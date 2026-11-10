@@ -1638,6 +1638,14 @@ def run(switcher) -> int:
         # line-buffered even when redirected, so it lands immediately.
         warning(_warn, file=sys.stderr)
 
+    # rumps never sets an activation policy, so under a framework Python the
+    # process launches as a regular app and parks a "Python" icon in the Dock
+    # for as long as the menu bar runs. Accessory keeps the status item and
+    # dialog windows but stays out of the Dock and the Cmd-Tab switcher.
+    AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+        AppKit.NSApplicationActivationPolicyAccessory
+    )
+
     from ai_quota_swap.menubar_app import run_app
 
     return run_app(switcher, rumps, AppKit)

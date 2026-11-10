@@ -67,6 +67,8 @@ from ai_quota_swap.menubar_engines import ActiveChangeWatcher, EngineSupervisor
 from ai_quota_swap.menubar_notify import Notification, Notifier, manual_switch_text, ref_labeler
 
 _ACCOUNT_REF = re.compile(r"Account-(\d+)(?: \([^)]*\))?")
+#: Marks a finished background action in the event queue.
+_ACTION_DONE = object()
 
 
 def run_app(switcher, rumps, AppKit) -> int:
@@ -110,6 +112,7 @@ def run_app(switcher, rumps, AppKit) -> int:
             self._last_usage_log: dict = {}
             self._events: list = []
             self._event_lock = threading.Lock()
+            self._action_lock = threading.Lock()
             self._notifier = Notifier()
             self._supervisor = EngineSupervisor(self._make_engine, self._queue_event)
             self._watcher = ActiveChangeWatcher(
@@ -130,8 +133,9 @@ def run_app(switcher, rumps, AppKit) -> int:
             self.refresh_timer.start()
             self.sync_timer = rumps.Timer(self.on_sync_tick, 1)
             self.sync_timer.start()
+            # rumps fires a timer as soon as it starts, so the ledger scan's
+            # timer starts with the first scan, a minute after launch.
             self.cost_timer = rumps.Timer(self.on_cost_tick, COST_SCAN_INTERVAL_S)
-            self.cost_timer.start()
             self.refresh_async()
 
         # ---- reads ----------------------------------------------------------
@@ -232,7 +236,7 @@ def run_app(switcher, rumps, AppKit) -> int:
             self._refresh_health_row()
             if not self._first_scan_done and time.monotonic() - self._started >= COST_FIRST_SCAN_DELAY_S:
                 self._first_scan_done = True
-                self._scan_async()
+                self.cost_timer.start()  # scans now, then every COST_SCAN_INTERVAL_S
 
         def _detect_active_change(self):
             # Reflect switches from any source (menu, CLI, an engine, a /login)
@@ -278,6 +282,9 @@ def run_app(switcher, rumps, AppKit) -> int:
                 events, self._events = self._events, []
             both = self._both()
             for provider, ev in events:
+                if provider is _ACTION_DONE:
+                    self._finish_action(*ev)
+                    continue
                 kind = getattr(ev, "kind", "")
                 if kind == "engine-stopped":
                     if self._supervisor.stopped(provider, ev):
@@ -412,8 +419,14 @@ def run_app(switcher, rumps, AppKit) -> int:
 
         # ---- feedback -------------------------------------------------------
         def _notify(self, note: Notification | None):
-            if note is not None:
+            # rumps raises when the process has no bundle identifier; a lost
+            # notification must not end the launch or drop the rest of a batch.
+            if note is None:
+                return
+            try:
                 rumps.notification(note.title, note.subtitle, note.body)
+            except Exception:
+                logger.warning("could not show a notification: %s", note.body, exc_info=True)
 
         def _activate(self):
             # A menu bar (accessory) app is not the active app, so a modal
@@ -474,25 +487,66 @@ def run_app(switcher, rumps, AppKit) -> int:
                 self._notify(Notification(text))
             self.refresh_async()
 
-        def _do_switch(self, a: Action):
+        def _in_background(self, work, done):
+            """Run a slow action off the main thread: a switch reads the
+            Keychain, may read usage over the network (the pre-switch check)
+            and, for Codex, restarts its background server, which can take
+            seconds. ``done(result)`` then runs on the main thread (the sync
+            tick); an error becomes an alert. One action at a time."""
+            def run():
+                with self._action_lock:
+                    try:
+                        result, error = work(), None
+                    except Exception as e:
+                        result, error = None, e
+                with self._event_lock:
+                    self._events.append((_ACTION_DONE, (done, result, error)))
+
+            threading.Thread(target=run, daemon=True, name="menubar-action").start()
+
+        def _finish_action(self, done, result, error):
+            if error is not None:
+                if not isinstance(error, ProviderError):
+                    logger.error(
+                        "menu bar action failed", exc_info=(type(error), error, error.__traceback__),
+                    )
+                self._alert(error_text(error))
+                return
+            guarded(lambda: done(result), alert=self._alert)
+
+        def _do_switch(self, a: Action, anyway: bool = False):
             sw = self._switcher_for(a.provider)
             acc = next((x for x in self._state(a.provider).accounts if x.number == a.number), None)
-            notes: list[str] = []
-            if acc is None or not acc.active:
-                try:
-                    notes = list(sw.check_switch_target(a.number, anyway=False) or [])
-                except SwitchError as e:
+            check = acc is None or not acc.active
+
+            def work():
+                notes: list[str] = []
+                if check:
+                    try:
+                        notes = list(sw.check_switch_target(a.number, anyway=anyway) or [])
+                    except SwitchError as e:
+                        if anyway:
+                            raise
+                        return ("refused", str(e), [])
+                return ("done", sw.switch_to(str(a.number), json_output=True), notes)
+
+            def done(outcome):
+                kind, value, notes = outcome
+                if kind == "refused":
                     # Needs re-login: the command line refuses without
                     # --anyway; here the same explanation asks first.
-                    if not self._confirm("Switch anyway?", relogin_confirmation(str(e)), "Switch anyway"):
-                        return
-                    notes = list(sw.check_switch_target(a.number, anyway=True) or [])
-            result = sw.switch_to(str(a.number), json_output=True)
-            self._after_switch(a.provider, result, notes)
+                    if self._confirm("Switch anyway?", relogin_confirmation(value), "Switch anyway"):
+                        self._do_switch(a, anyway=True)
+                    return
+                self._after_switch(a.provider, value, notes)
+
+            self._in_background(work, done)
 
         def _do_rotate(self, a: Action):
-            result = self.switcher.switch(strategy=a.value, json_output=True)
-            self._after_switch("claude", result)
+            self._in_background(
+                lambda: self.switcher.switch(strategy=a.value, json_output=True),
+                lambda result: self._after_switch("claude", result),
+            )
 
         def _do_add_current(self, a: Action):
             self._switcher_for(a.provider).add_account()
@@ -694,9 +748,13 @@ def _token_dialog(rumps, AppKit, activate) -> tuple[str, str] | None:
         alert.addButtonWithTitle_("Add")
         alert.addButtonWithTitle_("Cancel")
         view = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 320, 56))
-        token = AppKit.NSSecureTextField.alloc().initWithFrame_(AppKit.NSMakeRect(0, 32, 320, 24))
+        # rumps' Editing fields handle Cmd+X/C/V/A/Z themselves: an accessory
+        # app has no Edit menu, so plain text fields would not paste.
+        secure = getattr(rumps.rumps, "SecureEditing", AppKit.NSSecureTextField)
+        plain = getattr(rumps.rumps, "Editing", AppKit.NSTextField)
+        token = secure.alloc().initWithFrame_(AppKit.NSMakeRect(0, 32, 320, 24))
         token.setPlaceholderString_("token (required)")
-        email = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 320, 24))
+        email = plain.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 320, 24))
         email.setPlaceholderString_("email (optional)")
         view.addSubview_(token)
         view.addSubview_(email)

@@ -1170,6 +1170,14 @@ def test_no_claude_only_catches_left():
         assert "except ClaudeSwitchError" not in text and "(ClaudeSwitchError," not in text, name
 
 
+def test_run_keeps_the_app_out_of_the_dock():
+    # rumps sets no activation policy; without Accessory a framework Python
+    # parks a "Python" icon in the Dock. Lost once in a rewrite already.
+    import inspect
+
+    assert "NSApplicationActivationPolicyAccessory" in inspect.getsource(menubar.run)
+
+
 def test_run_without_rumps_raises_clean_error(monkeypatch):
     """A missing menubar extra surfaces as a provider error with the install
     hint, not a traceback."""
