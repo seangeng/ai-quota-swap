@@ -7432,3 +7432,57 @@ class TestHeaderProbeReadings:
         })
         assert outcome is TickOutcome.SWITCHED
         assert h.active_number() == 3
+
+
+class TestRotationCandidates:
+    """The engine's candidate rule, pure: the tick and the dashboard's "Next
+    best" list both ask it which accounts are switch targets."""
+
+    @staticmethod
+    def _kinds(**kinds):
+        return lambda n: kinds.get(n, "oauth")
+
+    def test_leaves_out_the_active_and_set_aside_accounts_in_rotation_order(self):
+        from ai_quota_swap.autoswitch import rotation_candidates
+
+        picked = rotation_candidates(
+            ["3", "1", "4", "2"], "1", set_aside={"4"}, kind_of=self._kinds(),
+            include_api_key_accounts=False,
+        )
+        assert picked.considered == ("3", "2")
+        assert picked.oauth == ("3", "2")
+        assert picked.api_key == ()
+
+    def test_api_key_accounts_only_when_the_setting_lets_them_in(self):
+        from ai_quota_swap.autoswitch import rotation_candidates
+
+        kinds = self._kinds(**{"5": "api_key"})
+        off = rotation_candidates(
+            ["1", "2", "5"], "1", set_aside=(), kind_of=kinds, include_api_key_accounts=False,
+        )
+        assert off.oauth == ("2",) and off.api_key == ()
+        assert off.considered == ("2", "5")  # still read, never a target
+        on = rotation_candidates(
+            ["1", "2", "5"], "1", set_aside=(), kind_of=kinds, include_api_key_accounts=True,
+        )
+        assert on.api_key == ("5",)
+
+    def test_an_api_key_account_at_its_budget_is_not_a_target(self):
+        from ai_quota_swap.autoswitch import rotation_candidates
+
+        over = UsageEntry(api_spend={"spend": {"used": 20.0, "limit": 20.0}})
+        under = UsageEntry(api_spend={"spend": {"used": 5.0, "limit": 20.0}})
+        picked = rotation_candidates(
+            ["1", "5", "6"], "1", set_aside=(),
+            kind_of=self._kinds(**{"5": "api_key", "6": "api_key"}),
+            include_api_key_accounts=True, entries={"5": over, "6": under},
+        )
+        assert picked.api_key == ("6",)
+
+    def test_no_active_account(self):
+        from ai_quota_swap.autoswitch import rotation_candidates
+
+        picked = rotation_candidates(
+            ["1", "2"], None, set_aside=(), kind_of=self._kinds(), include_api_key_accounts=False,
+        )
+        assert picked.oauth == ("1", "2")

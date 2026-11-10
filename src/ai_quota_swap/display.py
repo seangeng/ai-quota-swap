@@ -12,7 +12,9 @@ The pieces, outermost first:
 
 - :func:`render_block` turns an :class:`AccountBlock` into lines;
   :func:`block_from_entry` builds one from a stored usage reading.
-- :func:`header_line`, :func:`window_rows` and :func:`state_lines` are its parts.
+- :func:`header_line`, :func:`window_rows` and :func:`state_lines` are its parts;
+  :func:`header_parts`, :func:`window_suffix` and :func:`state_parts` give the
+  same words unstyled, for a surface that draws them its own way (the dashboard).
 - The phrases: :data:`NOTHING_MANAGED`, :data:`NEEDS_RELOGIN`,
   :func:`usage_unavailable`, :func:`as_of`, :func:`held_resets`,
   :func:`relogin_step`, :func:`nothing_managed_lines`.
@@ -331,25 +333,43 @@ def label_for(block: AccountBlock, *, long: bool = True) -> str:
     )
 
 
-def header_line(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ") -> str:
-    """``  #1 personal (maya@example.com) · active · Max 20x · Northwind Labs``.
+@dataclass(frozen=True)
+class HeaderParts:
+    """A header line's pieces, already cut to fit, before any styling.
 
-    The email is cut with an ellipsis when the line would not fit.
+    ``number`` is ``#2`` (``Claude #2`` with the provider shown); ``name`` is
+    the alias or the email; ``email`` is the address shown after an alias,
+    ``""`` when there is none or no room. ``facts`` are ``(text, role)``
+    in display order, roles ``active``, ``disabled``, ``api-key``, ``plan``,
+    ``plan-lapsed`` and ``org``.
     """
-    from ai_quota_swap.printer import accent, bolded, muted, yellowed
 
-    # ux.md: the active marker is bold; accent is for actions taken (and aliases).
-    facts: list[tuple[str, Callable[[str], str]]] = []
+    number: str
+    name: str
+    alias: bool
+    email: str
+    facts: tuple[tuple[str, str], ...]
+
+    def plain(self, indent: str = "") -> str:
+        head = f"{self.number} {self.name}" if self.number else self.name
+        email = f" ({self.email})" if self.email else ""
+        return indent + head + email + "".join(f" · {text}" for text, _ in self.facts)
+
+
+def header_parts(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ") -> HeaderParts:
+    """The pieces of :func:`header_line`: the email is cut with an ellipsis
+    when the line would not fit, and the organization gives way before it."""
+    facts: list[tuple[str, str]] = []
     if block.active:
-        facts.append(("active", bolded))
+        facts.append(("active", "active"))
     if block.disabled:
-        facts.append(("disabled", muted))
+        facts.append(("disabled", "disabled"))
     if block.kind == "api_key":
-        facts.append(("API key", muted))
+        facts.append(("API key", "api-key"))
     if block.plan:
-        facts.append((block.plan, yellowed if block.plan_warning else muted))
+        facts.append((block.plan, "plan-lapsed" if block.plan_warning else "plan"))
     if block.org:
-        facts.append((block.org, muted))
+        facts.append((block.org, "org"))
     tail_plain = "".join(f" · {text}" for text, _ in facts)
     prefix = []
     number_len = len(f"#{block.number} ") if block.number not in (None, "") else 0
@@ -372,23 +392,57 @@ def header_line(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ") 
     number = " ".join(prefix)
     name = block.alias or block.email or "account"
     room = width - len(indent) - len(number) - 1 - len(name) - len(tail_plain)
-    email_part = ""
+    email = ""
     if block.alias and block.email:
         # " (email)" needs 3 columns besides the address itself; below a
         # useful length it is left out (the alias still names the account).
         if room >= 3 + min(len(block.email), 8):
-            email_part = f" ({fit(block.email, room - 3)})"
+            email = fit(block.email, room - 3)
     elif room < 0:
         name = fit(name, len(name) + room)
-    styled_name = accent(name) if block.alias else name
-    head = f"{number} {styled_name}" if number else styled_name
+    return HeaderParts(number, name, bool(block.alias), email, tuple(facts))
+
+
+def header_line(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ") -> str:
+    """``  #1 personal (maya@example.com) · active · Max 20x · Northwind Labs``.
+
+    The email is cut with an ellipsis when the line would not fit.
+    """
+    from ai_quota_swap.printer import accent, bolded, muted, yellowed
+
+    # ux.md: the active marker is bold; accent is for actions taken (and aliases).
+    styles: dict[str, Callable[[str], str]] = {
+        "active": bolded, "disabled": muted, "api-key": muted,
+        "plan": muted, "plan-lapsed": yellowed, "org": muted,
+    }
+    parts = header_parts(block, width=width, indent=indent)
+    styled_name = accent(parts.name) if parts.alias else parts.name
+    head = f"{parts.number} {styled_name}" if parts.number else styled_name
+    email_part = f" ({parts.email})" if parts.email else ""
     sep = muted(" · ")
-    tail = "".join(f"{sep}{style(text)}" for text, style in facts)
+    tail = "".join(f"{sep}{styles[role](text)}" for text, role in parts.facts)
     return f"{indent}{head}{muted(email_part)}{tail}"
 
 
 def _pct_text(pct: float | None) -> str:
     return f"{pct:>3.0f}%" if isinstance(pct, (int, float)) else " n/a"
+
+
+def window_suffix(w: WindowRow, *, countdown: bool = True) -> str:
+    """What follows a window's percentage: ``resets 16:55 · in 2h 35m``, its
+    note, and ``limit reached`` at the limit. ``countdown=False`` leaves the
+    ``in …`` part out (a narrow row keeps the clock)."""
+    facts = []
+    if w.clock:
+        when = f"resets {w.clock}"
+        if w.countdown and countdown:
+            when += f" · in {w.countdown}"
+        facts.append(when)
+    if w.note:
+        facts.append(w.note)
+    if severity(w.pct, w.line) == "limit":
+        facts.append("limit reached")
+    return " · ".join(facts)
 
 
 def window_rows(
@@ -416,17 +470,7 @@ def window_rows(
             out.append(f"{indent}{branch} {dimmed(body) if stale else muted(body)}")
             continue
         level = severity(w.pct, w.line)
-        facts = []
-        if w.clock:
-            when = f"resets {w.clock}"
-            if w.countdown:
-                when += f" · in {w.countdown}"
-            facts.append(when)
-        if w.note:
-            facts.append(w.note)
-        if level == "limit":
-            facts.append("limit reached")
-        rest = " · ".join(facts)
+        rest = window_suffix(w)
         pct = _pct_text(w.pct)
         if stale:
             line = dimmed(f"{label}  {pct}  {rest}".rstrip())
@@ -436,37 +480,45 @@ def window_rows(
     return out
 
 
+def state_parts(block: AccountBlock) -> list[tuple[str, str]]:
+    """The sentences :func:`state_lines` prints, unwrapped and unstyled, as
+    ``(text, role)``: ``warn`` (needs re-login), ``dim`` (a state, a note,
+    the age of a stale reading) or ``muted`` (the held resets)."""
+    out: list[tuple[str, str]] = []
+    if block.state == "needs-relogin":
+        why = f" ({block.set_aside})" if block.set_aside else ""
+        out.append((f"{NEEDS_RELOGIN}{why}: {relogin_step(block.provider)}", "warn"))
+    elif block.state == "unavailable":
+        retrying = block.error not in ("store-unmirrored", "invalid_client", "setup-token")
+        out.append((
+            usage_unavailable(block.error, retry_in_s=block.retry_in_s, retrying=retrying), "dim",
+        ))
+    elif block.state == "api-key" and not block.notes:
+        out.append((API_KEY_NO_QUOTA, "dim"))
+    elif block.state == "not-read":
+        out.append((NOT_READ_YET, "dim"))
+    for note in block.notes:
+        out.append((note, "dim"))
+    if block.stale_s is not None and block.windows:
+        text = as_of(block.stale_s)
+        if block.error:
+            text += f" · {usage_unavailable(block.error, retry_in_s=block.retry_in_s)}"
+        out.append((text, "dim"))
+    if block.held:
+        out.append((block.held, "muted"))
+    return out
+
+
 def state_lines(block: AccountBlock, *, width: int = WIDTH, indent: str = "     ") -> list[str]:
     """The sentences under the windows: the account's state, its notes and
     the held resets, wrapped to ``width``."""
     from ai_quota_swap.printer import dimmed, muted, yellowed
 
+    styles: dict[str, Callable[[str], str]] = {"warn": yellowed, "dim": dimmed, "muted": muted}
     out: list[str] = []
-    room = width
-
-    def add(text: str, style: Callable[[str], str]) -> None:
-        for line in wrap(text, room, indent):
-            out.append(style(line))
-
-    if block.state == "needs-relogin":
-        why = f" ({block.set_aside})" if block.set_aside else ""
-        add(f"{NEEDS_RELOGIN}{why}: {relogin_step(block.provider)}", yellowed)
-    elif block.state == "unavailable":
-        retrying = block.error not in ("store-unmirrored", "invalid_client", "setup-token")
-        add(usage_unavailable(block.error, retry_in_s=block.retry_in_s, retrying=retrying), dimmed)
-    elif block.state == "api-key" and not block.notes:
-        add(API_KEY_NO_QUOTA, dimmed)
-    elif block.state == "not-read":
-        add(NOT_READ_YET, dimmed)
-    for note in block.notes:
-        add(note, dimmed)
-    if block.stale_s is not None and block.windows:
-        text = as_of(block.stale_s)
-        if block.error:
-            text += f" · {usage_unavailable(block.error, retry_in_s=block.retry_in_s)}"
-        add(text, dimmed)
-    if block.held:
-        add(block.held, muted)
+    for text, role in state_parts(block):
+        for line in wrap(text, width, indent):
+            out.append(styles[role](line))
     return out
 
 
