@@ -1,28 +1,50 @@
 name: Bug report
-description: Something in qswap isn't working right
+description: Something in qswap does not work as documented
 labels: [bug]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste access or refresh tokens, API keys, Admin keys, setup-tokens, or the contents of credential files, the Keychain, an export, or Codex's `auth.json`. Replace emails and organization names if you prefer. A security problem belongs in a private report: use "Report a vulnerability" on the Security tab instead of an issue.
   - type: textarea
     id: what-happened
     attributes:
       label: What happened?
-      description: What did you do, what did you see, and what did you expect instead?
-      placeholder: Ran `qswap switch 2`, got ... — expected ...
+      description: What you did, what you saw, and what you expected instead.
+      placeholder: Ran `qswap switch 2`, got ..., expected ...
+    validations:
+      required: true
+  - type: textarea
+    id: command-output
+    attributes:
+      label: The command and its output
+      description: The exact command you ran and everything it printed. For auto-switch problems, the `qswap auto` lines around the event.
+      render: shell
     validations:
       required: true
   - type: input
     id: version
     attributes:
-      label: qswap version and install method
-      description: Output of `qswap --version`, and whether you installed with uv, pipx, or from source.
-      placeholder: qswap 0.20.0, installed with uv
+      label: qswap version
+      description: Output of `qswap --version`.
     validations:
       required: true
   - type: dropdown
-    id: os
+    id: install
     attributes:
-      label: Operating system
-      description: Credentials are stored differently per platform, so this matters a lot.
+      label: How did you install it?
+      options:
+        - uv tool install
+        - pipx
+        - From a clone (uv sync)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Logins are stored differently on each platform, so this matters.
       options:
         - macOS
         - Linux
@@ -31,17 +53,17 @@ body:
     validations:
       required: true
   - type: dropdown
-    id: claude-code
+    id: accounts
     attributes:
-      label: How do you run Claude Code?
+      label: Which accounts are involved?
       multiple: true
       options:
-        - CLI (terminal)
-        - VS Code extension
-        - Desktop app
+        - Claude Code subscription
+        - Claude Code API key
+        - Codex
   - type: textarea
-    id: logs
+    id: doctor
     attributes:
-      label: Command output or logs
-      description: Paste the failing command's output — `qswap list` for account-state issues, `qswap auto` log lines for auto-switch issues. Formatted automatically, no backticks needed. Please redact emails/account identifiers, and never paste access/refresh tokens, API keys, setup tokens, or credential-file/Keychain contents.
+      label: Output of `qswap doctor`
+      description: It checks your setup and prints what it finds. If your version has no `qswap doctor`, paste `qswap list` instead.
       render: shell

@@ -5,9 +5,10 @@ instance (docs/design/providers.md). ``ClaudeAccountSwitcher`` is the Claude
 Code provider as it stands; ``codex.switcher.CodexSwitcher`` is the Codex one
 and exposes the same members.
 
-The two Protocols below are written against the members' real signatures, so
-a type checker, or ``tests/test_providers.py``, can tell when a switcher stops
-fitting them.
+The two Protocols below are written against the members' real signatures.
+``tests/test_providers.py`` checks that both switchers have every member with a
+matching signature, so it fails when a switcher stops fitting them. The project
+runs no type checker.
 
 Optional engine-host members, outside the Protocol: the engine reads them with
 ``getattr`` and falls back to Claude Code's behaviour when a switcher lacks
