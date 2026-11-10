@@ -306,7 +306,7 @@ SENTINEL_NOTES = {
     USAGE_FOREIGN_CREDENTIAL: (
         "the live login belongs to another account — switching to this one repairs it"
     ),
-    USAGE_API_KEY: "API key — no quota; billed per token",
+    USAGE_API_KEY: "API key — no usage recorded on this machine",
     USAGE_KEYCHAIN_UNAVAILABLE: "Keychain unavailable — it is locked or busy; unlock it and try again",
     USAGE_RELOGIN_REQUIRED: (
         "needs re-login — log in to it in Claude Code (/login), then run: qswap add"
@@ -372,7 +372,7 @@ def _usage_entry_lines(
     login_line = muted(_pad_row(*login_row, len(login_row[0]) + 1)) if login_row else None
     if entry.sentinel == USAGE_API_KEY and isinstance(entry.api_spend, dict):
         # An API-key account's spend (docs/api-accounts.md); without a
-        # reading it falls through to the plain "API key (no quota)" note.
+        # reading it falls through to the plain "no usage recorded" note.
         from ai_quota_swap import api_spend
 
         reading = entry.api_spend

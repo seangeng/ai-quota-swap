@@ -20,7 +20,7 @@ import re
 import threading
 import time
 
-from ai_quota_swap import launch_agent
+from ai_quota_swap import launch_agent, manual_reset
 from ai_quota_swap.exceptions import CredentialReadError, ProviderError, SwitchError
 from ai_quota_swap.menubar import (
     ENGINE_HOST_LABEL,
@@ -49,6 +49,9 @@ from ai_quota_swap.menubar import (
     parse_token_entry,
     relogin_confirmation,
     remove_dialog,
+    resets_auto_confirmation,
+    resets_setting,
+    use_reset,
     wanted_engines,
 )
 from ai_quota_swap.menubar_data import (
@@ -63,12 +66,14 @@ from ai_quota_swap.menubar_data import (
     read_history,
     scan_ledger,
 )
-from ai_quota_swap.menubar_engines import ActiveChangeWatcher, EngineSupervisor
+from ai_quota_swap.menubar_engines import ActiveChangeWatcher, EngineSupervisor, ResetRunner
 from ai_quota_swap.menubar_notify import Notification, Notifier, manual_switch_text, ref_labeler
 
 _ACCOUNT_REF = re.compile(r"Account-(\d+)(?: \([^)]*\))?")
 #: Marks a finished background action in the event queue.
 _ACTION_DONE = object()
+#: Marks the result of a *Use a reset* claim in the event queue.
+_RESET_DONE = object()
 
 
 def run_app(switcher, rumps, AppKit) -> int:
@@ -76,8 +81,10 @@ def run_app(switcher, rumps, AppKit) -> int:
     Codex's switcher is built once Codex manages an account."""
     from ai_quota_swap.autoswitch import AutoSwitchEngine
     from ai_quota_swap.settings import (
+        ResetSettings,
         load_codex_settings,
         load_engine_settings,
+        load_reset_settings,
         load_settings,
         set_setting,
     )
@@ -108,11 +115,18 @@ def run_app(switcher, rumps, AppKit) -> int:
             self._started = time.monotonic()
             self._first_scan_done = False
             self._thresholds: dict[str, float] = {}
+            self._resets = ResetSettings()
             self._start_at_login = False
             self._last_usage_log: dict = {}
             self._events: list = []
             self._event_lock = threading.Lock()
             self._action_lock = threading.Lock()
+            # Use a reset: manual_reset.spend (the `qswap reset N --grant ID
+            # --yes` sequence) in a worker; the result comes back as an event.
+            self._reset_runner = ResetRunner(
+                manual_reset.spend, lambda note: self._queue_event(_RESET_DONE, note),
+                lock=self._action_lock,
+            )
             self._notifier = Notifier()
             self._supervisor = EngineSupervisor(self._make_engine, self._queue_event)
             self._watcher = ActiveChangeWatcher(
@@ -285,6 +299,11 @@ def run_app(switcher, rumps, AppKit) -> int:
                 if provider is _ACTION_DONE:
                     self._finish_action(*ev)
                     continue
+                if provider is _RESET_DONE:
+                    self._notify(ev)
+                    self.rebuild_menu()  # the account's rows are usable again
+                    self.refresh_async()  # and show the refilled window
+                    continue
                 kind = getattr(ev, "kind", "")
                 if kind == "engine-stopped":
                     if self._supervisor.stopped(provider, ev):
@@ -320,6 +339,12 @@ def run_app(switcher, rumps, AppKit) -> int:
                 pass
             self._thresholds = thresholds
             try:
+                # resets.* as `qswap config set` left them: a change made in a
+                # terminal shows at the next rebuild.
+                self._resets = load_reset_settings(data_root)
+            except Exception:
+                self._resets = ResetSettings()
+            try:
                 self._start_at_login = bool(launch_agent.start_at_login_enabled())
             except Exception:
                 self._start_at_login = False
@@ -340,6 +365,7 @@ def run_app(switcher, rumps, AppKit) -> int:
                 engines=engines, cost=self._cost, history=data.history,
                 start_at_login=self._start_at_login, thresholds=self._thresholds,
                 can_add_token=hasattr(self.switcher, "add_account_from_token"),
+                resets=self._resets, resets_busy=self._reset_runner.busy(),
             )
 
         def rebuild_menu(self):
@@ -444,6 +470,12 @@ def run_app(switcher, rumps, AppKit) -> int:
         def _confirm(self, title: str, message: str, ok: str) -> bool:
             self._activate()
             return rumps.alert(title=title, message=message, ok=ok, cancel="Cancel") == 1
+
+        def _confirm_cancel_default(self, title: str, message: str, ok: str) -> bool:
+            """A confirmation whose default (Return) button is Cancel, for
+            what cannot be undone."""
+            self._activate()
+            return _ask_cancel_default(AppKit, title, message, ok)
 
         def dispatch(self, action: Action):
             """Run a row's handler. No error ever escapes to rumps: a provider
@@ -652,6 +684,39 @@ def run_app(switcher, rumps, AppKit) -> int:
                 self._notify(self._notifier.engine_failed(a.provider or "claude", failure, both=self._both()))
             self.rebuild_menu()
 
+        def _do_resets_auto(self, a: Action):
+            # Off → on can spend something irreversible: ask once.
+            question = resets_auto_confirmation(self._resets.auto, str(a.value))
+            if question and not self._confirm("Use resets automatically", question, "Turn on"):
+                return
+            self._write_reset_setting(a)
+
+        def _do_toggle_weekly_for_model(self, a: Action):
+            self._write_reset_setting(a)
+
+        def _write_reset_setting(self, a: Action):
+            """The key `qswap config set` writes, through the same writer.
+            Running engines read resets.* from settings.json on every tick
+            (switcher.reset_settings), so nothing is restarted."""
+            key, value = resets_setting(a, self._resets)
+            try:
+                set_setting(data_root, key, value)
+            except Exception as e:
+                self._alert(f"Couldn't change {key}: {error_text(e) if isinstance(e, ProviderError) else e}")
+                return
+            self.rebuild_menu()
+
+        def _do_use_reset(self, a: Action):
+            started = use_reset(
+                self._menu_input(), a,
+                confirm=lambda title, message: self._confirm_cancel_default(title, message, "Use reset"),
+                run=lambda provider, number, grant_id, **kw: self._reset_runner.run(
+                    self._switcher_for(provider), provider, number, grant_id, **kw,
+                ),
+            )
+            if started:
+                self.rebuild_menu()  # its rows read "in progress"
+
         def _save_and_rebuild(self):
             self.settings.save(settings_path)
             self.rebuild_menu()
@@ -696,6 +761,17 @@ def run_app(switcher, rumps, AppKit) -> int:
 
     MenuBarApp().run()
     return 0
+
+
+def _ask_cancel_default(AppKit, title: str, message: str, ok: str) -> bool:
+    """An alert with Cancel as the default button and ``ok`` beside it;
+    True only when ``ok`` was clicked."""
+    alert = AppKit.NSAlert.alloc().init()
+    alert.setMessageText_(title)
+    alert.setInformativeText_(message)
+    alert.addButtonWithTitle_("Cancel")  # the first button is the default
+    alert.addButtonWithTitle_(ok)
+    return alert.runModal() == AppKit.NSAlertSecondButtonReturn
 
 
 def _codex_auth_path():

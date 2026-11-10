@@ -867,13 +867,7 @@ def _reset_command(argv: list[str]) -> None:
     parser.add_argument("--debug", action="store_true", help="log debug detail")
     args = parser.parse_args(argv)
 
-    from ai_quota_swap import display, prompts, resets
-    from ai_quota_swap.autoswitch import (
-        STATE_FILENAME,
-        _read_state_file,
-        record_reset_claim,
-        reset_request_id,
-    )
+    from ai_quota_swap import display, manual_reset, prompts, resets
     from ai_quota_swap.exceptions import ValidationError
     from ai_quota_swap.json_output import SCHEMA_VERSION
 
@@ -897,97 +891,34 @@ def _reset_command(argv: list[str]) -> None:
             _print_resets(switcher, as_json=args.json)
             return
 
-        num, email, _org = switcher.resolve_account(args.account)
-        name = switcher.label(num, long=False)
-        entry = switcher.refresh_account_usage(num)
-        last_good = entry.last_good if entry is not None else None
-        status = last_good.get("resets") if isinstance(last_good, dict) else None
-        now = _time.time()
-        if status is None:
-            why = entry.last_error if entry is not None else None
-            if why == "invalid_grant" or (entry is not None and entry.sentinel == "re-login needed"):
-                step = display.relogin_step("codex" if codex else "claude")
-                raise ValidationError(
-                    f"{name} {display.NEEDS_RELOGIN}; nothing was spent.\n"
-                    f"{step[:1].upper()}{step[1:]}"
-                )
-            if why:
-                raise ValidationError(
-                    f"{name}: its {noun}s could not be read ({display.error_label(why)}); "
-                    "try again later"
-                )
-            raise ValidationError(f"{name} reports no {noun}s; nothing to spend")
-        if not status.get("eligible"):
-            reason = status.get("ineligible_reason") or "unknown"
-            raise ValidationError(f"{name} has no {noun}s (not eligible: {reason})")
-        grants = status.get("grants") or []
-        if args.grant:
-            grant = next((g for g in grants if g["id"] == args.grant), None)
-            if grant is None:
-                raise ValidationError(f"{name} has no {noun} '{args.grant}' ({command} lists them)")
-        else:
-            # One that clears a window at the line first, the narrowest
-            # first: with only Fable at its limit, a Fable reset before a
-            # weekly one.
-            usable = resets.manual_order(status, last_good, rs.threshold, now)
-            if not usable:
-                held = resets.unused_grants(status, now)
-                if not held:
-                    raise ValidationError(f"{name} holds no {noun}s; nothing to spend")
-                reasons = "; ".join(
-                    f"{resets.reset_name(g)}: "
-                    f"{display.grant_state(resets.grant_unusable_reason(g, now))}"
-                    for g in held
-                )
-                raise ValidationError(f"{name} has no {noun} it can use right now ({reasons})")
-            grant = usable[0]
-        unusable = resets.grant_unusable_reason(grant, now)
-        if unusable:
-            raise ValidationError(
-                f"that {noun} cannot be used right now ({display.grant_state(unusable)})"
-            )
-
-        reset_name = resets.reset_name(grant)
-        if not args.yes:
+        def confirm(choice) -> bool:
+            if args.yes:
+                return True
             if not prompts.interactive():
                 raise prompts.needs_confirmation(command)
-            if codex:
-                from ai_quota_swap import codex_cli
-
-                print(codex_cli.describe_credit(
-                    num, email, grant, last_good, status, now, threshold=rs.threshold,
-                    name=switcher.label(num),
-                ))
-                question = "Use this reset credit?"
-            else:
-                print(_describe_reset(
-                    num, email, grant, last_good, status, now, threshold=rs.threshold,
-                    name=switcher.label(num),
-                ))
-                question = f"Use this {reset_name}?"
-            if not prompts.confirm(question, command=command):
+            print(manual_reset.describe(choice, name=switcher.label(choice.number)))
+            if not prompts.confirm(manual_reset.question(choice), command=command):
                 print(dimmed("Kept; nothing was spent."))
-                return
+                return False
+            return True
 
-        state = _read_state_file(switcher.backup_dir / STATE_FILENAME)
-        claims = state.get("resetClaims") if isinstance(state.get("resetClaims"), dict) else {}
-        request_id = reset_request_id(claims.get(num), grant["id"], switcher)
-        base = {
-            "at": _time.time(),
-            "grantId": grant["id"],
-            "requestId": request_id,
-            "reason": "manual",
-            "auto": False,
-        }
-        record_reset_claim(switcher.backup_dir, num, {**base, "result": "pending", "settled": False})
-        in_flight = True
-        result = switcher.claim_usage_reset(num, grant["id"], request_id)
-        in_flight = False
-        record_reset_claim(
-            switcher.backup_dir, num,
-            {**base, "result": result.result, "settled": result.settled,
-             "detail": result.reason or result.detail},
+        def started() -> None:
+            nonlocal in_flight
+            in_flight = True
+
+        # The one manual sequence (manual_reset.spend): a fresh re-read, the
+        # choice, the question, the pending record with its request id, the
+        # claim and its usage refresh, the final record.
+        spent = manual_reset.spend(
+            switcher, args.account, args.grant, codex=codex, settings=rs,
+            confirm=confirm, started=started,
         )
+        if spent is None:
+            return
+        in_flight = False
+        result, grant = spent.result, spent.choice.grant
+        num, email, name = spent.choice.number, spent.choice.email, spent.choice.name
+        reset_name = resets.reset_name(grant)
         if args.json:
             print(json.dumps({
                 "schemaVersion": SCHEMA_VERSION,
@@ -1038,66 +969,11 @@ def _reset_command(argv: list[str]) -> None:
         sys.exit(130)
 
 
-def _describe_reset(
-    num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float,
-    *, threshold: float = 95.0, name: str | None = None,
-) -> str:
-    """What spending ``grant`` would do, in the terms Claude Code uses, and
-    what it trades when it is broader than the limit reached. ``name`` is
-    the account's label (``#2 work (maya@example.com)``)."""
-    from ai_quota_swap import resets
-    from ai_quota_swap.labels import account_label
-    from ai_quota_swap.oauth import reset_clock_string
-    from datetime import datetime, timezone
+def _describe_reset(*args, **kwargs) -> str:
+    """:func:`manual_reset.describe_reset` (kept for callers of the old name)."""
+    from ai_quota_swap import manual_reset
 
-    reset_name = resets.reset_name(grant)
-    who = name or account_label(num, email=email)
-    lines = [bolded(f"{who} · {reset_name}"), dimmed(f"  id {grant['id']}")]
-    if grant.get("label"):
-        lines.append(dimmed(f"  {grant['label']}"))
-    phrase = resets.clears_phrase(grant)
-    lines.append(f"  {phrase[:1].upper()}{phrase[1:]}")
-    trade = resets.trade_note(grant, usage, threshold)
-    if trade:
-        lines.append(yellowed(f"  {trade}"))
-    refills = []
-    for key in grant.get("clears") or ():
-        label = resets.WINDOW_LABELS.get(key) or key
-        pct = (grant.get("percent_used") or {}).get(key)
-        refills.append(f"{label} (now {pct:.0f}%)" if isinstance(pct, (int, float)) else label)
-    if refills:
-        lines.append(f"  Refills {', '.join(refills)} to 0%")
-    if grant.get("gives_back_weekly"):
-        share = next(
-            (
-                s.get("share_of_weekly")
-                for s in (usage or {}).get("scoped") or ()
-                if isinstance(s, dict)
-                and any(
-                    (resets.WINDOW_LABELS.get(k) or "").lower() == str(s.get("name", "")).lower()
-                    for k in grant.get("clears") or ()
-                )
-            ),
-            None,
-        )
-        given = f" (about {share:.0f} pts)" if isinstance(share, (int, float)) else ""
-        lines.append(f"  Also gives back what it used of the weekly window{given}")
-    week = resets.parse_ts(status.get("weekly_resets_at"))
-    if week is not None:
-        try:
-            clock = reset_clock_string(
-                datetime.fromtimestamp(week, tz=timezone.utc),
-                datetime.fromtimestamp(now, tz=timezone.utc),
-            )
-        except (ValueError, OverflowError, OSError):
-            clock = None
-        if clock:
-            lines.append(f"  Your weekly reset stays {clock}")
-    left = max(0, grant["resets_left"] - 1)
-    end = resets.use_by(resets.parse_ts(grant.get("ends_at")), year=True)
-    tail = f" · use by {end}" if end else ""
-    lines.append(dimmed(f"  {left} left on this grant after{tail} · a used reset cannot be undone"))
-    return "\n".join(lines)
+    return manual_reset.describe_reset(*args, **kwargs)
 
 
 def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
@@ -1180,14 +1056,7 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
     noun = "reset credit" if codex else "reset"
     command = "qswap codex reset" if codex else "qswap reset"
     set_aside = switcher.set_aside_accounts()
-    mode = {
-        "off": f"off · only {command} N spends one",
-        "active": f"active · when the account in use reaches {rs.threshold:g}% on a window "
-                  "its reset clears",
-        "last-resort": f"last-resort · when the active account reaches {rs.threshold:g}% "
-                       "and no switch helps",
-        "on-limit": f"on-limit · when any account reaches {rs.threshold:g}%",
-    }[rs.auto]
+    mode = display.reset_mode_line(rs.auto, rs.threshold, command)
     print(bolded("Reset credits" if codex else "Usage resets"))
     for line in display.wrap(f"Auto: {mode}", subsequent="  "):
         print(dimmed(line))

@@ -651,17 +651,19 @@ def import_accounts(
         summary += f", {replaced} replaced (dead token)"
     _eprint(summary)
 
-    # If we just rewrote the stored backup for the account that is the current
-    # live login, a plain switch would back the (possibly stale) live
-    # credentials up over it (issue #79) — point at the explicit activation
-    # path instead.
+    # One of the imported accounts is the login in use on this machine. That
+    # login keeps working as it is: Claude Code refreshes it, so it is at
+    # least as fresh as the exported copy, and the next switch away saves it
+    # over the imported one. `qswap switch N --force` would do the opposite
+    # (stash the live login and write the exported copy over it), so say
+    # that nothing needs doing rather than point at it.
     identity = switcher._get_current_account()
     if identity is not None and final is not None:
         live_slot = switcher._find_account_slot(final, identity[0], identity[1])
         if live_slot is not None and live_slot in written_slots:
             _eprint(
-                f"Note: {identity[0]} is your current live login — activate the "
-                f"imported credentials with: qswap switch {live_slot} --force"
+                f"{switcher.label(live_slot, identity[0])} is already the active "
+                "account; nothing needs doing."
             )
 
 

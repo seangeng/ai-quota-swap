@@ -419,7 +419,7 @@ class TestCountsByKind:
             "Holds 2 Fable resets and 1 weekly reset"
         )
     def test_menu_bar_row(self):
-        # Held resets by kind, compact and last (menubar.held_compact).
+        # Held resets by kind, compact and last (display.held_compact).
         from ai_quota_swap.display import Reading
         from ai_quota_swap.menubar import AccountState, account_row
 
@@ -432,7 +432,7 @@ class TestCountsByKind:
             return account_row(acc, now=now, stale_after_s=900).text
 
         mixed = _usage(grants=[fable("a", ends=far, left=2), weekly("w", ends=far)])
-        assert row(mixed).endswith(" · 2 Fable · 1 weekly resets")
+        assert row(mixed).endswith(" · resets: 2 Fable, 1 weekly")
         assert row(_usage(grants=[fable("a", ends=far)])).endswith(" · 1 Fable reset")
         assert "reset" not in row(_usage())
         # The login note stays last.

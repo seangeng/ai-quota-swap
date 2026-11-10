@@ -505,12 +505,45 @@ def _age(seconds: float) -> str:
     return f"{seconds // 86400}d ago"
 
 
+def nothing_recorded(reading: object) -> bool:
+    """Whether the figure qswap has for an API-key account shows no usage:
+    this machine's estimate is zero today and this month with no unpriced
+    tokens, or there is no figure yet only because nothing was ever scanned
+    (no ledger, no organization in the way: no note). An Admin API figure is
+    never "nothing recorded": its zeros are Anthropic's, and are shown as they
+    are. No reading at all (no budget, no organization, no ledger) counts too."""
+    if reading is None:
+        return True
+    if not isinstance(reading, dict):
+        return False
+    source = reading.get("source")
+    spend = reading.get("spend") if isinstance(reading.get("spend"), dict) else {}
+    used = spend.get("used")
+    if source == SOURCE_LEDGER:
+        return used == 0 and not reading.get("today") and not reading.get("unpriced_tokens")
+    return source is None and used is None and not reading.get("note")
+
+
+def _nothing_spent(limit: float | None) -> str:
+    """The budget form of nothing recorded: ``$0 of $500 this month``."""
+    return f"$0 of {budget_money(limit)} this month" if limit is not None else ""
+
+
 def spend_text(reading: dict) -> str:
     """``API key · $4.12 today · $212.40 this month of $500 (42%)``, then
-    ``· estimate`` when the figure is the local one."""
+    ``· estimate`` when the figure is the local one. With nothing recorded:
+    ``API key · no usage recorded on this machine``, after ``$0 of $500 this
+    month`` when there is a budget."""
+    from ai_quota_swap.display import API_KEY_NO_USAGE
+
     spend = reading.get("spend") or {}
     used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
     parts = ["API key"]
+    if nothing_recorded(reading):
+        if limit is not None:
+            parts.append(_nothing_spent(limit))
+        parts.append(API_KEY_NO_USAGE)
+        return " · ".join(parts)
     if used is None:
         parts.append("no spend data yet")
         if limit is not None:
@@ -537,12 +570,19 @@ def detail_text(reading: dict, now: float | None = None) -> str | None:
     note = reading.get("note")
     source = reading.get("source")
     as_of = reading.get("as_of")
+    empty = nothing_recorded(reading)
     if source == SOURCE_LEDGER:
         old = isinstance(as_of, (int, float)) and now - as_of > LEDGER_STALE_S
         if note:
-            return f"{note}; estimate from this machine's transcripts"
+            # "no usage recorded on this machine" already says where from.
+            return note if empty else f"{note}; estimate from this machine's transcripts"
         if old:
-            return f"estimate as of the last qswap usage, {_age(now - as_of)}"
+            what = "as of" if empty else "estimate as of"
+            return f"{what} the last qswap usage, {_age(now - as_of)}"
+        return None
+    if empty:
+        # Nothing scanned yet reads as nothing recorded, as it will after
+        # the first scan of an unused key: the same state, the same words.
         return None
     if source == SOURCE_ADMIN:
         if note:
@@ -570,9 +610,14 @@ def short_text(reading: dict) -> str:
 def menu_text(reading: dict) -> str:
     """For a menu bar row, within its note width: ``$4.12 today ·
     $212.40/$500 (42%)``; ``(104%, over budget)`` past the budget, as
-    :func:`spend_text` says it."""
+    :func:`spend_text` says it. Nothing recorded with a budget: ``$0 of $500
+    this month``."""
+    from ai_quota_swap.display import API_KEY_NO_USAGE_SHORT
+
     spend = reading.get("spend") or {}
     used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
+    if nothing_recorded(reading):
+        return _nothing_spent(limit) or API_KEY_NO_USAGE_SHORT
     if used is None:
         return "API key · no spend data"
     today = reading.get("today")

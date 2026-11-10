@@ -942,6 +942,47 @@ USAGE = Scenario(
 )
 
 
+# -- the first day of the menu bar: unused API keys -----------------------------
+
+WEEKLY_RESET = Grant(
+    id="launch-2611-weekly",
+    label="One weekly reset",
+    clears=("seven_day",),
+    type="weekly",
+    ends_in=40 * D,
+)
+
+NEW_KEYS = Scenario(
+    name="new-keys",
+    title="Three API keys just added without an email, beside an account holding resets",
+    clock=CLOCK,
+    accounts=(
+        # A long address (the menu row cuts it), near its weekly limit, holding
+        # resets of two kinds: three Fable resets on one grant and a weekly one.
+        ClaudeAccount(
+            slot=1,
+            email="maya.lindqvist@northwind.example.com",
+            plan="max20",
+            seven_day=Window(98, 2 * D + 5 * H),
+            models=(ModelWindow("Fable", 27, 2 * D + 5 * H, share_of_weekly=9),),
+            resets=Resets(grants=(
+                replace(FABLE_RESET, resets_left=3, resets_total=3), WEEKLY_RESET,
+            )),
+        ),
+        # `qswap add-token sk-ant-api03-...` three times, no --email, never used.
+        *(ClaudeAccount(slot=n, email=f"api-key-{n}@token.local", api_key=True) for n in (5, 6, 7)),
+    ),
+    active=1,
+    settings=_DARK,
+    warmup=2 * M,
+    notes=(
+        "The maintainer's first-day menu: #1 at 98% weekly holding 3 Fable resets and 1 "
+        "weekly reset; #5-#7 API keys added without an email and never used (no ledger "
+        "until the menu bar's first scan)."
+    ),
+)
+
+
 # -- first run: nothing managed yet ---------------------------------------------
 
 _FIRST_LOGIN = ClaudeAccount(
@@ -1083,7 +1124,7 @@ TROUBLE = Scenario(
 
 SCENARIOS: dict[str, Scenario] = {
     s.name: s for s in (
-        FLEET, AUTOSWITCH, RESET, RESET_AFTER, USAGE,
+        FLEET, AUTOSWITCH, RESET, RESET_AFTER, USAGE, NEW_KEYS,
         EMPTY, EMPTY_CLAUDE, EMPTY_CLAUDE_CODEX, TROUBLE,
     )
 }

@@ -110,7 +110,7 @@ class TestAdd:
         out, err = capsys.readouterr()
         assert prompts == ["Admin API key (input hidden): "]
         assert "Registered organization 'acme-corp' (Acme Corp)." in out
-        assert "Linked #3 api-key-3@token.local" in out and '"Dev laptop"' in out
+        assert "Linked #3 api-key-3 to" in out and '"Dev laptop"' in out
         assert "manage your whole organization" in err
         for text in (out, err, caplog.text):
             assert ADMIN_KEY not in text

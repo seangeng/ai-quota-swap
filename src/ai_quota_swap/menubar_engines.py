@@ -257,3 +257,105 @@ class ActiveChangeWatcher:
             if active and active != shown.get(provider):
                 changed.append(provider)
         return changed
+
+
+# -- spending one usage reset by hand ---------------------------------------------
+
+
+def _start_thread(work: Callable[[], None]) -> None:
+    threading.Thread(target=work, daemon=True, name="menubar-reset").start()
+
+
+class ResetRunner:
+    """Runs a confirmed *Use a reset* off the main thread.
+
+    ``spend(switcher, number, grant_id, codex=…)`` is
+    :func:`ai_quota_swap.manual_reset.spend`, the sequence ``qswap reset
+    ACCOUNT --grant ID --yes`` runs (fresh re-read, pending record, claim,
+    final record); tests pass a fake. ``report(notification)`` receives the
+    result from the worker thread, in the auto log's words (``Used a Fable
+    reset on #1 personal · …``, ``Did not use …: why``); the app queues it
+    for the main thread. ``start(work)`` runs ``work`` (a daemon thread);
+    ``lock`` serializes with the app's other slow actions.
+
+    One claim per account at a time: while one is in flight, :meth:`busy`
+    names the account (its rows read "in progress") and :meth:`run` refuses
+    a second. Nothing the worker raises escapes it.
+    """
+
+    def __init__(
+        self,
+        spend: Callable[..., object],
+        report: Callable[[object], None],
+        *,
+        start: Callable[[Callable[[], None]], None] | None = None,
+        lock: threading.Lock | None = None,
+    ) -> None:
+        self._spend = spend
+        self._report = report
+        self._start = start or _start_thread
+        self._lock = lock
+        self._busy: set[tuple[str, str]] = set()
+        self._guard = threading.Lock()
+
+    def busy(self) -> frozenset[tuple[str, str]]:
+        """``(provider, number)`` of every account with a claim in flight."""
+        with self._guard:
+            return frozenset(self._busy)
+
+    def run(self, switcher, provider: str, number: str, grant_id: str, *, who: str, what: str) -> bool:
+        """Spend ``grant_id`` on account ``number`` in the background. False
+        (and nothing started) while that account's last claim is in flight."""
+        key = (provider, str(number))
+        with self._guard:
+            if key in self._busy:
+                return False
+            self._busy.add(key)
+
+        def work() -> None:
+            text = self._outcome(switcher, provider, str(number), grant_id, who=who, what=what)
+            with self._guard:
+                self._busy.discard(key)
+            try:
+                from ai_quota_swap.menubar_notify import Notification
+
+                self._report(Notification(text))
+            except Exception:
+                _logger.error("menu bar: could not report a usage reset's result", exc_info=True)
+
+        try:
+            self._start(work)
+        except Exception:
+            with self._guard:
+                self._busy.discard(key)
+            raise
+        return True
+
+    def _outcome(self, switcher, provider: str, number: str, grant_id: str, *, who: str, what: str) -> str:
+        """The spend, and its result as one sentence. Never raises."""
+        from ai_quota_swap import manual_reset
+        from ai_quota_swap.exceptions import ProviderError
+
+        try:
+            if self._lock is not None:
+                with self._lock:
+                    spent = self._spend(switcher, number, grant_id, codex=provider == "codex")
+            else:
+                spent = self._spend(switcher, number, grant_id, codex=provider == "codex")
+            if spent is None:
+                return manual_reset.not_used_text(what, who, "kept")
+            return manual_reset.outcome_text(spent, who)
+        except ProviderError as e:
+            # The command line's refusal ("that reset cannot be used right
+            # now (…)", "… needs re-login; nothing was spent."), on one line.
+            message = " ".join(str(e).split())
+            names = [who]
+            head, _, rest = who.partition(" ")
+            if head in ("Claude", "Codex") and rest:
+                names.append(rest)  # the command line names it without the provider
+            for name in names:
+                message = message.removeprefix(f"{name}: ").removeprefix(f"{name} ")
+            return manual_reset.not_used_text(what, who, message)
+        except Exception as e:
+            _logger.error("menu bar: usage reset on %s #%s failed", provider, number, exc_info=True)
+            return manual_reset.not_used_text(what, who, "error", f"{type(e).__name__}: {e}")

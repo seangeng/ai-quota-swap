@@ -222,7 +222,7 @@ def menubar_outline(switcher) -> str:
     import time
 
     from ai_quota_swap import menubar, menubar_data
-    from ai_quota_swap.settings import load_codex_settings, load_settings
+    from ai_quota_swap.settings import load_codex_settings, load_reset_settings, load_settings
     from ai_quota_swap.snapshot_source import SnapshotSource
 
     root = switcher.backup_dir
@@ -245,6 +245,7 @@ def menubar_outline(switcher) -> str:
             "claude": load_settings(root).threshold,
             "codex": load_codex_settings(root).threshold,
         },
+        resets=load_reset_settings(root),
     )
     return menubar.build_menu(inp).outline()
 

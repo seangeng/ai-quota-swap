@@ -376,12 +376,15 @@ class TestConflictPolicy:
         assert seq["accounts"]["1"]["email"] == "bob@example.com"
         assert seq["accounts"]["3"]["email"] == "alice@example.com"
 
-    def test_import_over_live_login_hints_force_activation(
+    def test_import_over_the_active_login_says_nothing_needs_doing(
         self, temp_home: Path, capsys
     ):
-        """Overwriting the stored backup of the current live login prints the
-        --switch-to --force activation hint (issue #79 follow-up): a plain
-        switch would back the stale live creds up over the fresh import."""
+        """Importing the account whose login is in use says it is already
+        the active account and nothing needs doing. The import leaves that
+        login alone, and the old hint (`qswap switch 1 --force`) would have
+        written the exported copy over it: here the live login has moved on
+        since the export (Claude Code refreshed it), and --force puts the
+        older exported token back in its place."""
         s = _linux_switcher(temp_home)
         _seed_account(s, 1, "alice@example.com", "org-a", "Org A")
         (temp_home / ".claude.json").write_text(json.dumps({
@@ -392,17 +395,24 @@ class TestConflictPolicy:
                 "organizationName": "Org A",
             }
         }))
-        (temp_home / ".claude" / ".credentials.json").write_text(json.dumps(
-            {"claudeAiOauth": {"accessToken": "sk-stale-live"}}
-        ))
+        live_file = temp_home / ".claude" / ".credentials.json"
+        live_file.write_text(json.dumps({"claudeAiOauth": {"accessToken": "sk-exported"}}))
         out = temp_home / "alice.qswap"
         export_accounts(s, str(out))
+        newer = json.dumps({"claudeAiOauth": {"accessToken": "sk-refreshed-since"}})
+        live_file.write_text(newer)
 
         import_accounts(s, str(out), force=True)
 
         err = capsys.readouterr().err
-        assert "alice@example.com is your current live login" in err
-        assert "qswap switch 1 --force" in err
+        assert "#1 alice@example.com is already the active account; nothing needs doing." in err
+        assert "--force" not in err and "live login" not in err
+        assert live_file.read_text() == newer  # the login in use is untouched
+
+        # What the old hint did: the exported (older) token replaces it.
+        s.switch_to("1", force=True)
+        live = json.loads(live_file.read_text())
+        assert live["claudeAiOauth"]["accessToken"] == "sk-exported"
 
     def test_import_without_matching_live_login_prints_no_hint(
         self, temp_home: Path, capsys
@@ -422,7 +432,7 @@ class TestConflictPolicy:
 
         import_accounts(s, str(out), force=True)
 
-        assert "current live login" not in capsys.readouterr().err
+        assert "already the active account" not in capsys.readouterr().err
 
     def test_slot_allocation_when_exported_slot_taken(self, temp_home: Path):
         """Imported account's exported slot is taken by a different account

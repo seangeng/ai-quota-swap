@@ -16,8 +16,10 @@ The pieces, outermost first:
   :func:`header_parts`, :func:`window_suffix` and :func:`state_parts` give the
   same words unstyled, for a surface that draws them its own way (the dashboard).
 - The phrases: :data:`NOTHING_MANAGED`, :data:`NEEDS_RELOGIN`,
-  :func:`usage_unavailable`, :func:`as_of`, :func:`held_resets`,
-  :func:`relogin_step`, :func:`nothing_managed_lines`.
+  :data:`API_KEY_NO_USAGE`, :func:`usage_unavailable`, :func:`as_of`,
+  :func:`held_resets` (and :func:`held_compact` for a compact row),
+  :func:`api_key_summary`, :func:`reset_mode_line`, :func:`relogin_step`,
+  :func:`nothing_managed_lines`.
 - :func:`severity` and :func:`paint`: yellow from an account's switch line,
   red from the limit.
 """
@@ -28,7 +30,7 @@ import textwrap
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 
-from ai_quota_swap.labels import PROVIDER_SHORT, account_label
+from ai_quota_swap.labels import PROVIDER_SHORT, account_label, is_placeholder, shown_email
 
 #: Console width every message is written for (ux.md: "Fits 80 columns").
 WIDTH = 80
@@ -41,8 +43,11 @@ NEEDS_RELOGIN = "needs re-login"
 USAGE_UNAVAILABLE = "usage unavailable"
 #: A managed account whose usage has not been read yet.
 NOT_READ_YET = "usage not read yet"
-#: An API-key account: it has no subscription quota to show.
-API_KEY_NO_QUOTA = "no quota; billed per token"
+#: An API-key account with nothing spent in the figure qswap has: no Admin API
+#: figure, and this machine's sessions (or the lack of any scan yet) show no
+#: usage. The block's words, and a one-line row's (``api_key_summary``).
+API_KEY_NO_USAGE = "no usage recorded on this machine"
+API_KEY_NO_USAGE_SHORT = "no usage recorded"
 
 #: Provider ids to the names a sentence uses.
 PROVIDER_NAMES = {"claude": "Claude Code", "codex": "Codex"}
@@ -174,6 +179,43 @@ def held_resets(counts: Sequence[tuple[str, int]], provider: str | None = "claud
     if len(parts) <= 1:
         return parts[0] if parts else ""
     return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def held_compact(counts: Sequence[tuple[str, int]], provider: str | None = "claude") -> str:
+    """Held usage resets as one fact of a compact row (the menu bar's account
+    rows): ``1 Fable reset``, ``2 weekly resets``, ``1 reset credit`` for one
+    kind (:func:`held_resets`); several kinds in one phrase, ``resets: 3
+    Fable, 1 weekly``, so the counts never read as separate facts."""
+    if not counts:
+        return ""
+    if provider == "codex" or len(counts) == 1:
+        return held_resets(counts, provider)
+    return "resets: " + ", ".join(f"{n} {label}" for label, n in counts)
+
+
+def api_key_summary(block: "AccountBlock") -> str:
+    """An API-key account's state in a one-line row (the menu bar, the
+    dashboard), after its ``API key`` fact: the block's first line, except
+    that nothing recorded is said in two words (``no usage recorded``) and a
+    budget with nothing spent as ``$0 of $500 this month``."""
+    note = block.notes[0] if block.notes else API_KEY_NO_USAGE
+    if note == API_KEY_NO_USAGE:
+        return API_KEY_NO_USAGE_SHORT
+    return note.removesuffix(f" · {API_KEY_NO_USAGE}")
+
+
+def reset_mode_line(mode: str, threshold: float, command: str = "qswap reset") -> str:
+    """``resets.auto`` in words, as ``qswap reset``'s ``Auto:`` line says it:
+    ``on-limit · when any account reaches 95%``. ``command`` is the one that
+    spends a reset by hand (``qswap codex reset`` for Codex)."""
+    return {
+        "off": f"off · only {command} N spends one",
+        "active": f"active · when the account in use reaches {threshold:g}% on a window "
+                  "its reset clears",
+        "last-resort": f"last-resort · when the active account reaches {threshold:g}% "
+                       "and no switch helps",
+        "on-limit": f"on-limit · when any account reaches {threshold:g}%",
+    }.get(mode, mode)
 
 
 #: What ``qswap remove`` / ``qswap codex remove`` ask; ``{name}`` is the
@@ -390,7 +432,11 @@ def header_parts(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ")
     number_len = len(f"#{block.number} ") if block.number not in (None, "") else 0
     if block.show_provider and block.provider:
         number_len += len(PROVIDER_SHORT.get(block.provider, block.provider)) + 1
-    name_len = min(len(block.alias or block.email or "account"), 24)
+    # A placeholder (api-key-5@token.local) is a name: shown as "api-key-5",
+    # never as an address in parentheses (labels.shown_email).
+    shown = shown_email(block.email)
+    address = "" if is_placeholder(block.email) else block.email
+    name_len = min(len(block.alias or shown or "account"), 24)
     over = len(indent) + number_len + name_len + len(tail_plain) - width
     if over > 0 and block.org and facts and facts[-1][0] == block.org:
         # The organization gives way first, then goes altogether.
@@ -405,14 +451,14 @@ def header_parts(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ")
     if block.number is not None and str(block.number) != "":
         prefix.append(f"#{block.number}")
     number = " ".join(prefix)
-    name = block.alias or block.email or "account"
+    name = block.alias or shown or "account"
     room = width - len(indent) - len(number) - 1 - len(name) - len(tail_plain)
     email = ""
-    if block.alias and block.email:
+    if block.alias and address:
         # " (email)" needs 3 columns besides the address itself; below a
         # useful length it is left out (the alias still names the account).
-        if room >= 3 + min(len(block.email), 8):
-            email = fit(block.email, room - 3)
+        if room >= 3 + min(len(address), 8):
+            email = fit(address, room - 3)
     elif room < 0:
         name = fit(name, len(name) + room)
     return HeaderParts(number, name, bool(block.alias), email, tuple(facts))
@@ -509,7 +555,7 @@ def state_parts(block: AccountBlock) -> list[tuple[str, str]]:
             usage_unavailable(block.error, retry_in_s=block.retry_in_s, retrying=retrying), "dim",
         ))
     elif block.state == "api-key" and not block.notes:
-        out.append((API_KEY_NO_QUOTA, "dim"))
+        out.append((API_KEY_NO_USAGE, "dim"))
     elif block.state == "not-read":
         out.append((NOT_READ_YET, "dim"))
     for note in block.notes:
