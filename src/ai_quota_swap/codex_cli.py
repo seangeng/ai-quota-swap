@@ -476,6 +476,33 @@ def codex_accounts_managed() -> bool:
     return isinstance(data, dict) and bool(data.get("accounts"))
 
 
+def codex_managed_count() -> int:
+    """How many Codex accounts are managed, from the registry file alone."""
+    path = get_codex_data_dir() / "sequence.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    accounts = data.get("accounts") if isinstance(data, dict) else None
+    return len(accounts) if isinstance(accounts, dict) else 0
+
+
+def live_codex_email() -> str | None:
+    """The live Codex login's email, read from ``auth.json`` alone (no
+    switcher, no directory created); None when there is none or it cannot be
+    read. Never raises."""
+    try:
+        from ai_quota_swap.codex import auth as codex_auth
+
+        home = codex_auth.codex_home()
+        login = codex_auth.try_parse_login(
+            codex_auth.read_auth_bytes(codex_auth.auth_path(home))
+        )
+    except Exception:
+        return None
+    return login.email if login is not None else None
+
+
 def extend_unified_list(payload, *, json_output: bool):
     """Append the Codex section to ``qswap list`` when Codex accounts exist.
 
@@ -492,8 +519,10 @@ def extend_unified_list(payload, *, json_output: bool):
 
     section: dict = {}
     if not json_output:
+        from ai_quota_swap import display
+
         print()
-        print(bolded("Codex accounts:"))
+        print(bolded(display.provider_heading("codex", both=True)))
     try:
         switcher = CodexSwitcher(configure_logging=False)
         switcher.check_storage()
@@ -525,12 +554,14 @@ def extend_unified_list(payload, *, json_output: bool):
 
 def describe_credit(
     num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float,
-    *, threshold: float = 95.0,
+    *, threshold: float = 95.0, name: str | None = None,
 ) -> str:
     """What spending one Codex usage reset credit would do, before asking."""
     from ai_quota_swap import resets
+    from ai_quota_swap.labels import account_label
 
-    lines = [bolded(f"Account-{num} ({email}) · Codex usage reset credit · {grant['id']}")]
+    who = name or account_label(num, email=email)
+    lines = [bolded(f"{who} · reset credit"), dimmed(f"  id {grant['id']}")]
     if grant.get("label"):
         lines.append(dimmed(f"  {grant['label']}"))
     name = resets.reset_name(grant)
@@ -574,13 +605,10 @@ def print_credit_used(switcher, num: str, email: str, grant: dict) -> None:
     if isinstance(status, dict):
         count = resets.total_left(status, time.time())
         left = f" · {count} credit{'' if count == 1 else 's'} left"
-    print(accent(
-        f"Used a Codex usage reset credit on Account-{num} ({email}): "
-        f"{cleared} reset{left}"
-    ))
+    print(accent(f"Used a reset credit on {switcher.label(num, long=False)}: {cleared} reset{left}"))
     if fresh is not None:
         for line in switcher._entry_lines(fresh):
-            print(f"   {line}")
+            print(f"     {line}")
 
 
 # -- qswap usage ------------------------------------------------------------------

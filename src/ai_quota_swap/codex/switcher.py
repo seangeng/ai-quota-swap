@@ -110,14 +110,14 @@ NEAR_EXPIRY_S = 600.0
 LOGIN_HOME_PREFIX = "login-home-"
 LOGIN_HOME_MAX_AGE_S = 86_400.0
 
-#: Human notes for the sentinel states a Codex row can be in.
+#: Human notes for the sentinel states a Codex row can be in. The state comes
+#: first and a remedy follows " — ", as in Claude Code's notes.
 SENTINEL_NOTES = {
     USAGE_TOKEN_EXPIRED: "token expired — Codex renews it the next time it runs",
     USAGE_UNKNOWN_UNTIL_USED: (
-        "usage unknown until used — the saved access token has expired; "
-        "Codex renews it on first use"
+        "usage unknown until used — Codex renews the expired token on first use"
     ),
-    USAGE_NO_CREDENTIALS: "no saved login — log in to it and run: qswap codex add",
+    USAGE_NO_CREDENTIALS: "no saved login — log in to it again: qswap codex login",
 }
 
 _PLAN_LABELS = {
@@ -837,62 +837,96 @@ class CodexSwitcher:
         )
 
     def _entry_lines(self, entry: UsageEntry) -> list[str]:
-        """Usage lines for one row, in the Claude rows' grammar (sans indent)."""
-        note = SENTINEL_NOTES.get(entry.sentinel) if entry.sentinel else None
-        if note is not None:
-            out = [dimmed(note)]
-            last_seen = claude_switcher.last_seen_note(entry)
-            if last_seen is not None:
-                out.append(f"{dimmed('└')} {muted(last_seen)}")
-            return out
-        if entry.sentinel is not None or entry.last_good is None:
-            return claude_switcher._usage_entry_lines(entry, None)
-        usage = entry.last_good
-        rows = claude_switcher._usage_rows(
-            {k: v for k, v in usage.items() if k != "rejected"}, entry.fetched_at
-        )
-        rejected = usage.get("rejected")
-        if isinstance(rejected, dict):
-            cell = oauth.fresh_reset_strings(rejected)
-            rows.append(
-                ("limit", f"reached    until {cell[1]:<12}  in {cell[0]}" if cell else "reached")
-            )
-        usage_count = len(rows)
-        resets_row = claude_switcher._resets_row(usage)
-        if resets_row is not None:
-            rows.append(resets_row)
-        width = max((len(label) for label, _ in rows), default=0) + 1
-        lines = [claude_switcher._pad_row(label, body, width) for label, body in rows]
-        if (
-            usage_count
-            and entry.age_s is not None
-            and entry.age_s > claude_switcher._USAGE_AGE_NOTE_S
-            and entry.fetched_at is not None
-        ):
-            lines[usage_count - 1] += f" · {format_age(int(entry.fetched_at * 1000))}"
-        return [
-            f"{dimmed('└' if j == len(lines) - 1 else '├')} {muted(line)}"
-            for j, line in enumerate(lines)
-        ]
+        """Usage lines for one row (sans the header), as ``list`` prints them."""
+        from ai_quota_swap import display
 
-    def _row_header(self, info: _Info, data: dict, plan: dict | None) -> str:
-        tag = "workspace" if is_workspace_plan(self._plan_type(plan)) else "personal"
-        label = f"{accent(info.alias)} ({info.email})" if info.alias else info.email
-        markers = ""
-        if info.is_active:
-            markers += f" {bold_accent('(active)')}"
-        if self._disabled_from_data(data, info.number):
-            markers += f" {muted('(disabled)')}"
-        markers += claude_switcher._plan_marker(plan, self._usage_store.clock())
-        return f"  {info.number}: {label} {muted(f'[{tag}]')}{markers}"
+        block = display.block_from_entry(
+            None, entry, provider="codex",
+            lines=self._display_lines(),
+            sentinel_notes={k: v.replace(" — ", "; ") for k, v in SENTINEL_NOTES.items()},
+            now=self._usage_store.clock(), stale_after_s=claude_switcher._USAGE_AGE_NOTE_S,
+        )
+        return [line.strip() for line in display.render_block(block)[1:]]
+
+    def _display_lines(self):
+        """Codex's switch lines, for severity colours (codex.threshold)."""
+        from ai_quota_swap import display
+        from ai_quota_swap.settings import load_engine_settings
+
+        try:
+            settings = load_engine_settings(self.data_root, self.provider_id)
+        except Exception:
+            return display.Lines()
+        return display.Lines(five_hour=settings.threshold, weekly=settings.weekly_threshold)
+
+    def label(self, number: str | int | None, email: str | None = None, *, long: bool = True) -> str:
+        """How this account is named in a message (labels.account_label)."""
+        from ai_quota_swap.labels import account_label
+
+        if number is None:
+            return email or "account"
+        record = ((self._read_registry() or {}).get("accounts") or {}).get(str(number)) or {}
+        return account_label(
+            number, alias=record.get("alias") or None,
+            email=email if email is not None else record.get("email", ""), long=long,
+        )
+
+    def alias_for(self, number: str | int) -> str:
+        """The account's alias, or ``""``."""
+        record = ((self._read_registry() or {}).get("accounts") or {}).get(str(number)) or {}
+        return record.get("alias", "") or ""
+
+    def set_aside_accounts(self) -> dict[str, str]:
+        """Accounts the Codex engine holds out until they are logged in again."""
+        from ai_quota_swap.autoswitch import set_aside_accounts
+
+        def identity(number: str) -> tuple[str, str | None] | None:
+            email = self.account_email(number)
+            if not email:
+                return None
+            creds = self.read_account_credentials(number, email)
+            return email, (self.credential_fingerprint(creds) if creds else None)
+
+        try:
+            return set_aside_accounts(self.backup_dir, identity=identity)
+        except Exception as e:
+            self._logger.debug(f"set-aside read failed: {e!r}")
+            return {}
+
+    def account_block(
+        self, info: _Info, entry: UsageEntry | None, data: dict, *,
+        set_aside: dict[str, str] | None = None, show_provider: bool = False,
+    ):
+        """One account's :class:`display.AccountBlock`, as ``list`` shows it."""
+        from ai_quota_swap import display
+
+        now = self._usage_store.clock()
+        record = self._plan_record(info, entry) if entry is not None else None
+        plan, plan_warning = claude_switcher.ClaudeAccountSwitcher._plan_text(record, now)
+        policy = self._policy_from_data(data, info.number)
+        lines = self._display_lines()
+        if policy.threshold is not None:
+            lines = display.Lines(five_hour=policy.threshold, weekly=lines.weekly)
+        return display.block_from_entry(
+            info.number, entry,
+            email=info.email, alias=info.alias, provider="codex",
+            show_provider=show_provider, active=info.is_active,
+            disabled=self._disabled_from_data(data, info.number),
+            plan=plan, plan_warning=plan_warning, lines=lines,
+            set_aside=(set_aside or {}).get(info.number),
+            sentinel_notes={k: v.replace(" — ", "; ") for k, v in SENTINEL_NOTES.items()},
+            now=now, stale_after_s=claude_switcher._USAGE_AGE_NOTE_S,
+        )
 
     def print_account_rows(self, infos: list[_Info], entries: dict[str, UsageEntry]) -> None:
+        from ai_quota_swap import display
+
         data = self._read_registry() or {}
+        set_aside = self.set_aside_accounts()
         for i, info in enumerate(infos):
-            entry = entries[info.number]
-            print(self._row_header(info, data, self._plan_record(info, entry)))
-            for line in self._entry_lines(entry):
-                print(f"     {line}")
+            block = self.account_block(info, entries.get(info.number), data, set_aside=set_aside)
+            for line in display.render_block(block):
+                print(line)
             if i < len(infos) - 1:
                 print()
 
@@ -937,14 +971,69 @@ class CodexSwitcher:
             return self.list_payload(fetch)
         data = self._read_registry()
         if not data or not data.get("accounts"):
-            print(dimmed("No Codex accounts are managed yet."))
-            print(dimmed("Log in with codex, then run: qswap codex add"))
+            for line in self.nothing_managed_lines():
+                print(line)
             return None
         infos = self._accounts_info()
         entries = self._collect_usage_entries(infos, fetch)
-        print(bolded("Codex accounts:"))
+        from ai_quota_swap import display
+
+        print(bolded(display.provider_heading("codex", both=False)))
         self.print_account_rows(infos, entries)
         return None
+
+    def nothing_managed_lines(self, *, sentence: bool = True) -> list[str]:
+        """No Codex account managed: why, and the next step for this machine."""
+        from ai_quota_swap import display
+
+        email = self.live_login_email()
+        found = None if email else shutil.which("codex") is not None
+        return [
+            line.replace(display.NOTHING_MANAGED, "No Codex accounts are managed yet.")
+            for line in display.nothing_managed_lines(
+                "codex", live_email=email, cli_found=found, sentence=sentence,
+            )
+        ]
+
+    def managed_count(self) -> int:
+        """How many Codex accounts are managed."""
+        data = self._read_registry()
+        return len((data or {}).get("accounts") or {})
+
+    def live_login_email(self) -> str | None:
+        """The live Codex login's email, managed or not; None when there is
+        none (or it cannot be read)."""
+        try:
+            _home, _raw, login, _problem = self._live()
+        except Exception:
+            return None
+        return login.email if login is not None else None
+
+    def status_lines(self) -> list[str]:
+        """The live login's block under a "Codex" heading, or one line saying
+        why there is none and what to do."""
+        from ai_quota_swap import display
+
+        out = [bolded(display.provider_name("codex"))]
+        home, raw, login, problem = self._live()
+        data = self._read_registry() or {}
+        if login is None:
+            if raw is not None:
+                out.append(f"  The Codex login cannot be managed ({problem}).")
+            elif data.get("accounts"):
+                out.append("  No account is active. Activate one with: qswap codex switch")
+            else:
+                out.extend(f"  {line}" for line in self.nothing_managed_lines(sentence=False))
+            return out
+        num = self._slot_for_identity(data, login)
+        if num is None:
+            out.append(f"  {login.email} · not managed · add it with: qswap codex add")
+            return out
+        info = self._info_for(num, data, login)
+        entry = self._collect_usage_entries([info])[num]
+        block = self.account_block(info, entry, data, set_aside=self.set_aside_accounts())
+        out.extend(display.render_block(block))
+        return out
 
     def status(self, json_output: bool = False) -> dict | None:
         """``qswap codex status``: the live login, and its usage when managed."""
@@ -995,27 +1084,8 @@ class CodexSwitcher:
                 "totalManagedAccounts": len(data.get("accounts", {})),
             }
 
-        if login is None:
-            if raw is None:
-                print(f"{bolded('Status:')} {dimmed('No active Codex login')}")
-            else:
-                print(f"{bolded('Status:')} {dimmed(f'unmanageable login ({problem})')}")
-            return None
-        if num is None:
-            print(f"{bolded('Status:')} {login.email} {dimmed('(not managed)')}")
-            return None
-        info = self._info_for(num, data, login)
-        entry = self._collect_usage_entries([info])[num]
-        plan = self._plan_record(info, entry)
-        tag = "workspace" if is_workspace_plan(self._plan_type(plan)) else "personal"
-        marker = claude_switcher._plan_marker(plan, self._usage_store.clock())
-        print(
-            f"{bolded('Status:')} {accent(f'Account-{num}')} "
-            f"({login.email} {muted(f'[{tag}]')}){marker}"
-        )
-        print(f"  {dimmed(f'Total managed accounts: {len(data.get('accounts', {}))}')}")
-        for line in self._entry_lines(entry):
-            print(f"  {line}")
+        for line in self.status_lines():
+            print(line)
         return None
 
     def _info_for(self, num: str, data: dict, live: CodexLogin) -> _Info:
@@ -1091,15 +1161,14 @@ class CodexSwitcher:
             ) is None:
                 warning(f"Slot {slot} already occupied")
                 print(f"{occupant.get('email', 'unknown')}")
-                if not assume_yes:
-                    try:
-                        answer = input(f"Overwrite slot {slot}? [y/N] ").strip().lower()
-                    except (EOFError, KeyboardInterrupt):
-                        print(f"\n{dimmed('Cancelled')}")
-                        return None
-                    if answer not in ("y", "yes"):
-                        print(dimmed("Cancelled"))
-                        return None
+                from ai_quota_swap import prompts
+
+                if not prompts.confirm(
+                    f"Overwrite slot {slot}?", assume_yes=assume_yes,
+                    command=f"qswap codex add --slot {slot}",
+                ):
+                    print(dimmed("Cancelled; nothing was changed."))
+                    return None
                 displaced = occupant.get("email", "")
 
         carry = claude_switcher.ClaudeAccountSwitcher._carried_settings
@@ -1315,15 +1384,17 @@ class CodexSwitcher:
             live_num = self.current_account_number()
         except CodexLoginError:
             live_num = None
+        from ai_quota_swap import prompts
+
+        name = self.label(num, email)
         if live_num == num:
-            warning(f"Warning: Account-{num} ({email}) is the live Codex login")
-        if not assume_yes:
-            confirm = input(
-                f"Are you sure you want to stop managing Account-{num} ({email})? [y/N] "
-            )
-            if confirm.lower() != "y":
-                print(dimmed("Cancelled"))
-                return
+            warning(f"Warning: {name} is the live Codex login")
+        if not prompts.confirm(
+            f"Stop managing {name} and delete qswap's saved copy of its login?",
+            assume_yes=assume_yes, command="qswap codex remove",
+        ):
+            print(dimmed("Cancelled; nothing was removed."))
+            return
         with self._lock():
             data = self._require_registry()
             if num not in data["accounts"] or data["accounts"][num].get("email", "") != email:
@@ -1338,13 +1409,13 @@ class CodexSwitcher:
                 data["activeAccountNumber"] = None
             self._write_registry(data)
         self._logger.info(f"Removed Codex account {num}")
-        print(f"{accent('Removed')} Account-{num} ({email})")
+        print(f"{accent('Removed')} {name}")
         print(dimmed(
             "  Only qswap's saved copy was deleted; the login itself is untouched."
         ))
         warning(
-            "  Do not run `codex logout` to clean up: it signs the login out at "
-            "OpenAI, which kills every saved copy of it."
+            "  Do not run `codex logout` to clean up: it signs the login out at\n"
+            "  OpenAI, and every saved copy of it stops working."
         )
 
     # -- aliases and policy ---------------------------------------------------

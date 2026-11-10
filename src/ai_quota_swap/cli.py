@@ -874,16 +874,18 @@ only for the 5-hour or all-models weekly limit; for a per-model limit alone:
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args(argv)
 
-    from ai_quota_swap import resets
+    from ai_quota_swap import display, prompts, resets
     from ai_quota_swap.autoswitch import (
         STATE_FILENAME,
         _read_state_file,
         record_reset_claim,
         reset_request_id,
     )
+    from ai_quota_swap.exceptions import ValidationError
+    from ai_quota_swap.json_output import SCHEMA_VERSION
 
     # What the messages call one reset, and the command that lists them.
-    noun = "Codex usage reset credit" if codex else "reset"
+    noun = "reset credit" if codex else "reset"
     command = "qswap codex reset" if codex else "qswap reset"
     in_flight = False
     try:
@@ -894,76 +896,84 @@ only for the 5-hour or all-models weekly limit; for a per-model limit alone:
             switcher.require_accounts()
         rs = switcher.reset_settings()
         if not rs.enabled:
-            error(
-                "Error: usage resets are off — "
-                "`qswap config set resets.enabled true` turns them on"
+            raise ValidationError(
+                "usage resets are off; turn them on with: "
+                "qswap config set resets.enabled true"
             )
-            sys.exit(1)
         if args.account is None:
             _print_resets(switcher, as_json=args.json)
             return
 
         num, email, _org = switcher.resolve_account(args.account)
+        name = switcher.label(num, long=False)
         entry = switcher.refresh_account_usage(num)
         last_good = entry.last_good if entry is not None else None
         status = last_good.get("resets") if isinstance(last_good, dict) else None
         now = _time.time()
         if status is None:
-            why = entry.last_error if entry is not None and entry.last_error else (
-                entry.sentinel if codex and entry is not None and entry.sentinel else "no reading"
-            )
-            what = "Codex usage reset credit status" if codex else "usage-reset status"
-            error(f"Error: no {what} for Account-{num} ({why})")
-            sys.exit(1)
+            why = entry.last_error if entry is not None else None
+            if why == "invalid_grant" or (entry is not None and entry.sentinel == "re-login needed"):
+                step = display.relogin_step("codex" if codex else "claude")
+                raise ValidationError(
+                    f"{name} {display.NEEDS_RELOGIN}; nothing was spent.\n"
+                    f"{step[:1].upper()}{step[1:]}"
+                )
+            if why:
+                raise ValidationError(
+                    f"{name}: its {noun}s could not be read ({display.error_label(why)}); "
+                    "try again later"
+                )
+            raise ValidationError(f"{name} reports no {noun}s; nothing to spend")
         if not status.get("eligible"):
             reason = status.get("ineligible_reason") or "unknown"
-            error(f"Error: Account-{num} has no usage resets (not eligible: {reason})")
-            sys.exit(1)
+            raise ValidationError(f"{name} has no {noun}s (not eligible: {reason})")
         grants = status.get("grants") or []
         if args.grant:
             grant = next((g for g in grants if g["id"] == args.grant), None)
             if grant is None:
-                what = "credit" if codex else "grant"
-                error(f"Error: Account-{num} has no {what} '{args.grant}' (`{command}` lists them)")
-                sys.exit(1)
+                raise ValidationError(f"{name} has no {noun} '{args.grant}' ({command} lists them)")
         else:
             # One that clears a window at the line first, the narrowest
             # first: with only Fable at its limit, a Fable reset before a
             # weekly one.
             usable = resets.manual_order(status, last_good, rs.threshold, now)
             if not usable:
-                error(f"Error: Account-{num} has no {noun} it can use right now")
-                for g in resets.unused_grants(status, now):
-                    print(dimmed(
-                        f"  {resets.reset_name(g)} ({g['id']}): "
-                        f"{resets.grant_unusable_reason(g, now)}"
-                    ))
-                sys.exit(1)
+                held = resets.unused_grants(status, now)
+                if not held:
+                    raise ValidationError(f"{name} holds no {noun}s; nothing to spend")
+                reasons = "; ".join(
+                    f"{resets.reset_name(g)}: "
+                    f"{display.grant_state(resets.grant_unusable_reason(g, now))}"
+                    for g in held
+                )
+                raise ValidationError(f"{name} has no {noun} it can use right now ({reasons})")
             grant = usable[0]
         unusable = resets.grant_unusable_reason(grant, now)
         if unusable:
-            error(f"Error: that {'credit' if codex else 'reset'} can't be used right now ({unusable})")
-            sys.exit(1)
+            raise ValidationError(
+                f"that {noun} cannot be used right now ({display.grant_state(unusable)})"
+            )
 
-        name = resets.reset_name(grant)
+        reset_name = resets.reset_name(grant)
         if not args.yes:
-            if not sys.stdin.isatty():
-                error(f"Error: refusing to spend a {noun} without --yes in a non-interactive shell")
-                sys.exit(1)
+            if not prompts.interactive():
+                raise prompts.needs_confirmation(command)
             if codex:
                 from ai_quota_swap import codex_cli
 
                 print(codex_cli.describe_credit(
                     num, email, grant, last_good, status, now, threshold=rs.threshold,
+                    name=switcher.label(num),
                 ))
-                answer = input(f"Use this {noun}? [y/N] ")
+                question = "Use this reset credit?"
             else:
                 print(_describe_reset(
                     num, email, grant, last_good, status, now, threshold=rs.threshold,
+                    name=switcher.label(num),
                 ))
-                answer = input(f"Use this {name}? [y/N] ")
-            if answer.strip().lower() not in ("y", "yes"):
-                print(dimmed("Kept — nothing was spent."))
+                question = f"Use this {reset_name}?"
+            if not prompts.confirm(question, command=command):
+                print(dimmed("Kept; nothing was spent."))
                 return
 
         state = _read_state_file(switcher.backup_dir / STATE_FILENAME)
@@ -987,6 +997,7 @@ only for the 5-hour or all-models weekly limit; for a per-model limit alone:
         )
         if args.json:
             print(json.dumps({
+                "schemaVersion": SCHEMA_VERSION,
                 "account": {"number": int(num), "email": email},
                 "grantId": grant["id"],
                 "result": result.to_json(),
@@ -1000,48 +1011,55 @@ only for the 5-hour or all-models weekly limit; for a per-model limit alone:
             cleared = ", ".join(
                 resets.WINDOW_LABELS.get(k) or k for k in result.cleared
             ) or resets.grant_kind(grant)
-            print(accent(f"Used a {name} on Account-{num} ({email}): {cleared} refilled{left}"))
+            print(accent(f"Used a {reset_name} on {name}: {cleared} refilled{left}"))
             fresh = switcher.usage_entries_by_account(fetch=set()).get(num)
             if fresh is not None:
-                from ai_quota_swap.switcher import _usage_entry_lines
-
-                for line in _usage_entry_lines(fresh):
-                    print(f"   {line}")
+                block = display.block_from_entry(
+                    num, fresh, provider="claude",
+                    now=_time.time(), stale_after_s=float("inf"),
+                )
+                for line in display.render_block(block)[1:]:
+                    print(line)
         else:
             detail = (result.reason or result.detail or "").replace("_", " ")
             error(
-                f"{'Credit' if codex else 'Reset'} not used: {result.result}"
+                f"{'Credit' if codex else 'Reset'} not used: {result.result.replace('_', ' ')}"
                 + (f" ({detail})" if detail else "")
             )
         if not result.ok:
             sys.exit(1)
     except ProviderError as e:
-        error(f"Error: {e}")
+        if args.json:
+            print(json.dumps(error_envelope(e), indent=2))
+        else:
+            error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
         if in_flight:
             # The POST may have reached the server; the pending record keeps
             # its request id, so a retry (`qswap reset N` or the engine)
             # cannot spend a second one.
-            what = "credit" if codex else "reset"
-            print(f"\n{yellowed(f'Interrupted mid-claim — the {what} may have been used; `{command}` shows where things stand')}")
+            print(f"\n{yellowed(f'Interrupted mid-claim; the {noun} may have been used. {command} shows where things stand.')}")
         else:
-            print(f"\n{dimmed('Operation cancelled — nothing was spent')}")
+            print(f"\n{dimmed('Cancelled; nothing was spent.')}")
         sys.exit(130)
 
 
 def _describe_reset(
     num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float,
-    *, threshold: float = 95.0,
+    *, threshold: float = 95.0, name: str | None = None,
 ) -> str:
     """What spending ``grant`` would do, in the terms Claude Code uses, and
-    what it trades when it is broader than the limit reached."""
+    what it trades when it is broader than the limit reached. ``name`` is
+    the account's label (``#2 work (maya@example.com)``)."""
     from ai_quota_swap import resets
+    from ai_quota_swap.labels import account_label
     from ai_quota_swap.oauth import reset_clock_string
     from datetime import datetime, timezone
 
-    name = resets.reset_name(grant)
-    lines = [bolded(f"Account-{num} ({email}) · {name} · {grant['id']}")]
+    reset_name = resets.reset_name(grant)
+    who = name or account_label(num, email=email)
+    lines = [bolded(f"{who} · {reset_name}"), dimmed(f"  id {grant['id']}")]
     if grant.get("label"):
         lines.append(dimmed(f"  {grant['label']}"))
     phrase = resets.clears_phrase(grant)
@@ -1135,6 +1153,8 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
     current = switcher.current_account_number()
 
     if as_json:
+        from ai_quota_swap.json_output import SCHEMA_VERSION
+
         accounts = []
         for num, entry in entries.items():
             status = entry.last_good.get("resets") if isinstance(entry.last_good, dict) else None
@@ -1146,6 +1166,7 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
                 "error": None if status else (entry.last_error or entry.sentinel or "no reading"),
             })
         print(json.dumps({
+            "schemaVersion": SCHEMA_VERSION,
             "auto": {
                 "mode": rs.auto,
                 "threshold": rs.threshold,
@@ -1161,67 +1182,96 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
         }))
         return
 
+    from ai_quota_swap import display
+
+    noun = "reset credit" if codex else "reset"
+    command = "qswap codex reset" if codex else "qswap reset"
+    set_aside = switcher.set_aside_accounts()
     mode = {
-        "off": f"off (only `{'qswap codex reset' if codex else 'qswap reset'} N` spends)",
-        "active": f"active — when the account in use reaches {rs.threshold:g}% on a window its reset clears",
-        "last-resort": f"last-resort — when the active account is at {rs.threshold:g}% and no switch helps",
-        "on-limit": f"on-limit — when any account reaches {rs.threshold:g}%",
+        "off": f"off · only {command} N spends one",
+        "active": f"active · when the account in use reaches {rs.threshold:g}% on a window "
+                  "its reset clears",
+        "last-resort": f"last-resort · when the active account reaches {rs.threshold:g}% "
+                       "and no switch helps",
+        "on-limit": f"on-limit · when any account reaches {rs.threshold:g}%",
     }[rs.auto]
-    print(bolded("Codex usage reset credits" if codex else "Usage resets") + dimmed(f"   auto: {mode}"))
+    print(bolded("Reset credits" if codex else "Usage resets"))
+    for line in display.wrap(f"Auto: {mode}", subsequent="  "):
+        print(dimmed(line))
+    print()
     for num, entry in entries.items():
-        email = switcher.account_email(num)
-        marker = f" {accent('(active)')}" if num == current else ""
-        print(f"  {num}: {email}{marker}")
+        header = display.AccountBlock(
+            number=num, email=switcher.account_email(num), alias=switcher.alias_for(num),
+            active=num == current,
+        )
+        print(display.header_line(header))
         status = entry.last_good.get("resets") if isinstance(entry.last_good, dict) else None
+        if num in set_aside:
+            print(f"     {dimmed('└')} {yellowed(display.NEEDS_RELOGIN)} "
+                  f"{dimmed('(' + display.set_aside_reason(set_aside[num]) + ')')}")
+            continue
         if status is None:
-            why = entry.last_error or entry.sentinel or "no reading"
-            if codex and not entry.last_error and not entry.sentinel and isinstance(entry.last_good, dict):
-                # Read fine, but the usage answer carried no credit summary.
-                print(f"     {dimmed('└')} {dimmed('no reset credits reported')}")
-                continue
-            print(f"     {dimmed('└')} {dimmed(f'reset status unavailable ({why})')}")
+            if switcher.account_kind_for(num) == "api_key" or entry.sentinel == "api key":
+                note = f"API key; no {noun}s"
+            elif entry.last_error == "invalid_grant" or entry.sentinel == "re-login needed":
+                note = display.NEEDS_RELOGIN
+            elif entry.last_error:
+                note = f"{noun}s could not be read ({display.error_label(entry.last_error)})"
+            elif entry.sentinel:
+                note = (display.NEEDS_RELOGIN if entry.sentinel == "re-login needed"
+                        else display.error_label(entry.sentinel))
+            else:
+                note = f"no {noun}s reported"
+            print(f"     {dimmed('└')} {dimmed(note)}")
             continue
         grants = resets.unused_grants(status, now)
         if not status.get("eligible") or not grants:
             reason = status.get("ineligible_reason")
-            note = f"not eligible ({reason})" if not status.get("eligible") and reason else "no resets held"
+            note = (f"not eligible ({reason})" if not status.get("eligible") and reason
+                    else f"no {noun}s held")
             print(f"     {dimmed('└')} {dimmed(note)}")
             continue
-        # Grouped by kind, narrowest first; each line says what it clears.
+        # Grouped by kind, narrowest first; each says what it clears.
         grants = sorted(enumerate(grants), key=lambda item: (
             resets.SCOPE_BREADTH[resets.grant_scope(item[1])], resets.grant_kind(item[1]), item[0],
         ))
         grants = [g for _, g in grants]
-        width = max(len(resets.reset_name(g)) for g in grants)
         for j, g in enumerate(grants):
-            branch = dimmed("└" if j == len(grants) - 1 else "├")
-            why_not = resets.grant_unusable_reason(g, now)
-            state_text = "usable now" if why_not is None else why_not
+            last = j == len(grants) - 1
+            branch = dimmed("└" if last else "├")
+            cont = " " if last else dimmed("│")
+            n = g["resets_left"]
+            what = (f"{n} reset credit{'' if n == 1 else 's'}" if codex
+                    else f"{n} {resets._count_label(g)} reset{'' if n == 1 else 's'}")
+            first = f"{what} · {resets.clears_phrase(g)}"
+            if g["id"] == status.get("next_grant_id"):
+                first += " · next"
+            facts = [display.grant_state(resets.grant_unusable_reason(g, now))]
             end = resets.use_by(resets.parse_ts(g.get("ends_at")))
             if end:
-                state_text += f" · use by {end}"
-            tag = " · next" if g["id"] == status.get("next_grant_id") else ""
-            count = f"{g['resets_left']}×"
-            line = (
-                f"{count:>3} {resets.reset_name(g):<{width}}   "
-                f"{resets.clears_phrase(g)} · {state_text}"
-            )
-            print(f"     {branch} {muted(line)}  {dimmed(g['id'] + tag)}")
+                facts.append(f"use by {end}")
+            facts.append(f"id {g['id']}")
+            print(f"     {branch} {muted(display.fit(first, 72))}")
+            print(f"     {cont} {dimmed(display.fit(' · '.join(facts), 72))}")
+    print()
     if rs.auto != "off":
         if plan is not None:
-            what = "a Codex usage reset credit" if codex else f"a {plan.noun}"
-            hours = f", {plan.hours_left / 24:.1f}d before it resets on its own" if plan.hours_left else ""
-            print(accent(
-                f"Auto would now use {what} on Account-{plan.account} "
-                f"({plan.reason}: {plan.window} {plan.pct:.0f}%{hours})"
-            ))
+            what = "a reset credit" if codex else f"a {plan.noun}"
+            when = ""
+            if plan.hours_left:
+                when = f", {display.age_text(plan.hours_left * 3600)} before it refills on its own"
+            for line in display.wrap(
+                f"Auto would now use {what} on {switcher.label(plan.account, long=False)} "
+                f"({plan.window} at {plan.pct:.0f}%{when})."
+            ):
+                print(accent(line))
         else:
-            print(dimmed(f"Auto would not use a {'credit' if codex else 'reset'} right now."))
+            print(dimmed(f"Auto would not use a {noun} right now."))
             if kept is not None:
-                print(dimmed(resets.kept_note(kept)))
+                for line in display.wrap(resets.kept_note(kept)):
+                    print(dimmed(line))
         print(dimmed(
-            f"Auto {'credits spent' if codex else 'resets'} in the last 24h: "
-            f"{used_today}/{MAX_AUTO_RESETS_PER_DAY}"
+            f"Spent automatically in the last 24h: {used_today} of {MAX_AUTO_RESETS_PER_DAY}."
         ))
 
 
@@ -2077,6 +2127,171 @@ def _menubar_service(args) -> int:
     return 0
 
 
+def _check_switch_target(switcher, identifier: str, *, force: bool) -> list[str]:
+    """Resolve ``identifier`` and run the switcher's pre-switch check; an
+    identifier that does not resolve is left for ``switch_to`` to report."""
+    try:
+        number, _email, _org = switcher.resolve_account(identifier)
+        if number == switcher.current_account_number():
+            return []
+    except (ProviderError, TypeError, ValueError):
+        return []
+    notes = switcher.check_switch_target(number, force=force)
+    return list(notes) if isinstance(notes, list) else []
+
+
+# -- list and status across both providers ----------------------------------------
+
+
+def _first_run(switcher) -> None:
+    """Nothing managed by either provider: why, and the next step for each
+    login this machine has. Read-only; never asks."""
+    import shutil
+
+    from ai_quota_swap import codex_cli, display
+
+    live = switcher.live_login_email()
+    found = None if live else shutil.which(switcher.cli_name) is not None
+    for line in display.nothing_managed_lines("claude", live_email=live, cli_found=found):
+        print(line)
+    codex_live = codex_cli.live_codex_email()
+    if codex_live:
+        for line in display.nothing_managed_lines("codex", live_email=codex_live, sentence=False):
+            print(line)
+
+
+def _list_accounts(switcher, *, token_status: bool, as_json: bool):
+    """``qswap list``: Claude Code's accounts, then Codex's when any are
+    managed (text), or the payload with ``providers.codex`` (JSON)."""
+    from ai_quota_swap import codex_cli, display
+
+    claude_n = switcher.managed_count()
+    codex_n = codex_cli.codex_managed_count()
+    if as_json:
+        payload = switcher.list_accounts(show_token_status=False, json_output=True)
+        return codex_cli.extend_unified_list(payload, json_output=True)
+    if not claude_n and not codex_n:
+        _first_run(switcher)
+        return None
+    if claude_n:
+        switcher.list_accounts(show_token_status=token_status, json_output=False)
+    else:
+        print(bolded(display.provider_heading("claude", both=True)))
+        for line in display.nothing_managed_lines(
+            "claude", live_email=switcher.live_login_email(), sentence=False,
+        ):
+            print(f"  {line}")
+    codex_cli.extend_unified_list(None, json_output=False)
+    if not codex_n:
+        email = codex_cli.live_codex_email()
+        if email:
+            print()
+            print(dimmed(f"Codex is logged in as {email} and not managed; add it with: qswap codex add"))
+    return None
+
+
+def _auto_switch_state() -> dict:
+    """What the engines' heartbeats say: ``{"running": bool, "providers":
+    [...], "dryRun": bool, "lastTickAt": float|None}``."""
+    import time as _time
+
+    from ai_quota_swap.autoswitch import engine_running, read_heartbeat
+    from ai_quota_swap.paths import get_codex_data_dir
+
+    now = _time.time()
+    running: list[str] = []
+    dry = False
+    last: float | None = None
+    for provider, root in (("claude", paths.get_backup_root()), ("codex", get_codex_data_dir())):
+        try:
+            beat = read_heartbeat(root)
+        except Exception:
+            beat = None
+        if beat is None:
+            continue
+        tick = beat.get("lastTickAt")
+        if isinstance(tick, (int, float)) and (last is None or tick > last):
+            last = float(tick)
+        if engine_running(beat, now):
+            running.append(provider)
+            dry = dry or bool(beat.get("dryRun"))
+    return {"running": bool(running), "providers": running, "dryRun": dry, "lastTickAt": last}
+
+
+def _auto_switch_line(state: dict) -> str:
+    """One line for ``qswap status``: whether auto-switch is running."""
+    import time as _time
+
+    from ai_quota_swap import display
+
+    if not state["running"]:
+        return "Auto-switch is not running. Start it with: qswap auto"
+    names = " and ".join(display.provider_name(p) for p in state["providers"])
+    mode = " in dry-run mode (it switches nothing)" if state["dryRun"] else ""
+    when = ""
+    if state["lastTickAt"] is not None:
+        when = f"; last check {display.ago(_time.time() - state['lastTickAt'])}"
+    return f"Auto-switch is running for {names}{mode}{when}."
+
+
+def _status(switcher, *, as_json: bool):
+    """``qswap status``: both providers' active accounts in a few lines,
+    how many accounts each manages, and whether auto-switch is running."""
+    from ai_quota_swap import codex_cli, display
+
+    claude_n = switcher.managed_count()
+    codex_n = codex_cli.codex_managed_count()
+    codex_live = codex_cli.live_codex_email()
+    if as_json:
+        payload = switcher.status(json_output=True)
+        if isinstance(payload, dict):
+            extra: dict = {}
+            if codex_n or codex_live:
+                try:
+                    from ai_quota_swap.codex.switcher import CodexSwitcher
+
+                    codex = CodexSwitcher(configure_logging=False)
+                    codex.check_storage()
+                    section = codex.status(json_output=True) or {}
+                    section.pop("schemaVersion", None)
+                    extra["codex"] = section
+                except ProviderError as e:
+                    extra["codex"] = {"active": None, "error": error_envelope(e)["error"]}
+            if extra:
+                payload["providers"] = extra
+            state = _auto_switch_state()
+            payload["autoSwitch"] = {
+                "running": state["running"],
+                "providers": state["providers"],
+                "dryRun": state["dryRun"],
+                "lastTickAt": state["lastTickAt"],
+            }
+        return payload
+    if not claude_n and not codex_n:
+        _first_run(switcher)
+        return None
+    for line in switcher.status_lines():
+        print(line)
+    if codex_n or codex_live:
+        try:
+            from ai_quota_swap.codex.switcher import CodexSwitcher
+
+            codex = CodexSwitcher(configure_logging=False)
+            for line in codex.status_lines():
+                print(line)
+        except ProviderError as e:
+            print(bolded(display.provider_name("codex")))
+            print(f"  {display.usage_unavailable(None, retrying=False)}: {e}")
+    print()
+    counts = [f"{claude_n} Claude Code account{'' if claude_n == 1 else 's'}"]
+    if codex_n:
+        counts.append(f"{codex_n} Codex account{'' if codex_n == 1 else 's'}")
+    verb = "is" if claude_n + codex_n == 1 and len(counts) == 1 else "are"
+    print(dimmed(f"{' and '.join(counts)} {verb} managed."))
+    print(_auto_switch_line(_auto_switch_state()))
+    return None
+
+
 def main() -> None:
     """Main entry point for the CLI."""
     force_utf8_output()
@@ -2164,6 +2379,11 @@ def _dispatch(argv: list[str]) -> None:
         return
     if argv and argv[0] == "move":
         _move_command(argv[1:])
+        return
+    if argv and argv[0] == "doctor":
+        from ai_quota_swap import doctor
+
+        doctor.doctor_command(argv[1:])
         return
 
     # Bare `qswap` in an interactive terminal opens the TUI dashboard (like
@@ -2647,15 +2867,7 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
         elif args.enable_account is not None:
             switcher.set_account_disabled(args.enable_account, False)
         elif args.list:
-            payload = switcher.list_accounts(
-                show_token_status=args.token_status,
-                json_output=args.json,
-            )
-            # The Codex section (text) or `providers.codex` (JSON), only when
-            # Codex accounts are managed; never fails the Claude list.
-            from ai_quota_swap import codex_cli
-
-            payload = codex_cli.extend_unified_list(payload, json_output=args.json)
+            payload = _list_accounts(switcher, token_status=args.token_status, as_json=args.json)
         elif args.switch:
             from ai_quota_swap.settings import load_settings, parse_model_names
 
@@ -2679,11 +2891,21 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
                 payload["models"] = list(models)
                 payload["modelSource"] = model_source
         elif args.switch_to:
+            # A target that needs re-login would leave the user on a dead
+            # login: refused unless --force. One whose usage cannot be read,
+            # or is old, switches with a one-line warning (ux.md). The engine
+            # calls switch_to directly and runs its own checks.
+            notes = _check_switch_target(switcher, args.switch_to, force=args.force)
+            if not args.json:
+                for note in notes:
+                    warning(f"Warning: {note}")
             payload = switcher.switch_to(
                 args.switch_to, json_output=args.json, force=args.force
             )
+            if isinstance(payload, dict) and notes:
+                payload["warnings"] = [*notes, *payload.get("warnings", [])]
         elif args.status:
-            payload = switcher.status(json_output=args.json)
+            payload = _status(switcher, as_json=args.json)
         elif args.purge:
             switcher.purge()
             if sys.platform == "darwin":

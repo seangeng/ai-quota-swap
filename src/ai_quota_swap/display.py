@@ -208,9 +208,10 @@ def nothing_managed_lines(
             f"{name} was not found ({command} is not on PATH). Install it, "
             f"log in, then run: {add}"
         )
+    elif provider == "codex":
+        lines.append(f"{name} is not logged in. Run codex login, then: {add}")
     else:
-        how = "codex login" if provider == "codex" else "claude, then /login"
-        lines.append(f"{name} is not logged in. Log in ({how}), then run: {add}")
+        lines.append(f"{name} is not logged in. Start claude, log in with /login, then run: {add}")
     return lines
 
 
@@ -389,7 +390,8 @@ def window_rows(
 
     if not windows:
         return []
-    width = max(len(w.label) for w in windows)
+    # At least "extra"/"Fable" wide, so neighbouring blocks line up.
+    width = max(5, *(len(w.label) for w in windows))
     out = []
     for j, w in enumerate(windows):
         branch = dimmed("└" if j == len(windows) - 1 else "├")

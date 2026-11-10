@@ -27,8 +27,12 @@ def _stdin_is_terminal() -> bool:
 
 #: Whether a question can be asked (stdin is a terminal).
 interactive: Callable[[], bool] = _stdin_is_terminal
-#: Reads one answer; ``input`` unless a test replaces it.
-read_line: Callable[[str], str] = input
+
+
+def read_line(prompt: str) -> str:
+    """Read one answer (``input``, looked up when called so a patched
+    ``builtins.input`` answers too)."""
+    return input(prompt)
 
 
 def needs_confirmation(command: str, flag: str = "--yes") -> ConfirmationRequiredError:

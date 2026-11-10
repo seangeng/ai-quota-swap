@@ -26,7 +26,7 @@ from ai_quota_swap.exceptions import (
     SwitchError,
     ValidationError,
 )
-from ai_quota_swap import oauth, pace, subscription
+from ai_quota_swap import oauth, pace, prompts, subscription
 from ai_quota_swap.claude_locks import claude_config_lock, claude_credentials_lock
 from ai_quota_swap.json_output import (
     SCHEMA_VERSION,
@@ -298,12 +298,21 @@ ERROR_NOTES = {
     ),
 }
 
+# The state comes first and any remedy follows " — ": the menu bar keeps the
+# state alone for its rows (menubar.menu_note). The words are display.py's.
 SENTINEL_NOTES = {
-    USAGE_TOKEN_EXPIRED: "token expired — refresh deferred this pass; retries automatically",
-    USAGE_FOREIGN_CREDENTIAL: "live credential belongs to another account — a switch repairs it",
-    USAGE_API_KEY: "API key (no quota)",
-    USAGE_KEYCHAIN_UNAVAILABLE: "keychain unavailable — locked or in use; try again",
-    USAGE_RELOGIN_REQUIRED: "re-login needed — refresh token dead; log in with Claude Code, then run: qswap add",
+    USAGE_TOKEN_EXPIRED: "token expired — the refresh retries automatically",
+    USAGE_FOREIGN_CREDENTIAL: (
+        "the live login belongs to another account — switching to this one repairs it"
+    ),
+    USAGE_API_KEY: "API key — no quota; billed per token",
+    USAGE_KEYCHAIN_UNAVAILABLE: "Keychain unavailable — locked or busy; unlock it and try again",
+    USAGE_RELOGIN_REQUIRED: (
+        "needs re-login — log in to it in Claude Code (/login), then run: qswap add"
+    ),
+    USAGE_NO_CREDENTIALS: (
+        "no saved login — log in to it in Claude Code (/login), then run: qswap add"
+    ),
 }
 
 
@@ -4405,15 +4414,12 @@ class ClaudeAccountSwitcher:
                     print(
                         f"{existing_email} {muted(f'[{existing_tag}]')}"
                     )
-                    if not assume_yes:
-                        try:
-                            answer = input(f"Overwrite slot {slot}? [y/N] ").strip().lower()
-                        except (EOFError, KeyboardInterrupt):
-                            print(f"\n{dimmed('Cancelled')}")
-                            return
-                        if answer not in ("y", "yes"):
-                            print(dimmed("Cancelled"))
-                            return
+                    if not prompts.confirm(
+                        f"Overwrite slot {slot}?", assume_yes=assume_yes,
+                        command=f"qswap add --slot {slot}",
+                    ):
+                        print(dimmed("Cancelled; nothing was changed."))
+                        return
                     displace_slot = (
                         account_num,
                         existing_email,
@@ -4572,12 +4578,16 @@ class ClaudeAccountSwitcher:
                    their own confirmation UI, e.g. the TUI, confirm first).
         """
         self._refuse_session_shell()
-        import getpass
+        from ai_quota_swap import prompts
 
         if token == "-":
             token = sys.stdin.readline().rstrip("\n")
         elif not token:
-            token = getpass.getpass("Token: ")
+            token = prompts.secret(
+                "Token (input hidden): ",
+                unasked="no token given; pass it as an argument, or pipe it in: "
+                        "qswap add-token -",
+            )
 
         token = token.strip()
         if not token:
@@ -4683,15 +4693,12 @@ class ClaudeAccountSwitcher:
                     )
                     warning(f"Slot {slot} already occupied")
                     print(f"{existing_email} {muted(f'[{existing_tag}]')}")
-                    if not assume_yes:
-                        try:
-                            answer = input(f"Overwrite slot {slot}? [y/N] ").strip().lower()
-                        except (EOFError, KeyboardInterrupt):
-                            print(f"\n{dimmed('Cancelled')}")
-                            return
-                        if answer not in ("y", "yes"):
-                            print(dimmed("Cancelled"))
-                            return
+                    if not prompts.confirm(
+                        f"Overwrite slot {slot}?", assume_yes=assume_yes,
+                        command=f"qswap add-token --slot {slot}",
+                    ):
+                        print(dimmed("Cancelled; nothing was changed."))
+                        return
                     displace_slot = (
                         account_num,
                         existing_email,
@@ -4806,9 +4813,15 @@ class ClaudeAccountSwitcher:
                             acc.get("organizationUuid", ""),
                         )
                         print(f"  {num}: {identifier} {muted(f'[{tag}]')}")
-                    choice = input("Enter account number to remove: ").strip()
-                    if not choice.isdigit() or choice not in matches:
-                        print(dimmed("Cancelled"))
+                    choice = prompts.choose(
+                        "Enter the number of the account to remove:", matches,
+                        unasked=(
+                            f"{identifier} matches accounts {', '.join(matches)}; "
+                            "name one by number: qswap remove N"
+                        ),
+                    )
+                    if choice is None:
+                        print(dimmed("Cancelled; nothing was removed."))
                         return
                     identifier = choice
 
@@ -4831,17 +4844,16 @@ class ClaudeAccountSwitcher:
         # _delete_account_files re-checks as a safety net for all paths.
         self._ensure_no_live_session(account_num, email, "--remove-account")
 
+        name = self.label(account_num, email)
         if str(active_account) == account_num:
-            warning(f"Warning: Account-{account_num} ({email}) is currently active")
+            warning(f"Warning: {name} is the active account")
 
-        if not assume_yes:
-            confirm = input(
-                f"Are you sure you want to permanently remove "
-                f"Account-{account_num} ({email})? [y/N] "
-            )
-            if confirm.lower() != "y":
-                print(dimmed("Cancelled"))
-                return
+        if not prompts.confirm(
+            f"Remove {name} and delete its saved login?",
+            assume_yes=assume_yes, command="qswap remove",
+        ):
+            print(dimmed("Cancelled; nothing was removed."))
+            return
 
         # Remove backup files
         self._delete_account_files(account_num, email)
@@ -4853,7 +4865,7 @@ class ClaudeAccountSwitcher:
 
         self._write_json(self.sequence_file, data)
         self._logger.info(f"Removed account {account_num}: {email}")
-        print(f"{accent('Removed')} Account-{account_num} ({email})")
+        print(f"{accent('Removed')} {name}")
 
         self._prune_mappings(email, account_info.get("organizationUuid", ""))
 
@@ -6459,17 +6471,18 @@ class ClaudeAccountSwitcher:
         watch view's adaptive set); ``None`` — the CLI default — leaves every
         stale account eligible.
         """
-        if not self.sequence_file.exists():
-            # JSON mode must never prompt — emit an empty list instead of the
-            # interactive first-run setup.
+        if not self.sequence_file.exists() or not (
+            (self._get_sequence_data() or {}).get("accounts")
+        ):
+            # Read-only: say why the list is empty and the next step; never
+            # offer to add (ux.md: a read-only command never asks).
             if json_output:
                 return {
                     "schemaVersion": SCHEMA_VERSION,
                     "activeAccountNumber": None,
                     "accounts": [],
                 }
-            print(dimmed("No accounts are managed yet."))
-            self._first_run_setup()
+            self._print_nothing_managed()
             return None
 
         accounts_info = self._build_accounts_info()
@@ -6479,21 +6492,19 @@ class ClaudeAccountSwitcher:
         if json_output:
             return self._build_list_payload(accounts_info, entries, plans)
 
+        from ai_quota_swap import display
+
         seq_data = self._get_sequence_data() or {}
-        print(bolded("Accounts:"))
-        for i, (num, email, org_name, org_uuid, is_active, creds, alias) in enumerate(accounts_info):
-            tag = self._get_display_tag(email, org_name, org_uuid)
-            label = f"{accent(alias)} ({email})" if alias else email
-            markers = ""
-            if is_active:
-                markers += f" {bold_accent('(active)')}"
-            if self._disabled_from_data(seq_data, str(num)):
-                markers += f" {muted('(disabled)')}"
-            markers += _plan_marker(plans.get(str(num)), self._usage_store.clock())
-            print(f"  {num}: {label} {muted(f'[{tag}]')}{markers}")
-            login_expires_at = oauth.login_expires_at_epoch(creds)
-            for line in _usage_entry_lines(entries[str(num)], login_expires_at):
-                print(f"     {line}")
+        set_aside = self.set_aside_accounts()
+        settings = load_settings(self.backup_dir)
+        print(bolded(display.provider_heading("claude", both=False)))
+        for i, info in enumerate(accounts_info):
+            block = self._account_block(
+                info, entries[str(info[0])], seq_data=seq_data, plans=plans,
+                set_aside=set_aside, settings=settings,
+            )
+            for line in display.render_block(block):
+                print(line)
 
             if show_token_status:
                 for line in self._token_status_lines(accounts_info[i]):
@@ -6546,6 +6557,125 @@ class ClaudeAccountSwitcher:
                     print(f"  {dimmed('●')} {muted(label)}   {muted(cwd)}  {dimmed(f'({", ".join(parts)})')}")
         except Exception:
             self._logger.debug("Failed to detect running instances", exc_info=True)
+
+    # -- the account block (display.py) ---------------------------------------
+
+    def set_aside_accounts(self) -> dict[str, str]:
+        """Accounts the auto-switch engine holds out until their owner logs in
+        again (number → reason); an entry whose login was replaced since is
+        left out, as the engine itself would release it."""
+        from ai_quota_swap.autoswitch import set_aside_accounts
+
+        def identity(number: str) -> tuple[str, str | None] | None:
+            email = self.account_email(number)
+            if not email:
+                return None
+            creds = self.read_account_credentials(number, email)
+            return email, (self.credential_fingerprint(creds) if creds else None)
+
+        try:
+            return set_aside_accounts(self.backup_dir, identity=identity)
+        except Exception as e:  # display only; never fail a list over it
+            self._logger.debug(f"set-aside read failed: {e!r}")
+            return {}
+
+    @staticmethod
+    def _plan_text(record: dict | None, now: float) -> tuple[str, bool]:
+        """A slot's plan for its header (``"Max 20x"``), and whether it has
+        lapsed. A plan that has not refreshed in two TTLs says how old it is."""
+        if not record:
+            return "", False
+        plan = record.get("plan")
+        label = subscription.plan_label(plan) or ""
+        fetched = record.get("fetchedAt")
+        if label and isinstance(fetched, (int, float)) and now - fetched >= 2 * subscription.PLAN_TTL_S:
+            from ai_quota_swap import display
+
+            label += f" ({display.as_of(now - fetched)})"
+        return label, subscription.is_expired(plan)
+
+    @staticmethod
+    def _login_window(login_expires_at: float | None, needs_relogin: bool):
+        """The stored login's expiry as a window row, while it is worth saying."""
+        from ai_quota_swap import display
+
+        left = oauth.login_time_left(login_expires_at, needs_relogin)
+        if left is None:
+            return None
+        clock = oauth.login_expiry_clock(login_expires_at)
+        if left <= 0:
+            return display.WindowRow("login", text=f"expired {clock} · {display.NEEDS_RELOGIN}")
+        return display.WindowRow(
+            "login", text=f"expires {clock} · in {oauth.format_countdown(left)}"
+        )
+
+    def _account_block(
+        self,
+        info: tuple,
+        entry: UsageEntry | None,
+        *,
+        seq_data: dict,
+        plans: dict | None,
+        set_aside: dict[str, str],
+        settings,
+        show_provider: bool = False,
+        login_expires_at: float | None | object = ...,
+    ):
+        """One account's :class:`display.AccountBlock` for ``list``/``status``.
+
+        ``login_expires_at`` overrides the expiry read from ``info``'s
+        credentials (``status`` has it from the live login already)."""
+        from ai_quota_swap import api_spend, display
+
+        num, email, org_name, org_uuid, is_active, creds, alias = info
+        now = self._usage_store.clock()
+        policy = self._policy_from_data(seq_data, str(num))
+        line = policy.threshold if policy.threshold is not None else settings.threshold
+        record = (seq_data.get("accounts") or {}).get(str(num)) or {}
+        plan, plan_warning = self._plan_text((plans or {}).get(str(num)), now)
+        held_out = set_aside.get(str(num))
+        relogin = held_out is not None or (
+            entry is not None and entry.sentinel == USAGE_RELOGIN_REQUIRED
+        )
+        if login_expires_at is ...:
+            login_expires_at = oauth.login_expires_at_epoch(creds)
+        login_row = self._login_window(login_expires_at, relogin)
+
+        def api_lines(reading: dict) -> list[str]:
+            text = api_spend.spend_text(reading)
+            text = text.removeprefix("API key · ").removeprefix("API key")
+            out = [text] if text else []
+            detail = api_spend.detail_text(reading)
+            if detail:
+                out.append(detail)
+            return out
+
+        return display.block_from_entry(
+            num, entry,
+            email=email, alias=alias, provider="claude", show_provider=show_provider,
+            active=is_active, disabled=self._disabled_from_data(seq_data, str(num)),
+            plan=plan, plan_warning=plan_warning, org=org_name or "",
+            kind="api_key" if record.get("kind") == "api_key" else "oauth",
+            lines=display.Lines(five_hour=line, weekly=settings.weekly_threshold),
+            set_aside=held_out,
+            sentinel_notes={k: v.replace(" — ", "; ") for k, v in SENTINEL_NOTES.items()},
+            login_row=login_row, now=now, stale_after_s=_USAGE_AGE_NOTE_S,
+            api_lines=api_lines,
+        )
+
+    def _print_nothing_managed(self) -> None:
+        """The empty state: why there is nothing to list, and the next step."""
+        import shutil
+
+        from ai_quota_swap import display
+
+        identity = self._get_current_account()
+        live = identity[0] if identity is not None else None
+        found = None if live else shutil.which(self.cli_name) is not None
+        lines = display.nothing_managed_lines("claude", live_email=live, cli_found=found)
+        print(lines[0])
+        for line in lines[1:]:
+            print(line)
 
     def _active_account_usage(
         self, account_num: str, current_email: str, org_uuid: str
@@ -6632,61 +6762,70 @@ class ClaudeAccountSwitcher:
         }
 
     def status(self, json_output: bool = False) -> dict | None:
-        """Display current account status (or return the schema-v1 payload)."""
+        """Print this provider's part of ``qswap status`` (or return the
+        schema-v1 payload). ``cli`` adds Codex's part and the summary."""
         if json_output:
             return self._build_status_payload()
-
-        identity = self._get_current_account()
-        if identity is None:
-            print(f"{bolded('Status:')} {dimmed('No active Claude account')}")
-            return None
-        current_email, current_org_uuid = identity
-
-        data = self._get_sequence_data_migrated()
-        if not data:
-            print(f"{bolded('Status:')} {current_email} {dimmed('(not managed)')}")
-            return None
-
-        account_num = self._find_account_slot(data, current_email, current_org_uuid)
-        org_name = ""
-        if account_num is not None:
-            org_name = data["accounts"][account_num].get("organizationName", "") or ""
-
-        if account_num:
-            tag = self._get_display_tag(current_email, org_name, current_org_uuid)
-            total = len(data.get("accounts", {}))
-            print(
-                f"{bolded('Status:')} {accent(f'Account-{account_num}')} "
-                f"({current_email} {muted(f'[{tag}]')})"
-            )
-            print(f"  {dimmed(f'Total managed accounts: {total}')}")
-            entry, login_expires_at = self._active_account_usage(
-                account_num, current_email, current_org_uuid
-            )
-            for line in _usage_entry_lines(entry, login_expires_at):
-                print(f"  {line}")
-        else:
-            print(f"{bolded('Status:')} {current_email} {dimmed('(not managed)')}")
+        for line in self.status_lines():
+            print(line)
         return None
 
-    def _first_run_setup(self) -> None:
-        """First-run setup workflow."""
+    def managed_count(self) -> int:
+        """How many accounts are managed (0 before the first ``qswap add``)."""
+        if not self.sequence_file.exists():
+            return 0
+        return len((self._get_sequence_data() or {}).get("accounts") or {})
+
+    def live_login_email(self) -> str | None:
+        """The live login's email, managed or not; None when logged out."""
         identity = self._get_current_account()
+        return identity[0] if identity is not None else None
 
+    def status_lines(self) -> list[str]:
+        """The active account's block under a "Claude Code" heading, or one
+        line saying why there is none and what to do."""
+        from ai_quota_swap import display
+
+        out = [bolded(display.provider_name("claude"))]
+        identity = self._get_current_account()
+        data = (self._get_sequence_data_migrated() or {}) if self.sequence_file.exists() else {}
+        accounts = data.get("accounts") or {}
         if identity is None:
-            print(dimmed("No active Claude account found. Please log in first."))
-            return
-        current_email, _ = identity
-
-        response = input(
-            f"No managed accounts found. Add current account "
-            f"({current_email}) to managed list? [Y/n] "
+            if accounts:
+                out.append("  No account is active. Activate one with: qswap switch")
+            else:
+                out.extend(
+                    f"  {line}" for line in
+                    display.nothing_managed_lines(
+                        "claude", sentence=False,
+                        cli_found=__import__("shutil").which(self.cli_name) is not None,
+                    )
+                )
+            return out
+        current_email, current_org_uuid = identity
+        account_num = (
+            self._find_account_slot(data, current_email, current_org_uuid) if accounts else None
         )
-        if response.lower() == "n":
-            print(dimmed("Setup cancelled. You can run 'qswap --add-account' later."))
-            return
-
-        self.add_account()
+        if not account_num:
+            out.append(f"  {current_email} · not managed · add it with: qswap add")
+            return out
+        record = accounts[account_num]
+        active = self._read_active_credentials()
+        self._record_active_verdict(active)
+        info = (
+            int(account_num), current_email, record.get("organizationName", "") or "",
+            record.get("organizationUuid", "") or current_org_uuid or "", True,
+            active.value or "", record.get("alias", "") or "",
+        )
+        # The same collector as `list`, for one slot (freshness, backoff and
+        # the shared usage table behave the same).
+        entry = self._collect_usage_entries([info])[str(account_num)]
+        block = self._account_block(
+            info, entry, seq_data=data, plans=self._plans_for_pass([info], None),
+            set_aside=self.set_aside_accounts(), settings=load_settings(self.backup_dir),
+        )
+        out.extend(display.render_block(block))
+        return out
 
     def _switch_result_from_op(
         self, op: dict, strategy: str, extra_warnings: list[str] | None = None
@@ -7180,9 +7319,15 @@ class ClaudeAccountSwitcher:
                             acc.get("organizationUuid", ""),
                         )
                         print(f"  {num}: {identifier} {muted(f'[{tag}]')}")
-                    choice = input("Enter account number to switch to: ").strip()
-                    if not choice.isdigit() or choice not in matches:
-                        print(dimmed("Cancelled"))
+                    choice = prompts.choose(
+                        "Enter the number of the account to switch to:", matches,
+                        unasked=(
+                            f"{identifier} matches accounts {', '.join(matches)}; "
+                            "name one by number: qswap switch N"
+                        ),
+                    )
+                    if choice is None:
+                        print(dimmed("Cancelled; nothing was changed."))
                         return None
                     identifier = choice
 
@@ -7257,6 +7402,85 @@ class ClaudeAccountSwitcher:
                 f"Activated Account-{to['number']} ({to['email']}) from stored backup"
             )
         return result
+
+    def label(self, number: str | int | None, email: str | None = None, *, long: bool = True) -> str:
+        """How this account is named in a message: ``#2 work (maya@example.com)``,
+        ``#2 maya@example.com`` without an alias (labels.account_label)."""
+        from ai_quota_swap.labels import account_label
+
+        if number is None:
+            return email or "account"
+        record = ((self._get_sequence_data() or {}).get("accounts") or {}).get(str(number)) or {}
+        return account_label(
+            number, alias=record.get("alias") or None,
+            email=email if email is not None else record.get("email", ""), long=long,
+        )
+
+    def alias_for(self, number: str | int) -> str:
+        """The account's alias, or ``""``."""
+        record = ((self._get_sequence_data() or {}).get("accounts") or {}).get(str(number)) or {}
+        return record.get("alias", "") or ""
+
+    def target_readiness(self, number: str) -> tuple[str | None, str]:
+        """Whether switching to ``number`` would leave the user on a working
+        login: ``("relogin", why)`` when it needs re-login (the engine set it
+        aside, or its saved login was refused), ``("unreadable", text)`` /
+        ``("stale", text)`` when its usage cannot be read or is old, else
+        ``(None, "")``. A target with no trustworthy reading is read once."""
+        from ai_quota_swap import display
+
+        data = self._get_sequence_data() or {}
+        record = (data.get("accounts") or {}).get(str(number)) or {}
+        if record.get("kind") == "api_key":
+            return None, ""
+        email = record.get("email", "")
+        held = self.set_aside_accounts()
+        if str(number) in held:
+            return "relogin", display.set_aside_reason(held[str(number)])
+        try:
+            if self._slot_token_dead(str(number), email):
+                return "relogin", "its saved login was refused"
+        except Exception as e:
+            self._logger.debug(f"token-dead check failed: {e!r}")
+        org = record.get("organizationUuid", "") or ""
+        try:
+            entry = self._usage_store.entries({str(number): (email, org)}).get(str(number))
+            if entry is None or entry.decision_value() is None:
+                entry = self.refresh_usage({str(number)}).get(str(number)) or entry
+        except Exception as e:
+            self._logger.debug(f"pre-switch usage read failed: {e!r}")
+            return "unreadable", display.usage_unavailable(None, retrying=False)
+        if entry is None:
+            return "unreadable", display.usage_unavailable(None, retrying=False)
+        if entry.sentinel == USAGE_RELOGIN_REQUIRED:
+            return "relogin", "its saved login was refused"
+        if entry.decision_value() is not None:
+            return None, ""
+        if entry.last_good is not None and entry.age_s is not None:
+            text = f"usage {display.as_of(entry.age_s)}"
+            if entry.last_error:
+                text += f" ({display.error_label(entry.last_error)})"
+            return "stale", text
+        return "unreadable", display.usage_unavailable(entry.last_error, retrying=False)
+
+    def check_switch_target(self, number: str, *, force: bool = False) -> list[str]:
+        """Refuse a target that needs re-login (unless ``force``); return the
+        warnings to show for one whose usage is unreadable or stale."""
+        from ai_quota_swap import display
+
+        verdict, why = self.target_readiness(number)
+        name = self.label(number, long=False)
+        if verdict == "relogin":
+            if not force:
+                raise SwitchError(
+                    f"{name} {display.NEEDS_RELOGIN} ({why}); not switched.\n"
+                    f"Log in to it in Claude Code (/login), then run: qswap add\n"
+                    f"To switch to it anyway: qswap switch {number} --force"
+                )
+            return [f"{name} {display.NEEDS_RELOGIN} ({why}); switching anyway (--force)"]
+        if verdict in ("unreadable", "stale"):
+            return [f"{name}: {why}; switching anyway"]
+        return []
 
     def _live_matches_slot_backup(self, slot: str, email: str) -> bool:
         """Whether the live credential is provably the slot's stored lineage.
@@ -8268,8 +8492,12 @@ class ClaudeAccountSwitcher:
         except OSError:
             return 0
 
-    def purge(self) -> None:
+    def purge(self, assume_yes: bool = False) -> bool:
         """Remove all traces of ai-quota-swap from the system.
+
+        Returns True once the data is gone; False when the user said no (or
+        Ctrl-C at the prompt), in which case nothing was touched. Off a
+        terminal without ``assume_yes`` it raises ConfirmationRequiredError.
 
         This removes:
         - All stored account credentials (``.enc`` files on Linux/WSL/Windows; on
@@ -8366,10 +8594,11 @@ class ClaudeAccountSwitcher:
         print(dimmed("Note: This does NOT affect your current Claude Code login."))
         print()
 
-        confirm = input("Are you sure you want to purge all data? [y/N] ")
-        if confirm.lower() != "y":
-            print(dimmed("Cancelled"))
-            return
+        if not prompts.confirm(
+            "Remove all of this?", assume_yes=assume_yes, command="qswap purge",
+        ):
+            print(dimmed("Cancelled; nothing was removed."))
+            return False
 
         removed_items = []
 
@@ -8468,3 +8697,4 @@ class ClaudeAccountSwitcher:
             print(f"\n{dimmed('No ai-quota-swap data found to remove.')}")
 
         print(f"\n{accent('Purge complete.')}")
+        return True
