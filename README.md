@@ -267,7 +267,7 @@ Add further accounts with `qswap codex login`, not plain `codex login`: in your 
 
 ### Interactive dashboard (TUI)
 
-Run `qswap` on its own (or `qswap tui`) for the full-screen dashboard: live usage for every account, switching, and the auto-switcher, all keyboard-driven. `qswap watch` opens it straight to the live monitor. Works on macOS, Linux, and Windows.
+Run `qswap` on its own (or `qswap tui`) for the full-screen dashboard: live usage for every Claude Code and Codex account, switching, the auto-switcher for each provider, and the usage report, all keyboard-driven. `s` switches, `w` watches every account (`qswap watch` opens straight to it), `g` opens auto-switch, `u` the usage report; `esc` goes back and `q` quits on every screen. It says the same things `qswap list` does, in the same words. Works on macOS, Linux, and Windows.
 
 <img src="assets/tui-watch.png" width="760" alt="qswap watch — live 5h/7d usage bars for every account, with reset times and the active account marked">
 

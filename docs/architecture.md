@@ -97,12 +97,13 @@ Sizes are rounded and move with every change; they are here so you know what you
 
 | Module | Lines | What it does |
 |---|---|---|
-| `tui/app.py` | 400 | `QswapApp`: the snapshot poll loop and every action (switch, add, remove) |
-| `tui/dashboard.py` | 400 | The main screen, the switch picker and the watch screen |
-| `tui/autoview.py` | 400 | The live auto-switch screen, running the real engine |
-| `tui/widgets.py` | 600 | Usage bars, account cards, the accounts panel |
-| `tui/data.py` | 200 | Snapshots and blocking actions, always off the UI thread |
-| `tui/modals.py` | 200 | Confirmations and token entry |
+| `tui/app.py` | 700 | `QswapApp`: both providers' switchers, the snapshot poll loop, every action (switch, add, remove), the cost line |
+| `tui/dashboard.py` | 600 | The main screen and its menus, the switch picker and the watch screen |
+| `tui/autoview.py` | 500 | The live auto-switch screen: one real engine per provider, and "Next best" |
+| `tui/usageview.py` | 200 | The usage screen, over `ledger.usage.run_usage` and `ledger.report.render_text` |
+| `tui/widgets.py` | 800 | Usage bars; cards and one-line rows drawn from `display.AccountBlock`; the accounts panel and how it fits |
+| `tui/data.py` | 500 | `FleetSource` (each provider's snapshot and the facts around it), `block_for`, blocking actions, the ledger reads |
+| `tui/modals.py` | 200 | Confirmations, token entry, a command to run elsewhere |
 | `tui/theme.py` | 100 | The Textual themes and shared colours |
 | `menubar.py` | 1,600 | The menu bar's settings, its typed menu description and `build_menu`, the one pure function that turns both providers' state into the whole menu; the title, the health row, the dialogs' words |
 | `menubar_app.py` | 700 | The rumps glue: draws a `Menu`, maps each `Action` to a handler; only loaded with rumps |
@@ -169,7 +170,7 @@ On macOS the saved logins and Admin keys are Keychain items under the service `a
 | Reset planning | `resets.plan_reset` and `grant_scope`; the engine's call in `AutoSwitchEngine._maybe_use_reset`; the manual path in `cli._reset_command` | The Usage resets section of the README |
 | A Codex behaviour | `CodexSwitcher` (`switch_to`, `_handle_holders`, `login_new_account`), `codex/auth.py`, `codex/processes.py` | [design/codex.md](design/codex.md), [codex.md](codex.md) |
 | The ledger and prices | `ledger/readers.py` (what counts), `ledger/report.py` (grouping and attribution), the tables in `ledger/pricing.py` | [design/ledger.md](design/ledger.md), [usage.md](usage.md) |
-| The dashboard | `tui/dashboard.py` (screens), `tui/widgets.py` (cards and bars), `tui/app.py` (actions) | `scripts/demo/tour.py` screenshots every screen |
+| The dashboard | `tui/dashboard.py` (screens), `tui/widgets.py` (cards and bars), `tui/data.py` (`block_for`: a snapshot row in `display`'s words), `tui/app.py` (actions) | `scripts/demo/tour.py` screenshots every screen |
 | The menu bar | `menubar.build_menu` (every row and its words), `menubar_notify.Notifier` (notifications), `menubar_app` (drawing and handlers), `launch_agent.py`; `scripts/demo/run.py fleet --menubar` prints the menu for a scenario | [menubar.md](menubar.md) |
 
 API-key spend and budgets are in `api_spend.py` and `admin_api.py`; [design/api-accounts.md](design/api-accounts.md) explains them.

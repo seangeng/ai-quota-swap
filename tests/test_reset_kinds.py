@@ -410,15 +410,14 @@ class TestCountsByKind:
         text = "\n".join(_usage_entry_lines(UsageEntry(last_good=usage, fetched_at=None, age_s=0.0)))
         assert "3    2 Fable · 1 weekly · use by" in text
 
-    def test_tui_badge(self):
-        from ai_quota_swap.tui.widgets import _resets_badge
+    def test_tui_card_sentence(self):
+        from ai_quota_swap import display
 
         far = _far()
         mixed = _usage(grants=[fable("a", ends=far, left=2), weekly("w", ends=far)])
-        assert _resets_badge(mixed, time.time()) == "resets: 2 Fable · 1 weekly"
-        one_kind = _usage(grants=[fable("a", ends=far), fable("b", ends=far)])
-        assert _resets_badge(one_kind, time.time()) == "2 resets"
-
+        assert display.held_line(mixed["resets"], time.time()).startswith(
+            "Holds 2 Fable resets and 1 weekly reset"
+        )
     def test_menu_bar_row(self):
         # Held resets by kind, compact and last (menubar.held_compact).
         from ai_quota_swap.display import Reading

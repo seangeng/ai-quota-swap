@@ -835,6 +835,54 @@ class TestEngine:
         assert event.human().endswith("(dry run)")
         assert "resetClaims" not in h.state()
 
+    def _active_reset_fleet(self, h):
+        # `resets.auto active` spends a reset on a stuck active account even
+        # with a healthy peer to switch to.
+        set_setting(h.switcher.backup_dir, "resets.auto", "active")
+        before = {
+            "1": _engine_usage(fable=100, d7=95, share=40, grants=[_grant()]),
+            "2": _engine_usage(fable=0, d7=10),
+        }
+        after = {
+            "1": _engine_usage(fable=0, d7=55, grants=[_grant(left=0)]),
+            "2": _engine_usage(fable=0, d7=10),
+        }
+        return before, after
+
+    def test_a_dry_run_that_would_use_a_reset_does_not_also_switch(self, h):
+        h.engine = h._make_engine(dry_run=True)
+        before, _after = self._active_reset_fleet(h)
+        outcome, calls = self._tick(h, before)
+        assert calls == []
+        resets_planned = [e for e in h.events if isinstance(e, ResetEvent)]
+        assert len(resets_planned) == 1 and resets_planned[0].dry_run
+        # The tick ends at the planned reset, as a real one that refilled
+        # the active account would stay on it.
+        assert not any(isinstance(e, SwitchEvent) for e in h.events)
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+
+    def test_the_same_tick_live_uses_the_reset_and_stays(self, h):
+        before, after = self._active_reset_fleet(h)
+        outcome, calls = self._tick(h, before, after)
+        assert [c[:2] for c in calls] == [("1", "g-fable")]
+        assert not any(isinstance(e, SwitchEvent) for e in h.events)
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+
+    def test_a_dry_run_with_no_reset_to_plan_still_decides(self, h):
+        # Nothing to plan: the dry-run tick goes on to its switch decision.
+        h.engine = h._make_engine(dry_run=True)
+        before = {
+            "1": _engine_usage(d7=95),
+            "2": _engine_usage(d7=10),
+        }
+        outcome, _calls = self._tick(h, before)
+        assert not any(isinstance(e, ResetEvent) for e in h.events)
+        assert any(isinstance(e, SwitchEvent) for e in h.events)
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 1  # a dry run switches nothing
+
     def test_switch_preferred_when_it_helps(self, h):
         # Active 7d at 95% holds a weekly reset, but #2 has room: last-resort
         # keeps the reset and the engine switches.
@@ -898,18 +946,16 @@ class TestListRow:
         assert "resets:" in text
         assert "2    Fable · use by" in text
 
-    def test_tui_badge(self):
+    def test_tui_card_says_it_as_a_sentence(self):
         import time
 
-        from ai_quota_swap.tui.widgets import _resets_badge
+        from ai_quota_swap import display
 
         far = time.time() + 120 * DAY
-        assert _resets_badge(_usage(grants=[_grant("a", ends=far)]), time.time()) == "1 reset"
-        two = _usage(grants=[_grant("a", ends=far), _grant("b", ends=far, left=2)])
-        assert _resets_badge(two, time.time()) == "3 resets"
-        assert _resets_badge(_usage(), time.time()) == ""
-        assert _resets_badge(None, time.time()) == ""
-
+        status = _usage(grants=[_grant("a", ends=far), _grant("b", ends=far, left=2)])["resets"]
+        line = display.held_line(status, time.time())
+        assert line.startswith("Holds 3 Fable resets")
+        assert display.held_line(None, time.time()) == ""
     def test_no_row_without_resets(self):
         from ai_quota_swap.switcher import _usage_entry_lines
 

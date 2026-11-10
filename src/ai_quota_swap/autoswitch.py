@@ -45,7 +45,7 @@ import math
 import random
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1093,6 +1093,58 @@ def _over_budget(entry: object) -> bool:
     return budget is not None and budget[0] >= budget[1]
 
 
+@dataclass(frozen=True)
+class Candidates:
+    """The accounts one tick may switch to, each list in rotation order.
+
+    ``considered`` is every rotation account but the active one and those
+    set aside; ``oauth`` the subscription logins among them; ``api_key`` the
+    API-key accounts the settings let in, less any at its budget.
+    """
+
+    considered: tuple[str, ...]
+    oauth: tuple[str, ...]
+    api_key: tuple[str, ...]
+
+
+def rotation_candidates(
+    switchable: Sequence[str],
+    current: str | None,
+    *,
+    set_aside: Collection[str],
+    kind_of: Callable[[str], str],
+    include_api_key_accounts: bool,
+    entries: Mapping[str, object] | None = None,
+) -> Candidates:
+    """Which accounts a tick considers as switch targets: the engine's rule,
+    pure, so the dashboard's "Next best" list asks the same question.
+
+    ``switchable`` is the provider's rotation (``switchable_account_numbers``:
+    a saved login, not disabled). Left out: ``current``; accounts in
+    ``set_aside`` (the engine's quarantine: they need re-login); API-key
+    accounts unless ``include_api_key_accounts``, and then any at its budget
+    (``entries`` holds their spend readings). ``kind_of`` is
+    ``account_kind_for``.
+    """
+    entries = entries or {}
+    considered = tuple(n for n in switchable if n != current and n not in set_aside)
+    kinds = {n: kind_of(n) for n in considered}
+    oauth_accounts = tuple(n for n in considered if kinds[n] != "api_key")
+    api_accounts = (
+        tuple(
+            n for n in considered
+            if kinds[n] == "api_key" and not _over_budget(entries.get(n))
+        )
+        if include_api_key_accounts
+        else ()
+    )
+    return Candidates(considered, oauth_accounts, api_accounts)
+
+
+# `_maybe_use_reset`'s answer in a dry run that planned a reset: the tick ends.
+_RESET_PLANNED = object()
+
+
 def _headroom_by_account(
     usage: dict[str, dict | str | None], models: tuple[str, ...]
 ) -> dict[str, float | None]:
@@ -1271,7 +1323,10 @@ class AutoSwitchEngine:
         if self.dry_run:
             ref = _ref(plan.account, self.switcher.account_email(plan.account))
             self._emit(ResetEvent(account=ref, plan=plan.to_json(), dry_run=True))
-            return None
+            # What a real tick decides next rests on the refill, which a dry
+            # run cannot see: the tick ends here rather than also report a
+            # switch the reset would have made unnecessary.
+            return _RESET_PLANNED
 
         # Re-read the account before spending: the stored reading can be
         # minutes old (an hour under extended trust), and a reset taken in
@@ -1791,6 +1846,8 @@ class AutoSwitchEngine:
         refilled = self._maybe_use_reset(
             state, current, entries, usage, thresholds, quarantined
         )
+        if refilled is _RESET_PLANNED:
+            return TickOutcome.NO_ACTION  # dry run: "would use a reset" ends the tick
         if refilled is not None:
             entries, usage, headroom = refilled
 
@@ -1919,27 +1976,21 @@ class AutoSwitchEngine:
 
         # -- candidate selection ------------------------------------------
         switchable = self.switcher.switchable_account_numbers()
-        candidates = [
-            num
-            for num in switchable
-            if num != current and num not in quarantined
-        ]
-        oauth_candidates = [
-            n for n in candidates if self.switcher.account_kind_for(n) != "api_key"
-        ]
         # The no-return bar itself lives in `_rank` below: it is a statement
         # about the CHOICE, so it belongs where the choice is made rather than
         # in this census of what exists. See `_no_return_account` for the
         # incident, the scoping, and the release.
-        api_key_candidates = (
-            [
-                n for n in candidates
-                if self.switcher.account_kind_for(n) == "api_key"
-                and not _over_budget(entries.get(n))  # at its budget: not a target
-            ]
-            if settings.include_api_key_accounts
-            else []
+        picked = rotation_candidates(
+            switchable,
+            current,
+            set_aside=quarantined,
+            kind_of=self.switcher.account_kind_for,
+            include_api_key_accounts=settings.include_api_key_accounts,
+            entries=entries,  # an API-key account at its budget is not a target
         )
+        candidates = list(picked.considered)
+        oauth_candidates = list(picked.oauth)
+        api_key_candidates = list(picked.api_key)
         if (
             trigger in ("consume-first", "priority")
             and not oauth_candidates

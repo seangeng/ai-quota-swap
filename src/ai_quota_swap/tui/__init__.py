@@ -14,6 +14,17 @@ if TYPE_CHECKING:
     from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
 
+def _codex_switcher(switcher: "ClaudeAccountSwitcher"):
+    """The Codex provider beside Claude Code's, over the same data root; None
+    when it cannot be built (the dashboard then shows Claude Code alone)."""
+    try:
+        from ai_quota_swap.codex.switcher import CodexSwitcher
+
+        return CodexSwitcher(data_root=switcher.backup_dir, configure_logging=False)
+    except Exception:
+        return None
+
+
 def run(switcher: "ClaudeAccountSwitcher", start: str = "dashboard") -> int:
     """Run the TUI over an existing switcher. Returns the process exit code.
 
@@ -32,7 +43,7 @@ def run(switcher: "ClaudeAccountSwitcher", start: str = "dashboard") -> int:
         detected = detect_terminal_background()
     except Exception:
         detected = None
-    app = QswapApp(switcher, start=start, detected=detected)
+    app = QswapApp(switcher, codex=_codex_switcher(switcher), start=start, detected=detected)
     # Drain any late OSC reply immediately before Textual's driver starts,
     # so it isn't reissued as keystrokes once the app takes over the terminal.
     try:

@@ -18,6 +18,16 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - Usage errors exit 64 (not 2, which `auto --once` uses for "nothing to do"); every `--json` failure is the error envelope, and every payload carries `schemaVersion`. `priority --json` is new.
 - Every message fits 80 columns, and names commands by verb, never by a legacy flag.
 
+### Dashboard
+
+- Claude Code and Codex accounts in one dashboard, a section each, with each provider's active account in full; the watch page, the switch picker and the disable and remove menus list both, and every action goes to the account's own provider.
+- A card says what `qswap list` says, in the same order and words (`needs re-login` with its next step, `usage unavailable (HTTP 503), retrying`, `as of 3h ago`, held resets as a sentence, `extra` for extra-usage spend), coloured by the account's own switch line.
+- A cost line under the title (today and the last 7 days, estimated at API prices), and a usage screen (`u`): the `qswap usage` report, regrouped with Tab, 7 or 30 days with `d`.
+- The auto view runs one engine per provider, hosted as the menu bar hosts them, each with its own badge (`OFF`, `DRY-RUN`, `LIVE`), line and toggle (Tab between them, or side by side from 140 columns); "Next best" lists only what the engine would consider.
+- A first run says how to log in or offers `Add <email>` first; the add menu lists what each provider can add, `qswap codex login` included. No menu offers an action that cannot work.
+- Nothing wraps at 80 columns: emails give way before aliases and plans before figures, and a crowded screen keeps every account on one line before it folds any.
+- Switching to an account that needs re-login is refused with the command line's message and a "Switch anyway" choice; removing asks what `qswap remove` asks. Errors read as on the command line, never as a traceback. `esc` goes back and `q` quits on every screen.
+
 ### Codex (experimental)
 
 - `qswap codex add`, `list`, `status`, `switch`, `remove`, `alias`, `disable`, `enable`, `threshold` and `priority` keep several Codex CLI logins and switch between them.
@@ -46,7 +56,8 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 
 ### Usage resets
 
-- `qswap reset` lists every account's usage resets and spends one. `qswap list` says what an account holds ("Holds 1 Fable reset"), the dashboard shows a badge, and the menu bar a notification.
+- `qswap reset` lists every account's usage resets and spends one. `qswap list` and the dashboard say what an account holds ("Holds 1 Fable reset"), and the menu bar shows a notification.
+- A dry run that would spend a reset says so and stops there, rather than also reporting a switch.
 - The auto-switch engine spends resets under `resets.auto` (`last-resort` by default, or `active`, `on-limit`, `off`), only on a fresh reading, at most 3 a day, with a request id that makes a retry safe.
 - Resets have kinds (Fable or another model, 5-hour, weekly, full), read from the windows they clear. The planner spends the narrowest one that helps, and spends a weekly or full reset on a per-model limit only when `resets.weeklyForModelLimit` allows it. JSON output gains `scope`.
 

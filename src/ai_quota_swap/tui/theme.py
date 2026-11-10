@@ -11,9 +11,12 @@ palette.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from textual.theme import Theme
+
+if TYPE_CHECKING:
+    from rich.text import Text
 
 # Core palette (single source of truth — widgets import these for rich
 # renderables, the Theme below maps them onto Textual's design tokens).
@@ -139,3 +142,34 @@ Palette.DARK = Palette(
     accent=ACCENT, foreground=FOREGROUND, muted=MUTED,
     sev_ok=SEV_OK, sev_warn=SEV_WARN, sev_crit=SEV_CRIT, track=TRACK,
 )
+
+
+def from_printer(line: str, palette: Palette) -> "Text":
+    """A line the command line styled (``printer``'s ANSI) in this theme's
+    colours: its accent, muted, yellow and red become the palette's, so a
+    log line or an action's output reads like the rest of the screen."""
+    from rich.style import Style
+    from rich.text import Text
+
+    text = Text.from_ansi(line)
+    roles = {
+        173: palette.accent, (149, 76, 42): palette.accent,
+        250: palette.muted, (99, 93, 85): palette.muted,
+        1: palette.sev_crit, (173, 49, 40): palette.sev_crit,
+        3: palette.sev_warn, (121, 89, 17): palette.sev_warn,
+    }
+    spans = []
+    for span in text.spans:
+        style = span.style if isinstance(span.style, Style) else Style.parse(str(span.style))
+        color = style.color
+        new = None
+        if color is not None:
+            key = tuple(color.triplet) if color.number is None and color.triplet else color.number
+            new = roles.get(key)
+        elif style.dim:
+            new = palette.muted
+        if new is not None:
+            style = Style(color=new, bold=style.bold)
+        spans.append(type(span)(span.start, span.end, style))
+    text.spans = spans
+    return text

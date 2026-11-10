@@ -55,8 +55,8 @@ SIZE_HOOK = """
 })();
 """
 
-# Root menu order (tui/dashboard.py _root_entries).
-MENU = ("switch", "watch", "auto", "add", "disable", "remove", "theme", "quit")
+# Root menu order (tui/dashboard.py ROOT_MENU), for a fleet with nothing to add first.
+MENU = ("switch", "watch", "auto", "usage", "add", "disable", "remove", "theme", "quit")
 
 
 def menu(entry: str) -> tuple:
@@ -71,14 +71,21 @@ class Stop:
     steps: tuple  # ("key", "Enter") | ("type", "g") | ("wait", seconds)
     caption: str
     settle: float = 2.5  # seconds after the first frame before the first key
+    sizes: tuple = ()  # only at these sizes (COLSxROWS); () means every size asked for
 
 
 STOPS = (
-    Stop("main", "fleet", (), "The dashboard (bare qswap / qswap tui): accounts panel and root menu"),
+    Stop("main", "fleet", (), "The dashboard (bare qswap / qswap tui): both providers' accounts and the menu"),
+    Stop("cost-line", "usage", (), "The dashboard with session history: the cost line under the title"),
     Stop("watch", "fleet", (("type", "w"), ("wait", 1.5)), "Watch page (w, or qswap watch): every account, read-only"),
     Stop("watch-select", "fleet", (("type", "w"), ("wait", 1.0), ("type", "s"), ("wait", 0.8)),
          "Watch page with selection armed (s)"),
-    Stop("auto-dryrun", "fleet", (("type", "g"), ("wait", 3.0)), "Auto-switch view (g), dry-run"),
+    Stop("auto-dryrun", "fleet", (("type", "g"), ("wait", 3.0)),
+         "Auto-switch view (g), dry run: Claude Code's panel, Tab for Codex's"),
+    Stop("auto-codex", "fleet", (("type", "g"), ("wait", 2.5), ("key", "Tab"), ("wait", 0.8)),
+         "Auto-switch view: Codex's panel (Tab)"),
+    Stop("auto-wide", "fleet", (("type", "g"), ("wait", 3.0)),
+         "Auto-switch view on a wide terminal: both providers side by side", sizes=((150, 36),)),
     Stop("auto-threshold", "fleet", (("type", "g"), ("wait", 2.0), ("type", "t"), ("wait", 0.8)),
          "Auto-switch view, threshold adjust (t)"),
     Stop("auto-live-confirm", "fleet", (("type", "g"), ("wait", 2.0), ("type", "l"), ("wait", 0.8)),
@@ -88,17 +95,27 @@ STOPS = (
     Stop("auto-live-switched", "autoswitch", (("type", "g"), ("wait", 2.0), ("type", "l"), ("wait", 0.8),
                                               ("type", "y"), ("wait", 9.0)),
          "Auto-switch view, live, after the engine switched (autoswitch scenario)"),
+    Stop("usage", "usage", (("type", "u"), ("wait", 3.0)), "Usage report (u): the last 7 days by day"),
+    Stop("usage-by-model", "usage", (("type", "u"), ("wait", 2.5), ("key", "Tab"), ("wait", 1.5)),
+         "Usage report regrouped by model (Tab)"),
+    Stop("usage-30-days", "usage", (("type", "u"), ("wait", 2.5), ("key", "Tab"), ("key", "Tab"),
+                                    ("type", "d"), ("wait", 2.5)),
+         "Usage report by account over 30 days (Tab, d)"),
     Stop("switch-picker", "fleet", (("type", "s"), ("wait", 1.2)), "Switch picker (s)"),
     Stop("switch-done", "fleet", (("type", "s"), ("wait", 1.2), ("key", "ArrowDown"), ("key", "Enter"),
                                   ("wait", 1.5)), "Back on the dashboard after switching to account 2"),
-    Stop("add-menu", "fleet", menu("add"), "Add account submenu"),
+    Stop("switch-anyway", "trouble", (("type", "s"), ("wait", 1.2), ("key", "ArrowDown"), ("key", "Enter"),
+                                      ("wait", 1.5)),
+         "Switching to an account that needs re-login: refused, with a choice to switch anyway"),
+    Stop("add-menu", "fleet", menu("add"), "Add account submenu: what each provider can add"),
     Stop("add-login-confirm", "fleet", menu("add") + (("key", "Enter"), ("wait", 0.8)),
          "Add from the current Claude Code login: confirmation"),
-    Stop("add-login-output", "empty-claude", menu("add") + (("key", "Enter"), ("wait", 0.8),
-                                                            ("type", "y"), ("wait", 2.5)),
-         "Add from the current login, done: the output modal (first run)"),
+    Stop("add-login-output", "empty-claude", (("key", "Enter"), ("wait", 0.8), ("type", "y"), ("wait", 2.5)),
+         "First run: Add <the live login>, confirmed"),
     Stop("add-token-form", "fleet", menu("add") + (("key", "ArrowDown"), ("key", "Enter"), ("wait", 0.8)),
          "Add from a setup-token / API key: the form"),
+    Stop("codex-login", "fleet", menu("add") + (("key", "ArrowDown"),) * 3 + (("key", "Enter"), ("wait", 0.8)),
+         "Log in another Codex account: the command, where the dashboard cannot step aside"),
     Stop("disable-menu", "fleet", menu("disable"), "Disable / enable submenu"),
     Stop("disable-done", "fleet", menu("disable") + (("key", "ArrowDown"), ("key", "Enter"), ("wait", 1.5)),
          "After disabling account 2"),
@@ -108,10 +125,11 @@ STOPS = (
     Stop("theme-menu", "fleet", menu("theme"), "Theme submenu"),
     Stop("first-run-no-login", "empty", (), "The dashboard on a machine with no Claude Code login"),
     Stop("first-run-login", "empty-claude", (), "The dashboard with a live login that is not managed yet"),
+    Stop("first-run-both", "empty-claude-codex", (),
+         "The dashboard with live Claude Code and Codex logins, neither managed"),
     Stop("trouble-main", "trouble", (), "The dashboard with accounts in failure states"),
     Stop("trouble-watch", "trouble", (("type", "w"), ("wait", 1.5)), "Watch page with accounts in failure states"),
 )
-
 
 def parse_size(text: str) -> tuple[int, int]:
     cols, _, rows = text.lower().partition("x")
@@ -166,9 +184,11 @@ async def shoot_scenario(scenario: str, theme: str, sizes, stops, out: Path, log
     made = []
     with capture.Server(scenario, theme=theme) as server:
         async with cdp.chrome(2) as new_page:
-            for cols, rows in sizes:
+            wanted = list(dict.fromkeys([*sizes, *(z for s in stops for z in s.sizes)]))
+            for cols, rows in wanted:
                 todo = [s for s in stops
-                        if not (skip_existing and target_path(out, s, theme, cols, rows).exists())]
+                        if ((cols, rows) in s.sizes or (not s.sizes and (cols, rows) in sizes))
+                        and not (skip_existing and target_path(out, s, theme, cols, rows).exists())]
                 if not todo:
                     continue
                 w, h = await fit_cells(new_page, server, theme, cols, rows)

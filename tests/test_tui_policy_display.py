@@ -22,8 +22,11 @@ import json
 
 import pytest
 
-from ai_quota_swap.models import AccountPolicy
-from ai_quota_swap.tui.widgets import account_card_text, mini_account_text
+from ai_quota_swap import display
+from ai_quota_swap.models import AccountPolicy, AccountsSnapshot
+from ai_quota_swap.tui import data
+from ai_quota_swap.tui.theme import Palette
+from ai_quota_swap.tui.widgets import account_extra, card_text, row_text
 
 from tests.test_tui import (
     FakeSwitcher,
@@ -34,50 +37,44 @@ from tests.test_tui import (
     settle,
 )
 
-# Goldens captured from the unmodified engine at
-# 4f6c6ac6f303bd910d51bf5bf2fb36d553f4f37f60a50e438291d4feb5cadfbe, rendered
-# through the same ``make_account`` fixture used below.  Only the header row and
-# the whole mini row are pinned as literals: the card's bar rows carry a wall
-# clock date and would rot daily.  Their invariance is asserted structurally
-# instead (see ``test_the_card_bar_rows_are_untouched``).  The re-login note
-# (tests/test_login_expiry.py) only joins a row while its login is due, so
-# these fixtures, which carry no expiry, render without it.
-GOLDEN_CARD_HEADER = " 2  dev (user2@example.com)  [personal]   ● active"
-GOLDEN_MINI = " 2  dev (user2@example.com)  [personal]   5h 25% · 7d 10%"
-GOLDEN_CARD_HEADER_DISABLED = " 3  user3@example.com  [personal]   (disabled)"
-GOLDEN_MINI_DISABLED = " 3  user3@example.com  [personal]  (disabled)   5h 25% · 7d 10%"
-
-NOW = 1000.0
+# The card's header and the one-line row of an account with no policy, as the
+# command line's account block words them (no fixed date in either).
+GOLDEN_CARD_HEADER = "#2 dev (user2@example.com) · active"
+GOLDEN_ROW = "#2 dev (user2@example.com)   5h 25% · 7d 10%"
+GOLDEN_CARD_HEADER_DISABLED = "#3 user3@example.com · disabled"
+GOLDEN_ROW_DISABLED = "#3 user3@example.com · disabled   5h 25% · 7d 10%"
 
 
 def with_policy(acc, **kwargs):
-    """Attach an ``AccountPolicy`` to a snapshot from ``tests.test_tui``.
-
-    ``make_account`` predates the policy field and takes no ``policy=``
-    argument; ``test_tui.py`` is upstream's and stays byte-unchanged, so the
-    snapshot is rebuilt here instead of the helper being widened.
-    """
+    """Attach an ``AccountPolicy`` to a snapshot from ``tests.test_tui``."""
     return dataclasses.replace(acc, policy=AccountPolicy(**kwargs))
 
 
+def _block(acc):
+    view = data.ProviderView(
+        "claude", AccountsSnapshot(None, (acc,), 0.0), lines=display.Lines(five_hour=90.0),
+    )
+    return data.block_for(view, acc)
+
+
 def card(acc) -> str:
-    return account_card_text(acc, 80, now=NOW).plain
+    return card_text(_block(acc), 80, Palette.DARK, extra=account_extra(acc)).plain
 
 
 def mini(acc) -> str:
-    return mini_account_text(acc, NOW).plain
+    return row_text(_block(acc), 80, Palette.DARK, extra=account_extra(acc)).plain
 
 
 class TestThresholdBadge:
-    """A per-account override is legible on both paths."""
+    """A per-account override is legible on both paths, as "switch at N%"."""
 
     def test_the_card_shows_the_override(self):
         acc = with_policy(make_account(2, active=True, alias="dev"), threshold=75.0)
-        assert "75%" in card(acc).splitlines()[0]
+        assert card(acc).splitlines()[0].endswith("· switch at 75%")
 
-    def test_the_mini_row_shows_the_override(self):
+    def test_the_row_shows_the_override(self):
         acc = with_policy(make_account(2, active=True, alias="dev"), threshold=75.0)
-        assert "75%" in mini(acc)
+        assert "switch at 75%" in mini(acc)
 
     @pytest.mark.parametrize(
         ("value", "shown"),
@@ -86,68 +83,51 @@ class TestThresholdBadge:
     def test_a_fractional_override_keeps_its_fraction_and_a_whole_one_stays_whole(
         self, value, shown
     ):
-        # 75.0 must not read as "75.0%" and 82.5 must not round to "82%": the
-        # store accepts one decimal place (ACCOUNT_THRESHOLD_MIN..MAX) and the
-        # row has to show back exactly what was set.
         acc = with_policy(make_account(2, active=True, alias="dev"), threshold=value)
-        assert shown in card(acc).splitlines()[0]
-        assert shown in mini(acc)
+        assert card(acc).splitlines()[0].endswith(f"switch at {shown}")
+        assert f"switch at {shown}" in mini(acc)
 
     def test_an_account_on_the_global_default_shows_no_override(self):
         acc = with_policy(make_account(2, active=True, alias="dev"))
         assert acc.policy.threshold is None
-        assert "%" not in card(acc).splitlines()[0]
-        assert "th " not in mini(acc)
+        assert "switch at" not in card(acc) and "switch at" not in mini(acc)
 
-    def test_both_badges_render_together(self):
-        acc = with_policy(
-            make_account(2, active=True, alias="dev"), threshold=60.0
-        )
-        header = card(acc).splitlines()[0]
-        assert "60%" in header
-        row = mini(acc)
-        assert "60%" in row
+    def test_the_bars_tick_at_the_accounts_own_line(self):
+        from ai_quota_swap.tui.widgets import _BAR_TICK
+
+        own = with_policy(make_account(2, active=True, entry=make_entry(10.0, 10.0)), threshold=60.0)
+        plain = make_account(2, active=True, entry=make_entry(10.0, 10.0))
+        row_own = card(own).splitlines()[1]
+        row_plain = card(plain).splitlines()[1]
+        assert row_own.index(_BAR_TICK) < row_plain.index(_BAR_TICK)
 
 
 class TestUnpolicedAccountsRenderExactlyAsBefore:
-    """The negative half, and the reason this file has goldens.
-
-    Every account in an untouched store carries ``AccountPolicy()``.  If the
-    badge code path leaks so much as a stray space onto those rows, the whole
-    fleet's display changes for a feature nobody opted into.
-    """
+    """An account with no policy carries no trace of the feature."""
 
     def test_the_card_header_is_byte_identical_to_the_golden(self):
-        assert card(make_account(2, active=True, alias="dev")).splitlines()[0] == (
-            GOLDEN_CARD_HEADER
-        )
+        assert card(make_account(2, active=True, alias="dev")).splitlines()[0] == GOLDEN_CARD_HEADER
 
-    def test_the_mini_row_is_byte_identical_to_the_golden(self):
-        assert mini(make_account(2, active=True, alias="dev")) == GOLDEN_MINI
+    def test_the_row_is_byte_identical_to_the_golden(self):
+        assert mini(make_account(2, alias="dev")) == GOLDEN_ROW
 
     def test_a_disabled_account_is_byte_identical_to_the_golden(self):
         acc = make_account(3, disabled=True)
         assert card(acc).splitlines()[0] == GOLDEN_CARD_HEADER_DISABLED
-        assert mini(acc) == GOLDEN_MINI_DISABLED
+        assert mini(acc) == GOLDEN_ROW_DISABLED
 
     def test_an_explicit_empty_policy_renders_the_same_as_no_policy(self):
-        # ``AccountPolicy()`` is the field default, but a store that wrote an
-        # empty policy object back must not be distinguishable on screen.
         plain = make_account(2, active=True, alias="dev")
         assert card(with_policy(plain)) == card(plain)
         assert mini(with_policy(plain)) == mini(plain)
 
     def test_the_card_bar_rows_are_untouched(self):
-        # The bar rows carry a wall-clock reset date, so they are pinned
-        # structurally rather than as a literal: same row count, same window
-        # labels, and no policy token anywhere below the header.
         acc = make_account(2, active=True, alias="dev")
         lines = card(acc).splitlines()
         assert len(lines) == 3
-        assert lines[1].startswith("    5h ")
-        assert lines[2].startswith("    7d ")
-        for token in ("th ",):
-            assert token not in "\n".join(lines[1:])
+        assert lines[1].startswith("   5h ")
+        assert lines[2].startswith("   7d ")
+        assert "switch at" not in "\n".join(lines[1:])
 
 
 @pytest.mark.asyncio
@@ -194,7 +174,7 @@ class TestNextBestRanksEachAccountOnItsOwnLine:
             await settle(pilot)
             from textual.widgets import Static
 
-            plain = app.screen.query_one("#candidates", Static).render().plain
+            plain = app.screen.query_one("#candidates-claude", Static).render().plain
             assert plain.index("user3@example.com") < plain.index(
                 "user2@example.com"
             )
@@ -214,8 +194,8 @@ class TestNextBestRanksEachAccountOnItsOwnLine:
 
             await pilot.press("t", "right", "right", "right")
             await pilot.pause()
-            assert app.screen._settings.threshold == 93.0
-            plain = app.screen.query_one("#candidates", Static).render().plain
+            assert app.screen._states["claude"].settings.threshold == 93.0
+            plain = app.screen.query_one("#candidates-claude", Static).render().plain
             assert plain.index("user3@example.com") < plain.index(
                 "user2@example.com"
             )
