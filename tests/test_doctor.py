@@ -701,7 +701,7 @@ class TestUsage:
         assert code == 0
         assert lines[0].startswith("usage: qswap doctor")
         assert "--json" in out and "--online" in out
-        assert "Examples:" in out
+        assert "examples:" in out
         assert len(lines) <= 20
         assert all(len(line) <= 80 for line in lines)
 

@@ -1176,9 +1176,9 @@ def _parser():
             "say how to fix anything that is not. Reads only; changes nothing."
         ),
         epilog=(
-            "Examples:\n"
+            "examples:\n"
             "  qswap doctor\n"
-            "  qswap doctor --online      also check the network\n"
+            "  qswap doctor --online      # also check the network\n"
             "  qswap doctor --json"
         ),
     )

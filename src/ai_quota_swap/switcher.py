@@ -7404,7 +7404,7 @@ class ClaudeAccountSwitcher:
             email = None
         if email:
             return ConfigError(
-                f"No accounts are managed yet. Add the current login ({email}) with: qswap add"
+                "No accounts are managed yet. Add the current login with: qswap add"
             )
         return ConfigError(
             "No accounts are managed yet. Log in with claude (/login), then run: qswap add"
