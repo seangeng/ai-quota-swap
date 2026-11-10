@@ -1,91 +1,166 @@
 # API-key accounts: spend and budgets
 
-An API-key account (one you added with `qswap add-token sk-ant-api03-...`) has no 5-hour or weekly quota, so qswap cannot show a percentage for it. It shows what the account has spent instead, today and this month, and it can stop auto-switch from using the account once a monthly budget is reached.
+An API-key account has no 5-hour or weekly window, so qswap shows what it spent instead, today and this month. After this page you can add a Console API key, see its spend, give it a monthly budget that auto-switch respects, and read Anthropic's own figures with an organization's Admin key.
 
-## See what an API key has spent
+## Add an API key
 
-`qswap list`, the dashboard and the menu bar show it on the account's row:
-
-```
-  3: api-key-3@token.local [personal]
-     API key · $4.12 today · $212.40 this month of $500 (42%)
+```text
+$ qswap add-token sk-ant-api03-... --email build@example.com
+Added #6 build@example.com (from API key)
 ```
 
-Without a budget the row ends at `this month`. A row that ends in `· estimate` was worked out from this machine's transcripts (see [Two sources](#two-sources)), and a line under it says why when Anthropic's figure could not be used.
+`qswap add-token` detects the kind of token. Any value that starts with `sk-ant-` and is not an OAuth token (`sk-ant-oat...`, `sk-ant-ort...`) is stored as an API key: workspace keys (`sk-ant-api03-...`), personal keys (`sk-ant-usr-...`) and the other Console key families. Anything else is stored as a setup-token (below).
 
-`qswap budget` lists every API-key account's spend and budget, and `qswap list --json` adds an `apiSpend` object to the row ([json-output.md](json-output.md#optional-row-fields)).
+- `-` reads the token from standard input (`pbpaste | qswap add-token -`). With no token at all, qswap asks for it at a hidden prompt on a terminal. Both keep the key out of your shell history.
+- `--email` labels the account. Without it the label is `api-key-N@token.local`, N being the account number.
+- `--slot N` stores it in slot N; `--yes` replaces an account already in that slot without asking.
+- Adding makes no request to Anthropic. The key is stored like a saved login (see [../SECURITY.md](../SECURITY.md)).
 
-Months and days are UTC, as in Anthropic's reports, so the month resets at midnight UTC on the first.
+An API-key account switches like any other (`qswap switch 6`), and Claude Code then uses the key. Auto-switch treats it differently, as [Set a budget](#set-a-budget) explains.
+
+### Setup-tokens
+
+A setup-token is the long-lived token `claude setup-token` prints. It is added with the same command:
+
+```text
+$ qswap add-token sk-ant-oat01-...
+Added #7 setup-token-7@token.local (from token)
+```
+
+The usage endpoint does not answer setup-tokens, so by default their row reads:
+
+```text
+  #7 setup-token-7@token.local
+     usage unavailable (setup-tokens cannot read usage;
+     `qswap config set usage.headerProbe true` reads it from a 1-token request)
+```
+
+With `usage.headerProbe` on, qswap reads the 5-hour, weekly and Fable windows from the rate-limit headers of a request for one Haiku output token, sent at the normal polling pace. Each probe is a real request that counts against that account's quota, which is why it is off by default.
+
+## See what it spent
+
+`qswap list`, the dashboard and the menu bar show the spend on the account's row:
+
+```text
+$ qswap list
+...
+  #5 ci (api-key-5@token.local) · API key
+     $2.06 today · $25.16 this month of $40 (63%) · estimate
+...
+```
+
+Months and days are UTC, as in Anthropic's reports, so the month starts again at midnight UTC on the 1st. The row takes these forms:
+
+| Row | When |
+|---|---|
+| `$2.06 today · $25.16 this month` | No budget |
+| `... this month of $40 (63%)` | A budget is set |
+| `... this month of $20 (126%, over budget)` | At or past the budget |
+| `$25.16+ this month` | Some of the tokens are from a model with no price, and are left out |
+| `· estimate` at the end | The figure comes from this machine's session files, not from Anthropic ([Where the figure comes from](#where-the-figure-comes-from)) |
+| `no spend data yet · budget $500 a month` | A budget, but no figure yet. A second line says how to get one |
+| `no quota; billed per token` | No budget, no registered organization, and `qswap usage` has never run |
+
+A second line, when there is one, says why the figure is not Anthropic's (`key not found in a registered organization; estimate from this machine's transcripts`), how old an estimate is once it is more than an hour old (`estimate as of the last qswap usage, 3h ago`), or how old Anthropic's figure is while it cannot be refreshed (`Admin key rejected, figures from 12m ago`).
+
+`qswap budget` lists every API-key account's budget and spend:
+
+```text
+$ qswap budget
+Monthly budgets for API-key accounts (UTC month):
+  5: ci (api-key-5@token.local)  $25.16 of $40 this month (63%) (estimate) · $2.06 today
+A budget is a brake inside qswap, not a cap at Anthropic: auto-switch stops using the account at its budget. For a hard cap, set a workspace spend limit in the Console.
+```
+
+`qswap list --json` and `qswap budget --json` add an `apiSpend` object and a `budget` field to the account ([json-output.md](json-output.md)).
 
 ## Set a budget
 
-```bash
-qswap budget 3 500        # $500 a month for account 3 (number, email or alias)
-qswap budget 3 49.50
-qswap budget 3 off        # remove it
-qswap budget              # list budgets and spend
+```text
+$ qswap budget 5 500
+Set a monthly budget of $500 for #5 api-key-5@token.local.
+  A budget is a brake inside qswap, not a cap at Anthropic: auto-switch stops using the account at its budget. For a hard cap, set a workspace spend limit in the Console.
 ```
 
-With a budget set:
+The account can be a number, email or alias. The amount is US dollars per UTC month, above 0 and at most $10,000,000, such as `500` or `49.50`. `qswap budget 5 off` removes it. A subscription account is refused: budgets apply to API-key accounts only.
 
-- At 80% of the budget, auto-switch (`qswap auto`, the menu bar, the dashboard's auto view) reports a `budget-warning` once that month. The menu bar shows it as a notification.
-- At or over the budget, auto-switch does not switch to the account.
-- If the account in use reaches its budget, auto-switch treats it as at its limit and switches to an account that has room, a subscription first. API-key accounts under their budget are used only as a last resort, and only with `--include-api-key-accounts`, as before.
+What auto-switch (`qswap auto`, the menu bar, the dashboard's auto view) does with an API-key account; [auto-switch.md](auto-switch.md) has the rest of its rules:
 
-An account with no budget behaves exactly as before. So does an account whose spend is not known yet: there is nothing to hold the budget against.
+- It never ranks one against subscriptions. It lands on one only as a last resort, when it must move and no subscription has room, and only with `--include-api-key-accounts` (`autoswitch.includeApiKeyAccounts`).
+- An active API-key account under its budget, or without one, is left alone (`#5 ci is an API key · no quota to watch`). With `--include-api-key-accounts`, auto-switch instead counts its missing usage as unreadable and fails over to another account after `autoswitch.unhealthyTicks` checks (3 by default): `#5 ci is an API key · failover in 2 more checks`.
+- At 80% of the budget it logs one warning per account per month, which the menu bar also shows as a notification:
+
+  ```text
+  14:20:00  #5 ci has spent $25.16 of its $30.00 monthly budget (84%) (estimate)
+  ```
+
+- At or over the budget the account is never a target. If it is the active account, auto-switch treats it as at its limit and moves to an account with room, without waiting for the cooldown.
+- With no budget, or no figure to hold it against, nothing changes.
 
 ### What a budget is not
 
-A budget is a brake inside qswap, not a cap at Anthropic. It only changes what qswap's auto-switch does. Claude Code keeps working on the account if you switch to it by hand, and anything else that uses the same key is not affected at all. For a hard cap, set a spend limit on the key's workspace in the Claude Console.
+A budget is a brake inside qswap, not a cap at Anthropic. It changes only what auto-switch does. Claude Code keeps working on the account if you switch to it by hand, and anything else that uses the same key is not affected. For a hard cap, set a spend limit on the key's workspace in the Claude Console.
 
-Anthropic's figures can also arrive a few minutes late, and the local estimate only updates when `qswap usage` runs, so an account can go a little past its budget before qswap notices.
+Figures also arrive late: Anthropic's by about five minutes, the local estimate only when `qswap usage` runs. An account can go past its budget before qswap notices.
 
-## Register an organization
+## Register an organization's Admin key
 
-The most accurate figure comes from Anthropic's own usage report for the key, which counts every request made with it, from any machine or tool. Reading it needs an Admin API key for the organization the key belongs to:
+The most complete figure is Anthropic's usage report for the key, which counts every request made with it from any machine or tool. Reading it needs an Admin API key (`sk-ant-admin...`) for the organization the key belongs to:
 
 ```bash
-qswap api org add          # paste the key at the hidden prompt
-qswap api org add acme < admin-key.txt
+qswap api org add               # paste the key at the hidden prompt
+qswap api org add acme < key.txt
 qswap api org list
 qswap api org remove acme
 ```
 
-`add` reads the key from a hidden prompt, or from stdin when you pipe it in; it never takes the key as an argument, so it does not end up in your shell history. It checks the key with one read of the organization's details, stores it, then finds which of your API-key accounts belong to the organization. The name defaults to the organization's name.
+`add` reads the key from a hidden prompt, or from the first line of standard input; it never takes the key as an argument. It checks the key with one read of the organization's details and saves nothing if that fails (a rejected key, HTTP 403, no answer). Then it stores the key, then links your API-key accounts to the organization's keys and prints one line per account. The name defaults to one made from the organization's name.
 
-Where the key is kept: in the macOS Keychain (item `ai-quota-swap`, account `admin-org-<name>`); on Linux and Windows, or when the Keychain is locked, in a file only your user can read (`credentials/.admin-org-<name>.enc` in the data directory), the same way qswap keeps saved logins. `remove` deletes it, and so does `qswap purge`.
+The key is kept in the macOS Keychain (item `ai-quota-swap`, account `admin-org-<name>`). On Linux and Windows, or when the Keychain cannot be used, it is a file only your user can read, `credentials/.admin-org-<name>.enc` in the data directory, base64-encoded and not encrypted. `remove` deletes it, and so does `qswap purge`.
 
-To try it without storing anything, set `ANTHROPIC_ADMIN_KEY` in the environment of one command. qswap uses it only while no organization is registered, and never writes it anywhere.
+To try it without storing anything, set `ANTHROPIC_ADMIN_KEY` for one command. qswap uses it only while no organization is registered and never writes it anywhere.
 
 ### What an Admin key can do
 
-An Admin key is far more powerful than reading reports. It can manage the whole organization: invite and remove members, change workspaces, and rename or archive API keys. Anthropic offers no read-only key for usage reports, so this is the key you need. qswap only ever sends GET requests with it, to read the list of API keys and the usage and cost reports, and never logs it or puts it in a URL or an error message. Still:
+`qswap api org add` prints this before it asks for the key: an Admin key can manage your whole organization (members, invites, workspaces and API keys; it can rename or archive keys), and Anthropic offers no read-only key for usage reports. qswap sends it only in GET requests that read the organization's details, its key list, and the usage and cost reports, and refuses any other method before a request is made. The key goes in one request header, never in a URL, a log line, an error message or the cache. Still:
 
-- Create a dedicated key for qswap with an expiry date (Console, Settings, Admin keys).
-- Remove it with `qswap api org remove` when you stop using this.
-- Admin keys exist only for organizations; an individual Console account has none.
+- Create a dedicated Admin key for qswap with an expiry date (Console, Settings, Admin keys).
+- Remove it with `qswap api org remove` when you no longer need it.
 
 ### How accounts are matched to keys
 
-Anthropic's reports name keys by id, not by the secret. qswap lists the organization's keys, each with a hint such as `sk-ant-api03-R2D...igAA` (the start and end of the key), and links an account when exactly one listed key matches its key. If two keys share a hint, or two of your accounts match the same key, nothing is linked and the row says so. An account whose key is in no registered organization is estimated locally. The link is stored on the account and re-checked against its key every time, so replacing the key relinks it.
+Anthropic's reports name keys by id. Its key list gives each key a hint, the start and end of the secret, such as `sk-ant-api03-R2D...igAA`. qswap links an account when exactly one listed key in all registered organizations matches the account's key, and no other managed account matches the same one. Otherwise nothing is linked and the row's second line says why (`2 listed API keys share this key's hint; not linked`). An account whose key is in no registered organization is estimated locally.
 
-## Two sources
+The link is stored on the account and checked against its key on every read, without the network. qswap lists an organization's keys once a day, or sooner when it sees a key the last listing was not checked against, so a replaced key is relinked within about ten minutes.
 
-| Source | Shown as | What it knows |
+## Where the figure comes from
+
+| Source | Row | What it counts |
 |---|---|---|
-| Anthropic's usage report | no tag | Every request made with the key, anywhere, a few minutes behind. qswap reads it at most once every five minutes. |
-| This machine's transcripts | `estimate` | Only what Claude Code sent from this machine while this account was the live login, up to the last `qswap usage` run. |
+| Anthropic's usage report | no tag | Every request made with the key, anywhere, about five minutes behind. Read at most once every five minutes per organization |
+| This machine's session files | `estimate` | Claude Code requests from this machine while the account was active, as of the last `qswap usage` run |
 
-Both figures are tokens priced with the table behind [`qswap usage`](usage.md#the-cost-is-an-estimate), at list prices, so neither is your invoice to the cent:
+Both are tokens priced with the table behind `qswap usage` ([usage.md](usage.md#the-cost-is-an-estimate)), so neither is your invoice to the cent. Fast mode is priced; discounts, credits and long-context tiers are not, and charges that are not tokens (web search, code execution) are left out.
 
-- Discounts, credits, the Batch API and long-context surcharges are not applied (long prompts use the base tier). Fast mode is.
-- Web search and code execution are not included; they are in `qswap usage --billed`.
-- A model the price table does not know is left out, and the amount is marked `+`.
-
-If Anthropic's report cannot be read (the key was rejected, the Admin API is rate limiting or unreachable), the row shows the last figure it had for up to an hour, then falls back to the local estimate, with the reason underneath.
-
-The local estimate refreshes whenever `qswap usage` runs. Run it now and then (or from cron) if you rely on a budget without a registered organization; the row says how old an estimate is once it is more than an hour old.
+When Anthropic's report cannot be read (the key was rejected, the Admin API is rate limiting or unreachable), qswap backs off and the row keeps the last figure for up to an hour, then falls back to the local estimate, with the reason on the second line. The local estimate changes only when `qswap usage` runs, so run it now and then, or from cron, if you rely on a budget without a registered organization.
 
 ## What the organization was billed
 
-`qswap usage --billed` adds what Anthropic reports for each registered organization, for the same dates as the rest of `qswap usage`, by day, model, key or workspace. Its total is Anthropic's cost report. See [usage.md](usage.md#what-anthropic-billed---billed).
+`qswap usage --billed` adds what Anthropic reports for each registered organization over the same dates as the rest of `qswap usage`, by day, model, key or workspace. Its total is Anthropic's cost report. See [usage.md](usage.md#what-anthropic-billed).
+
+## Settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `autoswitch.includeApiKeyAccounts` | `false` | Let auto-switch land on an API-key account as a last resort |
+| `usage.headerProbe` | `false` | Read setup-token usage from the rate-limit headers of a one-token Haiku request (uses that account's quota) |
+
+Change one with `qswap config set usage.headerProbe true`. The full list is in [settings.md](settings.md).
+
+## Limits
+
+- A budget is enforced by qswap's auto-switch only, and only once a spend figure exists.
+- Anthropic's figure needs an Admin key, which can do far more than read reports.
+- The local estimate sees only this machine's Claude Code usage while the account was active.
+- The menu bar's new build, which shows the budget notification, has not been run by hand yet ([menubar.md](menubar.md)).
+- Budgets and the Admin API apply to Claude Code API-key accounts. Codex accounts are covered in [codex.md](codex.md).
