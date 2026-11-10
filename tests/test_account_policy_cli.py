@@ -69,7 +69,7 @@ class TestThresholdSet(PolicyCliBase):
 
         assert self._record(ClaudeAccountSwitcher(), "2")["threshold"] == 85.0
         out = capsys.readouterr().out
-        assert "Account-2" in out
+        assert "#2 " in out
         assert "85" in out
 
     def test_it_stores_a_float_not_the_raw_string(self, temp_home: Path, capsys):

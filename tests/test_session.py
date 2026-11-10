@@ -1596,7 +1596,7 @@ class TestRun:
             manager.switcher.backup_dir, ACCOUNT_NUM, ACCOUNT_EMAIL
         )
         assert exc.value.env["CLAUDE_CONFIG_DIR"] == str(session_dir)
-        assert "overriding it for this launch" in capsys.readouterr().out
+        assert "overriding it for this launch" in " ".join(capsys.readouterr().out.split())
 
     def test_preset_config_dir_fast_paths_for_active_default_account(
         self, manager, capture_exec, monkeypatch, capsys
@@ -1747,6 +1747,8 @@ class TestGuards:
         block_real_keychain.set_password(service, account, "creds")
 
         monkeypatch.setattr("builtins.input", lambda *a: "y")
+
+        monkeypatch.setattr("ai_quota_swap.prompts.interactive", lambda: True)
         seeded_switcher.remove_account(ACCOUNT_NUM)
 
         assert not session_dir.exists()
@@ -1792,6 +1794,8 @@ class TestGuards:
         block_real_keychain.set_password(service, account, "creds")
 
         monkeypatch.setattr("builtins.input", lambda *a: "y")
+
+        monkeypatch.setattr("ai_quota_swap.prompts.interactive", lambda: True)
         seeded_switcher.purge()
 
         assert block_real_keychain.get_password(service, account) is None

@@ -103,35 +103,45 @@ class TestCLI:
             env=_subprocess_env(),
         )
         assert result.returncode == 0
-        assert "Multi-Account Switcher" in result.stdout
+        assert "Switch between Claude Code and Codex accounts" in result.stdout
         # Bare subcommands are the documented interface and lead the help.
-        assert "qswap add" in result.stdout or "add " in result.stdout
-        assert "switch <num|email>" in result.stdout
-        assert "list " in result.stdout
-        assert "status " in result.stdout
+        assert "  add " in result.stdout
+        assert "switch [ACCOUNT]" in result.stdout
+        assert "  list " in result.stdout
+        assert "  status " in result.stdout
+        # Grouped by task, global options only, and it fits a screen.
+        for group in ("Accounts", "Automatic switching and resets", "Sessions",
+                      "Usage and cost", "Codex", "Setup and maintenance"):
+            assert f"\n{group}\n" in result.stdout
+        lines = result.stdout.splitlines()
+        assert max(len(line) for line in lines) <= 80
+        assert len(lines) <= 52
         # The legacy `--flag` spellings still work but are hidden from the
-        # options section; only the "keep working" note may mention them.
-        options_section = result.stdout.split("Flags combine with subcommands:")[0]
-        assert "--add-account" not in options_section
-        assert "--switch " not in options_section
-        assert "--list" not in options_section
-        assert "--status" not in options_section
+        # map; only the "still work" note may mention them.
+        before_note = result.stdout.split("The old flag spellings")[0]
+        assert "--add-account" not in before_note
+        assert "--switch " not in before_note
+        assert "--list" not in before_note
+        assert "--status" not in before_note
+        assert "--slot" not in result.stdout  # verb flags live in the verb's help
         # ...and the note that they keep working is still present.
-        assert "keep working" in result.stdout
+        assert "still work" in result.stdout
 
     def test_no_args_shows_error(self):
-        """Test that running without args (non-TTY) shows a clean no-command error."""
+        """Bare qswap off a terminal prints a three-line hint, not a usage error."""
         result = subprocess.run(
             [sys.executable, "-m", "ai_quota_swap"],
             capture_output=True,
             text=True,
             env=_subprocess_env(),
         )
-        assert result.returncode == 2
-        assert "no command given" in result.stderr
-        # The now-hidden legacy flags must not leak into the error.
-        assert "--add-account" not in result.stderr
-        assert "one of the arguments" not in result.stderr
+        assert result.returncode == 0
+        lines = result.stdout.splitlines()
+        assert len(lines) == 3
+        assert "qswap help" in lines[1] and "qswap list" in lines[2]
+        # The now-hidden legacy flags must not leak into it.
+        assert "--add-account" not in result.stdout + result.stderr
+        assert "one of the arguments" not in result.stdout + result.stderr
 
     def test_mutually_exclusive_args(self):
         """Test that mutually exclusive args are enforced."""
@@ -161,7 +171,7 @@ class TestCLI:
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
 
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
         assert "--token-status can only be used with 'list'" in capsys.readouterr().err
 
     def test_token_status_flag_is_forwarded_to_list(self):
@@ -183,7 +193,7 @@ class TestCLI:
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
 
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
         assert "--strategy can only be used with bare 'switch'" in capsys.readouterr().err
 
     def test_strategy_next_available_requires_switch(self, capsys):
@@ -192,7 +202,7 @@ class TestCLI:
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
 
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
         assert "--strategy can only be used with bare 'switch'" in capsys.readouterr().err
 
     def test_strategy_rejects_unknown_value(self, capsys):
@@ -201,7 +211,7 @@ class TestCLI:
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
 
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
 
     def test_switch_strategy_forwarded(self):
         """--switch --strategy best forwards the strategy to switch()."""
@@ -262,7 +272,7 @@ class TestCLI:
         with patch.object(sys, "argv", ["ai-quota-swap", "--switch", "--model", "Fable"]):
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
         assert "--model can only be used with" in capsys.readouterr().err
 
     def test_plain_switch_passes_no_strategy(self):
@@ -283,13 +293,13 @@ class TestCLI:
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
 
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
         assert "--slot can only be used with 'add' or 'add-token'" in capsys.readouterr().err
 
     def test_slot_flag_in_help(self):
-        """--slot should appear in help output."""
+        """--slot is in add's own help (verb flags moved out of the map)."""
         result = subprocess.run(
-            [sys.executable, "-m", "ai_quota_swap", "--help"],
+            [sys.executable, "-m", "ai_quota_swap", "add", "--help"],
             capture_output=True,
             text=True,
             env=_subprocess_env(),
@@ -303,7 +313,7 @@ class TestCLI:
         ):
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
         assert "--account can only be used with 'export'" in capsys.readouterr().err
 
     def test_force_flag_requires_import_or_switch_to(self, capsys):
@@ -311,7 +321,7 @@ class TestCLI:
         with patch.object(sys, "argv", ["ai-quota-swap", "--list", "--force"]):
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
         assert (
             "--force can only be used with 'import' or 'switch <num|email>'"
             in capsys.readouterr().err
@@ -361,15 +371,21 @@ class TestCLI:
         assert "not allowed" in result.stderr.lower()
 
     def test_export_in_help(self):
-        """The export/import subcommands should appear in help output."""
+        """The export/import subcommands appear in the map, each with its help."""
         result = subprocess.run(
             [sys.executable, "-m", "ai_quota_swap", "--help"],
             capture_output=True,
             text=True,
             env=_subprocess_env(),
         )
-        assert "export <path>" in result.stdout
-        assert "import <path>" in result.stdout
+        assert "export, import" in result.stdout
+        for verb in ("export", "import"):
+            own = subprocess.run(
+                [sys.executable, "-m", "ai_quota_swap", "help", verb],
+                capture_output=True, text=True, env=_subprocess_env(),
+            )
+            assert own.returncode == 0
+            assert f"usage: qswap {verb} PATH" in own.stdout
 
     def test_export_dispatch_calls_transfer(self):
         """--export dispatches into transfer.export_accounts."""
@@ -390,7 +406,7 @@ class TestCLI:
         with patch.object(sys, "argv", ["ai-quota-swap", "--list", "--full"]):
             with pytest.raises(SystemExit) as exc_info:
                 cli.main()
-        assert exc_info.value.code == 2
+        assert exc_info.value.code == 64
         assert "--full can only be used with 'export'" in capsys.readouterr().err
 
     def test_full_flag_dispatches_with_full_true(self):
@@ -683,7 +699,7 @@ class TestCLI:
         with pytest.raises(SystemExit) as exc:
             cli.main()
 
-        assert exc.value.code == 2
+        assert exc.value.code == 64
         assert "can only be used with 'menubar'" in capsys.readouterr().err
 
     def _menubar_settings(self, monkeypatch, tmp_path):
@@ -760,7 +776,7 @@ class TestCLI:
         with pytest.raises(SystemExit) as exc:
             cli.main()
 
-        assert exc.value.code == 2
+        assert exc.value.code == 64
         assert "--auto-switch/--no-auto-switch can only be used with" in capsys.readouterr().err
 
     def test_install_service_no_auto_switch_turns_the_toggle_off(
@@ -885,7 +901,7 @@ class TestCLI:
         assert exc.value.code == 0
         captured = capsys.readouterr()
         assert "Menu bar started (pid 4242)" in captured.out
-        assert "will not start it at login" in captured.err
+        assert "will not start it at login" in " ".join(captured.err.split())
 
     def test_service_status_says_when_the_login_items_switch_is_off(self, monkeypatch, capsys):
         self._service_harness(monkeypatch, ["qswap", "menubar", "--service-status"])
@@ -900,7 +916,7 @@ class TestCLI:
         with pytest.raises(SystemExit):
             cli.main()
 
-        assert "will not start it at login" in capsys.readouterr().err
+        assert "will not start it at login" in " ".join(capsys.readouterr().err.split())
 
     def test_foreground_runs_the_app_when_no_service_is_running(self, monkeypatch):
         seen = self._service_harness(monkeypatch, ["qswap", "menubar", "--foreground"])
@@ -939,7 +955,7 @@ class TestCLI:
         with pytest.raises(SystemExit) as exc:
             cli.main()
 
-        assert exc.value.code == 2
+        assert exc.value.code == 64
         assert "not allowed with" in capsys.readouterr().err
 
     def test_foreground_is_rejected_outside_menubar(self, monkeypatch, capsys):
@@ -948,7 +964,7 @@ class TestCLI:
         with pytest.raises(SystemExit) as exc:
             cli.main()
 
-        assert exc.value.code == 2
+        assert exc.value.code == 64
         assert "can only be used with 'menubar'" in capsys.readouterr().err
 
     def test_plain_menubar_auto_switch_sets_the_toggle_then_restarts_a_running_service(
@@ -1231,7 +1247,7 @@ class TestCLICommands:
         with patch.object(sys, "argv", ["ai-quota-swap", "--list", "--email", "u@x.com"]):
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
         assert "--email can only be used with 'add-token'" in capsys.readouterr().err
 
     def test_add_token_dispatches_to_switcher(self, temp_home: Path, capsys):
@@ -1278,8 +1294,13 @@ class TestCLICommands:
             text=True,
             env=_subprocess_env(),
         )
-        assert "add-token [TOKEN|-]" in result.stdout
-        assert "--email" in result.stdout  # modifier flag stays visible
+        assert "add-token [TOKEN]" in result.stdout
+        own = subprocess.run(
+            [sys.executable, "-m", "ai_quota_swap", "add-token", "--help"],
+            capture_output=True, text=True, env=_subprocess_env(),
+        )
+        assert "TOKEN|-" in own.stdout
+        assert "--email" in own.stdout  # the modifier flag is in the verb's help
 
 
 class TestRunCommand:
@@ -1368,7 +1389,7 @@ class TestRunCommand:
         with patch.object(sys, "argv", ["ai-quota-swap", "run", "2", "--bogus"]):
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
 
     def test_run_help(self, capsys):
         with patch.object(sys, "argv", ["ai-quota-swap", "run", "--help"]):
@@ -1380,7 +1401,7 @@ class TestRunCommand:
         assert "this terminal only" in out
         # Sharing history is the default, so the help leads with the way out.
         assert "--share-history, --no-share-history" in out
-        assert "This is the default" in out
+        assert "the default" in out
 
     def test_main_help_mentions_run(self):
         result = subprocess.run(
@@ -1389,7 +1410,7 @@ class TestRunCommand:
             text=True,
             env=_subprocess_env(),
         )
-        assert "run 2" in result.stdout
+        assert "run ACCOUNT" in result.stdout
 
     def test_main_help_mentions_alias(self):
         result = subprocess.run(
@@ -1398,7 +1419,7 @@ class TestRunCommand:
             text=True,
             env=_subprocess_env(),
         )
-        assert "alias <num|email>" in result.stdout
+        assert "alias ACCOUNT NAME" in result.stdout
 
     def test_session_error_exits_cleanly(self, capsys):
         class FailingSessionManager:
@@ -1542,9 +1563,9 @@ class TestSubcommandAliases:
             env=_subprocess_env(),
         )
         assert result.returncode == 0
-        assert "Multi-Account Switcher" in result.stdout
-        assert "Commands:" in result.stdout
-        assert "keep working" in result.stdout
+        assert "Switch between Claude Code and Codex accounts" in result.stdout
+        assert "Accounts\n" in result.stdout
+        assert "still work" in result.stdout
 
 
 class TestJsonOutputCli:
@@ -1555,15 +1576,20 @@ class TestJsonOutputCli:
         with patch.object(sys, "argv", ["ai-quota-swap", "--purge", "--json"]):
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
-        assert excinfo.value.code == 2
-        assert "--json can only be used with" in capsys.readouterr().err
+        assert excinfo.value.code == 64
+        # Under --json every failure, a usage error too, is the envelope.
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["error"]["type"] == "UsageError"
+        assert "--json can only be used with" in envelope["error"]["message"]
 
     def test_token_status_with_json_rejected(self, capsys):
         with patch.object(sys, "argv", ["ai-quota-swap", "--list", "--token-status", "--json"]):
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
-        assert excinfo.value.code == 2
-        assert "--token-status cannot be combined with --json" in capsys.readouterr().err
+        assert excinfo.value.code == 64
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["error"]["type"] == "UsageError"
+        assert "--token-status cannot be combined with --json" in envelope["error"]["message"]
 
     def test_list_json_serialized_to_stdout(self, capsys):
         payload = {"schemaVersion": 1, "activeAccountNumber": None, "accounts": []}
@@ -1775,7 +1801,7 @@ class TestAutoCommand:
         with patch.object(sys, "argv", ["ai-quota-swap", "auto", "--bogus"]):
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
 
     def test_auto_help(self, capsys):
         with patch.object(sys, "argv", ["ai-quota-swap", "auto", "--help"]):
@@ -1784,7 +1810,9 @@ class TestAutoCommand:
         assert excinfo.value.code == 0
         out = capsys.readouterr().out
         assert "--once" in out
-        assert "Exit codes" in out
+        # The exit codes of --once are in the description.
+        assert "0 switched, 1 error, 2 nothing to do" in " ".join(out.split())
+        assert "3 blocked" in out
 
     def test_main_help_mentions_auto(self):
         result = subprocess.run(
@@ -1928,7 +1956,7 @@ class TestMapCommand:
         self._seeded_switcher_env(temp_home)
         with patch("os.geteuid", return_value=1000, create=True):
             cli._map_command([])
-        assert "No directory mappings yet" in capsys.readouterr().out
+        assert "No directory is mapped to an account." in capsys.readouterr().out
 
     def test_map_list_shows_entries(self, temp_home, capsys):
         from ai_quota_swap.mappings import MappingStore
@@ -1943,7 +1971,7 @@ class TestMapCommand:
         out = capsys.readouterr().out
         assert "Directory mappings" in out
         assert "work@co.com" in out
-        assert "2:" in out  # slot number resolved
+        assert "#2 work@co.com" in out  # slot number resolved
 
     def test_map_list_flags_removed_account(self, temp_home, capsys):
         from ai_quota_swap.mappings import MappingStore
@@ -1956,7 +1984,7 @@ class TestMapCommand:
         with patch("os.geteuid", return_value=1000, create=True):
             cli._map_command([])
 
-        assert "account removed" in capsys.readouterr().out
+        assert "no longer managed" in capsys.readouterr().out
 
     def test_unmap_removes(self, temp_home, capsys):
         from ai_quota_swap.mappings import MappingStore
@@ -2142,7 +2170,7 @@ class TestAliasCommand:
              patch.object(sys, "argv", ["ai-quota-swap", "list", "--alias", "dev"]):
             with pytest.raises(SystemExit) as exc:
                 cli.main()
-        assert exc.value.code == 2
+        assert exc.value.code == 64
         assert "--alias can only be used with 'add'" in capsys.readouterr().err
 
 
@@ -2361,7 +2389,7 @@ class TestDisableEnableDispatch:
         with patch.object(sys, "argv", ["ai-quota-swap", "disable"]):
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
-        assert excinfo.value.code == 2
+        assert excinfo.value.code == 64
 
 
 class TestEmptyValueArguments:
@@ -2405,7 +2433,7 @@ class TestEmptyValueArguments:
     )
     def test_empty_value_is_rejected(self, argv, capsys):
         code, captured, switcher_cls = self._run(argv, capsys)
-        assert code == 2, f"{argv} exited {code} having printed {captured.out!r}"
+        assert code == 64, f"{argv} exited {code} having printed {captured.out!r}"
         assert "requires a non-empty" in captured.err
         switcher_cls.assert_not_called()
 
@@ -2499,7 +2527,7 @@ class TestImportUsageCli:
         with patch.object(sys, "argv", argv):
             with pytest.raises(SystemExit) as exc:
                 cli.main()
-        assert exc.value.code == 2
+        assert exc.value.code == 64
         assert message in capsys.readouterr().err
 
 
@@ -2538,18 +2566,11 @@ class TestCodexPrefix:
             # auto and reset exist since M2b; with nothing managed they still
             # stop in one line, before any engine or network work.
             (["codex", "auto", "--once"],
-             "No Codex accounts are managed yet; log in with codex and run qswap codex add"),
+             "No Codex accounts are managed yet. Run codex login, then: qswap codex add"),
             (["codex", "reset"],
-             "No Codex accounts are managed yet; log in with codex and run qswap codex add"),
-            # Verbs that never build a switcher must not act on Claude
-            # Code's data under the codex prefix either.
-            (["codex", "config", "set", "autoswitch.threshold", "50"],
-             "qswap codex config is not a Codex command (try 'qswap codex help')"),
-            (["codex", "upgrade"], "qswap codex upgrade is not a Codex command (try 'qswap codex help')"),
-            (["codex", "menubar", "--auto-switch"],
-             "qswap codex menubar is not a Codex command (try 'qswap codex help')"),
+             "No Codex accounts are managed yet. Run codex login, then: qswap codex add"),
             (["codex", "usage"],
-             "qswap codex usage is not a Codex command: run qswap usage --provider codex"),
+             "Codex usage is part of qswap usage: qswap usage --provider codex"),
         ],
         ids=lambda v: " ".join(v) if isinstance(v, list) else "",
     )
@@ -2558,6 +2579,28 @@ class TestCodexPrefix:
         out, err = capsys.readouterr()
         assert code == 1
         assert err.splitlines() == [f"Error: {message}"]
+        assert out == ""
+        claude_cls.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            # Verbs that never build a switcher must not act on Claude
+            # Code's data under the codex prefix either: an unknown verb is a
+            # usage error (64), one line naming it.
+            ["codex", "config", "set", "autoswitch.threshold", "50"],
+            ["codex", "upgrade"],
+            ["codex", "menubar", "--auto-switch"],
+        ],
+        ids=lambda v: " ".join(v),
+    )
+    def test_claude_only_verbs_are_usage_errors_under_codex(self, argv, capsys):
+        code, claude_cls = self._run_main(argv)
+        out, err = capsys.readouterr()
+        assert code == 64
+        assert err.splitlines() == [
+            f"qswap codex: error: unknown command '{argv[1]}'; qswap codex help lists them"
+        ]
         assert out == ""
         claude_cls.assert_not_called()
 
@@ -2575,20 +2618,24 @@ class TestCodexPrefix:
         assert code == 1
         assert json.loads(capsys.readouterr().out)["error"] == {
             "type": "ConfigError",
-            "message": "No Codex accounts are managed yet; log in with codex and run qswap codex add",
+            "message": "No Codex accounts are managed yet. Run codex login, then: qswap codex add",
         }
 
     def test_bare_codex_is_a_usage_error(self, capsys):
-        code, _ = self._run_main(["codex"])
-        assert code == 2
-        assert "no command given" in capsys.readouterr().err
+        # Off a terminal, bare `qswap codex` prints a three-line hint.
+        with patch.object(sys, "argv", ["qswap", "codex"]), \
+             patch.object(cli, "ClaudeAccountSwitcher"):
+            cli.main()
+        out = capsys.readouterr().out
+        assert "qswap codex help" in out and "qswap codex list" in out
 
     def test_codex_help(self, capsys):
         with patch.object(sys, "argv", ["qswap", "codex", "help"]):
             cli.main()
         out = capsys.readouterr().out
-        assert "qswap codex switch <num|email>" in out
+        assert "switch [ACCOUNT]" in out
         assert "codex logout" in out
+        assert max(len(line) for line in out.splitlines()) <= 80
 
     def test_codex_list_as_a_real_command(self):
         result = subprocess.run(
@@ -2672,7 +2719,10 @@ class TestCodexPrefix:
             "through cli._switcher, so the provider prefix would not reach it"
         )
         assert "ClaudeAccountSwitcher(" in inspect.getsource(cli._switcher)
-        assert source.count("switcher = _switcher(debug=args.debug)") == 14
+        # priority builds through print_priorities(make_switcher=_switcher),
+        # shared with qswap codex priority.
+        assert source.count("switcher = _switcher(debug=args.debug)") == 13
+        assert "print_priorities(_switcher, args" in source
 
     def test_a_command_handler_reports_a_provider_error(self, capsys):
         """Each handler catches the base, so a provider's error raised while

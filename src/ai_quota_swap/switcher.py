@@ -254,7 +254,7 @@ def _login_row(login_expires_at: float | None, quarantined: bool) -> tuple[str, 
         return None
     clock = oauth.login_expiry_clock(login_expires_at)
     if left <= 0:
-        return ("login", f"{'':4}  expired {clock:<12}  re-login needed")
+        return ("login", f"{'':4}  expired {clock:<12}  needs re-login")
     return ("login", f"{'':4}  expires {clock:<12}  in {oauth.format_countdown(left)}")
 
 
@@ -306,7 +306,7 @@ SENTINEL_NOTES = {
         "the live login belongs to another account — switching to this one repairs it"
     ),
     USAGE_API_KEY: "API key — no quota; billed per token",
-    USAGE_KEYCHAIN_UNAVAILABLE: "Keychain unavailable — locked or busy; unlock it and try again",
+    USAGE_KEYCHAIN_UNAVAILABLE: "Keychain unavailable — it is locked or busy; unlock it and try again",
     USAGE_RELOGIN_REQUIRED: (
         "needs re-login — log in to it in Claude Code (/login), then run: qswap add"
     ),
@@ -6290,7 +6290,7 @@ class ClaudeAccountSwitcher:
                 other = by_fp.get(fp)
                 if other:
                     out.append(
-                        f"{self.label(other, long=False)} and {self.label(snum, long=False)} hold the same "
+                        f"Account-{other} and Account-{snum} hold the same "
                         f"credential ({email}) — one slot's backup was "
                         "overwritten. Log in with the missing account and "
                         "re-add it: qswap add --slot N"
@@ -6303,7 +6303,7 @@ class ClaudeAccountSwitcher:
                 other = by_identity.get(key)
                 if other and other != snum:
                     out.append(
-                        f"{self.label(other, long=False)} and {self.label(snum, long=False)} both authenticate "
+                        f"Account-{other} and Account-{snum} both authenticate "
                         f"as {email} — remove or re-login one of them."
                     )
                 elif not other:
@@ -6368,7 +6368,7 @@ class ClaudeAccountSwitcher:
                     and abs(d7_ts - o_d7_ts) <= _LOCKSTEP_RESET_TOLERANCE_S
                 ):
                     out.append(
-                        f"{self.label(other, long=False)} and {self.label(snum, long=False)} report identical "
+                        f"Account-{other} and Account-{snum} report identical "
                         "usage and matching reset times — they may be the "
                         "same account (issue #117). If it persists, log in "
                         "with the missing account and re-add it: "
@@ -6506,10 +6506,12 @@ class ClaudeAccountSwitcher:
         lockstep_warnings = self._lockstep_usage_warnings(accounts_info, entries)
         if dup_warnings or lockstep_warnings:
             print()
+            # The JSON payload keeps these strings as they were ("Account-2");
+            # text names the accounts the new way.
             for msg in dup_warnings:
-                warning(msg)
+                warning(self._relabel(msg))
             for msg in lockstep_warnings:
-                warning(msg)
+                warning(self._relabel(msg))
 
         # Running instances
         try:
@@ -6644,7 +6646,7 @@ class ClaudeAccountSwitcher:
             kind="api_key" if record.get("kind") == "api_key" else "oauth",
             lines=display.Lines(five_hour=line, weekly=settings.weekly_threshold),
             set_aside=held_out,
-            sentinel_notes={k: v.replace(" — ", "; ") for k, v in SENTINEL_NOTES.items()},
+            sentinel_notes={k: v.replace(" — ", ": ") for k, v in SENTINEL_NOTES.items()},
             login_row=login_row, now=now, stale_after_s=_USAGE_AGE_NOTE_S,
             api_lines=api_lines,
         )
@@ -7407,6 +7409,10 @@ class ClaudeAccountSwitcher:
             email=email if email is not None else record.get("email", ""), long=long,
         )
 
+    def _relabel(self, text: str) -> str:
+        """``Account-2`` in a message kept for JSON, as text names it now."""
+        return re.sub(r"Account-(\d+)", lambda m: self.label(m.group(1), long=False), text)
+
     def alias_for(self, number: str | int) -> str:
         """The account's alias, or ``""``."""
         record = ((self._get_sequence_data() or {}).get("accounts") or {}).get(str(number)) or {}
@@ -7867,6 +7873,13 @@ class ClaudeAccountSwitcher:
 
         self._refuse_session_shell()
         warnings_out: list[str] = []
+
+        def _nm(number, email=None, *, long=False):
+            # Text names an account the new way; the JSON `warnings` keep the
+            # spelling scripts saw before (docs/json-output.md).
+            if emit_output:
+                return self.label(number, email, long=long)
+            return f"Account-{number}" + (f" ({email})" if email else "")
         # Session-mode drift. Switching the default login to an account that
         # also has a live session profile puts the same refresh token in two
         # config dirs — if the server rotates it, one copy goes stale — which
@@ -7905,7 +7918,7 @@ class ClaudeAccountSwitcher:
                     )
                 if pids:
                     msg = (
-                        f"{self.label(target_account, pre_email)} has a live "
+                        f"{_nm(target_account, pre_email)} has a live "
                         "session-mode Claude instance "
                         f"(PID {', '.join(map(str, pids))}). Running the same "
                         "account as both the default login and a session can make "
@@ -8233,8 +8246,8 @@ class ClaudeAccountSwitcher:
                         msg = (
                             "Credential ownership mismatch detected. The live "
                             "credential was preserved and was not written "
-                            f"into {self.label(current_account, long=False)}. If #"
-                            f"{foreign_slot} later cannot authenticate, log "
+                            f"into {_nm(current_account)}. If "
+                            f"{_nm(foreign_slot)} later cannot authenticate, log "
                             "in as it and run: qswap add --slot "
                             f"{foreign_slot}"
                         )
@@ -8242,7 +8255,7 @@ class ClaudeAccountSwitcher:
                         msg = (
                             "The live credential was previously identified "
                             "as another account's. It was preserved and not "
-                            f"written into {self.label(current_account, long=False)}. If the "
+                            f"written into {_nm(current_account)}. If the "
                             "owning account later cannot authenticate, log "
                             "in as it and run: qswap add"
                         )
@@ -8250,7 +8263,7 @@ class ClaudeAccountSwitcher:
                         msg = (
                             "The live login does not match a managed "
                             "account. It was preserved and not written into "
-                            f"{self.label(current_account, long=False)}. If you need that "
+                            f"{_nm(current_account)}. If you need that "
                             "account, log in as it and run: qswap add"
                         )
                     if emit_output:
@@ -8263,9 +8276,9 @@ class ClaudeAccountSwitcher:
                     # may be written.
                     msg = (
                         "Credential ownership mismatch detected. The live "
-                        f"credential already matches {self.label(foreign_slot, long=False)}'s "
+                        f"credential already matches {_nm(foreign_slot)}'s "
                         "stored backup, so nothing was written into "
-                        f"{self.label(current_account, long=False)}."
+                        f"{_nm(current_account)}."
                     )
                     if emit_output:
                         warning(msg)
@@ -8285,7 +8298,7 @@ class ClaudeAccountSwitcher:
                     msg = (
                         "The live credential's tokens were wiped (Claude "
                         "Code clears them when a refresh is rejected). "
-                        f"{self.label(current_account, long=False)}'s stored backup was "
+                        f"{_nm(current_account)}'s stored backup was "
                         "kept. If the account cannot authenticate after "
                         "switching back, log in with Claude Code and run: "
                         "qswap add"
@@ -8434,8 +8447,11 @@ class ClaudeAccountSwitcher:
                 if from_ref and from_ref.get("number") is not None else ""
             )
             print(f"{accent('Switched')} {source}{self.label(target_account, target_email)}")
+            # The whole list, not only the target: reading it also refreshes
+            # the account just left while no lock is held (the persist path
+            # test_switch_persists_rotated_refresh_token_to_backup guards).
             try:
-                self._print_account(target_account)
+                self.list_accounts()
             except Exception as e:
                 self._logger.warning(f"Post-switch usage display failed: {e!r}")
                 print(dimmed("  Usage could not be shown; qswap list shows it."))

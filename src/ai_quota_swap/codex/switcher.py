@@ -110,6 +110,9 @@ NEAR_EXPIRY_S = 600.0
 LOGIN_HOME_PREFIX = "login-home-"
 LOGIN_HOME_MAX_AGE_S = 86_400.0
 
+#: What a Codex verb says when nothing is managed: the state and the next step.
+NO_CODEX_ACCOUNTS = "No Codex accounts are managed yet. Run codex login, then: qswap codex add"
+
 #: Human notes for the sentinel states a Codex row can be in. The state comes
 #: first and a remedy follows " — ", as in Claude Code's notes.
 SENTINEL_NOTES = {
@@ -244,10 +247,7 @@ class CodexSwitcher:
         self.check_storage()
         data = self._read_registry()
         if not data or not data.get("accounts"):
-            raise ConfigError(
-                "No Codex accounts are managed yet; log in with codex and run "
-                "qswap codex add"
-            )
+            raise ConfigError(NO_CODEX_ACCOUNTS)
 
     # -- registry -------------------------------------------------------------
 
@@ -271,7 +271,7 @@ class CodexSwitcher:
     def _require_registry(self) -> dict:
         data = self._read_registry()
         if not data or not data.get("accounts"):
-            raise ConfigError("No Codex accounts are managed yet")
+            raise ConfigError(NO_CODEX_ACCOUNTS)
         return data
 
     def _write_registry(self, data: dict) -> None:
@@ -843,7 +843,7 @@ class CodexSwitcher:
         block = display.block_from_entry(
             None, entry, provider="codex",
             lines=self._display_lines(),
-            sentinel_notes={k: v.replace(" — ", "; ") for k, v in SENTINEL_NOTES.items()},
+            sentinel_notes={k: v.replace(" — ", ": ") for k, v in SENTINEL_NOTES.items()},
             now=self._usage_store.clock(), stale_after_s=claude_switcher._USAGE_AGE_NOTE_S,
         )
         return [line.strip() for line in display.render_block(block)[1:]]
@@ -949,7 +949,7 @@ class CodexSwitcher:
             disabled=self._disabled_from_data(data, info.number),
             plan=plan, plan_warning=plan_warning, lines=lines,
             set_aside=(set_aside or {}).get(info.number),
-            sentinel_notes={k: v.replace(" — ", "; ") for k, v in SENTINEL_NOTES.items()},
+            sentinel_notes={k: v.replace(" — ", ": ") for k, v in SENTINEL_NOTES.items()},
             now=now, stale_after_s=claude_switcher._USAGE_AGE_NOTE_S,
         )
 
@@ -1138,6 +1138,12 @@ class CodexSwitcher:
                 "totalManagedAccounts": len(data.get("accounts", {})),
             }
 
+        if not data.get("accounts") and (raw is None or login is not None):
+            # Nothing managed: the empty state and its next step, as `qswap
+            # status` says it.
+            for line in self.nothing_managed_lines():
+                print(line)
+            return None
         for line in self.status_lines():
             print(line)
         return None
@@ -1183,7 +1189,7 @@ class CodexSwitcher:
         path = codex_auth.auth_path(home)
         if raw is None:
             raise CodexLoginError(
-                f"No Codex login found at {path}. Log in with codex first."
+                f"No Codex login found at {path}. Run codex login, then: qswap codex add"
             )
         if login is None:
             raise CodexLoginError(problem or f"{path} holds no ChatGPT login")
@@ -1385,7 +1391,7 @@ class CodexSwitcher:
                 os.chmod(home, 0o700)
             print(dimmed(
                 "Logging in under a temporary Codex home; your current Codex "
-                "login stays as it is."
+                "login stays live."
             ))
             try:
                 outcome = run(home, list(codex_args))
@@ -1717,7 +1723,6 @@ class CodexSwitcher:
         op = self._perform_switch(target, emit_output=not json_output, force=False)
         return self._result(op, "rotation", warnings) if json_output else None
 
-    @staticmethod
     def _skip(self, warnings: list[str], json_output: bool, number: str, why: str) -> None:
         # JSON keeps its wording; text names the account the new way.
         if json_output:
@@ -1871,11 +1876,11 @@ class CodexSwitcher:
                 warning(msg)
             if background is not None and background.get("restarted"):
                 print(dimmed(
-                    f"Restarted the Codex background server (pid {background['pid']}); "
-                    "new codex sessions use the new account."
+                    f"Restarted Codex's background server (pid {background['pid']}); "
+                    "new sessions use this account."
                 ))
             elif background is None:
-                print(dimmed("New codex sessions use the new account."))
+                print(dimmed("New codex sessions use this account."))
         self._replan_new_active(target, target_email, target_login.account_id)
         op = {"from": from_ref, "to": to_ref, "warnings": warnings}
         if background is not None:

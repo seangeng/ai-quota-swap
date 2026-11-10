@@ -255,15 +255,19 @@ def fit(text: str, width: int) -> str:
 
 
 def wrap(text: str, width: int = WIDTH, indent: str = "", subsequent: str | None = None) -> list[str]:
-    """``text`` wrapped to ``width`` columns; never splits a command."""
-    return textwrap.wrap(
-        text,
+    """``text`` wrapped to ``width`` columns; never splits a word, a quoted
+    argument, or the command after "run: " (printer.wrap_message's rule)."""
+    from ai_quota_swap.printer import _NBSP, _protect
+
+    lines = textwrap.wrap(
+        _protect(text),
         width=width,
         initial_indent=indent,
         subsequent_indent=indent if subsequent is None else subsequent,
         break_on_hyphens=False,
         break_long_words=False,
     ) or [indent.rstrip()]
+    return [line.replace(_NBSP, " ") for line in lines]
 
 
 # -- the account block -----------------------------------------------------------
@@ -397,7 +401,8 @@ def window_rows(
         branch = dimmed("└" if j == len(windows) - 1 else "├")
         label = f"{w.label:<{width}}"
         if w.text is not None:
-            body = f"{label}  {'':4}  {w.text}"
+            # "expires CLOCK" puts its clock under the windows' "resets CLOCK".
+            body = f"{label}  {'':3}  {w.text}"
             out.append(f"{indent}{branch} {dimmed(body) if stale else muted(body)}")
             continue
         level = severity(w.pct, w.line)

@@ -196,7 +196,7 @@ class TestListJson:
     def test_empty_list_no_prompt(self, temp_home: Path):
         """No accounts in JSON mode returns an empty payload — never prompts."""
         switcher = ClaudeAccountSwitcher()
-        with patch.object(switcher, "_first_run_setup") as first_run, \
+        with patch.object(switcher, "_print_nothing_managed") as first_run, \
              patch("builtins.input") as fake_input:
             payload = switcher.list_accounts(json_output=True)
         first_run.assert_not_called()

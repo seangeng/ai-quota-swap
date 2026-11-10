@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -177,10 +178,27 @@ def reddened(text: str) -> str:
 MESSAGE_WIDTH = 80
 
 
+_NBSP = "\u00a0"
+# A command after "run: ", "with: ", "then: " (and the like) up to the end of
+# its sentence or clause, and any quoted argument: wrapped as one word, so a
+# line break never lands inside something meant to be copied.
+_COMMAND = re.compile(
+    r"(?<=: )((?:qswap|uv|pipx|pip|codex|claude|git|python\S*|/\S+)\b[^;\n]*?)"
+    r"(?=\.\s|\.$|;|\)|$)"
+)
+_QUOTED = re.compile(r"(\"[^\"\n]*\"|'[^'\n]*'|`[^`\n]*`)")
+
+
+def _protect(line: str) -> str:
+    keep = lambda m: m.group(0).replace(" ", _NBSP)  # noqa: E731
+    return _QUOTED.sub(keep, _COMMAND.sub(keep, line))
+
+
 def wrap_message(msg: str, width: int = MESSAGE_WIDTH) -> str:
     """``msg`` with every line longer than ``width`` wrapped; a wrapped
-    line's continuation keeps its indent. Words (and commands' arguments)
-    are never split."""
+    line's continuation keeps its indent. Words, quoted arguments and the
+    command after "run: " are never split, and an indented line with no
+    sentence in it (a command to copy) is left whole."""
     import textwrap
 
     out = []
@@ -188,11 +206,16 @@ def wrap_message(msg: str, width: int = MESSAGE_WIDTH) -> str:
         if len(line) <= width:
             out.append(line)
             continue
+        stripped = line.strip()
+        if line[:1] == " " and ". " not in stripped and not stripped.endswith("."):
+            out.append(line)
+            continue
         indent = " " * (len(line) - len(line.lstrip(" ")))
-        out.extend(textwrap.wrap(
-            line, width, subsequent_indent=indent or "  ",
+        wrapped = textwrap.wrap(
+            _protect(line), width, subsequent_indent=indent or "  ",
             break_on_hyphens=False, break_long_words=False,
-        ) or [line])
+        ) or [line]
+        out.extend(part.replace(_NBSP, " ") for part in wrapped)
     return "\n".join(out)
 
 

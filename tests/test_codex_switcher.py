@@ -107,7 +107,7 @@ class TestAdd:
         raw = make_login(**LOGIN_A)
         capture(sw, env, raw)
         out = capsys.readouterr().out
-        assert "Added Account 1: a@example.com" in out
+        assert "Added #1 a@example.com" in out
         assert "qswap codex login" in out  # how to add the next one safely
         saved = sw.credentials_dir / "account-1.json"
         assert saved.read_bytes() == raw
@@ -127,7 +127,7 @@ class TestAdd:
         renewed = make_login(**LOGIN_A, access_suffix="renewed")
         capture(sw, env, renewed)
         out = capsys.readouterr().out
-        assert "Updated saved login for Account 1 (a@example.com)." in out
+        assert "Updated the saved login of #1 a@example.com" in out
         data = registry(sw)
         assert list(data["accounts"]) == ["1"] and data["sequence"] == [1]
         assert (sw.credentials_dir / "account-1.json").read_bytes() == renewed
@@ -157,11 +157,11 @@ class TestAdd:
         capture(sw, env, make_login(**LOGIN_A))
         b = make_login(**LOGIN_B)
         write_live(env.codex_home, b)
-        with patch("builtins.input", return_value="n"):
+        with patch("builtins.input", return_value="n"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             sw.add_account(slot=1)
         assert "Cancelled" in capsys.readouterr().out
         assert sw.account_email("1") == "a@example.com"
-        with patch("builtins.input", return_value="y"):
+        with patch("builtins.input", return_value="y"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             sw.add_account(slot=1)
         assert sw.account_email("1") == "b@example.com"
         assert (sw.credentials_dir / "account-1.json").read_bytes() == b
@@ -201,14 +201,14 @@ class TestRegistry:
             raise AssertionError("remove must not start any process")
 
         before_live = live_path(env).read_bytes()
-        with patch("builtins.input", return_value="y"), \
+        with patch("builtins.input", return_value="y"), patch("ai_quota_swap.prompts.interactive", return_value=True), \
              patch("subprocess.run", no_subprocess), \
              patch("subprocess.Popen", no_subprocess), \
              patch("ai_quota_swap.spawn.run", no_subprocess), \
              patch("os.system", no_subprocess):
             sw.remove_account("2")
         captured = capsys.readouterr()
-        assert "Removed Account-2 (a@example.com)" in captured.out
+        assert "Removed #2 a@example.com" in captured.out
         assert "is the live Codex login" in captured.err + captured.out
         assert "codex logout" in captured.err + captured.out
         assert not (sw.credentials_dir / "account-2.json").exists()
@@ -216,7 +216,7 @@ class TestRegistry:
         assert registry(sw)["sequence"] == [1]
 
     def test_remove_can_be_cancelled(self, two, sw, capsys):
-        with patch("builtins.input", return_value="n"):
+        with patch("builtins.input", return_value="n"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             sw.remove_account("1")
         assert "Cancelled" in capsys.readouterr().out
         assert registry(sw)["sequence"] == [1, 2]
@@ -251,8 +251,8 @@ class TestRegistry:
         sw.set_account_threshold("1", None)
         assert sw.account_policies()["1"].threshold is None
         out = capsys.readouterr().out
-        assert "Set Account-1 (b@example.com) threshold to 85%." in out
-        assert "Cleared threshold for Account-1" in out
+        assert "Set the switch line of #1 b@example.com to 85%" in out
+        assert "Cleared the switch line of #1 b@example.com" in out
 
     def test_disable_and_enable(self, two, sw, capsys):
         sw.set_account_disabled("1", True)
@@ -261,9 +261,9 @@ class TestRegistry:
         sw.set_account_disabled("1", True)
         sw.set_account_disabled("1", False)
         out = capsys.readouterr().out
-        assert "Disabled Account-1 (b@example.com)." in out
+        assert "Disabled #1 b@example.com" in out
         assert "already disabled" in out
-        assert "Enabled Account-1" in out
+        assert "Enabled #1" in out
         assert sw.switchable_account_numbers() == ["1", "2"]
 
     def test_a_missing_saved_copy_is_not_switchable(self, two, sw):
@@ -335,7 +335,7 @@ class TestSwitchTo:
         if sys.platform != "win32":
             assert stat.S_IMODE(live_path(env).stat().st_mode) == 0o600
         out = capsys.readouterr().out
-        assert "Switched to Account-1 (b@example.com)" in out
+        assert "Switched #2 a@example.com → #1 b@example.com" in out
         assert sw.current_account_number() == "1"
 
     def test_locks_are_taken_in_order_around_the_write(self, two, sw, env, recorder):

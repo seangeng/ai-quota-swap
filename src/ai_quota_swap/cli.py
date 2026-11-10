@@ -2144,6 +2144,7 @@ def _list_accounts(switcher, *, token_status: bool, as_json: bool):
         switcher.list_accounts(show_token_status=token_status, json_output=False)
     else:
         print(bolded(display.provider_heading("claude", both=True)))
+        print("  No Claude Code accounts are managed yet.")
         for line in display.nothing_managed_lines(
             "claude", live_email=switcher.live_login_email(), sentence=False,
         ):
@@ -2313,16 +2314,16 @@ def _help_and_usage(argv: list[str]) -> list[str] | None:
     verb = argv[0]
     if verb in ("-h", "--help"):
         print(helptext.MAIN_HELP, end="")
-        return None
+        sys.exit(0)
     if verb == "help":
         rest = argv[1:]
         if not rest:
             print(helptext.MAIN_HELP, end="")
-            return None
+            sys.exit(0)
         target = rest[0]
         if target in ("-h", "--help"):
             print(helptext.legacy_help("help"), end="")
-            return None
+            sys.exit(0)
         if target == "codex":
             from ai_quota_swap import codex_cli
 
@@ -2330,7 +2331,7 @@ def _help_and_usage(argv: list[str]) -> list[str] | None:
             return None
         if target in helptext.LEGACY_VERB_HELP:
             print(helptext.legacy_help(target), end="")
-            return None
+            sys.exit(0)
         if target in _OWN_PARSER_VERBS:
             _dispatch([target, "--help"])
             return None
@@ -2338,7 +2339,7 @@ def _help_and_usage(argv: list[str]) -> list[str] | None:
     if verb.startswith("-"):
         if any(a in ("-h", "--help") for a in argv):
             print(helptext.MAIN_HELP, end="")
-            return None
+            sys.exit(0)
         return argv
     if verb in _OWN_PARSER_VERBS:
         return argv
@@ -2349,7 +2350,7 @@ def _help_and_usage(argv: list[str]) -> list[str] | None:
         )
     if any(a in ("-h", "--help") for a in argv[1:]):
         print(helptext.legacy_help(verb), end="")
-        return None
+        sys.exit(0)
     if verb in helptext.VALUE_VERBS:
         rest = argv[1:]
         # The value may follow other options (`remove --yes 3`): bring the
@@ -2363,7 +2364,7 @@ def _help_and_usage(argv: list[str]) -> list[str] | None:
             if token in _VALUE_OPTIONS:
                 skip = True
                 continue
-            if not token.startswith("-"):
+            if token == "-" or not token.startswith("-"):
                 position = i
                 break
         if position is None:

@@ -163,7 +163,8 @@ class TestConfigValidation:
         code, _, err = _run(["set", "autoswitch.bogus", "1"], capsys)
         assert code == 1
         assert "unknown setting" in err
-        assert "autoswitch.threshold" in err
+        # It points at the list (qswap config) rather than printing 21 keys.
+        assert "qswap config lists the settings" in " ".join(err.split())
 
     def test_bad_bool_exits_1(self, temp_home, capsys):
         code, _, err = _run(
@@ -206,18 +207,19 @@ class TestConfigValidation:
         assert path.read_text() == "{not json"
 
     def test_missing_value_usage_error_exits_2(self, temp_home, capsys):
+        # Usage errors exit 64 (docs/design/ux.md), never 2.
         code, _, _ = _run(["set", "autoswitch.threshold"], capsys)
-        assert code == 2
+        assert code == 64
 
     def test_unknown_action_exits_2(self, temp_home, capsys):
         code, _, _ = _run(["frobnicate"], capsys)
-        assert code == 2
+        assert code == 64
 
     def test_json_with_set_rejected(self, temp_home, capsys):
         code, _, _ = _run(
             ["--json", "set", "autoswitch.threshold", "80"], capsys
         )
-        assert code == 2
+        assert code == 64
 
 
 class TestConfigUnset:

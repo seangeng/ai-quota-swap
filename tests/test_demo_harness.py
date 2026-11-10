@@ -272,14 +272,14 @@ class TestCodexInTheSandbox:
         out = audited_codex_run["stdout"]
         # The exit status is the last command's (list); the output shows the rest ran.
         assert audited_codex_run["returncode"] == 0, audited_codex_run["stderr"]
-        assert "Switched to Account-2 (maya@northwind.example.com)" in out
+        assert "Switched #1 maya@example.com → #2 work (maya@northwind.example.com)" in out
         # codex auto --once --dry-run: the reason in words, never the code
         # (the per-event line says "No switch needed", the tick log "· no switch needed").
         assert "no switch needed" in out.lower()
         assert "below-threshold" not in out
-        assert "Used a Codex usage reset credit on Account-2" in out
-        assert "Added Account 3: ops@example.net" in out
-        assert "Codex accounts:" in out  # the unified list's Codex section
+        assert "Used a reset credit on #2 work" in out
+        assert "Added #3" in out and "ops@example.net" in out
+        assert "\nCodex accounts\n" in out  # the unified list's Codex section
 
     def test_nothing_spawned_no_network_no_violation(self, audited_codex_run):
         kinds = {e["event"] for e in audited_codex_run["events"]}
@@ -311,29 +311,43 @@ class TestScenarioStates:
     def test_fleet_has_an_api_key_account_and_two_codex_accounts(self):
         r = _run(["fleet", "--", "list"])
         assert r.returncode == 0, r.stderr
-        assert "ci (api-key-5@token.local)" in r.stdout
-        assert "API key (no quota)" in r.stdout
-        codex = r.stdout.split("Codex accounts:", 1)[1]
-        assert "1: maya@example.com [personal] (active) · Plus" in codex
+        assert "#5 ci (api-key-5@token.local) · API key" in r.stdout
+        assert "no quota; billed per token" in r.stdout
+        codex = r.stdout.split("\nCodex accounts\n", 1)[1]
+        assert "#1 maya@example.com · active · Plus" in codex
         assert "47%" in codex  # the live account's weekly figure
-        assert "work (maya@northwind.example.com) [workspace] · Team" in codex
-        assert "resets:   1    full" in codex  # the saved account's credit
+        assert "#2 work (maya@northwind.example.com) · Team" in codex
+        assert "Holds 1 reset credit" in codex  # the saved account's credit
+        assert all(len(line) <= 80 for line in r.stdout.splitlines())
 
+    # "not logged in" where the CLI is installed, "was not found" where it is
+    # not (the harness keeps the machine's PATH).
     @pytest.mark.parametrize(
         ("scenario", "claude", "codex"),
         [
-            ("empty", "No active Claude account", "No active Codex login"),
-            ("empty-claude", "maya@example.com (not managed)", "No active Codex login"),
-            ("empty-claude-codex", "maya@example.com (not managed)", "maya@example.com (not managed)"),
+            ("empty", ("Claude Code is not logged in", "Claude Code was not found"),
+             ("Codex is not logged in", "Codex was not found")),
+            ("empty-claude", ("Claude Code is logged in as maya@example.com. Add it with: qswap add",),
+             ("Codex is not logged in", "Codex was not found")),
+            ("empty-claude-codex",
+             ("Claude Code is logged in as maya@example.com. Add it with: qswap add",),
+             ("Codex is logged in as maya@example.com. Add it with: qswap codex add",)),
         ],
     )
     def test_first_run_variants(self, scenario, claude, codex):
-        r = _run([scenario, "--", "status", "++", "codex", "status", "++", "list", "--json"])
+        r = _run([scenario, "--", "status"])
         assert r.returncode == 0, r.stderr
-        status, codex_status, listed = r.stdout.split("\n", 2)
-        assert claude in status
-        assert codex in codex_status
-        assert json.loads(listed)["accounts"] == []  # nothing managed
+        assert r.stdout.startswith("No accounts are managed yet.\n")  # with a next step
+        assert any(text in r.stdout for text in claude)
+        r = _run([scenario, "--", "codex", "status"])
+        assert r.returncode == 0, r.stderr
+        assert any(text in r.stdout for text in codex)
+        r = _run([scenario, "--", "list"])
+        assert r.returncode == 0, r.stderr  # read-only: never asks, never a traceback
+        assert r.stdout.startswith("No accounts are managed yet.\n")
+        assert any(text in r.stdout for text in claude)
+        r = _run([scenario, "--", "list", "--json"])
+        assert json.loads(r.stdout)["accounts"] == []  # nothing managed
 
     def test_usage_attributes_codex_sessions_to_codex_accounts(self):
         r = _run(["usage", "--", "usage", "--by", "account", "--provider", "codex"])
@@ -347,17 +361,19 @@ class TestScenarioStates:
     def test_trouble_shows_each_failure_state(self):
         r = _run(["trouble", "--", "list"])
         assert r.returncode == 0, r.stderr
-        claude = r.stdout.split("Codex accounts:", 1)[0]
+        claude = r.stdout.split("\nCodex accounts\n", 1)[0]
         rows = {}
         for block in claude.split("\n\n"):
-            number = re.search(r"^\s+(\d+): ", block, re.M)
+            number = re.search(r"^\s+#(\d+) ", block, re.M)
             if number:
                 rows[number.group(1)] = block
-        assert "5h: 100%" in rows["1"]
-        assert "re-login needed" in rows["2"]
-        assert "usage unavailable (http-503)" in rows["3"]
-        assert "3h ago" in rows["5"]
+        assert re.search(r"5h\s+100%.*limit reached", rows["1"])
+        assert "needs re-login" in rows["2"]
+        assert "usage unavailable (HTTP 503), retrying" in rows["3"]
+        assert "needs re-login" in rows["4"]  # set aside by the engine
+        assert "as of 3h" in rows["5"]
         assert "usage unknown until used" in r.stdout  # the Codex saved login
+        assert all(len(line) <= 80 for line in r.stdout.splitlines())
 
     def test_trouble_seeds_a_quarantine_the_engine_honours(self):
         # After `list` reads it, the quarantined account (4) has a fresh,
@@ -420,8 +436,8 @@ class TestHarnessPieces:
 
     def test_a_bare_double_dash_runs_qswap_with_no_arguments(self):
         r = _run(["empty", "--"])
-        assert r.returncode == 2
-        assert "no command given" in r.stderr
+        assert r.returncode == 0  # off a terminal, bare qswap prints a hint
+        assert "qswap help" in r.stdout and "qswap list" in r.stdout
         r = _run(["empty"])  # no `--` at all is still the launcher's own usage error
         assert r.returncode == 2
         assert "give the qswap arguments after --" in r.stderr

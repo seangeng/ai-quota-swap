@@ -165,7 +165,8 @@ def ensure_file_storage(home: Path) -> None:
     if mode in _KEYRING_MODES:
         raise CodexLoginError(
             f"Codex keeps its login in the OS keyring (cli_auth_credentials_store = "
-            f'"{mode}" in {config}); qswap supports file storage only'
+            f'"{mode}" in {config}); qswap supports file storage only. Set it to '
+            '"file", then log in again: codex login'
         )
     if mode == "ephemeral":
         raise CodexLoginError(

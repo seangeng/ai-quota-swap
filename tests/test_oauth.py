@@ -863,14 +863,14 @@ class TestFetchUsageForAccount:
         assert len(warning_records) == 1
         msg = warning_records[0].getMessage()
         assert "failed to persist" in msg
-        assert "qswap --add-account" in msg
+        assert "qswap add" in msg
         assert "1" in msg
         assert "test@example.com" in msg
 
         # Also verify the user-visible printed warning, and that stdout stays clean
         captured = capsys.readouterr()
         assert "failed to save refreshed token" in captured.err
-        assert "qswap --add-account" in captured.err
+        assert "qswap add" in captured.err
         assert captured.out == ""
 
 

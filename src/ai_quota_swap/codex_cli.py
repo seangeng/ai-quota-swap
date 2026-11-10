@@ -159,9 +159,11 @@ def _add(argv: list[str]) -> None:
         "Save the login Codex is using now ($CODEX_HOME/auth.json) as a managed "
         "account; for one already saved, refresh its saved copy. To add another "
         "account, use qswap codex login.",
-        epilog="""examples:
+        epilog=f"""examples:
   qswap codex add
   qswap codex add --alias work
+
+{LOGOUT_WARNING}
 """,
     )
     parser.add_argument("--slot", type=int, metavar="NUM", help="store it as this account number")

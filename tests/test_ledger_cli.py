@@ -161,7 +161,7 @@ class TestUsageCommand:
     )
     def test_bad_flags(self, capsys, args, message):
         code, _out, err = run_cli(*args, capsys=capsys)
-        assert code == 2
+        assert code == 64
         assert message in err
 
     def test_ledger_error_is_a_json_envelope(self, capsys):
@@ -223,7 +223,7 @@ class TestUsageCommand:
     def test_help_lists_usage(self, capsys):
         with patch.object(sys, "argv", ["qswap", "help"]), pytest.raises(SystemExit):
             cli.main()
-        assert "usage [--days N]" in capsys.readouterr().out
+        assert "usage                 tokens and estimated cost" in capsys.readouterr().out
 
     def test_every_line_fits_80_columns(self, history, capsys):
         for by in ("day", "model", "account", "project", "provider", "session"):
