@@ -236,14 +236,20 @@ def _switch(argv: list[str]) -> None:
     parser.add_argument("account", nargs="?", metavar="ACCOUNT",
                         help="number, email or alias; omit to rotate")
     parser.add_argument(
+        "--anyway", action="store_true",
+        help="with ACCOUNT: switch even though it needs re-login",
+    )
+    parser.add_argument(
         "--force", action="store_true",
-        help="with ACCOUNT: switch even if it needs re-login, or replace a "
-        "live login qswap does not manage (lost unless saved elsewhere)",
+        help="with ACCOUNT: replace a live login qswap does not manage (it is "
+        "lost unless saved elsewhere)",
     )
     _json_flag(parser)
     args = parser.parse_args(argv)
     if args.force and args.account is None:
         parser.error("--force can only be used with 'switch ACCOUNT'")
+    if args.anyway and args.account is None:
+        parser.error("--anyway can only be used with 'switch ACCOUNT'")
     if args.account is not None and not args.account:
         parser.error("'switch' requires a non-empty ACCOUNT")
     if args.account is None:
@@ -257,7 +263,7 @@ def _switch(argv: list[str]) -> None:
             except (ProviderError, ValueError):
                 number = live = None
             if number is not None and number != live:
-                notes = s.check_switch_target(number, force=args.force)
+                notes = s.check_switch_target(number, anyway=args.anyway)
                 if not args.json:
                     for note in notes:
                         warning(f"Warning: {note}")

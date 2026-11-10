@@ -340,11 +340,12 @@ def header_line(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ") 
 
     The email is cut with an ellipsis when the line would not fit.
     """
-    from ai_quota_swap.printer import accent, bold_accent, muted, yellowed
+    from ai_quota_swap.printer import accent, bolded, muted, yellowed
 
+    # ux.md: the active marker is bold; accent is for actions taken (and aliases).
     facts: list[tuple[str, Callable[[str], str]]] = []
     if block.active:
-        facts.append(("active", bold_accent))
+        facts.append(("active", bolded))
     if block.disabled:
         facts.append(("disabled", muted))
     if block.kind == "api_key":

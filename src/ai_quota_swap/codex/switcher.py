@@ -869,24 +869,26 @@ class CodexSwitcher:
             email=email if email is not None else record.get("email", ""), long=long,
         )
 
-    def check_switch_target(self, number: str, *, force: bool = False) -> list[str]:
+    def check_switch_target(self, number: str, *, anyway: bool = False) -> list[str]:
         """Refuse a target the engine set aside until it is logged in again
-        (unless ``force``); return a one-line warning for one whose usage is
-        unknown or old. Its expired-token state (usage unknown until used) is
-        switchable by design: Codex renews the token when it next runs."""
+        (unless ``anyway``, the ``--anyway`` flag: its only effect); return a
+        one-line warning for one whose usage is unknown or old. Its
+        expired-token state (usage unknown until used) is switchable by
+        design: Codex renews the token when it next runs. ``--force`` keeps
+        its own meaning (replace a live login qswap does not manage)."""
         from ai_quota_swap import display
 
         name = self.label(number, long=False)
         held = self.set_aside_accounts()
         if str(number) in held:
             why = display.set_aside_reason(held[str(number)])
-            if not force:
+            if not anyway:
                 raise SwitchError(
                     f"{name} {display.NEEDS_RELOGIN} ({why}); not switched.\n"
                     f"Log in to it again: qswap codex login\n"
-                    f"To switch to it anyway: qswap codex switch {number} --force"
+                    f"To switch to it anyway: qswap codex switch {number} --anyway"
                 )
-            return [f"{name} {display.NEEDS_RELOGIN} ({why}); switching anyway (--force)"]
+            return [f"{name} {display.NEEDS_RELOGIN} ({why}); switching anyway"]
         try:
             entry = self.usage_entries_by_account(fetch=set()).get(str(number))
         except Exception:
@@ -1700,12 +1702,22 @@ class CodexSwitcher:
             idx = sequence.index(current) if current in sequence else -1
             order = [sequence[(idx + k) % len(sequence)] for k in range(1, len(sequence))]
         target = None
+        held = self.set_aside_accounts()
+        skipped: dict[str, list[str]] = {"relogin": [], "disabled": [], "broken": []}
         for candidate in order:
             if self._disabled_from_data(data, candidate):
+                skipped["disabled"].append(candidate)
                 self._skip(warnings, json_output, candidate, "disabled")
                 continue
             if self._saved_login(candidate) is None:
+                skipped["broken"].append(candidate)
                 self._skip(warnings, json_output, candidate, "no saved login")
+                continue
+            if candidate in held:
+                # The engine set it aside: landing on it would leave Codex on
+                # a login that no longer works.
+                skipped["relogin"].append(candidate)
+                self._skip(warnings, json_output, candidate, "needs re-login")
                 continue
             target = candidate
             break
@@ -1715,18 +1727,36 @@ class CodexSwitcher:
             if json_output:
                 return self._noop(strategy="rotation", reason="no-valid-target",
                                   message=message, ref=ref, warnings=warnings)
-            print(dimmed(message))
+            steps = []
+            if skipped["relogin"]:
+                steps.append("log in to one that needs re-login again: qswap codex login")
+            if skipped["disabled"]:
+                steps.append(
+                    f"bring a disabled one back: qswap codex enable {skipped['disabled'][0]}"
+                )
+            if skipped["broken"]:
+                steps.append("save a login for one: qswap codex login")
+            if current is not None:
+                say(dimmed(
+                    f"No other account can take over, so Codex stays on "
+                    f"{self.label(current, long=False)}."
+                ))
+            else:
+                say(dimmed("No account can be activated."))
+            if steps:
+                say(dimmed("To fix that, " + "; or ".join(steps)))
             return None
         # Never forced: a live login qswap cannot read is refused, not overwritten.
         op = self._perform_switch(target, emit_output=not json_output, force=False)
         return self._result(op, "rotation", warnings) if json_output else None
 
     def _skip(self, warnings: list[str], json_output: bool, number: str, why: str) -> None:
-        # JSON keeps its wording; text names the account the new way.
+        # JSON keeps its wording; text names the account the new way, in the
+        # Claude switcher's form ("Skipped #2 work: needs re-login.").
         if json_output:
             warnings.append(f"Skipped Account-{number} ({why})")
         else:
-            print(f"{accent('Skipping')} {self.label(number, long=False)} ({why})")
+            say(f"{accent('Skipped')} {self.label(number, long=False)}: {why}.")
 
     def _processes_on_home(self, home: Path) -> list[codex_processes.CodexProcess]:
         """Codex processes that may hold this home's login in memory."""
@@ -1863,7 +1893,7 @@ class CodexSwitcher:
         if emit_output:
             source = (
                 f"{self.label(from_ref.get('number'), long=False)} → "
-                if from_ref and from_ref.get("number") is not None else ""
+                if from_ref and from_ref.get("number") is not None else "to "
             )
             print(f"{accent('Switched')} {source}{self.label(target, target_email)}")
             try:

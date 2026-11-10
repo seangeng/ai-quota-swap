@@ -55,7 +55,7 @@ Usage polling is adaptive — a couple of accounts per check, busy alternates wa
 
 It fails safe: if a usage check errors it keeps trusting the last-known numbers, for a bounded time, while retries back off, and an expired token on an idle machine makes it hold rather than fail over (Claude Code refreshes the token on your next message).
 
-An account whose refresh token has died is set aside: every view (`qswap list`, `qswap status`, the log) shows it as `needs re-login`, and `qswap switch N` refuses it unless `--force`, until you either log in with it and run `qswap add` (or `qswap add --slot N`), or replace its stored credentials from a known-good export — a plain `qswap import backup.qswap` replaces dead-token slots on its own (`--force` is still required to replace other existing accounts; note a stale export can carry an already-superseded token). API-key accounts are never rotated onto unless you pass `--include-api-key-accounts`.
+An account whose refresh token has died is set aside: every view (`qswap list`, `qswap status`, the log) shows it as `needs re-login`, a plain `qswap switch` (and `--strategy best` or `next-available`) skips it, and `qswap switch N` refuses it unless `--anyway`, until you either log in with it and run `qswap add` (or `qswap add --slot N`), or replace its stored credentials from a known-good export — a plain `qswap import backup.qswap` replaces dead-token slots on its own (`--force` is still required to replace other existing accounts; note a stale export can carry an already-superseded token). API-key accounts are never rotated onto unless you pass `--include-api-key-accounts`.
 
 ## Running alongside Claude Code
 

@@ -321,10 +321,11 @@ class TestSetAside:
         with pytest.raises(SwitchError) as exc:
             CodexSwitcher.check_switch_target(switcher, "2")
         assert "needs re-login" in str(exc.value)
-        assert "qswap codex switch 2 --force" in str(exc.value)
-        notes = CodexSwitcher.check_switch_target(switcher, "2", force=True)
+        assert "qswap codex switch 2 --anyway" in str(exc.value)
+        assert "--force" not in str(exc.value)
+        notes = CodexSwitcher.check_switch_target(switcher, "2", anyway=True)
         assert notes == ["#2 work needs re-login (its saved login was refused); "
-                         "switching anyway (--force)"]
+                         "switching anyway"]
 
 
 def test_status_json_gains_codex_and_auto_switch(temp_home, monkeypatch, capsys):
@@ -352,3 +353,165 @@ def test_the_shared_module_has_no_io():
     source = Path(cli.__file__).with_name("display.py").read_text(encoding="utf-8")
     for forbidden in ("open(", "print(", "subprocess", "urlopen", "time.time("):
         assert forbidden not in source, forbidden
+
+
+# -- --anyway and --force are separate ----------------------------------------------
+
+
+from tests.test_switcher import TestPerformSwitchPostDisplay  # noqa: E402
+
+LIVE_1 = json.dumps({"claudeAiOauth": {"accessToken": "sk-live-1", "refreshToken": "rt-live-1"}})
+
+
+class TestAnywayAndForce:
+    """--anyway only overrides the needs-re-login refusal; --force keeps its
+    own meaning (activate without saving the outgoing login first)."""
+
+    def _run(self, temp_home, sample_sequence_data, argv, capsys):
+        from ai_quota_swap.models import Platform
+
+        helper = TestPerformSwitchPostDisplay()
+        switcher, creds, configs = helper._setup_two_accounts(temp_home, sample_sequence_data)
+        live = {"creds": LIVE_1}
+        patches = helper._install_store_patches(switcher, creds, configs, live)
+        switcher.platform = Platform.LINUX
+        try:
+            with patch.object(cli, "ClaudeAccountSwitcher", return_value=switcher), \
+                 patch.object(switcher, "target_readiness",
+                              return_value=("relogin", "its saved login was refused")), \
+                 patch.object(switcher, "list_accounts"):
+                code = _main(argv)
+        finally:
+            for p in patches:
+                p.stop()
+        out, err = capsys.readouterr()
+        return code, out + err, switcher, creds, live
+
+    def test_anyway_switches_and_still_backs_up_the_outgoing_login(
+        self, temp_home, mock_claude_config, sample_sequence_data, capsys,
+    ):
+        code, out, switcher, creds, live = self._run(
+            temp_home, sample_sequence_data, ["switch", "2", "--anyway"], capsys)
+        assert code == 0, out
+        assert "switching anyway" in out
+        assert switcher._get_sequence_data()["activeAccountNumber"] == 2
+        # The login being left was saved into its slot before the swap.
+        assert creds[("1", "test@example.com")] == LIVE_1
+        assert live["creds"] != LIVE_1
+
+    def test_force_alone_is_still_refused(
+        self, temp_home, mock_claude_config, sample_sequence_data, capsys,
+    ):
+        code, out, switcher, creds, live = self._run(
+            temp_home, sample_sequence_data, ["switch", "2", "--force"], capsys)
+        assert code == 1
+        assert "To switch to it anyway: qswap switch 2 --anyway" in out
+        assert switcher._get_sequence_data()["activeAccountNumber"] == 1
+        assert live["creds"] == LIVE_1 and ("1", "test@example.com") not in creds
+
+    def test_anyway_with_force_does_both(
+        self, temp_home, mock_claude_config, sample_sequence_data, capsys,
+    ):
+        code, out, switcher, creds, live = self._run(
+            temp_home, sample_sequence_data, ["switch", "2", "--anyway", "--force"], capsys)
+        assert code == 0, out
+        assert switcher._get_sequence_data()["activeAccountNumber"] == 2
+        # --force: the outgoing login was not saved first.
+        assert ("1", "test@example.com") not in creds
+        assert live["creds"] != LIVE_1
+
+    def test_anyway_needs_an_account(self, temp_home, capsys):
+        assert _main(["switch", "--anyway"]) == 64
+        assert "--anyway can only be used with 'switch ACCOUNT'" in capsys.readouterr().err
+
+    def test_codex_anyway_needs_an_account(self, temp_home, capsys):
+        assert _main(["codex", "switch", "--anyway"]) == 64
+
+
+# -- rotation skips accounts that need re-login ------------------------------------------
+
+
+class TestRotationSkipsNeedsRelogin:
+    def _three(self, temp_home):
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
+
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        switcher._write_json(switcher.sequence_file, {
+            "activeAccountNumber": 1, "sequence": [1, 2, 3],
+            "accounts": {
+                "1": {"email": "a@example.com", "organizationUuid": ""},
+                "2": {"email": "b@example.com", "organizationUuid": "", "alias": "work"},
+                "3": {"email": "c@example.com", "organizationUuid": ""},
+            },
+        })
+        return switcher
+
+    def _rotate(self, switcher, relogin, strategy=None, json_output=False):
+        performed = []
+
+        def perform(target, **kw):
+            performed.append(target)
+            return {"from": None, "to": {"number": int(target), "email": ""}, "warnings": []}
+
+        with patch.object(switcher, "_get_current_account", return_value=("a@example.com", "")), \
+             patch.object(switcher, "_account_is_switchable", return_value=True), \
+             patch.object(switcher, "relogin_reasons", return_value=relogin), \
+             patch.object(switcher, "_self_switch_action", return_value=("noop", None)), \
+             patch.object(switcher, "_usage_by_account", return_value={
+                 "1": {"five_hour": {"pct": 50}}, "2": {"five_hour": {"pct": 1}},
+                 "3": {"five_hour": {"pct": 10}},
+             }), \
+             patch.object(switcher, "_perform_switch", side_effect=perform):
+            payload = switcher.switch(strategy=strategy, json_output=json_output)
+        return performed, payload
+
+    @pytest.mark.parametrize("strategy", [None, "next-available", "best"])
+    def test_rotation_and_strategies_skip_it(self, temp_home, capsys, strategy):
+        switcher = self._three(temp_home)
+        performed, _ = self._rotate(switcher, {"2": "its saved login was refused"}, strategy)
+        assert performed == ["3"]
+        assert "Skipped #2 work: needs re-login." in capsys.readouterr().out
+
+    def test_json_lists_it_in_warnings(self, temp_home):
+        switcher = self._three(temp_home)
+        performed, payload = self._rotate(
+            switcher, {"2": "its saved login was refused"}, json_output=True)
+        assert performed == ["3"]
+        assert "Skipped Account-2 (needs re-login)" in payload["warnings"]
+
+    def test_nothing_left_stops_with_the_next_step(self, temp_home, capsys):
+        switcher = self._three(temp_home)
+        data = switcher._get_sequence_data()
+        data["accounts"]["3"]["disabled"] = True
+        switcher._write_json(switcher.sequence_file, data)
+        performed, _ = self._rotate(switcher, {"2": "its saved login was refused"})
+        assert performed == []  # never lands on a broken account
+        out = " ".join(capsys.readouterr().out.split())
+        assert "Skipped #2 work: needs re-login." in out
+        assert "Skipped #3 c@example.com: disabled." in out
+        assert "No other account can take over, so you stay on #1 a@example.com." in out
+        assert "then run: qswap add" in out and "qswap enable 3" in out
+
+    def test_relogin_reasons_reads_the_engine_and_dead_tokens(self, temp_home):
+        switcher = self._three(temp_home)
+        with patch.object(switcher, "set_aside_accounts", return_value={"3": "invalid_grant"}), \
+             patch.object(switcher, "_slot_token_dead", side_effect=lambda n, e: n == "2"):
+            assert switcher.relogin_reasons() == {
+                "3": "its saved login was refused", "2": "its saved login was refused",
+            }
+
+
+class TestCodexRotationSkipsNeedsRelogin:
+    def test_skip_and_stop(self, capsys):
+        from ai_quota_swap.codex.switcher import CodexSwitcher
+
+        switcher = MagicMock(spec=CodexSwitcher)
+        switcher.label.side_effect = lambda n, *a, **k: {"1": "#1 a@example.com",
+                                                          "2": "#2 work",
+                                                          "3": "#3 c@example.com"}[n]
+        warnings: list[str] = []
+        CodexSwitcher._skip(switcher, warnings, False, "2", "needs re-login")
+        assert capsys.readouterr().out.strip() == "Skipped #2 work: needs re-login."
+        CodexSwitcher._skip(switcher, warnings, True, "2", "needs re-login")
+        assert warnings == ["Skipped Account-2 (needs re-login)"]

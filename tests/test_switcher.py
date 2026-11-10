@@ -6112,7 +6112,7 @@ class TestSwitchSkipsBrokenSlots:
             s.switch()
 
         out = capsys.readouterr().out
-        assert "Skipping #2 b@example.com" in out
+        assert "Skipped #2 b@example.com: no saved login" in out
 
         data = s._get_sequence_data()
         assert data["activeAccountNumber"] == 3
@@ -6142,8 +6142,9 @@ class TestSwitchSkipsBrokenSlots:
         s.switch()  # must not raise
 
         out = capsys.readouterr().out
-        assert "Skipping #2 b@example.com" in out
-        assert "No other accounts have valid" in out
+        assert "Skipped #2 b@example.com: no saved login" in out
+        assert "No other account can take over" in out
+        assert "re-add one: qswap add --slot 2" in " ".join(out.split())
 
         # Active account unchanged.
         data = s._get_sequence_data()
@@ -6216,7 +6217,7 @@ class TestSwitchSkipsBrokenSlots:
             s.switch()
 
         out = capsys.readouterr().out
-        assert "Skipping #1 a@example.com" in out
+        assert "Skipped #1 a@example.com: no saved login" in out
 
         data = s._get_sequence_data()
         assert data["activeAccountNumber"] == 2
@@ -6234,7 +6235,7 @@ class TestSwitchSkipsBrokenSlots:
         with patch.object(s, "list_accounts"):
             s.switch()
 
-        assert "Skipping #1 a@example.com (disabled)" in capsys.readouterr().out
+        assert "Skipped #1 a@example.com: disabled." in capsys.readouterr().out
         assert s._get_sequence_data()["activeAccountNumber"] == 2
 
     def test_fresh_machine_all_broken_raises(self, temp_home: Path):
@@ -6462,7 +6463,7 @@ class TestUsageAwareSwitch:
             s.switch(strategy="next-available")
 
         out = capsys.readouterr().out
-        assert "Skipping #2 b@example.com (at 5h/7d limit)" in out
+        assert "Skipped #2 b@example.com: at its 5h/7d limit." in out
         assert s._get_sequence_data()["activeAccountNumber"] == 3
 
     @staticmethod
@@ -6499,7 +6500,7 @@ class TestUsageAwareSwitch:
 
         out = capsys.readouterr().out
         assert "Using configured model limits: Fable (from autoswitch.model)" in out
-        assert "Skipping #2 b@example.com (at Fable limit)" in out
+        assert "Skipped #2 b@example.com: at its Fable limit." in out
         assert s._get_sequence_data()["activeAccountNumber"] == 3
 
     def test_next_available_without_models_ignores_scoped(
@@ -9577,7 +9578,7 @@ class TestDisableEnableAccount:
             s.switch()
 
         out = capsys.readouterr().out
-        assert "Skipping #2 b@example.com (disabled)" in out
+        assert "Skipped #2 b@example.com: disabled." in out
         assert s._get_sequence_data()["activeAccountNumber"] == 3
 
     def test_best_strategy_ignores_disabled_candidate(self, temp_home):

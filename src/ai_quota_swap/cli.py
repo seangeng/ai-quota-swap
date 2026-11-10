@@ -2096,16 +2096,18 @@ def _after_add(switcher) -> None:
         print(dimmed(display.ANOTHER_ACCOUNT_STEPS["claude"]))
 
 
-def _check_switch_target(switcher, identifier: str, *, force: bool) -> list[str]:
+def _check_switch_target(switcher, identifier: str, *, anyway: bool) -> list[str]:
     """Resolve ``identifier`` and run the switcher's pre-switch check; an
-    identifier that does not resolve is left for ``switch_to`` to report."""
+    identifier that does not resolve is left for ``switch_to`` to report.
+    ``anyway`` (``--anyway``) only overrides the needs-re-login refusal;
+    ``--force`` is passed to ``switch_to`` alone and keeps its meaning."""
     try:
         number, _email, _org = switcher.resolve_account(identifier)
         if number == switcher.current_account_number():
             return []
     except (ProviderError, TypeError, ValueError):
         return []
-    notes = switcher.check_switch_target(number, force=force)
+    notes = switcher.check_switch_target(number, anyway=anyway)
     return list(notes) if isinstance(notes, list) else []
 
 
@@ -2559,6 +2561,11 @@ def _dispatch(argv: list[str]) -> None:
         help="Include full ~/.claude.json in export (default: oauthAccount only)",
     )
     parser.add_argument(
+        "--anyway",
+        action="store_true",
+        help="With 'switch ACCOUNT': switch even though it needs re-login",
+    )
+    parser.add_argument(
         "-y",
         "--yes",
         action="store_true",
@@ -2803,6 +2810,9 @@ def _dispatch(argv: list[str]) -> None:
     if args.alias is not None and not args.add_account:
         parser.error("--alias can only be used with 'add'")
 
+    if args.anyway and not args.switch_to:
+        parser.error("--anyway can only be used with 'switch ACCOUNT'")
+
     if args.force and not (args.import_ or args.switch_to):
         parser.error("--force can only be used with 'import' or 'switch ACCOUNT'")
 
@@ -2924,7 +2934,7 @@ def _dispatch(argv: list[str]) -> None:
             # login: refused unless --force. One whose usage cannot be read,
             # or is old, switches with a one-line warning (ux.md). The engine
             # calls switch_to directly and runs its own checks.
-            notes = _check_switch_target(switcher, args.switch_to, force=args.force)
+            notes = _check_switch_target(switcher, args.switch_to, anyway=args.anyway)
             if not args.json:
                 for note in notes:
                     warning(f"Warning: {note}")

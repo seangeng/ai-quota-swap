@@ -281,7 +281,7 @@ qswap add
 
 This will update the stored credentials without creating a duplicate.
 
-If the refresh token itself has died (every view shows such an account as `needs re-login`, and auto-switch sets it aside), log in with it and run `qswap add`, or replace its stored credentials from a known-good export: a plain `qswap import backup.qswap` replaces dead-token slots on its own (a stale export can carry an already-superseded token).
+If the refresh token itself has died (every view shows such an account as `needs re-login`, a plain `qswap switch` skips it, `qswap switch N` refuses it unless `--anyway`, and auto-switch sets it aside), log in with it and run `qswap add`, or replace its stored credentials from a known-good export: a plain `qswap import backup.qswap` replaces dead-token slots on its own (a stale export can carry an already-superseded token).
 
 ### Other commands
 

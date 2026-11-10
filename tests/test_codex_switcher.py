@@ -774,3 +774,29 @@ class TestEngineMembers:
         sw.backfill_account_uuid("1", "user-b")
         sw.backfill_account_uuid("1", "someone-else")
         assert registry(sw)["accounts"]["1"]["uuid"] == "user-b"
+
+
+class TestRotationSkipsNeedsRelogin:
+    """A bare `qswap codex switch` never lands on an account the engine set
+    aside until it is logged in again; it says so in one line."""
+
+    def test_skips_it_and_stops_with_the_next_step(self, two, sw, env, capsys):
+        before = live_path(env).read_bytes()
+        with patch.object(type(sw), "set_aside_accounts", return_value={"1": "invalid_grant"}):
+            sw.switch()
+        out = capsys.readouterr().out
+        assert "Skipped #1 b@example.com: needs re-login." in out
+        assert "No other account can take over, so Codex stays on #2 a@example.com." in out
+        assert "qswap codex login" in out
+        assert live_path(env).read_bytes() == before  # nothing changed
+
+    def test_json_lists_it_in_warnings(self, two, sw, env, capsys):
+        with patch.object(type(sw), "set_aside_accounts", return_value={"1": "invalid_grant"}):
+            payload = sw.switch(json_output=True)
+        assert payload["switched"] is False
+        assert payload["warnings"] == ["Skipped Account-1 (needs re-login)"]
+
+    def test_without_it_rotation_proceeds(self, two, sw, env, capsys):
+        with patch.object(type(sw), "set_aside_accounts", return_value={}):
+            sw.switch()
+        assert sw.current_account_number() == "1"

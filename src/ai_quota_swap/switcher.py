@@ -6191,6 +6191,7 @@ class ClaudeAccountSwitcher:
         current_num: str | None,
         models: tuple[str, ...] = (),
         usage: dict | None = None,
+        exclude: set[str] | frozenset[str] = frozenset(),
     ) -> tuple[str | None, str]:
         """Decide the ``best`` strategy target relative to the current account.
 
@@ -6224,6 +6225,7 @@ class ClaudeAccountSwitcher:
             if str(n) != str(current_num)
             and self._account_is_switchable(str(n))
             and not self._disabled_from_data(data, str(n))
+            and str(n) not in exclude  # needs re-login (relogin_reasons)
         ]
         if not others:
             return None, "none"
@@ -6942,38 +6944,50 @@ class ClaudeAccountSwitcher:
                 raise self._nothing_managed_error()
 
             target = str(preferred)
+            relogin = self.relogin_reasons()
             target_disabled = self._disabled_from_data(data, target)
-            if target_disabled or not self._account_is_switchable(target):
+            if (
+                target_disabled
+                or not self._account_is_switchable(target)
+                or target in relogin
+            ):
                 if target_disabled:
-                    reason = console_reason = "(disabled)"
-                else:
-                    reason = "(no stored credentials/config)"
-                    console_reason = (
-                        "(no stored credentials/config, re-add with "
-                        f"qswap add --slot {target})"
+                    self._skip_line(warnings, json_output, target, "(disabled)", "disabled")
+                elif not self._account_is_switchable(target):
+                    self._skip_line(
+                        warnings, json_output, target, "(no stored credentials/config)",
+                        f"no saved login; re-add it with: qswap add --slot {target}",
                     )
-                if json_output:
-                    warnings.append(f"Skipped Account-{target} {reason}")
                 else:
-                    print(f"{accent('Skipping')} {self.label(target, long=False)} {console_reason}")
+                    self._skip_line(warnings, json_output, target, "(needs re-login)",
+                                    "needs re-login")
                 fallback = next(
                     (str(num) for num in sequence
                      if str(num) != target
                      and not self._disabled_from_data(data, str(num))
-                     and self._account_is_switchable(str(num))),
+                     and self._account_is_switchable(str(num))
+                     and str(num) not in relogin),
                     None,
                 )
                 if not fallback:
-                    if any(
-                        self._account_is_switchable(str(num)) for num in sequence
-                    ):
+                    usable = [
+                        str(num) for num in sequence
+                        if self._account_is_switchable(str(num)) and str(num) not in relogin
+                    ]
+                    if usable:
                         raise ConfigError(
                             "No accounts remain in rotation. Re-enable one with: "
-                            "qswap enable <num|email>"
+                            "qswap enable N"
+                        )
+                    if any(str(num) in relogin for num in sequence):
+                        raise ConfigError(
+                            "No account can be activated: each one needs re-login, is "
+                            "disabled, or has no saved login. Log in to one in Claude "
+                            "Code (/login), then run: qswap add"
                         )
                     raise ConfigError(
                         "No managed accounts have valid stored credentials/config. "
-                        "Re-add a slot with: qswap add --slot <number>"
+                        "Re-add a slot with: qswap add --slot N"
                     )
                 target = fallback
             op = self._perform_switch(target, emit_output=not json_output)
@@ -7035,12 +7049,24 @@ class ClaudeAccountSwitcher:
         # Usage-aware "jump to most headroom". Only switches when another
         # account is provably better; otherwise stays put (never moves onto a
         # worse or unverifiable account). Bare `qswap --switch` rotates anyway.
+        relogin = self.relogin_reasons()
         if strategy == "best":
             best_usage = self._usage_by_account()
             self._warn_inert_models(best_usage, models, json_output, warnings)
             target, note = self._select_best_switchable(
-                current_num, models, best_usage
+                current_num, models, best_usage, exclude=set(relogin),
             )
+            if note != "none":
+                # "none" falls through to rotation, which says it itself.
+                for num in (data.get("sequence") or []):
+                    num = str(num)
+                    if (
+                        num in relogin and num != str(current_num)
+                        and not self._disabled_from_data(data, num)
+                        and self._account_is_switchable(num)
+                    ):
+                        self._skip_line(warnings, json_output, num, "(needs re-login)",
+                                        "needs re-login")
             if target is not None:
                 op = self._perform_switch(target, emit_output=not json_output)
                 return (
@@ -7152,25 +7178,25 @@ class ClaudeAccountSwitcher:
 
         next_account: str | None = None
         skipped_exhausted: list[str] = []
+        skipped: dict[str, list[str]] = {"relogin": [], "disabled": [], "broken": []}
         for offset in range(1, len(sequence)):
             candidate = str(sequence[(current_index + offset) % len(sequence)])
             if self._disabled_from_data(data, candidate):
-                if json_output:
-                    warnings.append(f"Skipped Account-{candidate} (disabled)")
-                else:
-                    print(f"{accent('Skipping')} {self.label(candidate, long=False)} (disabled)")
+                skipped["disabled"].append(candidate)
+                self._skip_line(warnings, json_output, candidate, "(disabled)", "disabled")
                 continue
             if not self._account_is_switchable(candidate):
-                if json_output:
-                    warnings.append(
-                        f"Skipped Account-{candidate} (no stored credentials/config)"
-                    )
-                else:
-                    print(
-                        f"{accent('Skipping')} {self.label(candidate, long=False)} "
-                        f"(no stored credentials/config, re-add with "
-                        f"qswap add --slot {candidate})"
-                    )
+                skipped["broken"].append(candidate)
+                self._skip_line(
+                    warnings, json_output, candidate, "(no stored credentials/config)",
+                    f"no saved login; re-add it with: qswap add --slot {candidate}",
+                )
+                continue
+            if candidate in relogin:
+                # Landing on it would leave the user on a dead login.
+                skipped["relogin"].append(candidate)
+                self._skip_line(warnings, json_output, candidate, "(needs re-login)",
+                                "needs re-login")
                 continue
             if strategy == "next-available":
                 headroom = oauth.account_headroom(usage.get(candidate), models)
@@ -7189,12 +7215,8 @@ class ClaudeAccountSwitcher:
                         ]
                         if at:
                             label = "/".join(at)
-                    if json_output:
-                        warnings.append(
-                            f"Skipped Account-{candidate} (at {label} limit)"
-                        )
-                    else:
-                        print(f"{accent('Skipping')} {self.label(candidate, long=False)} (at {label} limit)")
+                    self._skip_line(warnings, json_output, candidate, f"(at {label} limit)",
+                                    f"at its {label} limit")
                     continue
             next_account = candidate
             break
@@ -7227,10 +7249,22 @@ class ClaudeAccountSwitcher:
                     to_ref=current_ref, warnings=warnings,
                     message="No other accounts have valid stored credentials/config.",
                 )
-            print(dimmed(
-                "No other accounts have valid stored credentials/config.\n"
-                "Re-add a skipped slot with: qswap add --slot <number>"
+            steps = []
+            if skipped["relogin"]:
+                steps.append(
+                    "log in to one that needs re-login in Claude Code (/login), then "
+                    "run: qswap add"
+                )
+            if skipped["disabled"]:
+                steps.append(f"bring a disabled one back: qswap enable {skipped['disabled'][0]}")
+            if skipped["broken"]:
+                steps.append(f"re-add one: qswap add --slot {skipped['broken'][0]}")
+            say(dimmed(
+                f"No other account can take over, so you stay on "
+                f"{self.label(current_num, long=False)}."
             ))
+            if steps:
+                say(dimmed("To fix that, " + "; or ".join(steps)))
             return None
 
         # Rotation anchored on a drifted activeAccountNumber can land on the
@@ -7408,6 +7442,35 @@ class ClaudeAccountSwitcher:
             "No accounts are managed yet. Log in with claude (/login), then run: qswap add"
         )
 
+    def relogin_reasons(self) -> dict[str, str]:
+        """Accounts that need re-login (number → why, in words), from what is
+        stored, with no network: the auto-switch engine's set-aside list and
+        saved logins the server refused. Rotation skips these."""
+        from ai_quota_swap import display
+
+        out = {n: display.set_aside_reason(r) for n, r in self.set_aside_accounts().items()}
+        data = self._get_sequence_data() or {}
+        for num, record in (data.get("accounts") or {}).items():
+            if num in out or record.get("kind") == "api_key":
+                continue
+            try:
+                if self._slot_token_dead(num, record.get("email", "")):
+                    out[num] = "its saved login was refused"
+            except Exception as e:  # a display question; never fail a switch on it
+                self._logger.debug(f"token-dead check failed for {num}: {e!r}")
+        return out
+
+    def _skip_line(
+        self, warnings: list[str], json_output: bool, number: str, json_why: str, text_why: str
+    ) -> None:
+        """One account a rotation passed over. JSON keeps the spelling scripts
+        saw before (``Skipped Account-2 (disabled)``); text says
+        ``Skipped #2 work: disabled.``"""
+        if json_output:
+            warnings.append(f"Skipped Account-{number} {json_why}")
+        else:
+            say(f"{accent('Skipped')} {self.label(number, long=False)}: {text_why}.")
+
     def label(self, number: str | int | None, email: str | None = None, *, long: bool = True) -> str:
         """How this account is named in a message: ``#2 work (maya@example.com)``,
         ``#2 maya@example.com`` without an alias (labels.account_label)."""
@@ -7472,21 +7535,23 @@ class ClaudeAccountSwitcher:
             return "stale", text
         return "unreadable", display.usage_unavailable(entry.last_error, retrying=False)
 
-    def check_switch_target(self, number: str, *, force: bool = False) -> list[str]:
-        """Refuse a target that needs re-login (unless ``force``); return the
-        warnings to show for one whose usage is unreadable or stale."""
+    def check_switch_target(self, number: str, *, anyway: bool = False) -> list[str]:
+        """Refuse a target that needs re-login (unless ``anyway``, the
+        ``--anyway`` flag: its only effect); return the warnings to show for
+        one whose usage is unreadable or stale. ``--force`` is not involved:
+        it keeps its own meaning (activate without backing up first)."""
         from ai_quota_swap import display
 
         verdict, why = self.target_readiness(number)
         name = self.label(number, long=False)
         if verdict == "relogin":
-            if not force:
+            if not anyway:
                 raise SwitchError(
                     f"{name} {display.NEEDS_RELOGIN} ({why}); not switched.\n"
                     f"Log in to it in Claude Code (/login), then run: qswap add\n"
-                    f"To switch to it anyway: qswap switch {number} --force"
+                    f"To switch to it anyway: qswap switch {number} --anyway"
                 )
-            return [f"{name} {display.NEEDS_RELOGIN} ({why}); switching anyway (--force)"]
+            return [f"{name} {display.NEEDS_RELOGIN} ({why}); switching anyway"]
         if verdict in ("unreadable", "stale"):
             return [f"{name}: {why}; switching anyway"]
         return []
@@ -8194,7 +8259,7 @@ class ClaudeAccountSwitcher:
                     else:
                         source = (
                             f"{self.label(from_ref.get('number'), long=False)} → "
-                            if from_ref and from_ref.get("number") is not None else ""
+                            if from_ref and from_ref.get("number") is not None else "to "
                         )
                         print(f"{accent('Switched')} {source}"
                               f"{self.label(target_account, target_email)}")
@@ -8461,7 +8526,7 @@ class ClaudeAccountSwitcher:
         if emit_output:
             source = (
                 f"{self.label(from_ref.get('number'), long=False)} → "
-                if from_ref and from_ref.get("number") is not None else ""
+                if from_ref and from_ref.get("number") is not None else "to "
             )
             print(f"{accent('Switched')} {source}{self.label(target_account, target_email)}")
             # The whole list, not only the target: reading it also refreshes

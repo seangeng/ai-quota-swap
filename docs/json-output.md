@@ -8,7 +8,7 @@ The same three commands under `qswap codex` (`qswap codex list --json`, ...) pri
 
 - Every payload carries a `schemaVersion` (currently `1`), including `qswap reset --json` and `qswap codex reset --json`.
 - Every failure under `--json` is the error envelope on stdout, `{"schemaVersion":1,"error":{"type":…,"message":…}}`: a handled error exits 1, a usage error (unknown verb, bad flag, missing argument) exits 64 with `type` `"UsageError"`. `message` is for people; key scripts on `type` and the exit code.
-- `--switch`/`--switch-to` report `{"switched": true|false, "from": …, "to": …, "strategy": …, "reason": …, "message": …, "warnings": […]}`. A target whose usage could not be read, or is old, adds a line to `warnings`; one that needs re-login is refused with the error envelope (type `SwitchError`) unless `--force`.
+- `--switch`/`--switch-to` report `{"switched": true|false, "from": …, "to": …, "strategy": …, "reason": …, "message": …, "warnings": […]}`. A target whose usage could not be read, or is old, adds a line to `warnings`; one that needs re-login is refused with the error envelope (type `SwitchError`) unless `--anyway`. A rotation (`switch` with no account) skips such accounts and lists each in `warnings` as `Skipped Account-N (needs re-login)`.
 - Payloads only gain fields. The human-readable strings inside them (`message`, `warnings`) keep the spelling scripts saw before (`Account-2`), even where the text output now says `#2 work`.
 
 ## Commands with `--json`

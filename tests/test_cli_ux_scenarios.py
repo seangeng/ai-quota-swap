@@ -40,7 +40,7 @@ class TestSwitchTargets:
         out = r.stdout + r.stderr
         assert "Error: #2 work needs re-login (its saved login was refused); not" in out
         assert "then run: qswap add" in out
-        assert "To switch to it anyway: qswap switch 2 --force" in out
+        assert "To switch to it anyway: qswap switch 2 --anyway" in out
         listed = json.loads(r.stdout[r.stdout.index("{"):])
         assert listed["activeAccountNumber"] == 1  # nothing changed
 
@@ -49,12 +49,25 @@ class TestSwitchTargets:
         assert r.returncode == 1
         assert "#4 side needs re-login (its saved login was refused)" in r.stdout + r.stderr
 
-    def test_force_switches_with_a_warning(self):
-        r = qswap("trouble", "switch", "2", "--force")
+    def test_anyway_switches_with_a_warning(self):
+        r = qswap("trouble", "switch", "2", "--anyway")
         assert r.returncode == 0, r.stderr
         assert r.stdout.startswith("Warning: #2 work needs re-login")
-        assert "switching anyway (--force)" in " ".join(r.stdout.split())
+        assert "switching anyway" in r.stdout
         assert "Switched #1 personal → #2 work" in r.stdout
+
+    def test_force_alone_does_not_override_the_refusal(self):
+        r = qswap("trouble", "switch", "2", "--force")
+        assert r.returncode == 1
+        assert "qswap switch 2 --anyway" in r.stdout + r.stderr
+
+    def test_rotation_skips_accounts_that_need_re_login(self):
+        # From #1: #2 (dead login) is skipped; #3 is next.
+        r = qswap("trouble", "switch")
+        assert r.returncode == 0, r.stderr
+        lines = r.stdout.splitlines()
+        assert lines[0] == "Skipped #2 work: needs re-login."
+        assert lines[1].startswith("Switched #1 personal → #3 night-shift")
 
     @pytest.mark.parametrize("target, words", [
         ("3", "#3 night-shift: usage unavailable (HTTP 503); switching anyway"),
