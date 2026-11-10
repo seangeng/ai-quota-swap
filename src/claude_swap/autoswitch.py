@@ -463,6 +463,250 @@ class ConfigWarningEvent(AutoSwitchEvent):
         return f"warning: {self.message}"
 
 
+@dataclass(frozen=True)
+class ResetEvent(AutoSwitchEvent):
+    """A usage reset the engine spent (or, dry-run, would spend).
+
+    ``plan`` is :meth:`claude_swap.resets.ResetPlan.to_json`; ``result`` the
+    server's answer (:meth:`claude_swap.resets.ClaimResult.to_json`), None in
+    dry-run.
+    """
+
+    kind: ClassVar[str] = "limit-reset"
+    account: dict
+    plan: dict
+    result: dict | None = None
+    dry_run: bool = False
+
+    def _fields(self) -> dict:
+        return {
+            "account": self.account,
+            "plan": self.plan,
+            "result": self.result,
+            "dryRun": self.dry_run,
+        }
+
+    @property
+    def used(self) -> bool:
+        return bool(self.result and self.result.get("result") == "reset")
+
+    def human(self) -> str:
+        plan = self.plan
+        who = f"Account-{self.account.get('number')} ({self.account.get('email')})"
+        why = f"{plan['window']} {plan['pct']:.0f}%"
+        hours = plan.get("hoursLeft")
+        if hours is not None:
+            why += f", {_hours_label(hours)} before it resets on its own"
+        what = f"a {plan['grantKind']} reset"
+        if self.dry_run:
+            return f"[dry-run] would use {what} on {who} ({plan['reason']}: {why})"
+        result = self.result or {}
+        if self.used:
+            left = result.get("resetsLeft")
+            tail = f" · {left} left on this grant" if isinstance(left, int) else ""
+            return f"Used {what} on {who} ({plan['reason']}: {why}){tail}"
+        detail = result.get("reason") or result.get("detail") or ""
+        return (
+            f"Did not use {what} on {who}: {result.get('result', 'error')}"
+            + (f" ({str(detail).replace('_', ' ')})" if detail else "")
+        )
+
+
+def _hours_label(hours: float) -> str:
+    if hours >= 48:
+        return f"{hours / 24:.0f}d"
+    if hours >= 1:
+        return f"{hours:.0f}h"
+    return f"{max(hours * 60, 0):.0f}m"
+
+
+# A claim's record keeps the account out of the planner until a reading taken
+# after it arrives AND this long has passed: no second spend on the pre-claim
+# numbers, and no tight retry loop when the server keeps refusing.
+RESET_SUCCESS_GAP_S = 30 * 60.0
+RESET_RETRY_GAP_S = 10 * 60.0
+# The server said no (cooldown, already used, not at a limit, ineligible):
+# its fresh reading usually explains why, but never ask again sooner.
+RESET_REFUSED_GAP_S = 60 * 60.0
+# A planned reset is re-read first; a reading older than this is no basis.
+RESET_FRESH_READ_S = 120.0
+# Results that may have spent a reset (or whose outcome is unknown): they
+# count toward the daily brake. auth_error / rate_limited / the decided
+# refusals cannot have spent one.
+_BRAKE_RESULTS = frozenset({"reset", "already_used", "unavailable", "error", "pending"})
+# Runaway brake across the fleet: banked resets cannot be bought back.
+MAX_AUTO_RESETS_PER_DAY = 3
+
+
+def _state_lock_for(state_path: Path) -> FileLock:
+    return FileLock(state_path.parent / ".autoswitch_state.lock")
+
+
+def _read_state_file(state_path: Path) -> dict:
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _mutate_state_file(state_path: Path, mutator: Callable[[dict], None]) -> dict:
+    with _state_lock_for(state_path):
+        state = _read_state_file(state_path)
+        state["schemaVersion"] = STATE_SCHEMA_VERSION
+        mutator(state)
+        atomic_write_json(state_path, state)
+        return state
+
+
+def record_reset_claim(
+    backup_dir: Path,
+    number: str,
+    record: dict,
+    *,
+    state_path: Path | None = None,
+) -> None:
+    """Persist one claim (manual or automatic) so every engine sees it.
+
+    ``resetClaims[number]`` is the latest attempt per account (its request id
+    is reused to retry an unconfirmed claim idempotently); successful claims
+    also append to ``resetLog`` for the daily brake and for ``cswap reset``.
+    """
+    path = state_path or (backup_dir / STATE_FILENAME)
+
+    def apply(state: dict) -> None:
+        claims = state.get("resetClaims")
+        if not isinstance(claims, dict):
+            claims = state["resetClaims"] = {}
+        claims[str(number)] = record
+        if record.get("result") in _BRAKE_RESULTS and record.get("result") != "pending":
+            log = state.get("resetLog")
+            if not isinstance(log, list):
+                log = []
+            log.append({
+                "at": record.get("at"),
+                "account": str(number),
+                "grantId": record.get("grantId"),
+                "result": record.get("result"),
+                "auto": bool(record.get("auto")),
+            })
+            state["resetLog"] = log[-50:]
+
+    _mutate_state_file(path, apply)
+
+
+def reset_claims_today(state: dict, now: float, *, auto_only: bool = True) -> int:
+    """Claims in the last 24h that may have spent a reset: logged results in
+    ``_BRAKE_RESULTS`` plus claims still pending (a crash between the POST
+    and its record leaves one), so an unknown outcome counts as spent."""
+    def recent(item: object) -> bool:
+        return (
+            isinstance(item, dict)
+            and isinstance(item.get("at"), (int, float))
+            and now - item["at"] < 86400
+            and (bool(item.get("auto")) or not auto_only)
+        )
+
+    log = state.get("resetLog")
+    logged = sum(
+        1 for item in (log if isinstance(log, list) else ())
+        if recent(item) and item.get("result", "reset") in _BRAKE_RESULTS
+    )
+    claims = state.get("resetClaims")
+    pending = sum(
+        1 for item in (claims.values() if isinstance(claims, dict) else ())
+        if recent(item) and item.get("result") == "pending"
+    )
+    return logged + pending
+
+
+def reset_claim_settled(record: object, fetched_at: float | None, now: float) -> bool:
+    """Whether an account's last claim no longer holds it out of planning."""
+    if not isinstance(record, dict):
+        return True
+    at = record.get("at")
+    if not isinstance(at, (int, float)) or isinstance(at, bool):
+        return True
+    if fetched_at is None or fetched_at <= at:
+        return False
+    result = record.get("result")
+    if result == "reset":
+        gap = RESET_SUCCESS_GAP_S
+    elif result in ("already_used", "not_limited", "cooldown", "ineligible"):
+        gap = RESET_REFUSED_GAP_S
+    else:
+        gap = RESET_RETRY_GAP_S
+    return now - at >= gap
+
+
+def preview_reset_plan(
+    switcher: ClaudeAccountSwitcher,
+    settings: AutoSwitchSettings,
+    entries: Mapping[str, object],
+    *,
+    now: float | None = None,
+):
+    """The reset the engine's policy would spend right now on ``entries``
+    (``usage_entries_by_account()``), or None — for ``cswap reset`` to show.
+    Same inputs as :meth:`AutoSwitchEngine._maybe_use_reset`, no side effects."""
+    from claude_swap import resets
+
+    now = time.time() if now is None else now
+    rs = switcher.reset_settings()
+    if not rs.enabled:
+        return None
+    state = _read_state_file(switcher.backup_dir / STATE_FILENAME)
+    if reset_claims_today(state, now) >= MAX_AUTO_RESETS_PER_DAY:
+        return None
+    quarantined = set(state.get("quarantine") or {}) if isinstance(state.get("quarantine"), dict) else set()
+    claims = state.get("resetClaims") if isinstance(state.get("resetClaims"), dict) else {}
+    current = switcher.current_account_number()
+    policies = switcher.account_policies()
+    thresholds = ThresholdMap(
+        {n: p.threshold for n, p in policies.items() if p.threshold is not None},
+        settings.threshold,
+    )
+    rotation = [
+        n for n in switcher.switchable_account_numbers()
+        if n not in quarantined and switcher.account_kind_for(n) != "api_key"
+    ]
+    accounts = rotation if current in rotation or current is None else [current, *rotation]
+    usage = {
+        num: entry.decision_value() for num, entry in entries.items()  # type: ignore[union-attr]
+    }
+    settling = [
+        n for n in accounts
+        if not reset_claim_settled(claims.get(n), getattr(entries.get(n), "fetched_at", None), now)
+    ]
+    views = resets.views_from(
+        usage,
+        claimable=rotation,
+        thresholds=thresholds,
+        weekly_threshold=settings.weekly_threshold,
+        accounts=accounts,
+        settling=settling,
+    )
+    return resets.plan_reset(
+        views, current=current, settings=rs,
+        watched=parse_model_names(settings.model), now=now,
+    )
+
+
+def reset_request_id(record: object, grant_id: str) -> str:
+    """The idempotency key for claiming ``grant_id``: the previous attempt's
+    when that attempt never got a decided answer, else a fresh one."""
+    import uuid
+
+    if (
+        isinstance(record, dict)
+        and record.get("grantId") == grant_id
+        and not record.get("settled")
+        and isinstance(record.get("requestId"), str)
+    ):
+        return record["requestId"]
+    return uuid.uuid4().hex
+
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
@@ -719,14 +963,10 @@ class AutoSwitchEngine:
     # -- state file ---------------------------------------------------------
 
     def _state_lock(self) -> FileLock:
-        return FileLock(self.state_path.parent / ".autoswitch_state.lock")
+        return _state_lock_for(self.state_path)
 
     def _read_state(self) -> dict:
-        try:
-            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            return {}
-        return raw if isinstance(raw, dict) else {}
+        return _read_state_file(self.state_path)
 
     def _mutate_state(self, mutator: Callable[[dict], None]) -> dict:
         """Read-modify-write the state file under its lock; returns new state.
@@ -735,12 +975,157 @@ class AutoSwitchEngine:
         overwriting each other's quarantine/cooldown updates. Never called
         while any other lock is held.
         """
-        with self._state_lock():
-            state = self._read_state()
-            state["schemaVersion"] = STATE_SCHEMA_VERSION
-            mutator(state)
-            atomic_write_json(self.state_path, state)
-            return state
+        return _mutate_state_file(self.state_path, mutator)
+
+    # -- usage resets ---------------------------------------------------------
+
+    def _maybe_use_reset(
+        self,
+        state: dict,
+        current: str,
+        entries: dict,
+        usage: dict,
+        thresholds: "ThresholdMap",
+        quarantined: set[str],
+    ) -> tuple[dict, dict, dict] | None:
+        """Spend at most one usage reset this tick, if the policy wants one.
+
+        Runs after collection and before the switch decision, so a refill
+        lands in the same tick's decision: an active account brought back
+        under its line stays, a refilled peer becomes a target. Returns the
+        re-read ``(entries, usage, headroom)`` after a successful claim, None
+        otherwise. Only rotation accounts (switchable, not quarantined, OAuth)
+        ever spend; an account whose last claim has not been followed by a
+        fresh reading is held out (``reset_claim_settled``), and the fleet
+        stops after ``MAX_AUTO_RESETS_PER_DAY`` automatic resets a day.
+        """
+        from claude_swap import resets
+
+        # Nothing to plan unless some reading carries grants: checked first,
+        # so a fleet without resets pays no settings read and no clock read
+        # (the tick's clock reads are part of its decision snapshot).
+        if not any(
+            isinstance(u, dict)
+            and isinstance(u.get("resets"), dict)
+            and u["resets"].get("grants")
+            for u in usage.values()
+        ):
+            return None
+        rs = self.switcher.reset_settings()
+        if not rs.enabled or rs.auto not in ("active", "last-resort", "on-limit"):
+            return None
+        now = self.clock()
+        if reset_claims_today(state, now) >= MAX_AUTO_RESETS_PER_DAY:
+            return None
+        rotation = [
+            n for n in self.switcher.switchable_account_numbers()
+            if n not in quarantined and self.switcher.account_kind_for(n) != "api_key"
+        ]
+        accounts = rotation if current in rotation else [current, *rotation]
+
+        def plan_on(entries_now: dict, usage_now: dict, claims: dict, at: float):
+            settling = [
+                n for n in accounts
+                if not reset_claim_settled(
+                    claims.get(n),
+                    entries_now[n].fetched_at if n in entries_now else None,
+                    at,
+                )
+            ]
+            views = resets.views_from(
+                usage_now,
+                claimable=rotation,
+                thresholds=thresholds,
+                weekly_threshold=self.settings.weekly_threshold,
+                accounts=accounts,
+                settling=settling,
+            )
+            return resets.plan_reset(
+                views, current=current, settings=rs, watched=self._models, now=at
+            )
+
+        claims = state.get("resetClaims")
+        plan = plan_on(entries, usage, claims if isinstance(claims, dict) else {}, now)
+        if plan is None:
+            return None
+        if self.dry_run:
+            ref = _ref(plan.account, self.switcher.account_email(plan.account))
+            self._emit(ResetEvent(account=ref, plan=plan.to_json(), dry_run=True))
+            return None
+
+        # Re-read the account before spending: the stored reading can be
+        # minutes old (an hour under extended trust), and a reset taken in
+        # Claude Code or by another surface meanwhile is invisible in it.
+        # Plan again on the fresh numbers; no fresh reading, no spend.
+        target = plan.account
+        entries = {**entries, **self.switcher.refresh_usage({target})}
+        fresh = entries.get(target)
+        now = self.clock()
+        if fresh is None or fresh.fetched_at is None or now - fresh.fetched_at > RESET_FRESH_READ_S:
+            _logger.info("usage reset on account %s deferred: no fresh reading", target)
+            return None
+        usage = {**usage, target: fresh.decision_value()}
+        plan = plan_on(entries, usage, claims if isinstance(claims, dict) else {}, now)
+        if plan is None:
+            return None
+        ref = _ref(plan.account, self.switcher.account_email(plan.account))
+        fetched_at = entries[plan.account].fetched_at if plan.account in entries else None
+
+        # Reserve under the state lock: re-check the brake and the account's
+        # last claim against the CURRENT file (another engine — the menu
+        # bar, the TUI, a cron --once — may have claimed since this tick's
+        # snapshot), take the request id from that fresh record, and write
+        # the pending record before any POST.
+        reserved: dict = {}
+
+        def reserve(st: dict) -> None:
+            if reset_claims_today(st, now) >= MAX_AUTO_RESETS_PER_DAY:
+                return
+            current_claims = st.get("resetClaims")
+            if not isinstance(current_claims, dict):
+                current_claims = st["resetClaims"] = {}
+            previous = current_claims.get(plan.account)
+            if not reset_claim_settled(previous, fetched_at, now):
+                return
+            record = {
+                "at": now,
+                "grantId": plan.grant_id,
+                "requestId": reset_request_id(previous, plan.grant_id),
+                "reason": plan.reason,
+                "auto": True,
+                "result": "pending",
+                "settled": False,
+            }
+            current_claims[plan.account] = record
+            reserved.update(record)
+
+        _mutate_state_file(self.state_path, reserve)
+        if not reserved:
+            return None
+        result = self.switcher.claim_usage_reset(
+            plan.account, plan.grant_id, reserved["requestId"]
+        )
+        try:
+            record_reset_claim(
+                self.switcher.backup_dir, plan.account,
+                {
+                    **reserved,
+                    "result": result.result,
+                    "settled": result.settled,
+                    "detail": result.reason or result.detail,
+                },
+                state_path=self.state_path,
+            )
+        except Exception as e:  # the pending record still holds the request id
+            _logger.warning("could not record usage reset claim: %r", e)
+        self._emit(ResetEvent(account=ref, plan=plan.to_json(), result=result.to_json()))
+        if not result.ok:
+            return None
+        # claim_usage_reset already re-read the claimed account; serve the
+        # store for everyone else (no extra requests).
+        entries = self.switcher.usage_entries_by_account(fetch=set())
+        usage = {num: entry.decision_value() for num, entry in entries.items()}
+        return entries, usage, _headroom_by_account(usage, self._models)
 
     # -- quarantine -----------------------------------------------------------
 
@@ -1158,6 +1543,12 @@ class AutoSwitchEngine:
 
         if not self._model_check_done:
             self._check_model_names(quarantined, usage)
+
+        refilled = self._maybe_use_reset(
+            state, current, entries, usage, thresholds, quarantined
+        )
+        if refilled is not None:
+            entries, usage, headroom = refilled
 
         if (
             self.switcher.account_kind_for(current) == "api_key"

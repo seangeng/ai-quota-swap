@@ -246,6 +246,18 @@ def _policy_badges(acc: AccountSnapshot, gap: str) -> list[str]:
     return badges
 
 
+def _resets_badge(last_good: dict | None, now: float) -> str:
+    """``3 resets`` in a card header while the account holds usage resets
+    (``cswap reset`` lists them), else ``""``."""
+    from claude_swap import resets
+
+    status = last_good.get("resets") if isinstance(last_good, dict) else None
+    n = resets.total_left(status, now)
+    if not n:
+        return ""
+    return f"{n} reset{'s' if n != 1 else ''}"
+
+
 def account_card_text(
     acc: AccountSnapshot,
     width: int,
@@ -278,6 +290,9 @@ def account_card_text(
     for badge in _policy_badges(acc, "   "):
         text.append(badge, style=palette.muted)
     _append_plan(text, acc, "   ", palette)
+    held = _resets_badge(acc.usage.last_good, now)
+    if held:
+        text.append(f"   {held}", style=palette.muted)
     age = data.format_age(acc.usage.age_s)
     if age:
         text.append(f"   {age}", style=palette.muted)

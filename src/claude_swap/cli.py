@@ -24,6 +24,7 @@ from claude_swap.printer import (
     force_utf8_output,
     muted,
     warning,
+    yellowed,
 )
 from claude_swap.settings import (
     AUTOSWITCH_STRATEGIES,
@@ -741,6 +742,335 @@ def _priority_command(argv: list[str]) -> None:
         sys.exit(130)
 
 
+def _reset_command(argv: list[str]) -> None:
+    """Handle `cswap reset [NUM|EMAIL|ALIAS] [--grant ID] [--yes] [--json]`.
+
+    Bare: list every account's usage-reset grants, the auto policy, and what
+    the engine would spend right now. With an account: spend one reset there
+    (asks first unless --yes). Exit 1 when nothing was spent.
+    """
+    import time as _time
+
+    parser = argparse.ArgumentParser(
+        prog="cswap reset",
+        description=(
+            "List or use usage resets: banked refills of a usage window that "
+            "Anthropic grants eligible plans (Claude Code's /limit-reset). A "
+            "reset sets the windows it clears back to 0%; the weekly reset "
+            "day stays where it was."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  cswap reset                     # every account's resets + the auto plan
+  cswap reset 2                   # use one reset on account 2 (asks first)
+  cswap reset 2 --grant launch-2610-fable --yes
+  cswap reset --json
+
+Automatic use (cswap auto, the TUI, the menu bar) follows resets.auto:
+  cswap config set resets.auto last-resort   # default
+  cswap config set resets.auto active        # the account in use, at its limit
+  cswap config set resets.auto on-limit
+  cswap config set resets.auto off
+        """,
+    )
+    parser.add_argument("account", nargs="?", metavar="NUM|EMAIL|ALIAS")
+    parser.add_argument("--grant", metavar="ID", help="Which grant to spend (default: the best usable one)")
+    parser.add_argument("-y", "--yes", action="store_true", help="Do not ask before spending")
+    parser.add_argument("--json", action="store_true", help="Machine-readable output")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    args = parser.parse_args(argv)
+
+    from claude_swap import resets
+    from claude_swap.autoswitch import (
+        STATE_FILENAME,
+        _read_state_file,
+        record_reset_claim,
+        reset_request_id,
+    )
+
+    in_flight = False
+    try:
+        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        _guard_root(switcher)
+        rs = switcher.reset_settings()
+        if not rs.enabled:
+            error(
+                "Error: usage resets are off — "
+                "`cswap config set resets.enabled true` turns them on"
+            )
+            sys.exit(1)
+        if args.account is None:
+            _print_resets(switcher, as_json=args.json)
+            return
+
+        num, email, _org = switcher.resolve_account(args.account)
+        entry = switcher.refresh_account_usage(num)
+        last_good = entry.last_good if entry is not None else None
+        status = last_good.get("resets") if isinstance(last_good, dict) else None
+        now = _time.time()
+        if status is None:
+            why = entry.last_error if entry is not None and entry.last_error else "no reading"
+            error(f"Error: no usage-reset status for Account-{num} ({why})")
+            sys.exit(1)
+        if not status.get("eligible"):
+            reason = status.get("ineligible_reason") or "unknown"
+            error(f"Error: Account-{num} has no usage resets (not eligible: {reason})")
+            sys.exit(1)
+        grants = status.get("grants") or []
+        if args.grant:
+            grant = next((g for g in grants if g["id"] == args.grant), None)
+            if grant is None:
+                error(f"Error: Account-{num} has no grant '{args.grant}' (`cswap reset` lists them)")
+                sys.exit(1)
+        else:
+            usable = sorted(
+                (g for g in grants if resets.grant_unusable_reason(g, now) is None),
+                key=lambda g: (
+                    g["id"] != status.get("next_grant_id"),
+                    resets.parse_ts(g.get("ends_at")) or math.inf,
+                ),
+            )
+            if not usable:
+                error(f"Error: Account-{num} has no reset it can use right now")
+                for g in resets.unused_grants(status, now):
+                    print(dimmed(
+                        f"  {resets.grant_kind(g)} ({g['id']}): "
+                        f"{resets.grant_unusable_reason(g, now)}"
+                    ))
+                sys.exit(1)
+            grant = usable[0]
+        unusable = resets.grant_unusable_reason(grant, now)
+        if unusable:
+            error(f"Error: that reset can't be used right now ({unusable})")
+            sys.exit(1)
+
+        kind = resets.grant_kind(grant)
+        if not args.yes:
+            if not sys.stdin.isatty():
+                error("Error: refusing to spend a reset without --yes in a non-interactive shell")
+                sys.exit(1)
+            print(_describe_reset(num, email, grant, last_good, status, now))
+            answer = input(f"Use this {kind} reset? [y/N] ")
+            if answer.strip().lower() not in ("y", "yes"):
+                print(dimmed("Kept — nothing was spent."))
+                return
+
+        state = _read_state_file(switcher.backup_dir / STATE_FILENAME)
+        claims = state.get("resetClaims") if isinstance(state.get("resetClaims"), dict) else {}
+        request_id = reset_request_id(claims.get(num), grant["id"])
+        base = {
+            "at": _time.time(),
+            "grantId": grant["id"],
+            "requestId": request_id,
+            "reason": "manual",
+            "auto": False,
+        }
+        record_reset_claim(switcher.backup_dir, num, {**base, "result": "pending", "settled": False})
+        in_flight = True
+        result = switcher.claim_usage_reset(num, grant["id"], request_id)
+        in_flight = False
+        record_reset_claim(
+            switcher.backup_dir, num,
+            {**base, "result": result.result, "settled": result.settled,
+             "detail": result.reason or result.detail},
+        )
+        if args.json:
+            print(json.dumps({
+                "account": {"number": int(num), "email": email},
+                "grantId": grant["id"],
+                "result": result.to_json(),
+            }))
+        elif result.ok:
+            left = f" · {result.resets_left} left on this grant" if result.resets_left is not None else ""
+            cleared = ", ".join(
+                resets.WINDOW_LABELS.get(k) or k for k in result.cleared
+            ) or kind
+            print(accent(f"Used a {kind} reset on Account-{num} ({email}): {cleared} refilled{left}"))
+            fresh = switcher.usage_entries_by_account(fetch=set()).get(num)
+            if fresh is not None:
+                from claude_swap.switcher import _usage_entry_lines
+
+                for line in _usage_entry_lines(fresh):
+                    print(f"   {line}")
+        else:
+            detail = (result.reason or result.detail or "").replace("_", " ")
+            error(
+                f"Reset not used: {result.result}" + (f" ({detail})" if detail else "")
+            )
+        if not result.ok:
+            sys.exit(1)
+    except ClaudeSwitchError as e:
+        error(f"Error: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        if in_flight:
+            # The POST may have reached the server; the pending record keeps
+            # its request id, so a retry (`cswap reset N` or the engine)
+            # cannot spend a second one.
+            print(f"\n{yellowed('Interrupted mid-claim — the reset may have been used; `cswap reset` shows where things stand')}")
+        else:
+            print(f"\n{dimmed('Operation cancelled — nothing was spent')}")
+        sys.exit(130)
+
+
+def _describe_reset(
+    num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float
+) -> str:
+    """What spending ``grant`` would do, in the terms Claude Code uses."""
+    from claude_swap import resets
+    from claude_swap.oauth import reset_clock_string
+    from datetime import datetime, timezone
+
+    kind = resets.grant_kind(grant)
+    lines = [bolded(f"Account-{num} ({email}) · {kind} reset · {grant['id']}")]
+    if grant.get("label"):
+        lines.append(dimmed(f"  {grant['label']}"))
+    refills = []
+    for key in grant.get("clears") or ():
+        label = resets.WINDOW_LABELS.get(key) or key
+        pct = (grant.get("percent_used") or {}).get(key)
+        refills.append(f"{label} (now {pct:.0f}%)" if isinstance(pct, (int, float)) else label)
+    if refills:
+        lines.append(f"  Refills {', '.join(refills)} to 0%")
+    if grant.get("gives_back_weekly"):
+        share = next(
+            (
+                s.get("share_of_weekly")
+                for s in (usage or {}).get("scoped") or ()
+                if isinstance(s, dict)
+                and any(
+                    (resets.WINDOW_LABELS.get(k) or "").lower() == str(s.get("name", "")).lower()
+                    for k in grant.get("clears") or ()
+                )
+            ),
+            None,
+        )
+        given = f" (about {share:.0f} pts)" if isinstance(share, (int, float)) else ""
+        lines.append(f"  Also gives back what it used of the weekly window{given}")
+    week = resets.parse_ts(status.get("weekly_resets_at"))
+    if week is not None:
+        try:
+            clock = reset_clock_string(
+                datetime.fromtimestamp(week, tz=timezone.utc),
+                datetime.fromtimestamp(now, tz=timezone.utc),
+            )
+        except (ValueError, OverflowError, OSError):
+            clock = None
+        if clock:
+            lines.append(f"  Your weekly reset stays {clock}")
+    left = max(0, grant["resets_left"] - 1)
+    end = resets.use_by(resets.parse_ts(grant.get("ends_at")), year=True)
+    tail = f" · use by {end}" if end else ""
+    lines.append(dimmed(f"  {left} left on this grant after{tail} · a used reset cannot be undone"))
+    return "\n".join(lines)
+
+
+def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
+    """Every account's grants, the auto policy, and the plan right now."""
+    import time as _time
+
+    from claude_swap import resets
+    from claude_swap.autoswitch import (
+        MAX_AUTO_RESETS_PER_DAY,
+        STATE_FILENAME,
+        _read_state_file,
+        preview_reset_plan,
+        reset_claims_today,
+    )
+    from claude_swap.settings import load_settings
+
+    entries = switcher.usage_entries_by_account()
+    # Readings taken before reset grants were read (an older cswap, or
+    # resets.enabled off at the time) carry no status: read those now.
+    missing = {
+        num for num, entry in entries.items()
+        if entry.sentinel is None
+        and isinstance(entry.last_good, dict)
+        and "resets" not in entry.last_good
+        and switcher.account_kind_for(num) != "api_key"
+    }
+    if missing:
+        entries = switcher.refresh_usage(missing)
+    now = _time.time()
+    rs = switcher.reset_settings()
+    settings = load_settings(switcher.backup_dir)
+    plan = preview_reset_plan(switcher, settings, entries, now=now)
+    state = _read_state_file(switcher.backup_dir / STATE_FILENAME)
+    used_today = reset_claims_today(state, now)
+    current = switcher.current_account_number()
+
+    if as_json:
+        accounts = []
+        for num, entry in entries.items():
+            status = entry.last_good.get("resets") if isinstance(entry.last_good, dict) else None
+            accounts.append({
+                "number": int(num),
+                "email": switcher.account_email(num),
+                "active": num == current,
+                "resets": resets.status_to_json(status, now) if status else None,
+                "error": None if status else (entry.last_error or entry.sentinel or "no reading"),
+            })
+        print(json.dumps({
+            "auto": {
+                "mode": rs.auto,
+                "threshold": rs.threshold,
+                "minHoursLeft": rs.min_hours_left,
+                "expiryDays": rs.expiry_days,
+                "expiryThreshold": rs.expiry_threshold,
+                "usedToday": used_today,
+                "maxPerDay": MAX_AUTO_RESETS_PER_DAY,
+            },
+            "plan": plan.to_json() if plan else None,
+            "accounts": accounts,
+        }))
+        return
+
+    mode = {
+        "off": "off (only `cswap reset N` spends)",
+        "active": f"active — when the account in use reaches {rs.threshold:g}% on a window its reset clears",
+        "last-resort": f"last-resort — when the active account is at {rs.threshold:g}% and no switch helps",
+        "on-limit": f"on-limit — when any account reaches {rs.threshold:g}%",
+    }[rs.auto]
+    print(bolded("Usage resets") + dimmed(f"   auto: {mode}"))
+    for num, entry in entries.items():
+        email = switcher.account_email(num)
+        marker = f" {accent('(active)')}" if num == current else ""
+        print(f"  {num}: {email}{marker}")
+        status = entry.last_good.get("resets") if isinstance(entry.last_good, dict) else None
+        if status is None:
+            why = entry.last_error or entry.sentinel or "no reading"
+            print(f"     {dimmed('└')} {dimmed(f'reset status unavailable ({why})')}")
+            continue
+        grants = resets.unused_grants(status, now)
+        if not status.get("eligible") or not grants:
+            reason = status.get("ineligible_reason")
+            note = f"not eligible ({reason})" if not status.get("eligible") and reason else "no resets held"
+            print(f"     {dimmed('└')} {dimmed(note)}")
+            continue
+        for j, g in enumerate(grants):
+            branch = dimmed("└" if j == len(grants) - 1 else "├")
+            why_not = resets.grant_unusable_reason(g, now)
+            state_text = "usable now" if why_not is None else why_not
+            end = resets.use_by(resets.parse_ts(g.get("ends_at")))
+            if end:
+                state_text += f" · use by {end}"
+            tag = " · next" if g["id"] == status.get("next_grant_id") else ""
+            count = f"{g['resets_left']}×"
+            line = f"{count:>3} {resets.grant_kind(g):<7} {state_text}"
+            print(f"     {branch} {muted(line)}  {dimmed(g['id'] + tag)}")
+    if rs.auto != "off":
+        if plan is not None:
+            hours = f", {plan.hours_left / 24:.1f}d before it resets on its own" if plan.hours_left else ""
+            print(accent(
+                f"Auto would now use a {plan.grant_kind} reset on Account-{plan.account} "
+                f"({plan.reason}: {plan.window} {plan.pct:.0f}%{hours})"
+            ))
+        else:
+            print(dimmed("Auto would not use a reset right now."))
+        print(dimmed(f"Auto resets in the last 24h: {used_today}/{MAX_AUTO_RESETS_PER_DAY}"))
+
+
 def _auto_command(argv: list[str]) -> None:
     """Handle `cswap auto [--once] [--json] [...]`.
 
@@ -877,7 +1207,7 @@ Defaults live in settings.json in the backup root; flags override them.
     def human_emit(event: AutoSwitchEvent) -> None:
         stamp = _time.strftime("%H:%M:%S")
         line = event.human()
-        if event.kind == "switch":
+        if event.kind == "switch" or (event.kind == "limit-reset" and not getattr(event, "dry_run", False)):
             line = accent(line)
         elif event.kind in ("error", "account-quarantined"):
             line = yellowed(line)
@@ -1413,6 +1743,9 @@ def main() -> None:
     if argv and argv[0] == "priority":
         _priority_command(argv[1:])
         return
+    if argv and argv[0] in ("reset", "resets"):
+        _reset_command(argv[1:])
+        return
     if argv and argv[0] == "swap":
         _swap_command(argv[1:])
         return
@@ -1463,6 +1796,8 @@ Commands:
   %(prog)s swap <a> <b>               exchange two accounts' slot numbers
   %(prog)s move <a> <slot>            assign an account to a slot (swaps if taken)
   %(prog)s auto                       auto-switch when nearing rate limits
+  %(prog)s reset                      list usage resets (+ what auto would use)
+  %(prog)s reset <num|email>          use one usage reset on that account
   %(prog)s config [set KEY VALUE]     show or change settings (settings.json)
   %(prog)s unclaimed [--purge ID]     list or drop stashed credential entries
   %(prog)s export <path>              export accounts

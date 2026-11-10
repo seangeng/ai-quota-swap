@@ -1301,6 +1301,24 @@ class UsageStore:
 
         self._mutate(identities, plans.keys(), apply)
 
+    def mark_due(self, nums: Iterable[str], identities: dict[str, Identity]) -> None:
+        """Make slots poll-due now, keeping their cadence (``pollIntervalS``).
+
+        For an event that made the stored reading obsolete on the server's
+        side — a usage reset just claimed — so the next scheduled pass (or an
+        explicit ``fetch``) re-reads it instead of serving the pre-reset
+        numbers until the plan comes due.
+        """
+        nums = list(nums)
+        if not nums:
+            return
+        now = self.clock()
+
+        def apply(_num: str, row: dict) -> None:
+            row["nextPollAt"] = now
+
+        self._mutate(identities, nums, apply)
+
     def clear_dead_token(
         self, nums: Iterable[str], identities: dict[str, Identity]
     ) -> None:

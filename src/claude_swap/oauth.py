@@ -491,13 +491,25 @@ def fresh_reset_strings(window: dict) -> tuple[str, str] | None:
     return None
 
 
-def request_usage_data(access_token: str) -> dict:
-    """Request raw utilization data from the Anthropic usage API."""
+def request_usage_data(access_token: str, *, resets: bool = False) -> dict:
+    """Request raw utilization data from the Anthropic usage API.
+
+    ``resets`` also asks for the account's usage-reset grants (the
+    ``cedar_ember`` block, see :mod:`claude_swap.resets`): same request, one
+    query flag, sent with Claude Code's own client agent because the server
+    only answers that block for a Claude Code surface.
+    """
+    from claude_swap import resets as resets_mod
+
     url = "https://api.anthropic.com/api/oauth/usage"
+    agent = "claude-swap/1.0"
+    if resets:
+        url += "?" + resets_mod.USAGE_QUERY
+        agent = resets_mod.user_agent()
     headers = {
         "Authorization": f"Bearer {access_token}",
         "anthropic-beta": OAUTH_BETA_HEADER,
-        "User-Agent": "claude-swap/1.0",
+        "User-Agent": agent,
     }
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=5) as resp:
@@ -869,9 +881,25 @@ def build_usage_result(data: dict) -> dict | None:
     # surface each scoped window separately. Absent/older responses (no
     # ``limits``) simply yield no ``scoped`` key.
     limits = data.get("limits")
+    # How much of the all-models weekly window each scoped limit has used
+    # (``limit_index`` points into ``limits``). A usage reset that "gives back
+    # weekly" refunds exactly this share, so the reset planner reads it to
+    # project the weekly window after a model reset.
+    shares: dict[int, float] = {}
+    raw_shares = data.get("weekly_scoped_shares")
+    for share in raw_shares if isinstance(raw_shares, list) else ():
+        if not isinstance(share, dict):
+            continue
+        index, used = share.get("limit_index"), share.get("used_percent_of_weekly")
+        if (
+            isinstance(index, int) and not isinstance(index, bool)
+            and isinstance(used, (int, float)) and not isinstance(used, bool)
+            and math.isfinite(used)
+        ):
+            shares[index] = float(used)
     if isinstance(limits, list):
         scoped: list[dict] = []
-        for lim in limits:
+        for index, lim in enumerate(limits):
             if not isinstance(lim, dict):
                 continue
             scope = lim.get("scope")
@@ -884,9 +912,24 @@ def build_usage_result(data: dict) -> dict | None:
             if lim.get("resets_at"):
                 scoped_entry["resets_at"] = lim["resets_at"]
                 scoped_entry["countdown"], scoped_entry["clock"] = format_reset(lim["resets_at"])
+            if index in shares:
+                scoped_entry["share_of_weekly"] = shares[index]
             scoped.append(scoped_entry)
         if scoped:
             result["scoped"] = scoped
+
+    if result:
+        # Only alongside a real reading: a reset block alone is not usage.
+        from claude_swap import resets as resets_mod
+
+        # Never let the reset block cost the usage reading it rides on.
+        try:
+            status = resets_mod.parse_status(data.get("cedar_ember"))
+        except Exception as e:  # malformed beyond what parse_status expects
+            _logger.debug("cedar_ember parse failed: %r", e)
+            status = None
+        if status is not None:
+            result["resets"] = status
 
     return result if result else None
 
@@ -1052,6 +1095,7 @@ def try_fetch_usage_for_account(
     persist_credentials: Callable[[str, str, str], None] | None = None,
     refresh_via: Callable[[str, str, str], RefreshOutcome] | None = None,
     header_probe: bool = False,
+    resets: bool = False,
 ) -> UsageOutcome:
     """Fetch usage for an account, refreshing expired tokens for inactive accounts only.
 
@@ -1068,6 +1112,9 @@ def try_fetch_usage_for_account(
     instead, in place of the endpoint request, so the caller's poll plan and
     backoff pace it exactly like an endpoint fetch; without it the outcome is
     the ``"setup-token"`` error and no request is sent.
+
+    ``resets`` reads the account's usage-reset grants with the same request
+    (see :func:`request_usage_data`).
     """
     context = f"for account {account_num}"  # no email: paste-safe for public issues
     oauth = extract_oauth_data(credentials)
@@ -1124,7 +1171,7 @@ def try_fetch_usage_for_account(
         # the 401 path below retries the refresh.
 
     try:
-        data = request_usage_data(access_token)
+        data = request_usage_data(access_token, resets=resets)
         return UsageOutcome(build_usage_result(data))
     except urllib.error.HTTPError as e:
         kind, retry_after = _classify_usage_error(e)
@@ -1173,7 +1220,7 @@ def try_fetch_usage_for_account(
             return UsageOutcome(None, error="refresh-failed")
 
         try:
-            data = request_usage_data(new_token)
+            data = request_usage_data(new_token, resets=resets)
             return UsageOutcome(build_usage_result(data))
         except Exception as retry_error:
             kind, retry_after = _classify_usage_error(retry_error)

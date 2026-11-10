@@ -1,0 +1,141 @@
+# Roadmap
+
+Status: active, 2026-11-10. Name: `ai-quota-swap`, command `qswap`.
+
+This project started as a fork of [claude-swap](https://github.com/realiti4/claude-swap) and is
+becoming its own tool: one place to see how much quota every AI coding account has left, switch
+to the best one automatically, spend limit resets at the right moment, and know what the tokens
+were worth. Claude Code first, Codex second, API keys third.
+
+## Where it stands
+
+Inherited from claude-swap 1.1.0b1: multi-account switching for Claude Code, the auto-switch
+engine, parallel sessions (`run`), the TUI, the macOS menu bar, JSON output, export and import.
+
+Added in this fork so far: usage resets for Claude (`reset`, a `resets:` row, auto-spend with the
+modes `active`, `last-resort`, `on-limit`, `off`, a daily brake, and a locked two-engine
+reservation).
+
+## Principles
+
+1. **Never refresh a live login from the side.** Only the CLI that owns a login rotates its
+   tokens. Backups refresh under a lease.
+2. **Irreversible actions get brakes.** Spending a reset or money needs a fresh reading, a daily
+   cap, a dry run, and a log line.
+3. **Unofficial endpoints stay behind one module per provider** and degrade to "unknown" when
+   they change. Nothing else breaks.
+4. **Local only.** No telemetry, no server. Credentials stay in the OS keychain or 0600 files.
+5. **One vocabulary across providers.** A window has a label, a percent used, and a reset time,
+   whether it came from Anthropic or OpenAI.
+
+## Milestones
+
+### M0. New identity
+
+- New package, import, and command name. The old `cswap` command is not shipped, so this tool
+  and claude-swap can be installed side by side.
+- Its own data directory and keychain service names. First run imports an existing claude-swap
+  store (copy, never share: two tools rotating the same tokens would log accounts out).
+- `LICENSE` keeps the original MIT copyright line and adds ours. The README ends with a one-line
+  credit to claude-swap.
+- Version restarts at `0.1.0`.
+
+Done when: the full test suite passes under the new name and an existing store imports cleanly.
+
+### M1. Provider seam
+
+Today every module assumes Claude Code (`switcher.py` alone is 8,300 lines). Introduce a
+`Provider` interface and move Claude behind it with no behavior change:
+
+- identity (who is logged in), capture and activate a login, backup refresh
+- usage read, normalized to windows
+- resets: list and claim
+- session isolation (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) and "is the CLI running" detection
+
+One registry, each account tagged with a provider. Numbers stay global; "active" is per
+provider. The auto-switch engine runs once per provider on shared code.
+
+Done when: the existing 3,655 tests pass unchanged and a stub second provider shows up in
+`list`, `--json`, the TUI, and the menu bar.
+
+### M2. Codex
+
+Verified on 2026-11-10 against Codex CLI 0.164.0 and a live account:
+
+- Login lives in `~/.codex/auth.json` (`tokens.access_token`, `refresh_token`, `account_id`).
+- `GET https://chatgpt.com/backend-api/wham/usage` returns `plan_type`, a primary and secondary
+  window (`used_percent`, `limit_window_seconds`, `reset_at`), credits, and
+  `rate_limit_reset_credits.available_count`.
+- Session files record per-turn token counts and a rate-limit snapshot.
+
+Deliverables: add, switch, and list Codex accounts; live usage; auto-switch; `run` with a
+per-account `CODEX_HOME`; Codex reset credits (list, manual spend, then auto-spend under the
+same modes as Claude).
+
+To verify before building: whether a running Codex session adopts a swapped `auth.json`;
+whether OpenAI refresh tokens rotate on use; the endpoint that spends a reset credit.
+
+### M3. Token and cost ledger
+
+`usage` command: tokens by day, account, model, and project, with an API-equivalent dollar
+figure.
+
+- Incremental readers for Claude Code transcripts (`~/.claude/projects/**/*.jsonl`) and Codex
+  session files, into a small SQLite store.
+- Attribution: a structured switch log says which account was active when; `run` sessions
+  attribute exactly.
+- A bundled price table with a user override file. Costs are labeled as estimates.
+- Per subscription: value used against plan price, cache hit rate.
+- History of quota readings, so the dashboard can show burn rate and "weekly limit reached
+  Thursday 15:00 at this pace".
+
+### M4. API accounts
+
+API-key accounts currently read "API key (no quota)".
+
+- With an Anthropic Admin key: real usage and cost from `GET /v1/organizations/usage_report/messages`
+  and `/v1/organizations/cost_report`, plus org rate limits.
+- Without one: spend estimated from the M3 ledger.
+- A monthly budget per API account. The engine stops routing to an account at its budget.
+- Opt-in overflow: when every subscription is exhausted, fall back to an API account with a cap.
+- OpenAI API keys for Codex, same shape (endpoints to verify).
+
+### M5. Engine
+
+- One reset policy across providers.
+- `where`: the best account per provider right now, and when each exhausted one returns.
+- Wait or switch: don't jump to an account with 1% left when the current one resets in 40
+  minutes.
+- Hooks: run a user command on switch, limit reached, and reset used.
+
+### M6. Surfaces
+
+- TUI: provider sections, history sparklines, a usage and cost screen.
+- Menu bar: Codex rows, cost today.
+- `statusline`: a one-line output for Claude Code's status line.
+- A documented, versioned JSON schema for every command.
+
+### M7. Public release
+
+- A README a developer can act on in one screen: what it does, install, first account, the
+  five commands that matter. Framed screenshots and short demo recordings of the dashboard,
+  `list`, auto-switch, and a reset being spent, all made from a fake account store.
+- Task-first docs under `docs/`: quickstart, auto-switch, resets, Codex, usage and cost,
+  sessions, menu bar, JSON schema, troubleshooting.
+- `SECURITY.md` on how credentials are stored and which unofficial endpoints are used.
+  `CONTRIBUTING.md`, `CHANGELOG.md`.
+- CI on macOS, Linux, and Windows. Releases to PyPI by trusted publishing.
+- A scrub pass: no personal emails, tokens, or account data in tests, fixtures, or history.
+- GitHub description and topics: `claude-code`, `codex`, `account-switcher`, `multi-account`,
+  `rate-limit`, `usage-tracking`.
+
+## Not planned
+
+- A proxy or load balancer that sits between the CLI and the API.
+- A desktop GUI. The TUI and the menu bar cover it.
+- Gemini, Cursor, and others in the first release. The provider seam leaves room.
+
+## Order
+
+M0, then M1. M2 and M3 run in parallel after M1. M4 needs M3. M5 and M6 follow M2. M7 last.
+A first public release makes sense after M2 and M3.

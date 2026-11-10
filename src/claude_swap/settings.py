@@ -116,12 +116,48 @@ class UsageSettings:
     header_probe: bool = False
 
 
+RESET_AUTO_MODES = ("off", "active", "last-resort", "on-limit")
+
+
+@dataclass(frozen=True)
+class ResetSettings:
+    """Usage resets (``resets`` section): banked refills of a usage window
+    that Anthropic grants eligible plans (Claude Code's ``/limit-reset``).
+
+    ``enabled``: read each account's reset grants along with its usage (the
+    same request, with ``?cedar_ember=1`` and Claude Code's client agent), so
+    ``cswap list``/``cswap reset`` show them and the engine can use them. Off
+    sends the plain usage request.
+
+    ``auto``: when the auto engine spends a reset by itself. ``last-resort``
+    (default) only when the active account is at ``threshold`` on a window
+    no account switch can relieve; ``on-limit`` whenever any rotation account
+    reaches ``threshold`` on a window a grant clears; ``off`` never (``cswap
+    reset`` still works); ``active`` whenever the account in use reaches
+    ``threshold`` on a window its own grant clears, rather than switching
+    away. Every auto mode also spends a grant about to
+    expire (``expiry_days`` of runway per unused reset) once the window it
+    clears reaches ``expiry_threshold``.
+
+    ``min_hours_left``: skip a reset when the window it would refill resets
+    on its own within this many hours anyway.
+    """
+
+    enabled: bool = True
+    auto: str = "last-resort"
+    threshold: float = 95.0
+    min_hours_left: float = 24.0
+    expiry_days: float = 7.0
+    expiry_threshold: float = 50.0
+
+
 _SECTION_DEFAULT_SOURCES = {
     "autoswitch": AutoSwitchSettings,
     "ui": UiSettings,
     "run": RunSettings,
     "updates": UpdateSettings,
     "usage": UsageSettings,
+    "resets": ResetSettings,
 }
 
 
@@ -209,6 +245,30 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "usage", "headerProbe", "header_probe", "bool",
             help="Read setup-token usage from a 1-token Haiku request's rate-limit headers (opt-in: uses quota)",
+        ),
+        SettingSpec(
+            "resets", "enabled", "enabled", "bool",
+            help="Read each account's usage-reset grants with its usage (shown by list and reset)",
+        ),
+        SettingSpec(
+            "resets", "auto", "auto", "choice", choices=RESET_AUTO_MODES,
+            help="When auto-switch spends a reset: active, last-resort, on-limit, or off",
+        ),
+        SettingSpec(
+            "resets", "threshold", "threshold", "float", 50.0, 100.0,
+            help="Use a reset once a window it clears reaches this pct",
+        ),
+        SettingSpec(
+            "resets", "minHoursLeft", "min_hours_left", "float", 0.0, 168.0,
+            help="Skip a reset when that window refills on its own within this many hours",
+        ),
+        SettingSpec(
+            "resets", "expiryDays", "expiry_days", "float", 0.0, 60.0,
+            help="Days of runway per unused reset before its expiry (0: no expiry guard)",
+        ),
+        SettingSpec(
+            "resets", "expiryThreshold", "expiry_threshold", "float", 0.0, 100.0,
+            help="Inside that runway, use a reset once its window reaches this pct",
         ),
     )
 }
@@ -397,6 +457,49 @@ def load_usage_settings(backup_root: Path) -> UsageSettings:
     return UsageSettings(header_probe=header_probe)
 
 
+def load_reset_settings(backup_root: Path) -> ResetSettings:
+    """Load the resets section; each bad field reverts to its default alone."""
+    raw = _read_raw(settings_path(backup_root))
+    section = raw.get("resets")
+    default = ResetSettings()
+    if not isinstance(section, dict):
+        return default
+    kwargs = {}
+    for spec in SETTING_SPECS.values():
+        if spec.section != "resets" or spec.json_key not in section:
+            continue
+        value = section[spec.json_key]
+        if spec.kind == "bool":
+            if isinstance(value, str):
+                value = _BOOL_WORDS.get(value.strip().lower())
+            if not isinstance(value, bool):
+                _logger.warning(
+                    "settings.json: %s expects a boolean, got %r; using %r",
+                    spec.dotted, section[spec.json_key], spec.default,
+                )
+                continue
+        elif spec.kind == "float":
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or (isinstance(value, float) and not math.isfinite(value))
+            ):
+                _logger.warning(
+                    "settings.json: %s expects a number, got %r; using %r",
+                    spec.dotted, value, spec.default,
+                )
+                continue
+            value = float(min(max(value, spec.lo), spec.hi))
+        elif spec.kind == "choice" and value not in spec.choices:
+            _logger.warning(
+                "settings.json: unsupported %s %r; using %r",
+                spec.dotted, value, spec.default,
+            )
+            continue
+        kwargs[spec.field] = value
+    return dataclasses.replace(default, **kwargs)
+
+
 def save_settings(backup_root: Path, settings: AutoSwitchSettings) -> None:
     """Write the autoswitch section, preserving unknown keys and sections."""
     path = settings_path(backup_root)
@@ -571,6 +674,7 @@ def effective_settings(backup_root: Path) -> list[tuple[SettingSpec, object, boo
         "run": load_run_settings(backup_root),
         "updates": load_update_settings(backup_root),
         "usage": load_usage_settings(backup_root),
+        "resets": load_reset_settings(backup_root),
     }
     rows = []
     for spec in SETTING_SPECS.values():

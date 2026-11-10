@@ -131,6 +131,14 @@ def usage_to_json(usage: dict, fetched_at: float | None = None) -> dict:
         out["spend"] = spend_out
     if "scoped" in usage:
         out["scoped"] = [_scoped_window_to_json(w, fetched_at) for w in usage["scoped"]]
+    if isinstance(usage.get("resets"), dict):
+        # Usage-reset grants. Display only: usage_from_json does not read them
+        # back, so an imported reading can never drive a claim here.
+        import time
+
+        from claude_swap import resets
+
+        out["resets"] = resets.status_to_json(usage["resets"], time.time())
     # A setup-token header-probe reading: its completeness and any refusal
     # decide whether it may gate auto-switching, so both survive export.
     if usage.get("source") == oauth.USAGE_SOURCE_HEADERS:

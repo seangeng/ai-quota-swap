@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 
 _EVENT_ROLES = {
     "switch": "accent",
+    "limit-reset": "accent",
     "error": "sev_warn",
     "account-quarantined": "sev_warn",
     "all-exhausted": "sev_crit",
@@ -256,7 +257,7 @@ class AutoScreen(Screen):
             return
         palette = Palette.from_theme(self.app.current_theme)
         self.query_one("#event-log", RichLog).write(event_text(event, palette=palette))
-        if event.kind == "switch":
+        if event.kind in ("switch", "limit-reset"):
             self.app.request_refresh()
 
     def action_toggle_live(self) -> None:

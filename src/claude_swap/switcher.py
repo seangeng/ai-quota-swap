@@ -94,7 +94,9 @@ from claude_swap.paths import (
 from claude_swap.process_detection import get_running_instances
 from claude_swap import poll_policy
 from claude_swap.settings import (
+    ResetSettings,
     load_settings,
+    load_reset_settings,
     load_usage_settings,
     parse_model_names,
     settings_path,
@@ -214,6 +216,24 @@ def _format_usage_lines(
     rows = [*_usage_rows(usage, fetched_at), *extra_rows]
     width = max((len(label) for label, _ in rows), default=0) + 1  # label + ':'
     return [_pad_row(label, body, width) for label, body in rows]
+
+
+def _resets_row(usage: dict) -> tuple[str, str] | None:
+    """(label, body) for the usage-resets row, or None when none are held::
+
+        ├ Fable:   6%   resets Nov 15 03:00  in 5d 5h
+        └ resets:   3   Fable · use by Mar 9
+    """
+    from claude_swap import resets
+
+    status = usage.get("resets") if isinstance(usage, dict) else None
+    now = time.time()
+    held = resets.summary(status, now, counted=False)
+    if held is None:
+        return None
+    # The count sits under the window rows' digits and the text under their
+    # "resets" column: " 28%   resets ..." / "  3    Fable ...".
+    return ("resets", f"{resets.total_left(status, now):>3}    {held}")
 
 
 def _login_row(login_expires_at: float | None, quarantined: bool) -> tuple[str, str] | None:
@@ -349,7 +369,9 @@ def _usage_entry_lines(
         )
         return out
     if entry.last_good is not None:
-        extra = (login_row,) if login_row is not None else ()
+        extra = tuple(
+            row for row in (_resets_row(entry.last_good), login_row) if row is not None
+        )
         lines = _format_usage_lines(entry.last_good, entry.fetched_at, extra_rows=extra)
         usage_count = len(lines) - len(extra)
         if (
@@ -434,6 +456,8 @@ class ClaudeAccountSwitcher:
         self._poll_inputs_override: tuple[float, float | None, tuple[str, ...]] | None = None
         # (settings mtime, usage.headerProbe) — see _header_probe_enabled.
         self._header_probe_cache: tuple[float | None, bool] | None = None
+        # (settings mtime, ResetSettings) — see reset_settings.
+        self._reset_settings_cache: tuple[float | None, ResetSettings] | None = None
 
         # The credential storage layer (active + per-account backup stores, macOS
         # Keychain-vs-file routing, the per-process capability cache). Reads its
@@ -1877,6 +1901,109 @@ class ClaudeAccountSwitcher:
             accounts_info, fetch=fetch, scheduled=scheduled
         )
 
+    # -- usage resets ----------------------------------------------------------
+
+    def _claim_access_token(self, num: str) -> tuple[str | None, str]:
+        """``(access_token, "")`` valid right now for spending one of the
+        slot's usage resets, or ``(None, why)``.
+
+        Same ownership rules as the usage fetch: the active login and a live
+        ``cswap run`` session own their tokens, so those are used read-only and
+        never refreshed here (an expired one waits for its owner's next
+        request); an idle slot's backup is refreshed only through the consume
+        gate, which serializes against every other refresher.
+        """
+        from claude_swap.session import (
+            read_session_credentials,
+            session_identity_drifted,
+        )
+
+        info = next(
+            (i for i in self._build_accounts_info() if str(i[0]) == num), None
+        )
+        if info is None:
+            return None, "account not found"
+        _num, email, _org_name, org_uuid, is_active, creds, _alias = info
+
+        def valid(credentials: str | None) -> str | None:
+            data = oauth.extract_oauth_data(credentials or "") or {}
+            token = data.get("accessToken")
+            if not token or oauth.is_setup_token(data):
+                return None
+            if oauth.is_oauth_token_expired(data.get("expiresAt")):
+                return None
+            return token
+
+        if is_active:
+            token = valid(creds)
+            return (token, "") if token else (
+                None, "the active login's token is expired; Claude Code renews it on its next request",
+            )
+        live = bool(self._live_session_pids(num, email))
+        if live:
+            session_dir = self._session_dir(num, email)
+            session_creds = read_session_credentials(session_dir)
+            if session_creds and session_identity_drifted(session_dir, email, org_uuid):
+                session_creds = None
+            token = valid(session_creds) or valid(creds)
+            return (token, "") if token else (
+                None, "the live cswap run session's token is expired; it renews on its next request",
+            )
+        token = valid(creds)
+        if token:
+            return token, ""
+        if self.account_kind_for(num) == "api_key":
+            return None, "API-key accounts have no usage resets"
+        outcome = self.consume_backup_grant(num, email, creds)
+        token = valid(outcome.credentials) if outcome.error is None else None
+        if token:
+            return token, ""
+        return None, f"could not renew the stored login ({outcome.error or 'no token'})"
+
+    def claim_usage_reset(
+        self, account_num: str, grant_id: str, request_id: str
+    ) -> "resets.ClaimResult":
+        """Spend one reset of ``grant_id`` on a slot, then re-read its usage.
+
+        Never raises for network trouble (the result carries it). Any answer
+        the server decided makes the stored reading obsolete — a reset zeroes
+        windows, the others change what is offered — so the slot is made due
+        and fetched before returning, and every surface sees the new numbers.
+        """
+        from claude_swap import resets
+
+        num = str(account_num)
+        org_uuid = self.account_identity(num).get("organizationUuid") or ""
+        token, why = self._claim_access_token(num)
+        if token is None:
+            return resets.ClaimResult("auth_error", detail=why)
+        result = resets.claim(token, org_uuid, grant_id, request_id)
+        self._logger.info(
+            "usage reset claim on account %s, grant %s: %s%s",
+            num, grant_id, result.result,
+            f" ({result.reason or result.detail})" if (result.reason or result.detail) else "",
+        )
+        if result.settled:
+            self.refresh_account_usage(num)
+        return result
+
+    def refresh_usage(self, account_nums: set[str]) -> dict[str, UsageEntry]:
+        """Make slots poll-due and fetch them now; every slot's entry back
+        (a slot whose fetch cannot run — failure backoff, another poller's
+        lease — serves its stored one)."""
+        accounts_info = self._build_accounts_info()
+        identities = {
+            str(n): (email, org_uuid or "")
+            for n, email, _org_name, org_uuid, _active, _creds, _alias in accounts_info
+        }
+        nums = {str(n) for n in account_nums} & identities.keys()
+        self._usage_store.mark_due(sorted(nums), identities)
+        return self._collect_usage_entries(accounts_info, fetch=nums)
+
+    def refresh_account_usage(self, account_num: str) -> UsageEntry | None:
+        """:meth:`refresh_usage` for one slot; its entry, None if no such slot."""
+        return self.refresh_usage({str(account_num)}).get(str(account_num))
+
     def _subscription_store(self) -> subscription.PlanStore:
         return subscription.PlanStore(
             self.backup_dir / "cache" / subscription.PLAN_FILENAME,
@@ -2079,6 +2206,21 @@ class ClaudeAccountSwitcher:
         enabled = load_usage_settings(self.backup_dir).header_probe
         self._header_probe_cache = (mtime, enabled)
         return enabled
+
+    def reset_settings(self) -> ResetSettings:
+        """The ``resets`` section (reloaded only when the file changes), so a
+        running engine follows ``cswap config set resets.*`` without a restart."""
+        path = settings_path(self.backup_dir)
+        try:
+            mtime: float | None = path.stat().st_mtime
+        except OSError:
+            mtime = None
+        cache = getattr(self, "_reset_settings_cache", None)
+        if cache is not None and cache[0] == mtime:
+            return cache[1]
+        loaded = load_reset_settings(self.backup_dir)
+        self._reset_settings_cache = (mtime, loaded)
+        return loaded
 
     def switchable_account_numbers(self) -> list[str]:
         """Account numbers in rotation order eligible for automatic selection.
@@ -4720,6 +4862,7 @@ class ClaudeAccountSwitcher:
             outcome = oauth.try_fetch_usage_for_account(
                 account_num, email, creds, is_active=True,
                 header_probe=self._header_probe_enabled(),
+                resets=self.reset_settings().enabled,
             )
             if outcome.error != "http-401":
                 if outcome.usage is not None:
@@ -5212,6 +5355,7 @@ class ClaudeAccountSwitcher:
         outcome = oauth.try_fetch_usage_for_account(
             account_num, email, working, is_active=True,
             header_probe=self._header_probe_enabled(),
+            resets=self.reset_settings().enabled,
         )
         return FetchRecord(
             usage=outcome.usage,
@@ -5504,6 +5648,7 @@ class ClaudeAccountSwitcher:
             is_active=False,
             refresh_via=self.consume_backup_grant,
             header_probe=self._header_probe_enabled(),
+            resets=self.reset_settings().enabled,
         )
         return FetchRecord(
             usage=outcome.usage,
@@ -5528,6 +5673,7 @@ class ClaudeAccountSwitcher:
         outcome = oauth.try_fetch_usage_for_account(
             num, email, creds, is_active=True,
             header_probe=self._header_probe_enabled(),
+            resets=self.reset_settings().enabled,
         )
         if outcome.error == "http-401":
             return FetchRecord(sentinel=USAGE_TOKEN_EXPIRED, rejected_fp=stamp)

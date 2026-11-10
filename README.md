@@ -140,6 +140,35 @@ Defaults like the threshold and cooldown are configurable with `cswap config set
 
 The exact rules (margins, landing, polling cadence, tier handling) are in [docs/auto-switch.md](https://github.com/realiti4/claude-swap/blob/main/docs/auto-switch.md).
 
+### Usage resets
+
+Anthropic occasionally grants eligible plans banked **usage resets** (Claude Code's `/limit-reset`): each one sets the windows it clears back to 0% when you choose, and is lost if unused by its date. claude-swap reads every account's resets along with its usage and can spend them for you:
+
+```bash
+cswap reset                    # every account's resets, and what auto would use now
+cswap reset 2                  # use one on account 2 (asks first; --yes to skip)
+cswap config set resets.auto on-limit   # how auto-switch spends them (below)
+```
+
+`cswap list` shows a `resets:` row under any account that holds one. Whenever the auto engine runs (`cswap auto`, the dashboard's live mode, the menu bar), `resets.auto` decides when it spends one, at most one per tick:
+
+| `resets.auto` | Uses a reset when |
+|---|---|
+| `last-resort` (default) | the active account reaches `resets.threshold` (95%) on a window a reset clears, and switching accounts can't relieve it: no account has room there, or the engine doesn't watch that window (a Fable limit without `--model Fable`). If the active account holds no useful reset, it refills an account the engine can then switch to. |
+| `active` | the account in use reaches `resets.threshold` on a window one of its own resets clears: it refills rather than switching away. Pair with `resets.threshold 100` to spend only at the limit. |
+| `on-limit` | any account in rotation reaches `resets.threshold` on a window a reset clears. |
+| `off` | never; `cswap reset N` still works. |
+
+<details>
+<summary>Guards & settings</summary>
+
+- **Worth it, or kept.** A reset is skipped when its window refills on its own within `resets.minHoursLeft` (24h), or when another window would still sit over the line afterwards (a Fable reset does nothing for an account whose all-models weekly window stays at 98%). A Fable reset that also gives back Fable's share of the weekly window gets credit for it.
+- **Not lost to expiry.** Every auto mode also spends a reset once its expiry is within `resets.expiryDays` (7) per reset held, at `resets.expiryThreshold` (50%). Three resets expiring together start 21 days out.
+- **Never twice on old numbers.** After a claim, the account is held out until a reading taken after it arrives. An unconfirmed claim is retried with the same request id, so it can't spend a second reset. Auto spends at most 3 a day across all accounts, and never on disabled or quarantined accounts. `--dry-run` only reports.
+- `resets.enabled false` stops reading reset status. The status rides on the normal usage request, with Claude Code's client agent string, because the server only reports resets to Claude Code.
+
+</details>
+
 ### Run multiple accounts at the same time (session mode)
 
 Launch Claude Code as a specific account in the current terminal only — every other terminal and the VS Code extension stay on your default account, so two accounts can work in parallel.
@@ -208,6 +237,7 @@ If the refresh token itself has died (auto-switch quarantines and reports such a
 ```bash
 cswap run 2                     # Run an account in this terminal only (session mode)
 cswap auto                      # Auto-switch when nearing rate limits (see above)
+cswap reset                     # List usage resets; `cswap reset 2` uses one (see above)
 cswap config                    # Show or edit settings (see Configuration below)
 cswap list                      # Show all accounts with 5h/7d usage and reset times
 cswap list --token-status       # Add source-labelled OAuth token diagnostics

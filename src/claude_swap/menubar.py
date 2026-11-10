@@ -982,6 +982,23 @@ def run(switcher) -> int:
                 if ev.kind == "switch" and not getattr(ev, "dry_run", False):
                     rumps.notification("claude-swap", "Auto-switched account", ev.human())
                     self.refresh_async()  # reflect the switch promptly
+                elif ev.kind == "limit-reset" and not getattr(ev, "dry_run", False):
+                    if getattr(ev, "used", False):
+                        rumps.notification("claude-swap", "Usage reset used", ev.human())
+                        self.refresh_async()  # show the refilled window promptly
+                    else:
+                        # A refusal or failure retries on its own (10-60 min
+                        # apart): say each kind once per run, not every retry.
+                        seen = getattr(self, "_reset_failures_surfaced", None)
+                        if seen is None:
+                            seen = self._reset_failures_surfaced = set()
+                        key = (
+                            str((getattr(ev, "account", None) or {}).get("number")),
+                            str((getattr(ev, "result", None) or {}).get("result")),
+                        )
+                        if key not in seen:
+                            seen.add(key)
+                            rumps.notification("claude-swap", "Usage reset not used", ev.human())
                 elif ev.kind == "account-quarantined":
                     rumps.notification("claude-swap", "Account quarantined", ev.human())
                 elif ev.kind == "all-exhausted":

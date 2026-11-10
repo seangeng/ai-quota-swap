@@ -19,6 +19,7 @@ from claude_swap.settings import (
     RunSettings,
     UiSettings,
     UpdateSettings,
+    ResetSettings,
     UsageSettings,
     effective_settings,
     explicit_share_history,
@@ -294,6 +295,7 @@ class TestSettingSpecs:
             "run": RunSettings(),
             "updates": UpdateSettings(),
             "usage": UsageSettings(),
+            "resets": ResetSettings(),
         }
         for spec in SETTING_SPECS.values():
             assert spec.default == getattr(sources[spec.section], spec.field)
