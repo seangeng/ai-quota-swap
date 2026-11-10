@@ -784,7 +784,7 @@ class TestEngine:
         assert [c[:2] for c in calls] == [("1", "g-fable")]
         event = next(e for e in h.events if isinstance(e, ResetEvent))
         assert event.used and event.plan["reason"] == "last-resort"
-        assert "Used a Fable reset on Account-1" in event.human()
+        assert "Used a Fable reset on #1 a@example.com" in event.human()
         # The refill lands in the same tick: below its line, so no switch.
         assert outcome is TickOutcome.NO_ACTION
         assert h.active_number() == 1
@@ -830,7 +830,8 @@ class TestEngine:
         _, calls = self._tick(h, before)
         assert calls == []
         event = next(e for e in h.events if isinstance(e, ResetEvent))
-        assert event.dry_run and event.human().startswith("[dry-run] would use a Fable reset")
+        assert event.dry_run and event.human().startswith("Would use a Fable reset")
+        assert event.human().endswith("(dry run)")
         assert "resetClaims" not in h.state()
 
     def test_switch_preferred_when_it_helps(self, h):
@@ -876,7 +877,7 @@ class TestEngine:
         payload = event.to_json()
         assert payload["event"] == "limit-reset"
         assert payload["result"]["result"] == "cooldown"
-        assert "Did not use a Fable reset on Account-1" in event.human()
+        assert "Did not use a Fable reset on #1 a: cooldown" in event.human()
 
 
 # -- list output -------------------------------------------------------------------

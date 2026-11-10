@@ -273,7 +273,10 @@ class TestCodexInTheSandbox:
         # The exit status is the last command's (list); the output shows the rest ran.
         assert audited_codex_run["returncode"] == 0, audited_codex_run["stderr"]
         assert "Switched to Account-2 (maya@northwind.example.com)" in out
-        assert "no switch: below-threshold" in out  # codex auto --once --dry-run
+        # codex auto --once --dry-run: the reason in words, never the code
+        # (the per-event line says "No switch needed", the tick log "· no switch needed").
+        assert "no switch needed" in out.lower()
+        assert "below-threshold" not in out
         assert "Used a Codex usage reset credit on Account-2" in out
         assert "Added Account 3: ops@example.net" in out
         assert "Codex accounts:" in out  # the unified list's Codex section

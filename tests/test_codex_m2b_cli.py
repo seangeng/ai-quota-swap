@@ -192,7 +192,8 @@ class TestCodexAuto:
         two.fetch.answers["acct-b"] = UsageOutcome(usage=_reading(100))
         code, out, _ = run(["codex", "auto", "--once"], capsys)
         assert code == 2
-        assert "Used a weekly reset on Account-2 (a@example.com) (last-resort: 7d 100%" in out
+        assert "Used a weekly reset on #2 a@example.com · 7d reached 100%, no account" in out
+        assert "last-resort" not in out  # the reason in words
         assert [c[:2] for c in two.consumed] == [("acct-a", CREDIT_ID)]
         assert codex_usage.is_uuid4(two.consumed[0][2])
         assert _state(two)["resetClaims"]["2"]["auto"] is True
@@ -204,7 +205,7 @@ class TestCodexAuto:
         monkeypatch.setattr(AutoSwitchEngine, "run_loop", lambda self: 0)
         code, out, _ = run(["codex", "auto", "--dry-run"], capsys)
         assert code == 0
-        assert "Codex auto-switch running: threshold 99%, every 60s (dry-run)" in out
+        assert "Codex auto-switch dry run: would switch at 99% · every 60s" in out
 
 
 # -- qswap codex reset -------------------------------------------------------------------

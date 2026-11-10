@@ -1670,7 +1670,8 @@ class TestAdaptiveScheduler:
         )
         poll = next(e for e in h.events if isinstance(e, PollEvent))
         assert poll.fetch_errors.get("1") == "http-429"
-        assert "http-429" in poll.human()
+        # The fetch error, in words (the JSON keeps the kind).
+        assert "#1 a@example.com usage unavailable (rate limited, HTTP 429)" in poll.human()
         assert poll.to_json()["fetchErrors"] == {"1": "http-429"}
 
     def test_quarantined_candidate_never_consumes_the_poll_slot(
@@ -2202,10 +2203,10 @@ class TestEventsShape:
         harness.tick_with_usage({"1": _usage(42), "2": _usage(10), "3": None})
         poll = next(e for e in harness.events if isinstance(e, PollEvent))
         line = poll.human()
-        assert "Account-1" in line and "42% used" in line
+        assert line.startswith("#1 a@example.com at 5h 42% (switch at 90%)")
         # Others show per-window pcts, not just the ambiguous binding pct.
-        assert "#2: 5h 10% · 7d 0%" in line
-        assert "#3: ?" in line
+        assert "#2 b@example.com at 5h 10% · 7d 0%" in line
+        assert "#3 c@example.com usage not read yet" in line
 
     def test_poll_event_windows_match_the_decision_set(self, temp_home):
         # Scoped windows appear only when configured: rendering an ignored
@@ -2229,14 +2230,14 @@ class TestEventsShape:
         plain = build()
         plain.tick_with_usage(usage)
         poll = next(e for e in plain.events if isinstance(e, PollEvent))
-        assert "#2: 5h 3% · 7d 89%" in poll.human()
+        assert "#2 b@example.com at 5h 3% · 7d 89%" in poll.human()
         assert "Fable" not in poll.human()
         assert poll.to_json()["windowsPct"]["2"] == {"5h": 3.0, "7d": 89.0}
 
         modeled = build(model="Fable")
         modeled.tick_with_usage(usage)
         poll = next(e for e in modeled.events if isinstance(e, PollEvent))
-        assert "#2: 5h 3% · 7d 89% · Fable 21%" in poll.human()
+        assert "#2 b@example.com at 5h 3% · 7d 89% · Fable 21%" in poll.human()
         assert poll.to_json()["windowsPct"]["2"] == {
             "5h": 3.0, "7d": 89.0, "Fable": 21.0,
         }
@@ -7028,15 +7029,15 @@ class TestWeeklyThreshold:
         assert payload["headroomPct"]["1"] == 7.0                      # raw
         assert payload["threshold"] == 85.0
         assert payload["weeklyThreshold"] == 97.0
-        assert "Account-1 (a@example.com): 7d 93% used (switch at 97%)" in poll.human()
-        assert "#2: 5h 95% · 7d 47%" in poll.human()                   # raw
+        assert "#1 a@example.com at 7d 93% (switch at 97%)" in poll.human()
+        assert "#2 b@example.com at 5h 95% · 7d 47%" in poll.human()   # raw
 
     def test_poll_event_omits_the_weekly_line_when_unset(self, temp_home):
         h = self._harness(temp_home, weekly_threshold=None)
         h.tick_with_usage({"1": _usage7(42, 10), "2": _usage7(5, 5)})
         poll = next(e for e in h.events if isinstance(e, PollEvent))
         assert "weeklyThreshold" not in poll.to_json()
-        assert "5h 42% used (switch at 85%)" in poll.human()
+        assert "at 5h 42% (switch at 85%)" in poll.human()
 
     def test_poll_event_human_names_the_binding_window_and_its_line(self):
         active = {"number": 1, "email": "a@example.com"}
@@ -7044,16 +7045,16 @@ class TestWeeklyThreshold:
             active=active, headroom={"1": 7.0}, threshold=85.0,
             windows={"1": {"5h": 5.0, "7d": 93.0}}, weekly_threshold=97.0,
         )
-        assert "7d 93% used (switch at 97%)" in with_windows.human()
+        assert "at 7d 93% (switch at 97%)" in with_windows.human()
         # No window data (older stores, sentinels): the account-wide form.
         bare = PollEvent(active=active, headroom={"1": 7.0}, threshold=85.0,
                          weekly_threshold=97.0)
-        assert "93% used (switch at 85%)" in bare.human()
+        assert "at 93% (switch at 85%)" in bare.human()
         default = PollEvent(
             active=active, headroom={"1": 58.0}, threshold=90.0,
             windows={"1": {"5h": 42.0, "7d": 10.0}},
         )
-        assert "5h 42% used (switch at 90%)" in default.human()
+        assert "at 5h 42% (switch at 90%)" in default.human()
 
     def test_s2_a_weekly_bound_candidate_is_taken_over_a_5h_bound_active(
         self, temp_home

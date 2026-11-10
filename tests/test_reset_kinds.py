@@ -451,8 +451,8 @@ class TestEventWording:
         ("full", "full", "full reset"),
     ])
     def test_each_kind_named(self, scope, kind, noun):
-        assert self._event(scope, kind).human().startswith(f"Used a {noun} on Account-1")
-        assert self._event(scope, kind, dry_run=True).human().startswith(f"[dry-run] would use a {noun} on")
+        assert self._event(scope, kind).human().startswith(f"Used a {noun} on #1 a@example.com")
+        assert self._event(scope, kind, dry_run=True).human().startswith(f"Would use a {noun} on")
         assert f"Did not use a {noun}" in self._event(scope, kind, result="cooldown").human()
 
     def test_json_carries_scope(self):
