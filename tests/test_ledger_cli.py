@@ -261,7 +261,11 @@ class TestUsageEmptyStates:
             paths.get_codex_home() / "archived_sessions",
         ):
             assert home_path(d) in squeezed
-        assert "~/" in text  # home is spelled ~ (the Claude config home is under it)
+        # Home is spelled ~ (the Claude config home is under it), with this
+        # platform's separator: ~/ on POSIX, ~\ on Windows (report.home_path).
+        tilde = home_path(Path.home() / "x")[:-1]
+        assert tilde == ("~\\" if os.sep == "\\" else "~/")
+        assert tilde in text
         assert text.endswith("Use Claude Code or Codex, then run qswap usage again.")
         assert "Token usage" not in out and "$0.00" not in out and "Total" not in out
 

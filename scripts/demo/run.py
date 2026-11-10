@@ -64,6 +64,9 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
                    help="which TUI page --serve opens on")
     p.add_argument("--compression", type=float,
                    help="override the scenario's auto-switch time compression (see AutoRun)")
+    p.add_argument("--without-cli", action="append", choices=("claude", "codex"), default=[],
+                   help="act as if this CLI is not installed (repeatable); by default "
+                        "both are, whatever this machine has")
     p.add_argument("--tui-child", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(head)
     if "--" not in argv and not args.serve:
@@ -150,6 +153,7 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
     # API), and a process with no network needs no TLS trust store.
     cli._use_native_tls = lambda: None
     install_doctor_fakes()
+    install_cli_fakes(args.without_cli)
     random.seed(scenario.name)  # the engine's poll jitter, run to run
 
     code = 0
@@ -239,6 +243,18 @@ def install_codex_process_fakes(scenario) -> None:
     processes.background_server_pid = lambda home: None
     processes.restart_background_server = no_restart
     processes.run_codex_login = fake_login
+
+
+def install_cli_fakes(missing: list[str]) -> None:
+    """Whether ``claude`` and ``codex`` are installed is the scenario's
+    choice, not this machine's: ``ai_quota_swap.clis.find_cli`` (qswap's one
+    PATH lookup for them) answers both found, except those named with
+    ``--without-cli``. Output is then the same on a laptop with both CLIs and
+    a CI runner with neither. Nothing found is ever run: the sandbox refuses
+    every spawn."""
+    from ai_quota_swap import clis
+
+    clis.find_cli = lambda name: None if name in missing else f"/usr/local/bin/{name}"
 
 
 def install_doctor_fakes() -> None:

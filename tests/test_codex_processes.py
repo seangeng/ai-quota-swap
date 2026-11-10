@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ai_quota_swap import clis
 from ai_quota_swap.codex import processes
 from ai_quota_swap.codex.processes import (
     BACKGROUND_SERVER,
@@ -143,7 +144,7 @@ class TestRestart:
             seen["cmd"], seen["env"], seen["timeout"] = cmd, kwargs["env"], kwargs["timeout"]
             return SimpleNamespace(returncode=0, stdout="restarted\n", stderr="")
 
-        monkeypatch.setattr(processes.shutil, "which", lambda name: "/fake/bin/codex")
+        monkeypatch.setattr(clis, "find_cli", lambda name: "/fake/bin/codex")
         monkeypatch.setattr(processes.spawn, "run", fake_run)
         result = real_restart(tmp_path, timeout=7)
         assert result.ok is True
@@ -152,10 +153,10 @@ class TestRestart:
         assert seen["timeout"] == 7
 
     def test_failures_are_results_never_exceptions(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(processes.shutil, "which", lambda name: None)
+        monkeypatch.setattr(clis, "find_cli", lambda name: None)
         assert real_restart(tmp_path).detail == "codex is not on PATH"
 
-        monkeypatch.setattr(processes.shutil, "which", lambda name: "/fake/bin/codex")
+        monkeypatch.setattr(clis, "find_cli", lambda name: "/fake/bin/codex")
 
         def timeout(cmd, **kwargs):
             raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])

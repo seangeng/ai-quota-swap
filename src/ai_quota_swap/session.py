@@ -61,6 +61,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
+from ai_quota_swap import clis
 from ai_quota_swap import macos_keychain, spawn
 from ai_quota_swap.claude_locks import proper_lockfile
 from ai_quota_swap.exceptions import (
@@ -771,7 +772,7 @@ class SessionManager:
         and a session on the default login is the one thing an account
         switch can later pull out from under it.
         """
-        claude_bin = shutil.which("claude")
+        claude_bin = clis.find_cli("claude")
         if not claude_bin:
             raise SessionError(
                 "'claude' was not found on PATH. Install Claude Code first."
@@ -924,7 +925,7 @@ class SessionManager:
         profile, no auth-override scrubbing), so whatever the default login
         resolves to is what runs.
         """
-        claude_bin = shutil.which("claude")
+        claude_bin = clis.find_cli("claude")
         if not claude_bin:
             raise SessionError(
                 "'claude' was not found on PATH. Install Claude Code first."
@@ -1271,7 +1272,7 @@ class SessionManager:
         # subprocess won't resolve it (PATHEXT isn't applied) — it raises
         # FileNotFoundError. `shutil.which` finds the shim; when it finds
         # nothing at all the run below still raises, and that is "unknown".
-        claude_bin = shutil.which("claude") or "claude"
+        claude_bin = clis.find_cli("claude") or "claude"
         try:
             result = spawn.run(
                 [claude_bin, "auth", "status", "--json"],

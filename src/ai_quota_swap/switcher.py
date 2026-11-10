@@ -26,7 +26,7 @@ from ai_quota_swap.exceptions import (
     SwitchError,
     ValidationError,
 )
-from ai_quota_swap import oauth, pace, prompts, subscription
+from ai_quota_swap import clis, oauth, pace, prompts, subscription
 from ai_quota_swap.claude_locks import claude_config_lock, claude_credentials_lock
 from ai_quota_swap.json_output import (
     SCHEMA_VERSION,
@@ -6660,7 +6660,7 @@ class ClaudeAccountSwitcher:
 
         identity = self._get_current_account()
         live = identity[0] if identity is not None else None
-        found = None if live else shutil.which(self.cli_name) is not None
+        found = None if live else clis.cli_found(self.provider_id)
         lines = display.nothing_managed_lines("claude", live_email=live, cli_found=found)
         print(lines[0])
         for line in lines[1:]:
@@ -6791,7 +6791,7 @@ class ClaudeAccountSwitcher:
                     f"  {line}" for line in
                     display.nothing_managed_lines(
                         "claude", sentence=False,
-                        cli_found=__import__("shutil").which(self.cli_name) is not None,
+                        cli_found=clis.cli_found(self.provider_id),
                     )
                 )
             return out

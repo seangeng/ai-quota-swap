@@ -23,7 +23,10 @@ Run everything from the repository root with the dev dependencies installed
 `++` to run them one after another on the same state, for example
 `run.py reset -- reset ++ reset 1 --yes`. Add `--html <file>` to render the
 output as a terminal-window page, `--theme light` for the light palette, and
-`--width` to set the terminal's column count.
+`--width` to set the terminal's column count. Whether Claude Code and Codex
+are installed is the harness's choice, not this machine's: both are, unless
+`--without-cli claude` (or `codex`) says otherwise, so output is the same on a
+laptop with both CLIs and a CI runner with neither.
 
 ## Why it is safe
 

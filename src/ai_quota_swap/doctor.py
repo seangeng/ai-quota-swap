@@ -29,7 +29,6 @@ import os
 import platform as _platform
 import plistlib
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -260,7 +259,9 @@ def _data_dir() -> Path:
 
 
 def _which(name: str) -> str | None:
-    return shutil.which(name)
+    from ai_quota_swap import clis
+
+    return clis.find_cli(name)
 
 
 def _exists(path: Path) -> bool:

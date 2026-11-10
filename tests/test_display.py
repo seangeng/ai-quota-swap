@@ -44,7 +44,9 @@ class TestPhrases:
         codex = display.nothing_managed_lines("codex", live_email=None, sentence=False)
         assert codex == ["Codex is not logged in. Run codex login, then: qswap codex add"]
         missing = display.nothing_managed_lines("claude", cli_found=False)[1]
-        assert "claude is not on PATH" in missing and missing.endswith("qswap add")
+        assert missing == (
+            "Claude Code was not found on PATH. Install it and log in, then run: qswap add"
+        )
 
     def test_usage_unavailable(self):
         assert display.usage_unavailable("http-503") == "usage unavailable (HTTP 503), retrying"

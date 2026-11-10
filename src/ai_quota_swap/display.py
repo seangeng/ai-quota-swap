@@ -203,11 +203,7 @@ def nothing_managed_lines(
     if live_email:
         lines.append(f"{name} is logged in as {live_email}. Add it with: {add}")
     elif cli_found is False:
-        command = "codex" if provider == "codex" else "claude"
-        lines.append(
-            f"{name} was not found ({command} is not on PATH). Install it, "
-            f"log in, then run: {add}"
-        )
+        lines.append(f"{name} was not found on PATH. Install it and log in, then run: {add}")
     elif provider == "codex":
         lines.append(f"{name} is not logged in. Run codex login, then: {add}")
     else:

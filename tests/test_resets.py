@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ai_quota_swap import clis
 from ai_quota_swap import oauth, resets
 from ai_quota_swap.autoswitch import (
     MAX_AUTO_RESETS_PER_DAY,
@@ -291,13 +292,13 @@ class TestCliVersion:
         binary.write_text("")
         link = tmp_path / "claude"
         link.symlink_to(binary)
-        monkeypatch.setattr(resets.shutil, "which", lambda _name: str(link))
+        monkeypatch.setattr(clis, "find_cli", lambda _name: str(link))
         assert resets.detect_cli_version() == "2.1.500"
 
     def test_fallback(self, monkeypatch, tmp_path):
         monkeypatch.setattr(resets, "_cli_version_cache", None)
         monkeypatch.delenv("QSWAP_CLAUDE_CLI_VERSION", raising=False)
-        monkeypatch.setattr(resets.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(clis, "find_cli", lambda _name: None)
         monkeypatch.setattr(resets.Path, "home", lambda: tmp_path)
         assert resets.detect_cli_version() == resets.FALLBACK_CLI_VERSION
 

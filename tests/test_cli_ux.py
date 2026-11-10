@@ -515,3 +515,72 @@ class TestCodexRotationSkipsNeedsRelogin:
         assert capsys.readouterr().out.strip() == "Skipped #2 work: needs re-login."
         CodexSwitcher._skip(switcher, warnings, True, "2", "needs re-login")
         assert warnings == ["Skipped Account-2 (needs re-login)"]
+
+
+# -- is the CLI installed: one seam, a fixed default, both answers tested --------------
+
+
+from tests.conftest import FAKE_CLI_DIR, no_cli  # noqa: E402
+
+
+class TestCliInstalled:
+    """`ai_quota_swap.clis.find_cli` is the one PATH lookup for `claude` and
+    `codex`; conftest makes both found in every test, so output never depends
+    on this machine's PATH. These tests set each answer on purpose."""
+
+    def test_the_default_is_both_found(self):
+        from ai_quota_swap import clis
+
+        assert clis.find_cli("claude") == f"{FAKE_CLI_DIR}/claude"
+        assert clis.cli_found("codex")
+
+    def test_claude_installed_but_not_logged_in(self, temp_home, capsys):
+        assert _main(["list"]) == 0
+        assert capsys.readouterr().out.splitlines() == [
+            "No accounts are managed yet.",
+            "Claude Code is not logged in. Log in with claude (/login), then run: qswap add",
+        ]
+        assert _main(["status"]) == 0
+        assert "Claude Code is not logged in." in capsys.readouterr().out
+
+    def test_claude_not_installed(self, temp_home, monkeypatch, capsys):
+        from ai_quota_swap import clis
+
+        monkeypatch.setattr(clis, "find_cli", no_cli("claude"))
+        for verb in ("list", "status"):
+            assert _main([verb]) == 0
+            lines = capsys.readouterr().out.splitlines()
+            assert lines[0] == "No accounts are managed yet."
+            assert lines[1] == (
+                "Claude Code was not found on PATH. Install it and log in, then run: qswap add"
+            )
+
+    def test_codex_installed_but_not_logged_in(self, temp_home, capsys):
+        assert _main(["codex", "status"]) == 0
+        assert capsys.readouterr().out.splitlines() == [
+            "No Codex accounts are managed yet.",
+            "Codex is not logged in. Run codex login, then: qswap codex add",
+        ]
+
+    def test_codex_not_installed(self, temp_home, monkeypatch, capsys):
+        from ai_quota_swap import clis
+
+        monkeypatch.setattr(clis, "find_cli", no_cli("codex"))
+        for argv in (["codex", "status"], ["codex", "list"]):
+            assert _main(argv) == 0
+            lines = capsys.readouterr().out.splitlines()
+            assert lines[0] == "No Codex accounts are managed yet."
+            assert lines[1] == (
+                "Codex was not found on PATH. Install it and log in, then run: qswap codex add"
+            )
+
+    def test_doctor_and_run_ask_the_same_seam(self, temp_home, monkeypatch):
+        from ai_quota_swap import clis, doctor
+        from ai_quota_swap.exceptions import SessionError
+        from ai_quota_swap.session import SessionManager
+
+        assert doctor.default_probes().which("codex") == f"{FAKE_CLI_DIR}/codex"
+        monkeypatch.setattr(clis, "find_cli", no_cli())
+        assert doctor.default_probes().which("claude") is None
+        with pytest.raises(SessionError, match="not found on PATH"):
+            SessionManager(MagicMock()).exec_default([])

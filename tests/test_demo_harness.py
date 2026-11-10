@@ -320,15 +320,16 @@ class TestScenarioStates:
         assert "Holds 1 reset credit" in codex  # the saved account's credit
         assert all(len(line) <= 80 for line in r.stdout.splitlines())
 
-    # "not logged in" where the CLI is installed, "was not found" where it is
-    # not (the harness keeps the machine's PATH).
+    # The harness decides whether the CLIs are installed (both, unless
+    # --without-cli), so these do not depend on this machine's PATH.
     @pytest.mark.parametrize(
         ("scenario", "claude", "codex"),
         [
-            ("empty", ("Claude Code is not logged in", "Claude Code was not found"),
-             ("Codex is not logged in", "Codex was not found")),
+            ("empty", ("Claude Code is not logged in. Log in with claude (/login), then "
+                       "run: qswap add",),
+             ("Codex is not logged in. Run codex login, then: qswap codex add",)),
             ("empty-claude", ("Claude Code is logged in as maya@example.com. Add it with: qswap add",),
-             ("Codex is not logged in", "Codex was not found")),
+             ("Codex is not logged in. Run codex login, then: qswap codex add",)),
             ("empty-claude-codex",
              ("Claude Code is logged in as maya@example.com. Add it with: qswap add",),
              ("Codex is logged in as maya@example.com. Add it with: qswap codex add",)),
@@ -348,6 +349,18 @@ class TestScenarioStates:
         assert any(text in r.stdout for text in claude)
         r = _run([scenario, "--", "list", "--json"])
         assert json.loads(r.stdout)["accounts"] == []  # nothing managed
+
+    def test_without_the_clis_installed(self):
+        r = _run(["--without-cli", "claude", "--without-cli", "codex", "empty", "--",
+                  "status", "++", "codex", "status"])
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.splitlines() == [
+            "No accounts are managed yet.",
+            "Claude Code was not found on PATH. Install it and log in, then run: qswap add",
+            "No Codex accounts are managed yet.",
+            "Codex was not found on PATH. Install it and log in, then run: qswap codex add",
+        ]
+        assert all(len(line) <= 80 for line in r.stdout.splitlines())
 
     def test_usage_attributes_codex_sessions_to_codex_accounts(self):
         r = _run(["usage", "--", "usage", "--by", "account", "--provider", "codex"])

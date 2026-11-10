@@ -1041,7 +1041,9 @@ class CodexSwitcher:
         from ai_quota_swap import display
 
         email = self.live_login_email()
-        found = None if email else shutil.which("codex") is not None
+        from ai_quota_swap import clis
+
+        found = None if email else clis.cli_found("codex")
         return [
             line.replace(display.NOTHING_MANAGED, "No Codex accounts are managed yet.")
             for line in display.nothing_managed_lines(

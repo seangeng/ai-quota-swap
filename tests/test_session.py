@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ai_quota_swap import clis
 from ai_quota_swap import fsutil
 from ai_quota_swap import macos_keychain
 from ai_quota_swap import oauth
@@ -819,7 +820,7 @@ class TestIsSessionValid:
         """
         tmp_path.mkdir(exist_ok=True)
         resolved = "/fake/bin/claude.CMD"
-        monkeypatch.setattr(session_mod.shutil, "which", lambda name: resolved)
+        monkeypatch.setattr(clis, "find_cli", lambda name: resolved)
         seen_argv = {}
 
         def capture_run(argv, *a, **k):
@@ -1512,13 +1513,13 @@ def capture_exec(monkeypatch):
 
     monkeypatch.setattr(session_mod.SessionManager, "_exec", fake_exec)
     monkeypatch.setattr(
-        session_mod.shutil, "which", lambda name: f"/fake/bin/{name}"
+        clis, "find_cli", lambda name: f"/fake/bin/{name}"
     )
 
 
 class TestRun:
     def test_claude_not_on_path(self, manager, monkeypatch):
-        monkeypatch.setattr(session_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(clis, "find_cli", lambda name: None)
         with pytest.raises(SessionError, match="not found on PATH"):
             manager.run("2", [])
 
@@ -1677,7 +1678,7 @@ class TestRun:
         assert exc.value.env["ANTHROPIC_API_KEY"] == "sk-ant-key"
 
     def test_exec_default_claude_not_on_path(self, manager, monkeypatch):
-        monkeypatch.setattr(session_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(clis, "find_cli", lambda name: None)
         with pytest.raises(SessionError, match="not found on PATH"):
             manager.exec_default([])
 
@@ -3549,7 +3550,7 @@ class TestShareHistoryWindows:
     def test_run_accepts_the_flag(self, win_history, monkeypatch):
         source, session_dir, mgr = win_history
         monkeypatch.setattr(
-            session_mod.shutil, "which", lambda _name: "/usr/bin/claude"
+            clis, "find_cli", lambda _name: "/usr/bin/claude"
         )
 
         def past_the_resolver(_identifier):

@@ -52,6 +52,16 @@ def _no_update_check(monkeypatch):
     monkeypatch.setattr("ai_quota_swap.update_check.check_for_update", lambda v: None)
 
 
+def _real_path_lookup(monkeypatch) -> None:
+    """These tests put a stand-in ``codex`` on the real PATH (or empty it), so
+    they need the real lookup back, not conftest's fixed answer."""
+    import shutil
+
+    from ai_quota_swap import clis
+
+    monkeypatch.setattr(clis, "find_cli", shutil.which)
+
+
 def run(argv: list[str], capsys, *, answer: str | None = None, tty: bool = False) -> tuple[int, str, str]:
     with patch.object(sys, "argv", ["qswap", *argv]), \
          patch.object(sys.stdin, "isatty", return_value=tty), \
@@ -450,6 +460,7 @@ class TestCodexLogin:
         fake.write_text('#!/bin/sh\necho "$@" > "$CODEX_HOME/argv"\nexit 3\n')
         fake.chmod(0o755)
         monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+        _real_path_lookup(monkeypatch)
         home = tmp_path / "login-home"
         home.mkdir()
         outcome = REAL_RUN_CODEX_LOGIN(home, ["--device-auth"])
@@ -459,6 +470,7 @@ class TestCodexLogin:
 
     def test_the_real_runner_without_codex_on_path(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PATH", str(tmp_path))
+        _real_path_lookup(monkeypatch)
         assert REAL_RUN_CODEX_LOGIN(tmp_path, []) == LoginRun(None, "codex is not on PATH")
 
 

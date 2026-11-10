@@ -23,12 +23,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from ai_quota_swap import clis
 from ai_quota_swap import spawn
 from ai_quota_swap.process_detection import is_pid_alive
 
@@ -195,7 +195,7 @@ def run_codex_login(home: Path, args: list[str]) -> LoginRun:
     group) and comes back here as ``KeyboardInterrupt``. Only the child's
     environment names ``home``; this process's ``CODEX_HOME`` is untouched.
     """
-    exe = shutil.which("codex")
+    exe = clis.find_cli("codex")
     if exe is None:
         return LoginRun(None, "codex is not on PATH")
     env = {**os.environ, "CODEX_HOME": str(home)}
@@ -208,7 +208,7 @@ def run_codex_login(home: Path, args: list[str]) -> LoginRun:
 
 def restart_background_server(home: Path, timeout: float = RESTART_TIMEOUT_S) -> RestartResult:
     """``codex app-server daemon restart`` on ``home``. Never raises."""
-    exe = shutil.which("codex")
+    exe = clis.find_cli("codex")
     if exe is None:
         return RestartResult(False, "codex is not on PATH")
     env = {**os.environ, "CODEX_HOME": str(home)}

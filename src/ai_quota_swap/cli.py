@@ -2117,12 +2117,13 @@ def _check_switch_target(switcher, identifier: str, *, anyway: bool) -> list[str
 def _first_run(switcher) -> None:
     """Nothing managed by either provider: why, and the next step for each
     login this machine has. Read-only; never asks."""
-    import shutil
 
     from ai_quota_swap import codex_cli, display
 
     live = switcher.live_login_email()
-    found = None if live else shutil.which(switcher.cli_name) is not None
+    from ai_quota_swap import clis
+
+    found = None if live else clis.cli_found("claude")
     for line in display.nothing_managed_lines("claude", live_email=live, cli_found=found):
         print(line)
     codex_live = codex_cli.live_codex_email()
