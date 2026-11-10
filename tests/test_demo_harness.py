@@ -412,7 +412,7 @@ class TestScenarioStates:
         assert out.startswith("title: ⇄ personal · 46% · 38%\n")
         assert "Claude Code accounts  (heading)" in out and "Codex accounts  (heading)" in out
         assert "✓ #1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset\n" in out
-        assert "#3 night-shift · 5h 93% (resets in 38m) · 7d 81%" in out  # past its line
+        assert "#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset\n" in out
         assert "#2 work · 5h 8% · 7d 15% · 1 reset credit\n" in out
         # After the menu bar's ledger scan the API-key account has a spend
         # figure, as `qswap list` has after `qswap usage`.

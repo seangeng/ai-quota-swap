@@ -25,23 +25,23 @@ Then the **accounts**, one row each, the active one checked. With no Codex accou
 
 ```text
 #1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset
-#3 night-shift · 5h 93% (resets in 38m) · 7d 81% · Fable 97% (resets in…
+#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset
 #1 personal · 5h 100% (resets in 1h 12m) · 7d 64%
 #2 work · needs re-login
 ```
 
 - the account's short name, `#1 personal`, or `#1 maya@example.com` when it has no alias;
-- each window as a bare percentage; a window at or past the account's own switch line (its threshold, else the provider's `autoswitch.threshold` or `codex.threshold`) adds when it resets, `(resets in 38m)`; `extra 18%` is extra-usage spend;
+- each window as a bare percentage, and `extra 18%` for extra-usage spend. Only once the account is blocked does a row say when it comes back: a window at its limit (100%, or a refused setup-token, `limit reached`) adds `(resets in 1h 12m)`, and with several at the limit only the one that resets last carries it, since that is when the account is usable again;
 - the usage resets it holds, last: `1 Fable reset`, `2 Fable · 1 weekly resets`, `1 reset credit` for Codex;
 - `disabled` for an account held out of rotation (`#4 side · disabled · 5h 0% · 7d 9%`);
 - in place of the percentages, a state in `qswap list`'s words: `needs re-login` for an account whose saved login was refused or that the auto-switch engine set aside until its owner logs in again; `usage unavailable (HTTP 503), retrying` when no reading could be taken; `usage not read yet`;
 - `as of 3h 5m ago` after the percentages of a reading older than three refresh intervals (at least 15 minutes);
-- `API key · $4.12 today · $212.40 this month of $500 (42%) · estimate` for an API-key account, as `qswap list` shows it;
+- for an API-key account, its spend as `qswap list` shows it (`API key · $4.12 today · $212.40 this month · estimate`), or with a budget in the compact form, `API key · $4.12 today · $212.40/$500 (42%) est.` (`(104%, over budget)` past it);
 - `re-login in 5d 12h` at the end while a saved login nears its expiry.
 
-A row is at most 72 characters; a longer one (two windows past their lines, a budgeted API-key account with a long name) ends in `…`.
+A row is at most 72 characters. When one would be longer, the account's name gives way first (`#5 api-…`, its number kept); only then is the end cut.
 
-A row that needs you (needs re-login, a limit reached, an API-key account over its budget) is drawn in orange. Hovering over a row shows the account's full block as `qswap list` prints it, with every window's reset clock, `ahead of pace`, the plan, the full email, when held resets must be used, and the next step. Clicking a row switches that provider to the account. Switching to an account that needs re-login first asks, with the same explanation `qswap switch` gives when it refuses; *Switch anyway* is what `--anyway` does on the command line.
+A row that needs you (needs re-login, a window at or past the account's switch line, an API-key account over its budget) is drawn in orange. The switch line is the account's own threshold, else the provider's `autoswitch.threshold` (or `weeklyThreshold` for the weekly windows) or `codex.threshold`. Hovering over a row shows the account's full block as `qswap list` prints it, with every window's reset clock, `ahead of pace`, the plan, the full email, when held resets must be used, and the next step. Clicking a row switches that provider to the account. Switching to an account that needs re-login first asks, with the same explanation `qswap switch` gives when it refuses; *Switch anyway* is what `--anyway` does on the command line.
 
 With nothing managed the section says `No accounts are managed yet.` and the next step for each login on this machine; a line that names a live login adds it when clicked.
 

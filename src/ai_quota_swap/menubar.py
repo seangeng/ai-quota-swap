@@ -381,66 +381,51 @@ def _set_tooltip(item, text: str) -> None:
 ROW_LIMIT = 72
 
 
-def _window_segment(
-    label: str, window: dict, now: float, *, line: float | None = None
-) -> tuple[str, bool] | None:
-    """``5h 46%``; with ``(resets in 38m)`` once the window is at or past the
-    account's own switch ``line`` (or at 100%), where when it comes back is
-    what the reader wants. Also whether it is at its limit."""
-    pct = window.get("pct")
-    if not isinstance(pct, (int, float)):
-        return None
-    seg = f"{label} {_pct(pct)}%"
-    if display.severity(pct, line) != "ok":
-        countdown = _live_countdown(window, now)
-        if countdown:
-            seg += f" (resets in {countdown})"
-    return seg, pct >= 100
-
-
 def usage_segments(
     usage: dict, now: float, lines: display.Lines | None = None
-) -> tuple[list[str], bool]:
-    """A reading's windows as compact row segments, and whether any is at
-    its limit: bare percentages (``5h 46% · 7d 38% · Fable 52%``), a
-    countdown only on a window at or past its switch line (``lines``; without
-    one, at 100%), ``extra 18%`` for extra-usage spend. A refused setup-token
-    probe leads (``limit reached``): the account is at its limit until the
-    refusal ends, however low the windows read. Weekly windows whose reset
-    passed are rolled forward."""
+) -> tuple[list[str], bool, bool]:
+    """A reading's windows as compact row segments: bare percentages (``5h
+    46% · 7d 38% · Fable 52%``), ``extra 18%`` for extra-usage spend, and a
+    refused setup-token probe first as ``limit reached`` (the account is at
+    its limit until the refusal ends, however low the windows read).
+
+    A countdown appears only once the account is blocked, on a window at its
+    limit (100%, or refused): ``5h 100% (resets in 1h 12m)``. With several at
+    the limit, only the one that resets last carries it, since that is when
+    the account is usable again. Weekly windows whose reset passed are rolled
+    forward. Also returns whether any window is at its limit, and whether any
+    is at or past its switch line (``lines``)."""
     lines = lines or display.Lines()
-    parts: list[str] = []
-    limit = False
+    entries: list[tuple[str, dict | None, bool]] = []  # text, window, at its limit
+    past_line = False
     rejected = usage.get("rejected")
     if isinstance(rejected, dict):
-        seg = "limit reached"
-        countdown = _live_countdown(rejected, now)
-        if countdown:
-            seg += f" (resets in {countdown})"
-        parts.append(seg)
-        limit = True
-    for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
-        window = usage.get(key)
-        if key == "seven_day":
-            window = _rolled_weekly_window(window, now)
-        if isinstance(window, dict):
-            seg = _window_segment(label, window, now, line=lines.for_label(label))
-            if seg:
-                parts.append(seg[0])
-                limit = limit or seg[1]
+        entries.append(("limit reached", rejected, True))
+    windows = [("5h", usage.get("five_hour")), ("7d", _rolled_weekly_window(usage.get("seven_day"), now))]
     for window in usage.get("scoped") or []:
         window = _rolled_weekly_window(window, now)
-        if not isinstance(window, dict) or not window.get("name"):
+        if isinstance(window, dict) and window.get("name"):
+            windows.append((str(window["name"]), window))
+    for label, window in windows:
+        if not isinstance(window, dict) or not isinstance(window.get("pct"), (int, float)):
             continue
-        name = str(window["name"])
-        seg = _window_segment(name, window, now, line=lines.for_label(name))
-        if seg:
-            parts.append(seg[0])
-            limit = limit or seg[1]
+        pct = window["pct"]
+        past_line = past_line or display.severity(pct, lines.for_label(label)) != "ok"
+        entries.append((f"{label} {_pct(pct)}%", window, pct >= 100))
+    blocked = [(i, _resets_at_ts(w)) for i, (_t, w, at) in enumerate(entries) if at]
+    future = [(ts, i) for i, ts in blocked if ts != float("inf") and ts > now]
+    last = max(future)[1] if future else None
+    parts = []
+    for i, (text, window, _at) in enumerate(entries):
+        if i == last:
+            countdown = _live_countdown(window, now)
+            if countdown:
+                text += f" (resets in {countdown})"
+        parts.append(text)
     spend = usage.get("spend")
     if isinstance(spend, dict) and isinstance(spend.get("pct"), (int, float)):
         parts.append(f"extra {_pct(spend['pct'])}%")
-    return parts, limit
+    return parts, bool(blocked), past_line or bool(blocked)
 
 
 def usage_summary(
@@ -453,7 +438,7 @@ def usage_summary(
         return menu_note(usage)
     if usage is None:
         return display.USAGE_UNAVAILABLE
-    parts, _ = usage_segments(usage, time.time() if now is None else now, lines)
+    parts, _limit, _past = usage_segments(usage, time.time() if now is None else now, lines)
     return " · ".join(parts) if parts else display.USAGE_UNAVAILABLE
 
 
@@ -933,14 +918,15 @@ def account_row(
     38% · Fable 52% · 1 Fable reset``.
 
     The label is the short one; the windows are bare percentages, with a
-    countdown only on a window at or past the account's switch line (``5h 93%
-    (resets in 38m)``); held resets come last. A state replaces the
+    countdown only on a window at its limit (``5h 100% (resets in 1h 12m)``;
+    one, on the window that resets last); held resets come last. A window at
+    or past the account's switch line makes the row orange (``attention``). A state replaces the
     percentages, in ``qswap list``'s words: ``needs re-login``, ``usage
     unavailable (HTTP 503), retrying``, ``usage not read yet``, ``API key ·
-    $4.12 today · …``; an old reading adds ``as of 3h ago``. A stored login
-    nearing its expiry ends the row (``re-login in 5d 12h``). The row is cut
-    to :data:`ROW_LIMIT` with :func:`display.fit`; the tooltip is the whole
-    block.
+    $4.12 today · …`` (with a budget, the compact ``$212.40/$500 (42%)``); an
+    old reading adds ``as of 3h ago``. A stored login nearing its expiry ends
+    the row (``re-login in 5d 12h``). The row fits :data:`ROW_LIMIT`
+    (:func:`fit_row`); the tooltip is the whole block.
     """
     from ai_quota_swap import api_spend, resets
 
@@ -957,18 +943,24 @@ def account_row(
         retrying = block.error not in ("store-unmirrored", "invalid_client", "setup-token")
         parts.append(display.usage_unavailable(block.error, retry_in_s=block.retry_in_s, retrying=retrying))
     elif state == "api-key":
+        reading = getattr(acc.entry, "api_spend", None)
         parts.append("API key")
-        parts.append(block.notes[0] if block.notes else display.API_KEY_NO_QUOTA)
-        attention = api_spend.over_budget(getattr(acc.entry, "api_spend", None))
+        if api_spend.budget_state(reading) is not None:
+            # With a budget, the compact form: the budget figure (and "over
+            # budget") must never be what the row limit cuts.
+            parts.append(api_spend.menu_text(reading))
+        else:
+            parts.append(block.notes[0] if block.notes else display.API_KEY_NO_QUOTA)
+        attention = api_spend.over_budget(reading)
     elif state == "not-read":
         parts.append(display.NOT_READ_YET)
     elif state == "note":
         parts.append(menu_note(block.notes[0]) if block.notes else display.USAGE_UNAVAILABLE)
     else:
         usage = rolled_usage(acc.usage(), now) or {}
-        segments, at_limit = usage_segments(usage, now, acc.lines)
+        segments, _at_limit, past_line = usage_segments(usage, now, acc.lines)
         parts.extend(segments or [display.USAGE_UNAVAILABLE])
-        attention = at_limit
+        attention = past_line
         if block.stale_s is not None:
             stale = display.as_of(block.stale_s)
             if block.error:
@@ -983,9 +975,29 @@ def account_row(
             parts.append(note)
             attention = attention or note == display.NEEDS_RELOGIN
     return Row(
-        display.fit(" · ".join(parts), ROW_LIMIT), action=action, checked=acc.active,
+        fit_row(parts), action=action, checked=acc.active,
         attention=attention, tooltip=block_text(block),
     )
+
+
+#: The shortest an account label gets when a row is too long: ``#5 api…``.
+LABEL_FLOOR = 7
+
+
+def fit_row(parts: Sequence[str], limit: int = ROW_LIMIT) -> str:
+    """``parts`` joined with `` · `` within ``limit`` columns. The label
+    (``parts[0]``) gives way first, down to :data:`LABEL_FLOOR` (its number
+    stays, the full name is in the tooltip); only then is the end cut. Both
+    cuts are :func:`display.fit`'s."""
+    text = " · ".join(parts)
+    if len(text) <= limit or not parts:
+        return text
+    over = len(text) - limit
+    label = parts[0]
+    room = max(LABEL_FLOOR, len(label) - over)
+    if room < len(label):
+        text = " · ".join([display.fit(label, room), *parts[1:]])
+    return display.fit(text, limit)
 
 
 # -- the title ------------------------------------------------------------------------
