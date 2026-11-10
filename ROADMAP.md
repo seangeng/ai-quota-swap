@@ -66,20 +66,17 @@ accounts are managed yet.
 
 ### M2. Codex
 
-Verified on 2026-11-10 against Codex CLI 0.164.0 and a live account:
+Design: [docs/design/codex.md](docs/design/codex.md). Experimental until it has been run with
+two Codex accounts.
 
-- Login lives in `~/.codex/auth.json` (`tokens.access_token`, `refresh_token`, `account_id`).
-- `GET https://chatgpt.com/backend-api/wham/usage` returns `plan_type`, a primary and secondary
-  window (`used_percent`, `limit_window_seconds`, `reset_at`), credits, and
-  `rate_limit_reset_credits.available_count`.
-- Session files record per-turn token counts and a rate-limit snapshot.
+- M2a: capture, list, remove, and switch Codex logins (`qswap codex ...`); live usage in
+  `qswap list` and `--json`; plan label; warnings for the background server and desktop app.
+- M2b: `qswap codex auto` on the shared engine; reset credits (list, manual spend, auto-spend
+  under the shared `resets.*` policy).
+- M2c: `qswap codex run`, one `CODEX_HOME` per account, for parallel accounts.
 
-Deliverables: add, switch, and list Codex accounts; live usage; auto-switch; `run` with a
-per-account `CODEX_HOME`; Codex reset credits (list, manual spend, then auto-spend under the
-same modes as Claude).
-
-To verify before building: whether a running Codex session adopts a swapped `auth.json`;
-whether OpenAI refresh tokens rotate on use; the endpoint that spends a reset credit.
+Rules: qswap never refreshes a Codex login, never runs `codex logout`, and copies login
+records byte for byte.
 
 ### M3. Token and cost ledger
 
