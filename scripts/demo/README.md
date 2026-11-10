@@ -50,8 +50,11 @@ fails. It never falls back to real behaviour.
 5. `urllib.request.urlopen`, the one function every usage, profile, token and
    reset request in the package goes through, replaced by the canned API in
    `fakeapi.py`. The package still builds its real requests and parses the
-   answers with its real code; only the transport is fake. A request the fake
-   has no answer for counts as a violation.
+   answers with its real code; only the transport is fake. It answers
+   Anthropic's endpoints, Codex's `chatgpt.com/backend-api/wham` usage and
+   reset-credit endpoints, and PyPI's project page (404, as today, since the
+   package is not on PyPI). A request the fake has no answer for counts as a
+   violation.
 
 The self-test in `guards.verify` raises synthetic audit events at the hook
 (a real-store read, an outside write, a `security` spawn, a connection, a DNS
@@ -65,10 +68,17 @@ temp home, the repository and the interpreter's own install, writes nothing
 outside its temp home, spawns nothing and makes no network call; each guard
 refuses what it should; and the launcher refuses to start when a guard is off.
 
-The demo processes patch three things in their own memory only, and nothing on
+The demo processes patch these in their own memory only, and nothing on
 disk: `cli._use_native_tls` (it would load the Security framework, which the
 sandbox refuses), `poll_policy.JITTER_FRAC` (pinned to zero as the test suite
-pins it), and `AutoSwitchEngine._next_delay` (time compression, below).
+pins it), `AutoSwitchEngine._next_delay` (time compression, below), and the
+four functions in `ai_quota_swap.codex.processes` that reach processes
+(listing Codex processes with `ps`, finding and restarting Codex's background
+server, running `codex login`). The sandbox refuses those spawns, so the demo
+replaces them as `tests/conftest.py` does: no Codex process is running, no
+background server exists, and `codex login` writes the scenario's
+`codex_login` record into the temporary home it is handed (a scenario without
+one answers "codex is not on PATH").
 
 ## Scenarios
 
@@ -76,22 +86,34 @@ pins it), and `AutoSwitchEngine._next_delay` (time compression, below).
 UTC), accounts with plans, usage windows, usage-reset grants, aliases and
 disabled flags, settings, and optionally a session history.
 
-- `fleet`: four Claude accounts on Max 20x, Team, Max 5x and Pro. One is near
-  its limit, two hold usage resets, one is disabled.
+- `fleet`: four Claude accounts on Max 20x, Team, Max 5x and Pro (one near its
+  limit, two holding usage resets, one disabled), an API-key account, and two
+  Codex accounts (the live one at a moderate weekly figure, a saved workspace
+  account holding a reset credit). Every account was read two minutes before
+  the clock, so `auto --once` compares real readings.
 - `autoswitch`: the active account climbs from 86% to past its 90% line and
   the engine switches to the account with the most headroom.
 - `reset`: the active account is at 100% on its Fable weekly window and holds
   a Fable reset; `reset-after` is the same state once it is spent.
-- `usage`: two weeks of Claude Code and Codex sessions across four models,
-  five projects and three accounts, for `qswap usage` and its `--by` views.
+- `usage`: the `fleet` accounts plus two weeks of Claude Code and Codex
+  sessions across six models and five projects, with both providers'
+  activation logs, for `qswap usage` and its `--by` views.
+- `empty`, `empty-claude`, `empty-claude-codex`: the first run. Nothing is
+  managed and there is no `settings.json`; the variants add a live Claude Code
+  login, then a live Codex login as well.
+- `trouble`: failure states. Claude: the active account at 100% with no
+  resets, a dead saved login (expired token, refused refresh), a usage
+  endpoint answering 503, an account quarantined by the auto-switch engine,
+  and a reading three hours old whose refreshes time out. Codex: the live
+  account at 100% weekly, a saved one whose token expired.
 
-`seed.py` writes a scenario into the temp home with the switcher's own
+`seed.py` writes a scenario into the temp home with the switchers' own
 writers, the way the test suite's `EngineHarness` does, so the store on disk
-is what a real `qswap add` leaves. To add a scenario, build a `Scenario` and
-register it in `SCENARIOS`. To add a provider (Codex accounts, once that
-provider manages them), give it an account type with a `provider` field, a
-seeder in `seed.SEEDERS`, and routes in the canned API; scenario accounts are a
-flat list, so a mixed fleet is one tuple.
+is what a real `qswap add` (or `qswap codex add`) leaves. To add a scenario,
+build a `Scenario` and register it in `SCENARIOS`. To add a provider, give it
+an account type with a `provider` field, a seeder in `seed.SEEDERS`, and
+routes in the canned API; scenario accounts are a flat list, so a mixed fleet
+is one tuple.
 
 The auto-switch engine sleeps a minute between ticks. Demo runs compress that:
 each sleep moves the scenario clock forward instead of waiting (`AutoRun` sets
@@ -142,6 +164,18 @@ from `docs/shots/` with `index.html` as the entry.
 `build.py` runs html, shots, frame and index; add `--record local` or
 `--record littledemo --upload` to remake the recordings too, and `--only` to
 limit it to some shots.
+
+## Review tour
+
+`tour.py OUT_DIR` screenshots every dashboard screen and modal it knows
+(`tour.py --list` prints them: main, watch, the auto view dry-run and live,
+the switch picker, the add, disable and remove menus and their confirmations,
+the theme menu, the first-run and failure states) in dark and light, at exact
+terminal sizes in cells (`--sizes 100x30,80x24`, the default). It is a review
+aid, not part of `build.py`: each stop is a scenario plus a key sequence from
+the dashboard's first frame, every stop gets a fresh guarded app process, and
+files are named `<stop>--<theme>--<cols>x<rows>.png`. `--only` and
+`--skip-existing` limit a run.
 
 ## Keys in recordings
 

@@ -11,6 +11,11 @@ audit hook, which must never land in the pytest process. The tests prove:
   an off-machine connection and a DNS lookup, and let loopback through;
 * ``verify`` notices a guard that is missing, and the launcher then refuses
   to start instead of running unguarded;
+* the Codex verbs (switch, spending a credit, ``codex login``) run in the
+  sandbox with nothing spawned and no network, through the same process fakes
+  the suite's conftest installs;
+* each scenario shows the state it is named for (first run, a mixed fleet,
+  Codex attribution in ``qswap usage``, failure states);
 * the scenarios use invented identities only.
 """
 
@@ -18,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -242,6 +248,124 @@ class TestGuardsRefuse:
         assert "maya@example.com" not in r.stdout
 
 
+@pytest.fixture(scope="module")
+def audited_codex_run(tmp_path_factory) -> dict:
+    """One guarded run over the Codex verbs that reach processes and the
+    ChatGPT backend: list, switch, spend a credit, log a new account in."""
+    log = tmp_path_factory.mktemp("demo-codex-audit") / "audit.json"
+    r = _run([
+        "fleet", "--audit-log", str(log), "--",
+        "codex", "list", "++", "codex", "switch", "2", "++", "codex", "reset", "2", "--yes",
+        "++", "codex", "login", "--alias", "ops", "++", "codex", "auto", "--once", "--dry-run",
+        "++", "list",
+    ])
+    data = json.loads(log.read_text())
+    data["stdout"], data["stderr"], data["returncode"] = r.stdout, r.stderr, r.returncode
+    return data
+
+
+class TestCodexInTheSandbox:
+    """Codex support runs whole in the sandbox: its process seams are faked
+    the way tests/conftest.py fakes them, so nothing is spawned."""
+
+    def test_the_codex_verbs_ran(self, audited_codex_run):
+        out = audited_codex_run["stdout"]
+        # The exit status is the last command's (list); the output shows the rest ran.
+        assert audited_codex_run["returncode"] == 0, audited_codex_run["stderr"]
+        assert "Switched to Account-2 (maya@northwind.example.com)" in out
+        assert "no switch: below-threshold" in out  # codex auto --once --dry-run
+        assert "Used a Codex usage reset credit on Account-2" in out
+        assert "Added Account 3: ops@example.net" in out
+        assert "Codex accounts:" in out  # the unified list's Codex section
+
+    def test_nothing_spawned_no_network_no_violation(self, audited_codex_run):
+        kinds = {e["event"] for e in audited_codex_run["events"]}
+        assert not kinds & {"subprocess.Popen", "os.posix_spawn", "os.exec", "os.system", "os.fork"}
+        net = [e for e in audited_codex_run["events"] if e["event"].startswith(("socket.", "http.", "urllib."))]
+        assert net == []
+        assert audited_codex_run["violations"] == []
+
+    def test_no_file_outside_temp_home_repo_and_interpreter(self, audited_codex_run):
+        home = os.path.realpath(audited_codex_run["home"])
+        roots = [home, str(REPO), os.path.realpath(sys.base_prefix), os.path.realpath(sys.prefix)]
+        outside = sorted({
+            e["path"] for e in audited_codex_run["events"]
+            if e.get("path")
+            and not any(_under(os.path.realpath(e["path"]), r) or _under(e["path"], r) for r in roots)
+            and e["path"] not in SYSTEM_READS + DEVICES
+        })
+        assert outside == []
+
+    def test_codex_login_without_a_scenario_login_reads_as_no_codex_cli(self):
+        r = _run(["empty", "--", "codex", "login"])
+        assert r.returncode == 1, r.stderr
+        assert "codex is not on PATH" in r.stdout + r.stderr
+
+
+class TestScenarioStates:
+    """Each scenario shows the state it is named for."""
+
+    def test_fleet_has_an_api_key_account_and_two_codex_accounts(self):
+        r = _run(["fleet", "--", "list"])
+        assert r.returncode == 0, r.stderr
+        assert "ci (api-key-5@token.local)" in r.stdout
+        assert "API key (no quota)" in r.stdout
+        codex = r.stdout.split("Codex accounts:", 1)[1]
+        assert "1: maya@example.com [personal] (active) · Plus" in codex
+        assert "47%" in codex  # the live account's weekly figure
+        assert "work (maya@northwind.example.com) [workspace] · Team" in codex
+        assert "resets:   1    full" in codex  # the saved account's credit
+
+    @pytest.mark.parametrize(
+        ("scenario", "claude", "codex"),
+        [
+            ("empty", "No active Claude account", "No active Codex login"),
+            ("empty-claude", "maya@example.com (not managed)", "No active Codex login"),
+            ("empty-claude-codex", "maya@example.com (not managed)", "maya@example.com (not managed)"),
+        ],
+    )
+    def test_first_run_variants(self, scenario, claude, codex):
+        r = _run([scenario, "--", "status", "++", "codex", "status", "++", "list", "--json"])
+        assert r.returncode == 0, r.stderr
+        status, codex_status, listed = r.stdout.split("\n", 2)
+        assert claude in status
+        assert codex in codex_status
+        assert json.loads(listed)["accounts"] == []  # nothing managed
+
+    def test_usage_attributes_codex_sessions_to_codex_accounts(self):
+        r = _run(["usage", "--", "usage", "--by", "account", "--provider", "codex"])
+        assert r.returncode == 0, r.stderr
+        assert "Account-1 (maya@example.com)" in r.stdout
+        assert "Account-2 work (maya@northwind.example.com)" in r.stdout
+        assert "not managed by qswap" not in r.stdout
+        assert "unattributed" not in r.stdout
+
+    def test_trouble_shows_each_failure_state(self):
+        r = _run(["trouble", "--", "list"])
+        assert r.returncode == 0, r.stderr
+        claude = r.stdout.split("Codex accounts:", 1)[0]
+        rows = {}
+        for block in claude.split("\n\n"):
+            number = re.search(r"^\s+(\d+): ", block, re.M)
+            if number:
+                rows[number.group(1)] = block
+        assert "5h: 100%" in rows["1"]
+        assert "re-login needed" in rows["2"]
+        assert "usage unavailable (http-503)" in rows["3"]
+        assert "3h ago" in rows["5"]
+        assert "usage unknown until used" in r.stdout  # the Codex saved login
+
+    def test_trouble_seeds_a_quarantine_the_engine_honours(self):
+        # After `list` reads it, the quarantined account (4) has a fresh,
+        # readable reading with headroom, and auto still finds no candidate:
+        # the seeded quarantine keeps it out.
+        r = _run(["trouble", "--", "list", "++", "auto", "--once", "--json"])
+        assert r.returncode == 3, r.stderr
+        poll, no_switch = (json.loads(line) for line in r.stdout.strip().splitlines()[-2:])
+        assert poll["headroomPct"]["4"] == 70.0
+        assert no_switch["reason"] == "no-comparison"
+
+
 class TestHarnessPieces:
     @pytest.fixture(autouse=True)
     def _demo_path(self, monkeypatch):
@@ -251,15 +375,28 @@ class TestHarnessPieces:
         import scenarios
 
         for s in scenarios.SCENARIOS.values():
-            for a in s.accounts:
-                assert a.email.rsplit("@", 1)[1].split(".")[-2:] in (
+            logins = (*s.accounts, *(a for a in (s.live, s.codex_live, s.codex_login) if a is not None))
+            for a in logins:
+                domain = a.email.rsplit("@", 1)[1]
+                # token.local is the tool's own placeholder for an API key added
+                # without --email.
+                assert domain == "token.local" or domain.split(".")[-2:] in (
                     ["example", "com"], ["example", "org"], ["example", "net"],
                 ), a.email
                 assert a.org_name in ("", "Northwind Labs")
             if s.ledger:
-                assert s.ledger.codex_email.endswith("@example.com")
                 for p in s.ledger.projects + s.ledger.codex_projects:
                     assert p.path.startswith("/work/")
+
+    def test_codex_logins_decode_as_chatgpt_logins(self):
+        import scenarios
+
+        from ai_quota_swap.codex import auth as codex_auth
+
+        for a in scenarios.FLEET.codex_logins():
+            login = codex_auth.parse_login(a.login_record(scenarios.CLOCK))
+            assert (login.email, login.user_id, login.account_id) == (a.email, a.user_id, a.account_id)
+            assert login.access_expires_at == scenarios.CLOCK.timestamp() + a.token_expires_in.total_seconds()
 
     def test_loopback_rule(self):
         import guards
@@ -276,6 +413,36 @@ class TestHarnessPieces:
             ["reset"], ["reset", "1", "--yes"],
         ]
         assert run.split_commands(["list"]) == [["list"]]
+
+    def test_a_bare_double_dash_runs_qswap_with_no_arguments(self):
+        r = _run(["empty", "--"])
+        assert r.returncode == 2
+        assert "no command given" in r.stderr
+        r = _run(["empty"])  # no `--` at all is still the launcher's own usage error
+        assert r.returncode == 2
+        assert "give the qswap arguments after --" in r.stderr
+
+    def test_tour_stops_are_well_formed(self):
+        import scenarios
+        import tour
+
+        names = [s.name for s in tour.STOPS]
+        assert len(names) == len(set(names))
+        named_keys = {"Enter", "Escape", "Tab", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"}
+        for stop in tour.STOPS:
+            assert stop.scenario in scenarios.SCENARIOS, stop
+            for kind, value in stop.steps:
+                assert kind in ("key", "type", "wait"), stop
+                if kind == "key":
+                    assert value in named_keys, stop
+                if kind == "type":
+                    assert isinstance(value, str) and value, stop
+        # The menu helper follows the dashboard's root menu order.
+        from ai_quota_swap.tui.dashboard import DashboardScreen
+
+        root = [action for _label, action in DashboardScreen._root_entries(None)]
+        assert [a.removesuffix("-menu") for a in root] == list(tour.MENU)
+        assert tour.parse_size("100x30") == (100, 30)
 
     def test_littledemo_steps_are_valid_and_keyboard_only(self, tmp_path):
         import stories

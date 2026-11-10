@@ -18,18 +18,20 @@ import random
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from scenarios import PLANS, ClaudeAccount, Ledger, Scenario
+from scenarios import PLANS, ClaudeAccount, CodexAccount, Ledger, Scenario
 
 SCOPES = ["user:inference", "user:profile", "user:sessions:claude_code"]
 
 
 def _credentials(a: ClaudeAccount, scenario: Scenario) -> str:
+    if a.api_key:
+        return a.api_key_secret  # a managed key is stored raw
     plan = PLANS[a.plan]
     return json.dumps({
         "claudeAiOauth": {
             "accessToken": a.access_token(0),
             "refreshToken": a.refresh_token(0),
-            "expiresAt": int((scenario.epoch + 8 * 3600) * 1000),
+            "expiresAt": int((scenario.epoch + a.token_expires_in.total_seconds()) * 1000),
             "scopes": SCOPES,
             "subscriptionType": plan.organization_type.removeprefix("claude_"),
             "rateLimitTier": plan.tier,
@@ -38,6 +40,14 @@ def _credentials(a: ClaudeAccount, scenario: Scenario) -> str:
 
 
 def _oauth_account(a: ClaudeAccount) -> dict:
+    if a.api_key:
+        # What `qswap add-token` records for a key: no account metadata.
+        return {
+            "emailAddress": a.email,
+            "accountUuid": "",
+            "organizationUuid": None,
+            "organizationName": None,
+        }
     return {
         "accountUuid": a.account_uuid,
         "emailAddress": a.email,
@@ -48,60 +58,140 @@ def _oauth_account(a: ClaudeAccount) -> dict:
     }
 
 
-def seed_claude(switcher, scenario: Scenario) -> None:
+def _write_live_claude(switcher, a: ClaudeAccount, scenario: Scenario) -> None:
     from ai_quota_swap.paths import get_global_config_path
 
-    switcher._setup_directories()
-    switcher._init_sequence_file()
-    data = switcher._get_sequence_data()
-    added = (scenario.clock - timedelta(days=60)).isoformat().replace("+00:00", "Z")
-    for a in scenario.accounts:
-        if a.provider != "claude":
-            continue
-        n = str(a.slot)
-        switcher._write_account_credentials(n, a.email, _credentials(a, scenario))
-        switcher._write_account_config(n, a.email, json.dumps({"oauthAccount": _oauth_account(a)}))
-        record = {
-            "email": a.email,
-            "uuid": a.account_uuid,
-            "organizationUuid": a.org_uuid,
-            "organizationName": a.org_name,
-            "added": added,
-        }
-        if a.alias:
-            record["alias"] = a.alias
-        if a.disabled:
-            record["disabled"] = True
-        if a.priority is not None:
-            record["priority"] = a.priority
-        if a.threshold is not None:
-            record["threshold"] = a.threshold
-        data["accounts"][n] = record
-        if a.slot not in data["sequence"]:
-            data["sequence"].append(a.slot)
-    data["sequence"].sort()
-    data["activeAccountNumber"] = scenario.active
-    switcher._write_json(switcher.sequence_file, data)
-
-    active = scenario.account(scenario.active)
-    switcher._store._write_credentials(_credentials(active, scenario))
+    switcher._store._write_credentials(_credentials(a, scenario))
     switcher._write_json(
         get_global_config_path(),
         {
             "numStartups": 212,
             "hasCompletedOnboarding": True,
-            "oauthAccount": _oauth_account(active),
+            "oauthAccount": _oauth_account(a),
         },
     )
+
+
+def seed_claude(switcher, scenario: Scenario) -> None:
+    """Managed Claude accounts, the live login, and engine quarantines.
+
+    A scenario with no managed Claude account writes no registry at all, as
+    on a machine where ``qswap add`` never ran; its live login (if any) is the
+    unmanaged ``scenario.live``.
+    """
+    accounts = scenario.claude_accounts
+    if accounts:
+        switcher._setup_directories()
+        switcher._init_sequence_file()
+        data = switcher._get_sequence_data()
+        added = (scenario.clock - timedelta(days=60)).isoformat().replace("+00:00", "Z")
+        for a in accounts:
+            n = str(a.slot)
+            switcher._write_account_credentials(n, a.email, _credentials(a, scenario))
+            switcher._write_account_config(n, a.email, json.dumps({"oauthAccount": _oauth_account(a)}))
+            if a.api_key:
+                record = {"email": a.email, "uuid": "", "organizationUuid": "",
+                          "organizationName": "", "added": added, "kind": "api_key"}
+            else:
+                record = {
+                    "email": a.email,
+                    "uuid": a.account_uuid,
+                    "organizationUuid": a.org_uuid,
+                    "organizationName": a.org_name,
+                    "added": added,
+                }
+            if a.alias:
+                record["alias"] = a.alias
+            if a.disabled:
+                record["disabled"] = True
+            if a.priority is not None:
+                record["priority"] = a.priority
+            if a.threshold is not None:
+                record["threshold"] = a.threshold
+            data["accounts"][n] = record
+            if a.slot not in data["sequence"]:
+                data["sequence"].append(a.slot)
+        data["sequence"].sort()
+        data["activeAccountNumber"] = scenario.active
+        switcher._write_json(switcher.sequence_file, data)
+
+    live = scenario.account(scenario.active) if scenario.active is not None else scenario.live
+    if live is not None:
+        _write_live_claude(switcher, live, scenario)
+
+    quarantined = [a for a in accounts if a.quarantine]
+    if quarantined:
+        from ai_quota_swap.autoswitch import STATE_FILENAME, _mutate_state_file
+
+        at = scenario.clock - timedelta(minutes=50)
+
+        def add(state: dict) -> None:
+            for a in quarantined:
+                creds = switcher.read_account_credentials(str(a.slot), a.email)
+                state.setdefault("quarantine", {})[str(a.slot)] = {
+                    "email": a.email,
+                    "reason": a.quarantine,
+                    "at": at.isoformat().replace("+00:00", "Z"),
+                    "refreshTokenFingerprint": switcher.credential_fingerprint(creds),
+                }
+
+        _mutate_state_file(switcher.backup_dir / STATE_FILENAME, add)
+
+
+def seed_codex(switcher, scenario: Scenario) -> None:
+    """Managed Codex accounts and Codex's live ``auth.json``, through the
+    Codex switcher's own registry and saved-login writers."""
+    accounts = scenario.codex_accounts
+    live: CodexAccount | None = (
+        scenario.codex_account(scenario.codex_active)
+        if scenario.codex_active is not None else scenario.codex_live
+    )
+    if not accounts and live is None:
+        return
+    from ai_quota_swap.codex import auth as codex_auth
+    from ai_quota_swap.codex.switcher import CodexSwitcher
+    from ai_quota_swap.fsutil import atomic_write_bytes
+
+    if accounts:
+        cs = CodexSwitcher(data_root=switcher.backup_dir, configure_logging=False)
+        data = cs._empty_registry()
+        added = (scenario.clock - timedelta(days=30)).isoformat().replace("+00:00", "Z")
+        for a in accounts:
+            n = str(a.slot)
+            cs._write_saved(n, a.login_record(scenario.clock))
+            record = {
+                "email": a.email,
+                "uuid": a.user_id,
+                "organizationUuid": a.account_id,
+                "organizationName": "",
+                "added": added,
+            }
+            if a.alias:
+                record["alias"] = a.alias
+            if a.disabled:
+                record["disabled"] = True
+            if a.priority is not None:
+                record["priority"] = a.priority
+            if a.threshold is not None:
+                record["threshold"] = a.threshold
+            data["accounts"][n] = record
+        data["sequence"] = sorted(a.slot for a in accounts)
+        data["activeAccountNumber"] = scenario.codex_active
+        cs._write_registry(data)
+    if live is not None:
+        home = codex_auth.codex_home()
+        atomic_write_bytes(codex_auth.auth_path(home), live.login_record(scenario.clock), mode=0o600)
 
 
 def seed_settings(backup_dir: Path, scenario: Scenario) -> None:
     from ai_quota_swap.settings import atomic_write_json, settings_path
 
+    if not scenario.settings:
+        return  # no settings.json, as before any `qswap config set`
     atomic_write_json(settings_path(backup_dir), scenario.settings)
 
 
-SEEDERS = {"claude": seed_claude}
+SEEDERS = {"claude": seed_claude, "codex": seed_codex}
 
 
 def seed(scenario: Scenario) -> object:
@@ -113,7 +203,9 @@ def seed(scenario: Scenario) -> object:
     unknown = providers - set(SEEDERS)
     if unknown:
         raise SystemExit(f"no seeder for provider(s): {', '.join(sorted(unknown))}")
-    for provider in sorted(providers):
+    # Every seeder runs: each writes nothing when the scenario has none of its
+    # accounts, and the live logins of a first run belong to no account.
+    for provider in sorted(SEEDERS):
         SEEDERS[provider](switcher, scenario)
     seed_settings(switcher.backup_dir, scenario)
     if scenario.ledger is not None:
@@ -286,8 +378,22 @@ def seed_ledger(backup_dir: Path, scenario: Scenario) -> None:
         "org": active.org_uuid, "source": "switch",
     }, separators=(",", ":")))
     _write(backup_dir / "activations.jsonl", acts)
-    if ledger.codex_email:
-        first = (day0 - timedelta(days=ledger.days + 1)).timestamp()
-        _write(backup_dir / "codex" / "activations.jsonl", [json.dumps({
-            "ts": _iso(first), "number": None, "email": ledger.codex_email, "org": "", "source": "observed",
-        }, separators=(",", ":"))])
+
+    # Codex's own activation log, in its data root: account ids are the org.
+    codex_acts = []
+    for days_ago, hour, slot in ledger.codex_switches:
+        ts = (day0 - timedelta(days=days_ago)).timestamp() + hour * 3600
+        if ts > now:
+            continue
+        c = scenario.codex_account(slot)
+        codex_acts.append(json.dumps({
+            "ts": _iso(ts), "number": c.slot, "email": c.email, "org": c.account_id, "source": "switch",
+        }, separators=(",", ":")))
+    if codex_acts and scenario.codex_active is not None:
+        c = scenario.codex_account(scenario.codex_active)
+        codex_acts.append(json.dumps({
+            "ts": _iso(now - 1800), "number": c.slot, "email": c.email, "org": c.account_id,
+            "source": "switch",
+        }, separators=(",", ":")))
+    if codex_acts:
+        _write(backup_dir / "codex" / "activations.jsonl", codex_acts)

@@ -1,10 +1,15 @@
-"""A canned Anthropic API for demo runs.
+"""A canned Anthropic (and ChatGPT, and PyPI) API for demo runs.
 
 Installed as ``urllib.request.urlopen``: every usage, profile, token-refresh and
 reset-claim request the package makes goes through that one function, so the
 real request building and the real response parsing both run, and only the
 transport is fake. Answers come from the loaded scenario, keyed on the bearer
 token (each seeded account gets its own invented token).
+
+Routes: Anthropic's usage, profile, token and reset-claim endpoints; Codex's
+``chatgpt.com/backend-api/wham`` usage, reset-credit list and credit consume;
+and PyPI's project JSON, which answers 404 as it does today (the package is
+not on PyPI), so the passive update check behaves as it does for a user.
 
 A request this module has no answer for is a guard violation, not a 404: it
 means the code wanted to reach somewhere new, and the run should fail loudly
@@ -25,6 +30,11 @@ USAGE_PATH = "/api/oauth/usage"
 PROFILE_PATH = "/api/oauth/profile"
 TOKEN_URL_HOST = "platform.claude.com"
 API_HOST = "api.anthropic.com"
+CHATGPT_HOST = "chatgpt.com"
+CODEX_USAGE_PATH = "/backend-api/wham/usage"
+CODEX_CREDITS_PATH = "/backend-api/wham/rate-limit-reset-credits"
+CODEX_CONSUME_PATH = CODEX_CREDITS_PATH + "/consume"
+PYPI_HOST = "pypi.org"
 
 
 def iso(dt: datetime) -> str:
@@ -87,6 +97,11 @@ class FakeAnthropic:
             account = self.state.account_for_token(token)
             if account is None:
                 raise _http_error(url, 401, {"error": {"type": "authentication_error"}})
+            failure = self.state.usage_failure(account)
+            if failure is not None:
+                if failure.status == "timeout":
+                    raise TimeoutError("timed out (demo)")
+                raise _http_error(url, int(failure.status), {"error": {"type": "api_error"}})
             return _Response(url, self.state.usage_payload(account, resets=resets))
 
         if parts.hostname == API_HOST and parts.path == PROFILE_PATH and method == "GET":
@@ -114,7 +129,24 @@ class FakeAnthropic:
             body = json.loads((req.data or b"{}").decode())
             return _Response(url, self.state.claim(account, body.get("grant_id", "")))
 
-        message = f"the demo API has no answer for {method} {parts.hostname}{parts.path}"
+        if parts.hostname == CHATGPT_HOST and parts.path in (
+            CODEX_USAGE_PATH, CODEX_CREDITS_PATH, CODEX_CONSUME_PATH,
+        ):
+            account = self.state.codex_account_for_token(token, headers.get("chatgpt-account-id", ""))
+            if account is None:
+                raise _http_error(url, 401, {"detail": "Unauthorized"})
+            if parts.path == CODEX_USAGE_PATH and method == "GET":
+                return _Response(url, self.state.codex_usage_payload(account))
+            if parts.path == CODEX_CREDITS_PATH and method == "GET":
+                return _Response(url, self.state.codex_credits_payload(account))
+            if parts.path == CODEX_CONSUME_PATH and method == "POST":
+                body = json.loads((req.data or b"{}").decode())
+                return _Response(url, self.state.codex_consume(account, body.get("credit_id", "")))
+
+        if parts.hostname == PYPI_HOST and parts.path == "/pypi/ai-quota-swap/json" and method == "GET":
+            raise _http_error(url, 404, {"message": "Not Found"})
+
+        message =f"the demo API has no answer for {method} {parts.hostname}{parts.path}"
         if self.on_unknown is not None:
             self.on_unknown(message)
         raise urllib.error.URLError(message)

@@ -66,8 +66,9 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
                    help="override the scenario's auto-switch time compression (see AutoRun)")
     p.add_argument("--tui-child", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(head)
-    if not tail and not args.serve:
-        p.error("give the qswap arguments after --, e.g. run.py fleet -- list")
+    if "--" not in argv and not args.serve:
+        p.error("give the qswap arguments after --, e.g. run.py fleet -- list "
+                "(a bare `--` runs qswap with no arguments)")
     return args, tail
 
 
@@ -122,11 +123,17 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
         print(f"run.py: refusing to start.\n{e}", file=sys.stderr)
         return EXIT_GUARD_FAILED
 
+    install_codex_process_fakes(scenario)
+
     import seed
 
     switcher = seed.seed(scenario)
     if scenario.warmup:
         switcher.usage_entries_by_account()  # the earlier read
+        if scenario.codex_accounts:
+            from ai_quota_swap.codex.switcher import CodexSwitcher
+
+            CodexSwitcher(configure_logging=False).usage_entries_by_account()
         coordinates.move_to(scenario.epoch)
     if scenario.auto is not None:
         auto = scenario.auto
@@ -146,7 +153,8 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
 
     code = 0
     blocks = []
-    for command in split_commands(qswap_args):
+    # A bare `--` is qswap with no arguments (its usage error off a terminal).
+    for command in split_commands(qswap_args) or [[]]:
         saved = sys.stdout, sys.stderr
         buf = _Capture() if capture else None
         if buf is not None:
@@ -165,7 +173,7 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
     if capture:
         import render
 
-        shown = ["qswap " + " ".join(shlex.quote(a) for a in c) for c, _ in blocks]
+        shown = [" ".join(["qswap", *(shlex.quote(a) for a in c)]) for c, _ in blocks]
         if args.ansi:
             args.ansi.write_text("".join(f"$ {s}\n{out}" for s, (_, out) in zip(shown, blocks)),
                                  encoding="utf-8")
@@ -197,6 +205,39 @@ def split_commands(args: list[str]) -> list[list[str]]:
         else:
             out[-1].append(a)
     return [c for c in out if c]
+
+
+def install_codex_process_fakes(scenario) -> None:
+    """Fake the four functions through which Codex support reaches processes.
+
+    ``ai_quota_swap.codex.processes`` lists running Codex processes with ``ps``,
+    restarts Codex's background server and runs ``codex login``: all process
+    spawns, which the sandbox refuses (and a refusal is not an ``OSError``, so
+    the switch would die on it). The test suite replaces the same four
+    functions in ``tests/conftest.py``; this does it the same way, in this
+    process's memory only. Nothing runs: no Codex process is running here,
+    no background server exists, and ``codex login`` writes the scenario's
+    ``codex_login`` record into the temporary home it is given, as a real
+    login would. A scenario without one answers as a machine without the
+    codex CLI does.
+    """
+    from ai_quota_swap.codex import processes
+
+    def no_restart(home, timeout=processes.RESTART_TIMEOUT_S):
+        return processes.RestartResult(False, "no background server in the demo")
+
+    def fake_login(home, args):
+        if scenario.codex_login is None:
+            return processes.LoginRun(None, "codex is not on PATH")
+        path = home / "auth.json"
+        path.write_bytes(scenario.codex_login.login_record(scenario.clock))
+        path.chmod(0o600)
+        return processes.LoginRun(0)
+
+    processes.list_codex_processes = lambda: []
+    processes.background_server_pid = lambda home: None
+    processes.restart_background_server = no_restart
+    processes.run_codex_login = fake_login
 
 
 def install_time_compression(auto, coordinates, *, stop_after: bool) -> None:
