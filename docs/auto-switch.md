@@ -1,6 +1,6 @@
 # Automatic switching: the exact rules
 
-Reference for `qswap auto`, and for the menu bar's auto-switch, which runs the same engine. Everyday use is in the [README](../README.md#automatic-switching).
+Reference for `qswap auto`, for the menu bar's auto-switch, and for `qswap codex auto`, which all run the same engine. Everyday use is in the [README](../README.md#automatic-switching); what differs for Codex is under [Codex accounts](#codex-accounts).
 
 ## Strategies
 
@@ -64,6 +64,10 @@ For cron/systemd timers, `--once` reports the outcome in its exit code (`0` swit
 ```bash
 */5 * * * * qswap auto --once --json >> ~/.qswap-auto.log 2>&1
 ```
+
+## Codex accounts
+
+`qswap codex auto` runs these rules over the Codex accounts, with its own state (cooldown, quarantine, the daily cap on automatic credit spends) and the same settings, except one: its line is `codex.threshold` (default 99), because a Codex switch restarts Codex's background server and interrupts work in progress, so by default it moves only when the active account is out. A saved Codex login whose access token has expired reads "usage unknown until used" and is never picked, since qswap never refreshes a Codex login. When a switch is refused for now because a running Codex may be renewing the live token, the tick reports `no-switch` with reason `switch-deferred` and the next tick tries again. Codex usage reset credits are spent under the same `resets.*` settings as Claude Code's usage resets. Details: [codex.md](codex.md#automatic-switching).
 
 ## Defaults
 

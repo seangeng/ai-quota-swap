@@ -179,6 +179,33 @@ def background_server_pid(home: Path) -> int | None:
     return None
 
 
+@dataclass(frozen=True)
+class LoginRun:
+    """How ``codex login`` ended: its exit code, or why it never ran."""
+
+    returncode: int | None
+    detail: str = ""
+
+
+def run_codex_login(home: Path, args: list[str]) -> LoginRun:
+    """``codex login [args]`` with ``CODEX_HOME=home``, on the user's terminal.
+
+    Stdin, stdout and stderr are inherited, so the browser hand-off or the
+    device code shows as usual. Ctrl-C reaches ``codex`` too (same process
+    group) and comes back here as ``KeyboardInterrupt``. Only the child's
+    environment names ``home``; this process's ``CODEX_HOME`` is untouched.
+    """
+    exe = shutil.which("codex")
+    if exe is None:
+        return LoginRun(None, "codex is not on PATH")
+    env = {**os.environ, "CODEX_HOME": str(home)}
+    try:
+        proc = spawn.run([exe, "login", *args], env=env, check=False)
+    except OSError as e:
+        return LoginRun(None, str(e))
+    return LoginRun(proc.returncode)
+
+
 def restart_background_server(home: Path, timeout: float = RESTART_TIMEOUT_S) -> RestartResult:
     """``codex app-server daemon restart`` on ``home``. Never raises."""
     exe = shutil.which("codex")

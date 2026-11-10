@@ -17,12 +17,17 @@ Normalization (docs/design/codex.md, "Usage reading"):
 - ``rate_limit.allowed == false`` with no window at 100% adds ``rejected``, so
   the account reads as exhausted.
 - ``rate_limit_reset_credits.available_count > 0`` triggers one more GET for
-  the credit list, mapped into ``resets.grants[]`` (read side only).
+  the credit list, mapped into ``resets.grants[]``.
 
 The output follows the reading contract every consumer relies on (seam map
 §4.6): a window's ``pct`` key is always present, a ``scoped`` entry's ``pct`` is
 always a number, ``resets_at`` is a tz-aware ISO string, and no scoped name
 collides with ``5h``, ``7d`` or ``rejected``.
+
+Spending a credit is :func:`consume_reset_credit` (docs/design/codex.md,
+"Reset credits"): ``POST …/rate-limit-reset-credits/consume`` with
+``{redeem_request_id, credit_id}``, the request id a UUID v4 that the caller
+stores before the request and reuses on retry.
 """
 
 from __future__ import annotations
@@ -33,17 +38,39 @@ import math
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from ai_quota_swap import __version__, oauth
+
+if TYPE_CHECKING:
+    from ai_quota_swap.resets import ClaimResult
 
 _logger = logging.getLogger("ai-quota-swap")
 
 BASE_URL = "https://chatgpt.com/backend-api"
 USAGE_URL = f"{BASE_URL}/wham/usage"
 CREDITS_URL = f"{BASE_URL}/wham/rate-limit-reset-credits"
+CONSUME_URL = f"{CREDITS_URL}/consume"
 TIMEOUT_S = 10.0
+#: Same budget as the Claude claim: a timeout is an unknown outcome, retried
+#: later with the same request id.
+CLAIM_TIMEOUT_S = 25.0
+
+#: Longest credit id qswap accepts. OpenAI does not document the format; the
+#: ids seen so far are short, and anything near this is not an id.
+CREDIT_ID_MAX_LEN = 200
+
+#: The consume answer's ``code`` → qswap's claim result (design table).
+#: ``already_redeemed`` counts as done; anything else is an ``error``.
+CONSUME_RESULTS = {
+    "reset": "reset",
+    "already_redeemed": "already_used",
+    "nothing_to_reset": "ineligible",
+    "no_credit": "unavailable",
+}
 
 FIVE_HOUR_S = 18_000
 SEVEN_DAY_S = 604_800
@@ -68,17 +95,20 @@ def user_agent() -> str:
     return f"ai-quota-swap/{__version__}"
 
 
+def _headers(access_token: str, account_id: str) -> dict[str, str]:
+    """The auth headers Codex's own clients send to the ChatGPT backend."""
+    return {
+        "Authorization": f"Bearer {access_token}",
+        "ChatGPT-Account-ID": account_id,
+        "User-Agent": user_agent(),
+        "Accept": "application/json",
+    }
+
+
 def request_json(url: str, access_token: str, account_id: str, *, timeout: float = TIMEOUT_S) -> object:
     """One authenticated GET against the ChatGPT backend; the parsed JSON body."""
     request = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "ChatGPT-Account-ID": account_id,
-            "User-Agent": user_agent(),
-            "Accept": "application/json",
-        },
-        method="GET",
+        url, headers=_headers(access_token, account_id), method="GET"
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read())
@@ -98,8 +128,15 @@ class UsageOutcome:
     retry_after_s: float | None = None
 
 
-def fetch_usage(access_token: str, account_id: str) -> UsageOutcome:
-    """Read one account's usage (and, when it holds any, its reset credits)."""
+def fetch_usage(
+    access_token: str, account_id: str, *, read_credits: bool = True
+) -> UsageOutcome:
+    """Read one account's usage (and, when it holds any, its reset credits).
+
+    ``read_credits`` is the shared ``resets.enabled`` setting: off, no credit
+    list is read and the reading carries no ``resets`` status, the way the
+    Claude read then sends the plain usage request.
+    """
     try:
         data = request_json(USAGE_URL, access_token, account_id)
         usage = normalize_usage(data)
@@ -116,7 +153,9 @@ def fetch_usage(access_token: str, account_id: str) -> UsageOutcome:
         _logger.debug("Codex usage fetch failure detail: %r", e)
         return UsageOutcome(error=kind, retry_after_s=retry_after)
 
-    if usage is not None and _credit_count(data) > 0:
+    if usage is not None and not read_credits:
+        usage.pop("resets", None)
+    elif usage is not None and _credit_count(data) > 0:
         try:
             listing = request_json(CREDITS_URL, access_token, account_id)
             usage["resets"] = credits_status(listing, usage)
@@ -305,13 +344,62 @@ def _credit_count(data: object) -> int:
     return max(count, 0)
 
 
+def valid_credit_id(value: object) -> bool:
+    """Whether ``value`` can be a reset-credit id.
+
+    OpenAI does not document the format, so this is deliberately loose (UUIDs,
+    prefixed ids and the like all pass) and only refuses what cannot be an
+    id: empty, longer than :data:`CREDIT_ID_MAX_LEN`, or containing whitespace
+    or control characters. Anthropic's grant-id pattern
+    (``resets.GRANT_ID_RE``) is never applied to Codex credits.
+    """
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= CREDIT_ID_MAX_LEN
+        and value.isprintable()
+        and not any(ch.isspace() for ch in value)
+    )
+
+
+def is_uuid4(value: object) -> bool:
+    """Whether ``value`` is a UUID v4 in canonical form, the request id the
+    consume endpoint expects (Codex sends ``Uuid::new_v4()``)."""
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        return False
+    return parsed.version == 4 and str(parsed) == value
+
+
+def new_request_id() -> str:
+    """A fresh consume request id (UUID v4, canonical form)."""
+    return str(uuid.uuid4())
+
+
+def _expiry(value: object) -> str | None:
+    """A credit's ``expires_at`` as an ISO string: RFC 3339 as sent, or an
+    epoch number converted; None for null, absent or unreadable."""
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        try:
+            return _iso(float(value))
+        except (OverflowError, OSError, ValueError):
+            return None
+    return None
+
+
 def credits_status(listing: object, usage: dict) -> dict:
     """The reset-credit list, in the shape ``resets.parse_status`` returns.
 
     Each credit becomes one grant: ``id`` the credit id, ``ends_at`` its
     ``expires_at``, one use left while it is ``available``, ``clears`` the core
-    windows this reading has, ``label`` the credit's title. Spending one is the
-    next milestone; this is display and planning input only.
+    windows this reading has (a credit resets the core Codex limit; whether it
+    also resets an additional limit is not known, so those are not listed),
+    ``label`` the credit's title. A credit whose id cannot be an id
+    (:func:`valid_credit_id`) is dropped with a log line.
     """
     clears = [key for key in ("five_hour", "seven_day") if key in usage]
     kind = {
@@ -325,7 +413,10 @@ def credits_status(listing: object, usage: dict) -> dict:
         if not isinstance(raw, dict):
             continue
         credit_id = raw.get("id")
-        if not isinstance(credit_id, str) or not credit_id:
+        if not valid_credit_id(credit_id):
+            if credit_id is not None:
+                _logger.warning("Codex reset credit skipped: its id is not usable")
+                _logger.debug("Codex reset credit id rejected: %r", credit_id)
             continue
         status = raw.get("status")
         available = status == "available"
@@ -335,7 +426,6 @@ def credits_status(listing: object, usage: dict) -> dict:
             reason = "not_supported_by_plan"
         elif not available and status == "redeeming":
             reason = "redeeming"
-        expires = raw.get("expires_at")
         title = raw.get("title")
         grants.append({
             "id": credit_id,
@@ -343,7 +433,7 @@ def credits_status(listing: object, usage: dict) -> dict:
             "resets_left": 1 if available else 0,
             "resets_total": 1,
             "starts_at": None,
-            "ends_at": expires if isinstance(expires, str) and expires else None,
+            "ends_at": _expiry(raw.get("expires_at")),
             "clears": list(clears),
             "blocking": [],
             "paused": False,
@@ -372,3 +462,94 @@ def credits_status(listing: object, usage: dict) -> dict:
         "cooldown_until": None,
         "grants": grants,
     }
+
+
+# -- spending a credit ------------------------------------------------------------
+
+
+def _refusal_code(error: urllib.error.HTTPError) -> str | None:
+    """The consume ``code`` in an HTTP error body, when it is a known refusal."""
+    try:
+        data = json.loads(error.read())
+    except Exception:
+        return None
+    code = data.get("code") if isinstance(data, dict) else None
+    if isinstance(code, str) and code in CONSUME_RESULTS and code != "reset":
+        return code
+    return None
+
+
+def consume_reset_credit(
+    access_token: str,
+    account_id: str,
+    credit_id: str,
+    request_id: str,
+    *,
+    timeout: float = CLAIM_TIMEOUT_S,
+) -> ClaimResult:
+    """Spend one reset credit on the account. Never raises.
+
+    ``POST …/rate-limit-reset-credits/consume`` with the usage call's auth
+    headers plus ``Content-Type: application/json`` and the body
+    ``{"redeem_request_id": request_id, "credit_id": credit_id}``.
+    ``request_id`` is the idempotency key: a retry with the same one cannot
+    spend a second credit, so an unknown outcome (timeout, network, an answer
+    without a known ``code``) is an ``error`` to retry with it. The answer's
+    ``code`` maps by :data:`CONSUME_RESULTS`; HTTP 401/403 is ``auth_error``,
+    429 ``rate_limited``, anything else ``error``. Malformed ids are refused
+    here and never sent.
+    """
+    from ai_quota_swap.resets import ClaimResult
+
+    if not valid_credit_id(credit_id) or not is_uuid4(request_id):
+        return ClaimResult("error", detail="malformed credit or request id")
+    if not access_token or not account_id:
+        return ClaimResult("auth_error", detail="no access token")
+    body = json.dumps({"redeem_request_id": request_id, "credit_id": credit_id}).encode()
+    request = urllib.request.Request(
+        CONSUME_URL,
+        data=body,
+        method="POST",
+        headers={**_headers(access_token, account_id), "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return ClaimResult("rate_limited", detail="http-429")
+        if e.code in (401, 403):
+            return ClaimResult("auth_error", detail=f"http-{e.code}")
+        # The server may answer a refusal (no credit, nothing to reset, already
+        # redeemed) with a 4xx that still carries its ``code``. Read it, so a
+        # definite "no" is not retried as an unknown outcome. A 4xx never
+        # reports a successful reset.
+        refusal = _refusal_code(e) if 400 <= e.code < 500 else None
+        if refusal is not None:
+            return ClaimResult(CONSUME_RESULTS[refusal], reason=refusal, detail=f"http-{e.code}")
+        return ClaimResult("error", detail=f"http-{e.code}")
+    except (TimeoutError, urllib.error.URLError, OSError) as e:
+        _logger.debug("Codex reset credit transport failure: %r", e)
+        return ClaimResult("error", detail="network")
+    except ValueError:
+        return ClaimResult("error", detail="bad-response")
+    except Exception as e:  # http.client.IncompleteRead, BadStatusLine, ...
+        _logger.debug("Codex reset credit claim failed: %r", e)
+        return ClaimResult("error", detail=type(e).__name__)
+    if not isinstance(data, dict):
+        return ClaimResult("error", detail="bad-response")
+    code = data.get("code")
+    result = CONSUME_RESULTS.get(code) if isinstance(code, str) else None
+    if result is None:
+        return ClaimResult("error", detail="unrecognized answer")
+    windows = data.get("windows_reset")
+    detail = (
+        f"{windows} window{'s' if windows != 1 else ''} reset"
+        if isinstance(windows, int) and not isinstance(windows, bool)
+        else None
+    )
+    return ClaimResult(
+        result=result,
+        reason=None if result == "reset" else code,
+        detail=detail,
+    )

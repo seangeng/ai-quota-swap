@@ -161,9 +161,16 @@ class CodexSettings:
     the old login in memory. Restarting interrupts work in progress on it; off
     leaves it running and the switch reports that it still holds the old
     account.
+
+    ``threshold``: the Codex engine's switch line (``qswap codex auto``) when
+    ``--threshold`` is not given, in place of ``autoswitch.threshold``. A Codex
+    switch restarts the background server and interrupts work, so by default
+    the engine switches only once the active account is out. Every other
+    ``autoswitch.*`` setting applies to both providers.
     """
 
     restart_daemon: bool = True
+    threshold: float = 99.0
 
 
 _SECTION_DEFAULT_SOURCES = {
@@ -289,6 +296,10 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "codex", "restartDaemon", "restart_daemon", "bool",
             help="qswap codex switch restarts Codex's background server so new sessions use the new login",
+        ),
+        SettingSpec(
+            "codex", "threshold", "threshold", "float", 50.0, 99.9,
+            help="qswap codex auto's switch line (in place of autoswitch.threshold; a switch interrupts Codex)",
         ),
     )
 }
@@ -521,23 +532,57 @@ def load_reset_settings(backup_root: Path) -> ResetSettings:
 
 
 def load_codex_settings(backup_root: Path) -> CodexSettings:
-    """Load the codex section; missing/corrupt file or non-bool value → default."""
+    """Load the codex section; each bad field reverts to its default alone."""
     raw = _read_raw(settings_path(backup_root))
     section = raw.get("codex")
     default = CodexSettings()
     if not isinstance(section, dict):
         return default
-    value = section.get("restartDaemon", default.restart_daemon)
-    if isinstance(value, str):
-        # Never bool(str): a hand-edited quoted "false" must read as false.
-        value = _BOOL_WORDS.get(value.strip().lower())
-    if not isinstance(value, bool):
-        _logger.warning(
-            "settings.json: codex.restartDaemon must be true or false, got %r; "
-            "using %r", section.get("restartDaemon"), default.restart_daemon,
+    kwargs = {}
+    if "restartDaemon" in section:
+        value = section["restartDaemon"]
+        if isinstance(value, str):
+            # Never bool(str): a hand-edited quoted "false" must read as false.
+            value = _BOOL_WORDS.get(value.strip().lower())
+        if isinstance(value, bool):
+            kwargs["restart_daemon"] = value
+        else:
+            _logger.warning(
+                "settings.json: codex.restartDaemon must be true or false, got %r; "
+                "using %r", section.get("restartDaemon"), default.restart_daemon,
+            )
+    if "threshold" in section:
+        value = section["threshold"]
+        spec = SETTING_SPECS["codex.threshold"]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or (isinstance(value, float) and not math.isfinite(value))
+        ):
+            _logger.warning(
+                "settings.json: codex.threshold expects a number, got %r; using %r",
+                value, default.threshold,
+            )
+        else:
+            kwargs["threshold"] = float(min(max(value, spec.lo), spec.hi))
+    return dataclasses.replace(default, **kwargs)
+
+
+def load_engine_settings(backup_root: Path, provider_id: str = "claude") -> AutoSwitchSettings:
+    """The ``autoswitch`` settings one provider's engine runs on.
+
+    ``backup_root`` is the data root that holds ``settings.json`` for every
+    provider (a provider's own data may live below it, as Codex's does in
+    ``<root>/codex``). Claude Code's engine reads the ``autoswitch`` section
+    as it is; Codex's takes its threshold from ``codex.threshold`` instead.
+    Command-line flags go on top (:func:`merged_with_cli`).
+    """
+    settings = load_settings(backup_root)
+    if provider_id == "codex":
+        settings = dataclasses.replace(
+            settings, threshold=load_codex_settings(backup_root).threshold
         )
-        return default
-    return CodexSettings(restart_daemon=value)
+    return settings
 
 
 def save_settings(backup_root: Path, settings: AutoSwitchSettings) -> None:

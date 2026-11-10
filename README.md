@@ -242,11 +242,14 @@ Subfolders inherit the nearest mapped ancestor. In an unmapped directory, `qswap
 
 ```bash
 codex login && qswap codex add      # save the Codex login you are using
+qswap codex login                   # log in another account and save it; the live one stays
 qswap codex list                    # every saved Codex account with its usage
 qswap codex switch 2                # make account 2 the live Codex login
+qswap codex auto                    # switch automatically when the active account runs out
+qswap codex reset                   # list (and spend) Codex usage reset credits
 ```
 
-To add a second account, log it in under a throwaway `CODEX_HOME` and add it from there: `codex login` in your normal Codex home signs the current login out first. Never run `codex logout` on a login qswap has saved; it kills every saved copy. A switch restarts Codex's background server and warns about sessions and the desktop app that keep the old account. Steps and limits: [docs/codex.md](docs/codex.md).
+Add further accounts with `qswap codex login`, not plain `codex login`: in your normal Codex home, `codex login` signs the current login out first. Never run `codex logout` on a login qswap has saved; it kills every saved copy. A switch restarts Codex's background server and warns about sessions and the desktop app that keep the old account, so `qswap codex auto` switches only once the active account is out (`codex.threshold`, default 99). Steps and limits: [docs/codex.md](docs/codex.md).
 
 ### Interactive dashboard (TUI)
 
@@ -483,7 +486,7 @@ qswap add-token --email user@example.com     # optional label override
 
 - [docs/auto-switch.md](docs/auto-switch.md) — the exact auto-switch rules: hysteresis margins, landing rules, per-account thresholds and tiers, polling cadence. Read it to find out why it did or didn't switch.
 - [docs/json-output.md](docs/json-output.md) — every field in `--json` output, including the optional ones. Read it before writing a script against `qswap list --json` or `qswap auto --json`.
-- [docs/codex.md](docs/codex.md) — Codex accounts: adding a second account without signing the first out, what a switch does to running sessions, the background server and the desktop app, and what qswap never does. Read it before your first Codex switch.
+- [docs/codex.md](docs/codex.md) — Codex accounts: adding a second account without signing the first out, what a switch does to running sessions, the background server and the desktop app, `qswap codex auto`, usage reset credits, and what qswap never does. Read it before your first Codex switch.
 - [docs/usage.md](docs/usage.md) — `qswap usage`: what it reads, what the token and cost columns mean, why the cost is an estimate, your own prices, and how usage is attributed to accounts. Read it before trusting the account split.
 - [docs/menubar.md](docs/menubar.md) — how the macOS menu bar runs under launchd: start at login, the wrapper app in `/Applications`, file locations, upgrades, the Login Items switch. Read it when the icon is missing or the service misbehaves.
 

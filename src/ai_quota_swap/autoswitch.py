@@ -29,9 +29,11 @@ whose refresh token is dead gets quarantined instead of activated. When the
 active account's own usage becomes unreadable for ``unhealthy_ticks``
 consecutive ticks, the engine fails over to any healthy candidate.
 
-Cooldown and quarantine persist in ``<backup_root>/autoswitch_state.json``
+Cooldown and quarantine persist in ``<switcher.backup_dir>/autoswitch_state.json``
 (so cron-driven ``qswap auto --once`` ticks behave across processes), mutated
-read-modify-write under a dedicated file lock.
+read-modify-write under a dedicated file lock. Each provider's switcher has its
+own ``backup_dir`` (Codex: ``<data root>/codex``), so cooldown, quarantine,
+health counters and the daily reset brake are per provider.
 """
 
 from __future__ import annotations
@@ -50,7 +52,11 @@ from pathlib import Path
 from typing import ClassVar
 
 from ai_quota_swap import oauth, poll_policy
-from ai_quota_swap.exceptions import CredentialFormatError, ProviderError
+from ai_quota_swap.exceptions import (
+    CredentialFormatError,
+    ProviderError,
+    RetryableSwitchError,
+)
 from ai_quota_swap.json_output import SCHEMA_VERSION, USAGE_TOKEN_EXPIRED
 from ai_quota_swap.lines import BindingWindow, binding_window, window_line
 from ai_quota_swap.locking import FileLock
@@ -381,11 +387,19 @@ class QuarantineEvent(AutoSwitchEvent):
     number: str
     email: str
     reason: str
+    # The provider's own recovery step for the human line (not in JSON).
+    # Empty: Claude Code's, re-adding the login into the same slot.
+    recover: str = ""
 
     def _fields(self) -> dict:
         return {"number": self.number, "email": self.email, "reason": self.reason}
 
     def human(self) -> str:
+        if self.recover:
+            return (
+                f"Account-{self.number} ({self.email}) quarantined: {self.reason}. "
+                f"{self.recover}"
+            )
         return (
             f"Account-{self.number} ({self.email}) quarantined: {self.reason}. "
             f"Log in with it and run 'qswap --add-account --slot {self.number}' "
@@ -692,19 +706,35 @@ def preview_reset_plan(
     )
 
 
-def reset_request_id(record: object, grant_id: str) -> str:
-    """The idempotency key for claiming ``grant_id``: the previous attempt's
-    when that attempt never got a decided answer, else a fresh one."""
+def _new_reset_request_id() -> str:
+    """Claude Code's request id: a random UUID as 32 hex digits."""
     import uuid
 
+    return uuid.uuid4().hex
+
+
+def reset_request_id(record: object, grant_id: str, host: object = None) -> str:
+    """The idempotency key for claiming ``grant_id``: the previous attempt's
+    when that attempt never got a decided answer, else a fresh one.
+
+    The id's format is the provider's choice. A ``host`` (the switcher) may
+    define ``new_reset_request_id()`` and ``is_reset_request_id(value)``;
+    Codex does, for the UUID v4 its consume endpoint expects, and a stored id
+    that fails the check is replaced rather than reused. Without them
+    (Claude Code) a fresh id is 32 hex digits and any stored string is reused.
+    """
+    new_id = getattr(host, "new_reset_request_id", None) or _new_reset_request_id
+    valid = getattr(host, "is_reset_request_id", None)
+    previous = record.get("requestId") if isinstance(record, dict) else None
     if (
         isinstance(record, dict)
         and record.get("grantId") == grant_id
         and not record.get("settled")
-        and isinstance(record.get("requestId"), str)
+        and isinstance(previous, str)
+        and (valid is None or valid(previous))
     ):
-        return record["requestId"]
-    return uuid.uuid4().hex
+        return previous
+    return new_id()
 
 
 # ---------------------------------------------------------------------------
@@ -890,7 +920,8 @@ def _headroom_by_account(
 
 
 class AutoSwitchEngine:
-    """Threshold-policy auto-switcher over a :class:`ClaudeAccountSwitcher`.
+    """Threshold-policy auto-switcher over one provider's switcher (an
+    ``providers.EngineHost``: :class:`ClaudeAccountSwitcher` or ``CodexSwitcher``).
 
     ``on_event`` receives every :class:`AutoSwitchEvent`; exceptions it raises
     are not caught (a broken frontend should fail loudly in tests). ``clock``
@@ -1082,7 +1113,7 @@ class AutoSwitchEngine:
             record = {
                 "at": now,
                 "grantId": plan.grant_id,
-                "requestId": reset_request_id(previous, plan.grant_id),
+                "requestId": reset_request_id(previous, plan.grant_id, self.switcher),
                 "reason": plan.reason,
                 "auto": True,
                 "result": "pending",
@@ -1134,7 +1165,10 @@ class AutoSwitchEngine:
             }
 
         self._mutate_state(add)
-        self._emit(QuarantineEvent(number=number, email=email, reason=reason))
+        self._emit(QuarantineEvent(
+            number=number, email=email, reason=reason,
+            recover=getattr(self.switcher, "recover_hint", None) or "",
+        ))
 
     def _release_recovered_quarantines(self, state: dict) -> dict:
         """Drop quarantine entries whose credential was replaced since.
@@ -1472,20 +1506,21 @@ class AutoSwitchEngine:
                     weekly_threshold=settings.weekly_threshold,
                 )
             )
+            add = self._add_command()
             if self.switcher.has_live_login():
                 # Live login exists but qswap doesn't manage it: never act —
                 # a switch would overwrite it without a backup.
                 self._emit(
                     NoSwitchEvent(
                         reason="unmanaged-active-account",
-                        detail="run 'qswap --add-account' to include it in rotation",
+                        detail=f"run '{add}' to include it in rotation",
                     )
                 )
             else:
                 self._emit(
                     NoSwitchEvent(
                         reason="no-active-account",
-                        detail="log in and run 'qswap --add-account' first",
+                        detail=f"log in and run '{add}' first",
                     )
                 )
             return TickOutcome.NO_ACTION
@@ -1613,8 +1648,8 @@ class AutoSwitchEngine:
                         NoSwitchEvent(
                             reason="active-idle",
                             detail=(
-                                "token expired while Claude Code is idle; "
-                                "resumes on next use"
+                                f"token expired while {self._display_name()} "
+                                "is idle; resumes on next use"
                             ),
                         )
                     )
@@ -2878,7 +2913,15 @@ class AutoSwitchEngine:
                 self._emit(NoSwitchEvent(reason="cooldown"))
                 return TickOutcome.NO_ACTION
 
-            result = self.switcher.switch_to(number, json_output=True)
+            try:
+                result = self.switcher.switch_to(number, json_output=True)
+            except RetryableSwitchError as e:
+                # Nothing changed, and the provider says a later try is safe
+                # (Codex: a running Codex may be renewing the live token right
+                # now). Not an error, and nothing against the target: hold,
+                # and the next tick asks again. Claude Code never raises it.
+                self._emit(NoSwitchEvent(reason="switch-deferred", detail=str(e)))
+                return TickOutcome.NO_ACTION
             if not result or not result.get("switched"):
                 self._emit(
                     NoSwitchEvent(
@@ -2940,6 +2983,16 @@ class AutoSwitchEngine:
             settings.weekly_threshold,
             scale=settings.threshold,
         )
+
+    def _display_name(self) -> str:
+        """The provider's product name, for event text shown for every provider."""
+        return getattr(self.switcher, "display_name", None) or "Claude Code"
+
+    def _add_command(self) -> str:
+        """The qswap command that captures the live login, for event text.
+        A provider may name its own (``add_command``); Claude Code's is the
+        default."""
+        return getattr(self.switcher, "add_command", None) or "qswap --add-account"
 
     def _in_cooldown(self, state: dict) -> bool:
         last = state.get("lastSwitchAt")
@@ -3070,7 +3123,7 @@ class AutoSwitchEngine:
             # unreadable usage) — keep the normal cadence so the at-limit
             # escape isn't missed.
         elif outcome is TickOutcome.NO_ACTION and self._idle_hold_slow:
-            # Idle-hold: Claude is idle on an expired token — nothing changes
+            # Idle-hold: the CLI is idle on an expired token — nothing changes
             # until the user comes back, so crawl. Worst case protection
             # resumes one slow tick after they do.
             return max(interval, NO_RESET_FALLBACK_S)

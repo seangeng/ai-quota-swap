@@ -25,6 +25,7 @@ from ai_quota_swap.settings import (
     effective_settings,
     explicit_share_history,
     load_codex_settings,
+    load_engine_settings,
     load_run_settings,
     load_settings,
     load_ui_settings,
@@ -291,6 +292,38 @@ class TestCodexSettings:
     def test_listed_by_effective_settings(self, tmp_path: Path):
         keys = {spec.dotted: value for spec, value, _ in effective_settings(tmp_path)}
         assert keys["codex.restartDaemon"] is True
+        assert keys["codex.threshold"] == 99.0
+
+    def test_threshold_defaults_to_99_with_the_autoswitch_bounds(self, tmp_path: Path):
+        assert load_codex_settings(tmp_path).threshold == 99.0
+        spec, line = SETTING_SPECS["codex.threshold"], SETTING_SPECS["autoswitch.threshold"]
+        assert (spec.lo, spec.hi, spec.kind) == (line.lo, line.hi, line.kind)
+        assert set_setting(tmp_path, "codex.threshold", "95") == 95.0
+        assert load_codex_settings(tmp_path).threshold == 95.0
+        for bad in ("101", "49", "x"):
+            with pytest.raises(ConfigError):
+                set_setting(tmp_path, "codex.threshold", bad)
+
+    @pytest.mark.parametrize("value, expected", [
+        (97, 97.0), (120, 99.9), (10, 50.0), ("95", 99.0), (True, 99.0), (None, 99.0),
+    ])
+    def test_hand_edited_threshold(self, tmp_path: Path, value, expected):
+        settings_path(tmp_path).write_text(json.dumps(
+            {"codex": {"threshold": value, "restartDaemon": False}}))
+        loaded = load_codex_settings(tmp_path)
+        assert loaded.threshold == expected
+        assert loaded.restart_daemon is False  # one bad field never resets the other
+
+    def test_engine_settings_per_provider(self, tmp_path: Path):
+        settings_path(tmp_path).write_text(json.dumps({
+            "autoswitch": {"threshold": 80, "cooldownSeconds": 42},
+            "codex": {"threshold": 97},
+        }))
+        claude = load_engine_settings(tmp_path)
+        codex = load_engine_settings(tmp_path, "codex")
+        assert (claude.threshold, claude.cooldown_seconds) == (80.0, 42.0)
+        assert (codex.threshold, codex.cooldown_seconds) == (97.0, 42.0)
+        assert load_engine_settings(tmp_path, "claude") == load_settings(tmp_path)
 
 
 class TestSettingSpecs:

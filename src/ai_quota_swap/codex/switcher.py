@@ -27,12 +27,15 @@ import hashlib
 import json
 import logging
 import os
+import shutil
+import stat
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ai_quota_swap import oauth, poll_policy
+from ai_quota_swap import oauth, poll_policy, resets
 from ai_quota_swap import switcher as claude_switcher
 from ai_quota_swap.codex import auth as codex_auth
 from ai_quota_swap.codex import processes as codex_processes
@@ -91,8 +94,8 @@ from ai_quota_swap.printer import (
 from ai_quota_swap.settings import (
     ResetSettings,
     load_codex_settings,
+    load_engine_settings,
     load_reset_settings,
-    load_settings,
 )
 from ai_quota_swap.usage_store import FetchRecord, UsageEntry, UsageStore, with_sentinel
 
@@ -101,6 +104,11 @@ from ai_quota_swap.usage_store import FetchRecord, UsageEntry, UsageStore, with_
 #: minutes before it expires, and a swap during that renewal can strand the
 #: outgoing login's new refresh token (design, switch step 1).
 NEAR_EXPIRY_S = 600.0
+
+#: ``qswap codex login``'s temporary Codex homes, in the data root: their name
+#: prefix, and the age past which a leftover one is swept.
+LOGIN_HOME_PREFIX = "login-home-"
+LOGIN_HOME_MAX_AGE_S = 86_400.0
 
 #: Human notes for the sentinel states a Codex row can be in.
 SENTINEL_NOTES = {
@@ -172,6 +180,10 @@ class CodexSwitcher:
     provider_id = "codex"
     display_name = "Codex"
     cli_name = "codex"
+    # Optional engine-host members (``providers.py``): the commands the
+    # engine's event text quotes. Claude Code's are the engine's defaults.
+    add_command = "qswap codex add"
+    recover_hint = "Log in to it again with 'qswap codex login' to recover."
 
     def __init__(
         self,
@@ -225,6 +237,17 @@ class CodexSwitcher:
         home = codex_auth.codex_home()
         codex_auth.ensure_file_storage(home)
         return home
+
+    def require_accounts(self) -> None:
+        """Refuse, in one line, a keyring-mode home or a registry with no
+        account (``qswap codex auto`` has nothing to watch then)."""
+        self.check_storage()
+        data = self._read_registry()
+        if not data or not data.get("accounts"):
+            raise ConfigError(
+                "No Codex accounts are managed yet; log in with codex and run "
+                "qswap codex add"
+            )
 
     # -- registry -------------------------------------------------------------
 
@@ -505,10 +528,82 @@ class CodexSwitcher:
             return oauth.RefreshOutcome(None, "invalid_grant")
         return oauth.RefreshOutcome(current, None)
 
-    def claim_usage_reset(self, account_num: str, grant_id: str, request_id: str):
-        raise FeatureUnavailableError(
-            "Spending a Codex reset credit is not available yet"
+    # -- reset credits ----------------------------------------------------------
+
+    @staticmethod
+    def new_reset_request_id() -> str:
+        """A consume request id: a UUID v4, which Codex's endpoint expects
+        (optional engine-host member, read by ``autoswitch.reset_request_id``)."""
+        return codex_usage.new_request_id()
+
+    @staticmethod
+    def is_reset_request_id(value: str) -> bool:
+        """Whether a stored request id may be reused: a canonical UUID v4."""
+        return codex_usage.is_uuid4(value)
+
+    def _claim_login(self, num: str) -> tuple[CodexLogin | None, str]:
+        """``(login, "")`` whose access token can spend one of the account's
+        credits right now, or ``(None, why)``.
+
+        The live ``auth.json`` for the active account, the saved record for
+        any other; both are only read. An expired access token is refused,
+        never refreshed: Codex renews a login itself the next time it runs on
+        it (design rule).
+        """
+        data = self._read_registry() or {}
+        record = (data.get("accounts") or {}).get(num)
+        if record is None:
+            return None, "account not found"
+        _home, _raw, live, _problem = self._live()
+        if live is not None and self._slot_for_identity(data, live) == num:
+            login, whose = live, "the live login's"
+        else:
+            login, whose = self._saved_login(num), "the saved login's"
+            if login is None:
+                return None, "no saved login; log in to it and run: qswap codex login"
+        if login.account_id != (record.get("organizationUuid") or ""):
+            return None, "the saved login belongs to another account"
+        if login.access_expires_at is not None and login.access_expires_at <= self._usage_store.clock():
+            return None, (
+                f"{whose} access token has expired; Codex renews it the next "
+                "time it runs on this account"
+            )
+        return login, ""
+
+    def claim_usage_reset(
+        self, account_num: str, grant_id: str, request_id: str
+    ) -> resets.ClaimResult:
+        """Spend reset credit ``grant_id`` on an account, then re-read its usage.
+
+        Never raises: a login that cannot be used (missing, expired, a
+        keyring-mode home) is ``auth_error`` with nothing sent, and network
+        trouble is in the result (``codex_usage.consume_reset_credit``). Any
+        answer the server decided (``reset``, ``already_redeemed``,
+        ``nothing_to_reset``, ``no_credit``) makes the stored reading
+        obsolete, so the account is made due and fetched before returning.
+        """
+        num = str(account_num)
+        try:
+            login, why = self._claim_login(num)
+        except Exception as e:  # ProviderError (keyring home, registry), OSError
+            login, why = None, str(e) or type(e).__name__
+        if login is None:
+            result = resets.ClaimResult("auth_error", detail=why)
+        else:
+            result = codex_usage.consume_reset_credit(
+                login.access_token, login.account_id, grant_id, request_id
+            )
+        self._logger.info(
+            "Codex reset credit claim on account %s: %s%s",
+            num, result.result,
+            f" ({result.reason or result.detail})" if (result.reason or result.detail) else "",
         )
+        if result.settled or result.reason == "no_credit":
+            try:
+                self.refresh_usage({num})
+            except Exception as e:  # the claim stands; the next poll re-reads
+                self._logger.warning(f"Re-reading Codex account {num} after a claim failed: {e}")
+        return result
 
     def reset_settings(self) -> ResetSettings:
         """The shared ``resets`` section (data root's ``settings.json``)."""
@@ -526,11 +621,13 @@ class CodexSwitcher:
         self._poll_inputs_override = None
 
     def _poll_policy_inputs(self) -> tuple[float, float | None, tuple[str, ...]]:
-        """Switch lines for poll planning. No Codex model names exist, so the
-        ``autoswitch.model`` setting (Claude model names) is not applied."""
+        """Switch lines for poll planning: the Codex engine's own (its
+        threshold is ``codex.threshold``), unless an engine pinned them. No
+        Codex model names exist, so the ``autoswitch.model`` setting (Claude
+        model names) is not applied here."""
         if self._poll_inputs_override is not None:
             return self._poll_inputs_override
-        loaded = load_settings(self.data_root)
+        loaded = load_engine_settings(self.data_root, self.provider_id)
         return loaded.threshold, loaded.weekly_threshold, ()
 
     # -- usage ----------------------------------------------------------------
@@ -573,10 +670,12 @@ class CodexSwitcher:
             return self._expired_sentinel(info)
         return None
 
-    def _fetch_one(self, info: _Info) -> FetchRecord:
+    def _fetch_one(self, info: _Info, *, read_credits: bool = True) -> FetchRecord:
         login = info.login
         assert login is not None
-        outcome = codex_usage.fetch_usage(login.access_token, login.account_id)
+        outcome = codex_usage.fetch_usage(
+            login.access_token, login.account_id, read_credits=read_credits
+        )
         if outcome.error == "http-401":
             # Live: the token expired while Codex was idle; Codex renews it.
             # Saved: unknown until Codex next uses it. Either way, stamp the
@@ -653,7 +752,12 @@ class CodexSwitcher:
             repair_overslept=fetch is None or scheduled,
         )
         if claims:
-            records = {num: self._fetch_one(info_by_num[num]) for num in claims}
+            # The shared ``resets.enabled``: whether the credit list is read.
+            read_credits = self.reset_settings().enabled
+            records = {
+                num: self._fetch_one(info_by_num[num], read_credits=read_credits)
+                for num in claims
+            }
             plans = self._plans_after_fetch(records, entries, info_by_num)
             accepted = store.record(records, identities, claims, plans)
             for num in accepted:
@@ -673,6 +777,10 @@ class CodexSwitcher:
         nums = {str(n) for n in account_nums} & identities.keys()
         self._usage_store.mark_due(sorted(nums), identities)
         return self._collect_usage_entries(infos, fetch=nums)
+
+    def refresh_account_usage(self, account_num: str) -> UsageEntry | None:
+        """:meth:`refresh_usage` for one account; its entry, None if no such account."""
+        return self.refresh_usage({str(account_num)}).get(str(account_num))
 
     def _plan_record(self, info: _Info, entry: UsageEntry) -> dict | None:
         """The plan as a ``subscription.PlanStore`` record, for the shared renderers.
@@ -923,6 +1031,18 @@ class CodexSwitcher:
 
     # -- add / remove ---------------------------------------------------------
 
+    @staticmethod
+    def _checked_add_args(slot: int | None, alias: str | None) -> str | None:
+        """The alias, normalized; refuses a bad alias or slot before anything runs."""
+        if alias is not None:
+            try:
+                alias = normalize_alias(alias)
+            except ValueError as e:
+                raise ValidationError(str(e)) from e
+        if slot is not None and slot < 1:
+            raise ConfigError("Slot number must be >= 1")
+        return alias
+
     def add_account(
         self,
         slot: int | None = None,
@@ -934,14 +1054,7 @@ class CodexSwitcher:
         A login that is already managed has its saved copy replaced, byte for
         byte, instead of being added twice.
         """
-        if alias is not None:
-            try:
-                alias = normalize_alias(alias)
-            except ValueError as e:
-                raise ValidationError(str(e)) from e
-        if slot is not None and slot < 1:
-            raise ConfigError("Slot number must be >= 1")
-
+        alias = self._checked_add_args(slot, alias)
         home, raw, login, problem = self._live()
         path = codex_auth.auth_path(home)
         if raw is None:
@@ -950,7 +1063,23 @@ class CodexSwitcher:
             )
         if login is None:
             raise CodexLoginError(problem or f"{path} holds no ChatGPT login")
+        self._save_login(login, slot=slot, assume_yes=assume_yes, alias=alias, live=True)
 
+    def _save_login(
+        self,
+        login: CodexLogin,
+        *,
+        slot: int | None,
+        assume_yes: bool,
+        alias: str | None,
+        live: bool,
+    ) -> str | None:
+        """Save ``login`` as a managed account: the body of ``add`` and ``login``.
+
+        ``live`` says the login is the one in Codex's home, so it becomes the
+        recorded active account; a login captured elsewhere (``qswap codex
+        login``) does not. Returns the account number, None when cancelled.
+        """
         # Ask before taking the lock (never hold it across a prompt), then
         # re-check what was asked about under the lock.
         displaced: str | None = None
@@ -967,10 +1096,10 @@ class CodexSwitcher:
                         answer = input(f"Overwrite slot {slot}? [y/N] ").strip().lower()
                     except (EOFError, KeyboardInterrupt):
                         print(f"\n{dimmed('Cancelled')}")
-                        return
+                        return None
                     if answer not in ("y", "yes"):
                         print(dimmed("Cancelled"))
-                        return
+                        return None
                 displaced = occupant.get("email", "")
 
         carry = claude_switcher.ClaudeAccountSwitcher._carried_settings
@@ -993,7 +1122,7 @@ class CodexSwitcher:
                     f"{accent('Updated saved login')} for Account {existing} "
                     f"({login.email})."
                 )
-                return
+                return existing
 
             # Settings belong to the account, so only the same account's
             # records hand theirs on; a displaced occupant's end with it.
@@ -1037,18 +1166,133 @@ class CodexSwitcher:
             data["sequence"] = sorted(
                 {int(n) for n in data.get("sequence", []) if str(n) in accounts} | {int(num)}
             )
-            data["activeAccountNumber"] = int(num)
+            if live or (moved_from is not None and str(data.get("activeAccountNumber")) == moved_from):
+                data["activeAccountNumber"] = int(num)
             self._write_registry(data)
 
         self._logger.info(f"Added Codex account {num}")
         if moved_from is not None:
             print(dimmed(f"Moved from slot {moved_from} → {num}"))
         print(f"{accent('Added')} Account {num}: {login.email}")
-        if len(data["accounts"]) == 1:
+        if live and len(data["accounts"]) == 1:
             print(dimmed(
-                "To add another account without signing this one out, see: "
-                "qswap codex add --help"
+                "To add another account without signing this one out, run: "
+                "qswap codex login"
             ))
+        return num
+
+    # -- logging in a further account -------------------------------------------
+
+    def _login_homes(self) -> list[Path]:
+        """Temporary login homes under the data root (``qswap codex login``)."""
+        try:
+            return [p for p in self.backup_dir.iterdir() if p.name.startswith(LOGIN_HOME_PREFIX)]
+        except OSError:
+            return []
+
+    def _remove_login_home(self, home: Path) -> bool:
+        """Delete a temporary login home; True when it is gone. Never raises.
+
+        When the tree cannot be removed whole, the login file itself is
+        deleted at least, so no token is left behind; the next ``qswap codex
+        login`` sweeps what remains.
+        """
+        try:
+            shutil.rmtree(home)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as e:
+            self._logger.warning(f"Could not delete temporary Codex home {home}: {e}")
+            try:
+                codex_auth.auth_path(home).unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
+
+    def _sweep_login_homes(self, now: float | None = None) -> None:
+        """Delete temporary login homes a run left behind (a crash, a kill)
+        once they are a day old; a younger one may belong to a ``qswap codex
+        login`` running in another terminal. Never follows a symlink."""
+        now = time.time() if now is None else now
+        for home in self._login_homes():
+            try:
+                st = home.lstat()
+            except OSError:
+                continue
+            if not stat.S_ISDIR(st.st_mode) or now - st.st_mtime < LOGIN_HOME_MAX_AGE_S:
+                continue
+            self._remove_login_home(home)
+
+    def login_new_account(
+        self,
+        codex_args: list[str] | tuple[str, ...] = (),
+        *,
+        slot: int | None = None,
+        alias: str | None = None,
+        assume_yes: bool = False,
+        runner=None,
+    ) -> str | None:
+        """``qswap codex login``: log a further account in and save it.
+
+        ``codex login`` signs out (revokes) whatever login is already in its
+        home before it logs in, so the new login is made under an empty,
+        private (0700) temporary home in the data root, with ``CODEX_HOME``
+        set for ``codex`` alone and the user's terminal attached;
+        ``codex_args`` are passed through (``--device-auth``). The login it
+        leaves is saved with ``add``'s code (an account already managed has
+        its saved copy updated), then the temporary home is deleted, whatever
+        happened. Codex's own home is never touched and the live account does
+        not change.
+
+        ``runner(home, args) -> processes.LoginRun`` stands in for
+        :func:`processes.run_codex_login` (tests never start ``codex``).
+        Returns the account number; raises :class:`CodexLoginError` with
+        nothing saved when ``codex login`` fails, cannot start, or leaves no
+        ``auth.json``. Ctrl-C deletes the temporary home and propagates.
+        """
+        alias = self._checked_add_args(slot, alias)
+        self._setup_directories()
+        self._sweep_login_homes()
+        run = runner or codex_processes.run_codex_login
+        home = Path(tempfile.mkdtemp(prefix=LOGIN_HOME_PREFIX, dir=self.backup_dir))
+        try:
+            if sys.platform != "win32":
+                os.chmod(home, 0o700)
+            print(dimmed(
+                "Logging in under a temporary Codex home; your current Codex "
+                "login stays as it is."
+            ))
+            try:
+                outcome = run(home, list(codex_args))
+            except KeyboardInterrupt:
+                print(dimmed("codex login was interrupted; nothing was saved."))
+                raise
+            if outcome.returncode is None:
+                raise CodexLoginError(
+                    f"Could not run codex login ({outcome.detail}); nothing was saved."
+                )
+            if outcome.returncode != 0:
+                raise CodexLoginError(
+                    f"codex login failed (exit code {outcome.returncode}); nothing was saved."
+                )
+            path = codex_auth.auth_path(home)
+            raw = codex_auth.read_auth_bytes(path)
+            if raw is None or not raw.strip():
+                raise CodexLoginError(
+                    "codex login left no auth.json, so there was nothing to save. "
+                    "Codex may be set to keep logins in the OS keyring "
+                    "(cli_auth_credentials_store), which qswap does not support."
+                )
+            try:
+                login = codex_auth.parse_login(raw, source="The new login")
+            except CodexLoginError as e:
+                raise CodexLoginError(f"{e}; nothing was saved.") from e
+            return self._save_login(
+                login, slot=slot, assume_yes=assume_yes, alias=alias, live=False
+            )
+        finally:
+            self._remove_login_home(home)
 
     @staticmethod
     def _check_alias_free(accounts: dict, alias: str | None, owners: set[str | None]) -> None:

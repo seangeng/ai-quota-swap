@@ -70,6 +70,11 @@ them with the same shapes. They are declared as a `typing.Protocol` in
 The two new accessors replace the engine's direct calls into `oauth.extract_oauth_data` and
 `oauth.credential_fingerprint`. The Claude switcher implements them with exactly that code.
 
+Optional members, outside the Protocol (added in M2b): `new_reset_request_id()`,
+`is_reset_request_id(value)`, `add_command`, `recover_hint`. The engine reads them with
+`getattr` and falls back to Claude Code's behaviour, so the Claude switcher defines none of
+them and its request ids and event text are unchanged.
+
 Rules for implementers:
 
 - No member may take the registry lock and then call the network. Fetch first, then re-check
@@ -127,6 +132,6 @@ top-level keys keep their meaning, so the JSON contract is only extended.
 
 ## Not decided here
 
-- How Codex reset credits are spent, and whether a saved Codex login may be refreshed from
-  outside. Both wait on the protocol notes.
+- Whether a saved Codex login may be refreshed from outside (it is not, for now). How Codex
+  reset credits are spent is in [codex.md](codex.md#reset-credits).
 - Running both engines in one process (menu bar, TUI). That is a surfaces milestone.

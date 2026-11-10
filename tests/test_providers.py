@@ -172,9 +172,22 @@ class TestCodexSwitcherFitsTheContracts:
         CodexSwitcher()
         assert not (temp_home / ".ai-quota-swap" / "codex").exists()
 
-    def test_the_next_milestone_members_say_so(self, codex):
-        with pytest.raises(exceptions.FeatureUnavailableError, match="not available yet"):
-            codex.claim_usage_reset("1", "g", "r")
+    def test_optional_engine_members_are_codex_only(self, codex, temp_home):
+        """Outside the Protocol (providers.py docstring): the engine falls back
+        to Claude Code's behaviour when a switcher lacks them, so the Claude
+        switcher must define none of them."""
+        claude = ClaudeAccountSwitcher()
+        for name in ("new_reset_request_id", "is_reset_request_id", "add_command", "recover_hint"):
+            assert not hasattr(claude, name), name
+            assert hasattr(codex, name), name
+
+    def test_claim_never_raises_and_run_sessions_are_the_next_milestone(self, codex):
+        # M2b: spending a credit is implemented; an unknown account is an
+        # auth_error with nothing sent (the network block would fail a send).
+        from ai_quota_swap.resets import ClaimResult
+
+        result = codex.claim_usage_reset("1", "g", "r")
+        assert isinstance(result, ClaimResult) and result.result == "auth_error"
         assert codex.live_session_pids_for("1", "a@example.com") == []
 
 

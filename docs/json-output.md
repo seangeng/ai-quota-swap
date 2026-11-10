@@ -2,7 +2,7 @@
 
 `qswap list --json`, `qswap status --json` and `qswap switch --json` print a single JSON object on stdout; human-readable notices go to stderr. The commands and an example are in the [README](../README.md#json-output-for-scripting).
 
-The same three commands under `qswap codex` (`qswap codex list --json`, ...) print the same shapes for Codex accounts; the differences are listed under [Codex](#codex).
+The same three commands under `qswap codex` (`qswap codex list --json`, ...) print the same shapes for Codex accounts; the differences are listed under [Codex](#codex). `qswap codex reset --json` and `qswap codex auto --json` print what `qswap reset --json` and `qswap auto --json` print.
 
 ## Contract
 
@@ -57,6 +57,8 @@ The two projections stay `--json`-only, since a linear projection is too rough t
 - `usage.resets` lists the account's reset credits, one grant per credit (`resetsLeft` 1 while it is available, `endsAt` its expiry).
 - `usageStatus` can also be `unknown_until_used`: a saved login whose access token expired while unused (or was refused). Codex renews it the first time it runs on that account. `token_expired` is the live login's state: its token ran out while Codex was idle.
 
+`qswap codex reset --json` has the shape of `qswap reset --json`: bare, `{auto, plan, accounts}` with each account's `resets` in the shape above; with an account, `{account, grantId, result}`, where `grantId` is the credit id and `result.result` is `reset`, `already_used` (the credit was already spent with this request id; counts as done), `ineligible` (`reason: "nothing_to_reset"`), `unavailable` (`reason: "no_credit"`), `auth_error`, `rate_limited` or `error`. After a `reset`, `result.detail` says how many windows the server reset when it said so (`"2 windows reset"`), and `resetsLeft` is `null`: a credit is single-use, so the account's remaining credits are in its next reading.
+
 A Codex `switch` result may add `backgroundServer`: `{"pid", "restarted": true}`, or `{"pid", "restarted": false, "reason"}` when the restart was turned off (`codex.restartDaemon`) or failed. A failed restart is also in `warnings`; the switch itself still happened.
 
 ### Codex in `qswap list --json`
@@ -81,7 +83,7 @@ Account numbers are per provider: Claude account 1 and Codex account 1 are diffe
 
 ## `qswap auto --json`
 
-`qswap auto --json` emits an event stream instead: one JSON object per line (`{"schemaVersion":1,"event":"switch","ts":…, …}`) with kinds like `poll`, `switch`, `no-switch`, `account-quarantined`, `all-exhausted`, `error`. The contract is additive: new kinds and fields may appear, so scripts should ignore unknown ones.
+`qswap auto --json` (and `qswap codex auto --json`) emits an event stream instead: one JSON object per line (`{"schemaVersion":1,"event":"switch","ts":…, …}`) with kinds like `poll`, `switch`, `no-switch`, `account-quarantined`, `all-exhausted`, `limit-reset`, `error`. The contract is additive: new kinds, fields and `reason` values may appear, so scripts should ignore unknown ones. One `no-switch` reason so far is Codex-only: `switch-deferred`, a switch the provider refused for now with nothing changed (a running Codex may be renewing the live token); the next tick tries again.
 
 ## `qswap usage --json`
 

@@ -226,9 +226,11 @@ class FakeFetch:
     def __init__(self, answers: dict[str, UsageOutcome] | None = None):
         self.answers = answers or {}
         self.calls: list[tuple[str, str]] = []
+        self.read_credits: list[bool] = []
 
-    def __call__(self, access_token: str, account_id: str) -> UsageOutcome:
+    def __call__(self, access_token: str, account_id: str, *, read_credits: bool = True) -> UsageOutcome:
         self.calls.append((access_token, account_id))
+        self.read_credits.append(read_credits)
         return self.answers.get(account_id, UsageOutcome(error="network"))
 
 
