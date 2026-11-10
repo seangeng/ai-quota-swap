@@ -16,7 +16,7 @@ from ai_quota_swap import paths
 from ai_quota_swap.ledger import readers, scanner
 from ai_quota_swap.ledger.activations import ActivationLog, record_activation
 from ai_quota_swap.ledger.pricing import PriceTable, normalize_model
-from ai_quota_swap.ledger.report import build_report, render_text, report_to_json
+from ai_quota_swap.ledger.report import build_report, day_bounds, render_text, report_to_json
 from ai_quota_swap.ledger.scanner import Scanner, default_config
 from ai_quota_swap.ledger.store import DB_FILENAME, LedgerStore
 from tests.ledger_fixtures import (
@@ -58,10 +58,12 @@ class Env:
     def store(self) -> LedgerStore:
         return LedgerStore(self.data / DB_FILENAME)
 
-    def scan(self, providers=("claude", "codex"), **kw) -> scanner.ScanStats:
+    def scan(self, providers=("claude", "codex"), since=None, **kw) -> scanner.ScanStats:
         store = self.store()
         try:
-            return Scanner(store, default_config(self.data, self.registry), **kw).run(providers)
+            return Scanner(store, default_config(self.data, self.registry), **kw).run(
+                providers, since=since
+            )
         finally:
             store.close()
 
@@ -896,3 +898,300 @@ def test_many_rollouts_are_statted_in_parallel(env):
     stats = env.scan()
     assert (stats.files_seen, stats.events) == (70, 70)
     assert env.scan().files_read == 0
+
+
+# -- scan window ----------------------------------------------------------------
+
+D = 86_400
+THREAD_D = "00000000-0000-4000-8000-00000000000d"
+THREAD_E = "00000000-0000-4000-8000-00000000000e"
+NARROW = DAY  # a report on DAY and the day after
+WIDE = date.fromordinal(DAY.toordinal() - 40)
+
+
+def _aged(path: Path, mtime: float) -> Path:
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def _window(day: date) -> float:
+    """The first event time a report from ``day`` needs, as run_usage computes it."""
+    return day_bounds(day, day)[0] * 3600
+
+
+def _cursor_keys(env) -> set[str]:
+    store = env.store()
+    try:
+        return set(store.cursors("claude")) | set(store.cursors("codex"))
+    finally:
+        store.close()
+
+
+def _sessions(env) -> set[str]:
+    store = env.store()
+    try:
+        return {r[0] for r in store.conn.execute("SELECT DISTINCT session FROM buckets")}
+    finally:
+        store.close()
+
+
+def _buckets(env) -> list[tuple]:
+    """Every bucket, summed over sessions (see the window equivalence test)."""
+    store = env.store()
+    try:
+        return store.conn.execute(
+            "SELECT provider, hour, account, model, project, sum(input), sum(output), "
+            "sum(cache_read), sum(cache_write_5m), sum(cache_write_1h), sum(reasoning), "
+            "sum(requests) FROM buckets GROUP BY 1, 2, 3, 4, 5 ORDER BY 1, 2, 3, 4, 5"
+        ).fetchall()
+    finally:
+        store.close()
+
+
+def _tokens(totals) -> dict:
+    doc = totals.to_json()
+    doc.pop("costUsd")
+    return doc
+
+
+def _rollout_lines(thread: str, ts: float, *responses: str, model: str = "gpt-6.1-sol") -> list[str]:
+    return [codex_meta(ts, thread), codex_turn(ts, model)] + [
+        codex_record(ts + 1 + i, thread, r) for i, r in enumerate(responses)
+    ]
+
+
+def _history(env) -> None:
+    """Session files of many ages, with the cross-file cases the window must
+    survive: a Claude Code session resumed twice, each new file replaying
+    earlier responses with their original timestamps; a sub-agent transcript;
+    Codex threads live, archived and compressed; and an old-format fork whose
+    child is recent and replays the totals of a parent that is not."""
+    record_activation(env.data, number=1, email="a@example.com", org="", now=T0 - 10 * D)
+    _aged(write_lines(env.transcript("sess-1.jsonl"), [
+        claude_line(mid="msg_1", ts=T0 - 20 * D, session="sess-1", out=3, stop=None),
+        claude_line(mid="msg_1", ts=T0 - 20 * D + 1, session="sess-1", out=40),
+        claude_line(mid="msg_2", ts=T0 - 20 * D + 60, session="sess-1"),
+    ]), T0 - 20 * D + 60)
+    _aged(write_lines(env.transcript("sess-2.jsonl"), [
+        claude_line(mid="msg_1", ts=T0 - 20 * D + 1, session="sess-2", out=40),
+        claude_line(mid="msg_2", ts=T0 - 20 * D + 60, session="sess-2"),
+        claude_line(mid="msg_3", ts=T0 - 3 * D, session="sess-2", model="claude-sonnet-5-5"),
+    ]), T0 - 3 * D)
+    _aged(write_lines(env.transcript("sess-3.jsonl"), [
+        claude_line(mid="msg_3", ts=T0 - 3 * D, session="sess-3", model="claude-sonnet-5-5"),
+        claude_line(mid="msg_4", ts=T0 + 600, session="sess-3", out=3, stop=None),
+        claude_line(mid="msg_4", ts=T0 + 601, session="sess-3", out=90),
+    ]), T0 + 601)
+    sub = env.transcript("agent-1.jsonl", slug="-work-demo-app/sess-2/subagents")
+    _aged(write_lines(sub, [
+        claude_line(mid="msg_sub", ts=T0 - 9 * D, session="sess-2", sidechain=True),
+    ]), T0 - 9 * D)
+    _aged(write_lines(env.rollout(THREAD_A), _rollout_lines(THREAD_A, T0, "a1", "a2")), T0 + 2)
+    _aged(
+        write_lines(env.rollout(THREAD_B, archived=True),
+                    _rollout_lines(THREAD_B, T0 - 15 * D, "b1", model="gpt-5.4")),
+        T0 - 15 * D + 1,
+    )
+    lines_c = _rollout_lines(THREAD_C, T0 - 5 * D, "c1")
+    if scanner.ZSTD_AVAILABLE:
+        zst = env.rollout(THREAD_C, zst=True)
+        zst.write_bytes(scanner._zstd.compress(("\n".join(lines_c) + "\n").encode()))
+        _aged(zst, T0 - 5 * D + 1)
+    else:
+        _aged(write_lines(env.rollout(THREAD_C), lines_c), T0 - 5 * D + 1)
+    _aged(write_lines(env.rollout(THREAD_D), [
+        codex_meta(T0 - 12 * D, THREAD_D, version="0.40.0", ordinal=None),
+        codex_turn(T0 - 12 * D, "gpt-5.4"),
+        codex_count(T0 - 12 * D + 1, (100, 0, 10), (100, 0, 10)),
+        codex_count(T0 - 12 * D + 2, (300, 0, 30), (200, 0, 20)),
+    ]), T0 - 12 * D + 2)
+    _aged(write_lines(env.rollout(THREAD_E), [
+        codex_meta(T0 - 3600, THREAD_E, session=THREAD_D, version="0.40.0", ordinal=None),
+        codex_meta(T0 - 3600, THREAD_D, version="0.40.0", ordinal=None),
+        codex_count(T0 - 3599, (100, 0, 10), (100, 0, 10)),
+        codex_count(T0 - 3598, (300, 0, 30), (200, 0, 20)),
+        codex_turn(T0 - 3597, "gpt-5.4"),
+        codex_count(T0 - 3596, (360, 0, 36), (60, 0, 6)),
+    ]), T0 - 3596)
+
+
+class TestScanWindow:
+    @pytest.mark.parametrize("wide", ["wider window", "all"])
+    def test_a_narrow_scan_then_a_wider_one_matches_a_wide_scan_from_scratch(self, env, wide):
+        _history(env)
+        until = date.fromtimestamp(T0 + D)
+        wide_since = _window(WIDE) if wide == "wider window" else None
+
+        narrow = env.scan(since=_window(NARROW))
+        # sess-3, the live thread and the fork child are read; six are not.
+        assert (narrow.files_skipped, narrow.older_not_in_ledger) == (6, 6)
+        narrow_window = env.report(since=NARROW, until=until).total
+        env.scan(since=wide_since)
+        stepwise = (_buckets(env), env.sums(), env.report(since=WIDE, until=until).total)
+
+        store = env.store()
+        store.reset()
+        store.close()
+        env.scan(since=wide_since)
+        scratch = (_buckets(env), env.sums(), env.report(since=WIDE, until=until).total)
+
+        # Claude: msg_1..4 and the sub-agent; Codex: a1, a2, b1, c1, and three
+        # token_count deltas (two in the parent, one of the child's own).
+        assert scratch[1]["requests"] == 12
+        assert stepwise[0] == scratch[0]
+        assert stepwise[1] == scratch[1]
+        assert _tokens(stepwise[2]) == _tokens(scratch[2])
+        assert stepwise[2].cost == pytest.approx(scratch[2].cost)
+        # The narrow scan alone already held every event of its own window.
+        assert _tokens(narrow_window) == _tokens(env.report(since=NARROW, until=until).total)
+        assert narrow_window.requests > 0
+
+    def test_left_out_files_get_no_cursor_and_a_wider_scan_reads_them(self, env):
+        _aged(write_lines(env.transcript("sess-old.jsonl"), [
+            claude_line(mid="msg_old", ts=T0 - 10 * D, session="sess-old"),
+        ]), T0 - 10 * D)
+        _aged(write_lines(env.rollout(THREAD_A), _rollout_lines(THREAD_A, T0 - 10 * D, "r")),
+              T0 - 10 * D + 1)
+        new = _aged(write_lines(env.transcript("sess-new.jsonl"), [
+            claude_line(mid="msg_new", ts=T0, session="sess-new"),
+        ]), T0 + 1)
+
+        stats = env.scan(since=_window(NARROW))
+        assert env.sums()["requests"] == 1
+        assert (stats.files_seen, stats.files_read) == (1, 1)
+        assert (stats.files_skipped, stats.older_not_in_ledger) == (2, 2)
+        assert stats.modified_since == _window(NARROW) - scanner.MTIME_MARGIN
+        assert _cursor_keys(env) == {str(new)}
+
+        stats = env.scan(since=_window(WIDE))
+        assert env.sums()["requests"] == 3
+        assert (stats.files_read, stats.files_skipped) == (2, 0)
+        stats = env.scan(since=_window(NARROW))
+        assert (stats.files_read, stats.files_skipped, stats.older_not_in_ledger) == (0, 2, 0)
+
+    def test_the_margin_is_one_day_before_the_window(self, env):
+        assert scanner.MTIME_MARGIN == 86_400
+        since = _window(NARROW)
+        cutoff = since - scanner.MTIME_MARGIN
+        _aged(write_lines(env.transcript("sess-at.jsonl"), [
+            claude_line(mid="msg_at", ts=cutoff, session="sess-at"),
+        ]), cutoff)
+        _aged(write_lines(env.transcript("sess-before.jsonl"), [
+            claude_line(mid="msg_before", ts=cutoff - 1, session="sess-before"),
+        ]), cutoff - 1)
+        stats = env.scan(since=since)
+        assert (stats.files_read, stats.files_skipped) == (1, 1)
+        assert _sessions(env) == {"sess-at"}
+
+    def test_files_are_read_newest_first_across_both_providers(self, env, monkeypatch):
+        a = _aged(write_lines(env.transcript("sess-a.jsonl"), [
+            claude_line(mid="msg_a", ts=T0 - 3 * D, session="sess-a"),
+        ]), T0 - 3 * D)
+        b = _aged(write_lines(env.rollout(THREAD_A), _rollout_lines(THREAD_A, T0 - 2 * D, "r")),
+                  T0 - 2 * D)
+        c = _aged(write_lines(env.transcript("sess-c.jsonl"), [
+            claude_line(mid="msg_c", ts=T0 - D, session="sess-c"),
+        ]), T0 - D)
+        d = _aged(write_lines(env.rollout(THREAD_B), _rollout_lines(THREAD_B, T0, "r")), T0)
+        order: list[str] = []
+        claude_file, codex_thread = Scanner._claude_file, Scanner._codex_thread
+
+        def record_claude(self, path, *args):
+            order.append(path)
+            return claude_file(self, path, *args)
+
+        def record_codex(self, key, path, *args):
+            order.append(path)
+            return codex_thread(self, key, path, *args)
+
+        monkeypatch.setattr(Scanner, "_claude_file", record_claude)
+        monkeypatch.setattr(Scanner, "_codex_thread", record_codex)
+        env.scan()
+        assert order == [str(d), str(c), str(b), str(a)]
+
+    def test_an_interrupted_first_scan_keeps_the_newest_usage(self, env, monkeypatch):
+        for i in range(4):
+            _aged(write_lines(env.transcript(f"sess-{i}.jsonl"), [
+                claude_line(mid=f"msg_{i}", ts=T0 - i * D, session=f"sess-{i}"),
+            ]), T0 - i * D)
+        real = readers.parse_claude_line
+        calls = {"n": 0}
+
+        def flaky(raw):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise KeyboardInterrupt
+            return real(raw)
+
+        monkeypatch.setattr(scanner, "parse_claude_line", flaky)
+        with pytest.raises(KeyboardInterrupt):
+            env.scan(batch_events=1)
+        assert _sessions(env) == {"sess-0", "sess-1"}
+
+    @pytest.mark.skipif(os.utime not in os.supports_follow_symlinks, reason="needs lutimes")
+    def test_a_symlinks_age_is_its_targets(self, env):
+        share = env.home / "share"
+        old = _aged(write_lines(share / rollout_name(THREAD_A),
+                                _rollout_lines(THREAD_A, T0 - 10 * D, "old")), T0 - 10 * D)
+        new = _aged(write_lines(share / rollout_name(THREAD_B),
+                                _rollout_lines(THREAD_B, T0, "new")), T0 + 1)
+        env.rollout(THREAD_A).parent.mkdir(parents=True)
+        env.rollout(THREAD_A).symlink_to(old)  # a new link to an old file
+        env.rollout(THREAD_B).symlink_to(new)
+        os.utime(env.rollout(THREAD_B), (T0 - 30 * D, T0 - 30 * D), follow_symlinks=False)
+        env.rollout(THREAD_C).symlink_to(share / "unmounted" / rollout_name(THREAD_C))
+        stats = env.scan(since=_window(NARROW))
+        assert _sessions(env) == {THREAD_B}
+        assert env.sums("codex")["requests"] == 1
+        assert (stats.files_read, stats.files_skipped, stats.missing) == (1, 1, 1)
+
+    def test_a_thread_archived_while_old_still_counts_as_read(self, env):
+        live = _aged(write_lines(env.rollout(THREAD_A), _rollout_lines(THREAD_A, T0 - 10 * D, "r")),
+                     T0 - 10 * D)
+        env.scan()
+        archived = env.rollout(THREAD_A, archived=True)
+        archived.parent.mkdir(parents=True)
+        os.replace(live, archived)  # a rename keeps the inode and the mtime
+        stats = env.scan(since=_window(NARROW))
+        assert (stats.files_read, stats.files_skipped, stats.older_not_in_ledger) == (0, 1, 0)
+
+    @pytest.mark.skipif(not scanner.ZSTD_AVAILABLE, reason="needs zstd support")
+    def test_a_thread_compressed_while_old(self, env):
+        live = _aged(write_lines(env.rollout(THREAD_A), _rollout_lines(THREAD_A, T0 - 10 * D, "r")),
+                     T0 - 10 * D)
+        env.scan()
+        zst = env.rollout(THREAD_A, zst=True)
+        zst.write_bytes(scanner._zstd.compress(live.read_bytes()))
+        live.unlink()
+        # Compressed keeping the file's time (the zstd tool's default): this
+        # copy is no newer than what was read, so it is in the ledger.
+        _aged(zst, T0 - 10 * D)
+        stats = env.scan(since=_window(NARROW))
+        assert (stats.files_skipped, stats.older_not_in_ledger) == (1, 0)
+        # Compressed with a later time, still before the window: it could hold
+        # more than was read, so it counts as not in the ledger until a wider
+        # scan resumes it from the cursor.
+        _aged(zst, T0 - 5 * D)
+        stats = env.scan(since=_window(NARROW))
+        assert (stats.files_skipped, stats.older_not_in_ledger) == (1, 1)
+        stats = env.scan(since=_window(WIDE))
+        assert (stats.files_read, stats.bytes_read) == (1, 0)
+        assert env.sums("codex")["requests"] == 1
+        stats = env.scan(since=_window(NARROW))
+        assert (stats.files_skipped, stats.older_not_in_ledger) == (1, 0)
+
+    def test_lines_behind_an_mtime_set_back_are_flagged_and_read_by_a_full_scan(self, env):
+        """How the rule can miss events: a file written after its last scan and
+        then given an older mtime (a tool that copies times from an older
+        copy). The narrow scan cannot see the new line, but the file no longer
+        matches its cursor, so it is reported as not in the ledger."""
+        path = _aged(write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0 - 10 * D)]),
+                     T0 - 10 * D)
+        env.scan()
+        write_lines(path, [claude_line(mid="msg_2", ts=T0 + 60)], append=True)
+        _aged(path, T0 - 10 * D)
+        stats = env.scan(since=_window(NARROW))
+        assert env.sums()["requests"] == 1
+        assert stats.older_not_in_ledger == 1
+        env.scan()
+        assert env.sums()["requests"] == 2

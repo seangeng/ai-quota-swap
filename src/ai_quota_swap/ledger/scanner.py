@@ -1,11 +1,21 @@
 """The incremental scanner: transcript files in, buckets out.
 
-A scan walks the roots, reads each file from its stored cursor, turns lines
-into events (readers.py), and writes them in batches. Each batch is one
-SQLite transaction that adds to the buckets, records the dedupe keys, and
-moves the cursors of the files it read, so an interrupted scan (Ctrl-C, a
-crash) loses at most the batch in flight and the next scan resumes exactly
-where the last committed batch stopped.
+A scan walks the roots, stats every file once (in parallel), reads each file
+from its stored cursor, turns lines into events (readers.py), and writes them
+in batches. Each batch is one SQLite transaction that adds to the buckets,
+records the dedupe keys, and moves the cursors of the files it read, so an
+interrupted scan (Ctrl-C, a crash) loses at most the batch in flight and the
+next scan resumes exactly where the last committed batch stopped.
+
+Scan window
+    A report over ``[since, until]`` only needs files that can hold an event
+    at or after ``since``. A line is written when its event happens, so a
+    file's modification time is at or after every timestamp in it: a file
+    last changed more than ``MTIME_MARGIN`` before ``since`` is left alone.
+    It is not opened and gets no cursor, so a later, wider scan reads it.
+    Files are read newest first, so an interrupted first scan keeps the most
+    recent usage, and the files a narrow scan reads are exactly the newest
+    part of what a wide scan reads, in the same order.
 
 Roots come from ``paths.py``: nothing here spells a home directory.
 """
@@ -21,6 +31,7 @@ import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from ai_quota_swap import paths
@@ -48,6 +59,12 @@ BATCH_EVENTS = 20_000
 BATCH_BYTES = 64 * 1024 * 1024
 _CHUNK = 1024 * 1024
 
+# How long before the first event a report needs a file may have been last
+# changed and still be read. Absorbs clock skew between the machine that
+# wrote a line and the server that stamps a network share's mtimes, and the
+# report's rounding of local days to UTC hours.
+MTIME_MARGIN = 86_400
+
 _THREAD_ID = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$"
 )
@@ -62,6 +79,11 @@ class ScanStats:
     duplicates: int = 0
     missing: int = 0  # unreadable entries, such as symlinks to an unmounted volume
     skipped_compressed: int = 0  # .zst files with no zstd support
+    # The scan window: files last changed before ``modified_since`` (epoch
+    # seconds; None when every file was in scope) were not opened.
+    modified_since: float | None = None
+    files_skipped: int = 0  # Claude files and Codex threads outside the window
+    older_not_in_ledger: int = 0  # of those, the ones the ledger does not hold yet
     seconds: float = 0.0
     interrupted: bool = False
 
@@ -74,6 +96,15 @@ class ScanStats:
             "duplicates": self.duplicates,
             "missing": self.missing,
             "skippedCompressed": self.skipped_compressed,
+            "modifiedSince": (
+                datetime.fromtimestamp(self.modified_since).astimezone().isoformat(
+                    timespec="seconds"
+                )
+                if self.modified_since is not None
+                else None
+            ),
+            "filesSkipped": self.files_skipped,
+            "olderFilesNotInLedger": self.older_not_in_ledger,
             "seconds": round(self.seconds, 2),
         }
 
@@ -187,6 +218,28 @@ def _ino(st: os.stat_result) -> int:
     return ino - (1 << 64) if ino >= (1 << 63) else ino
 
 
+def _held(cursor: tuple | None, path: str, st: os.stat_result) -> bool:
+    """Whether the ledger already holds all of ``path`` as ``st`` describes it,
+    judged from the stored cursor without opening the file: the cursor marks
+    this file read to its end and the file is unchanged since; or, for a Codex
+    thread now in another file (moved to ``archived_sessions/``, compressed),
+    the thread was read to the end of a copy changed no earlier than this one."""
+    if cursor is None:
+        return False
+    c_inode, c_size, c_mtime, _offset, c_state = cursor
+    if c_size is None or c_mtime is None:
+        return False  # read only partway
+    if c_inode == _ino(st) and c_size == st.st_size and c_mtime == st.st_mtime_ns:
+        return True
+    if not c_state:
+        return False
+    try:
+        saved = json.loads(c_state)
+    except ValueError:
+        return False
+    return isinstance(saved, dict) and saved.get("file") != path and st.st_mtime_ns <= c_mtime
+
+
 class _Batch:
     def __init__(self) -> None:
         self.events: list[tuple[str, Event]] = []
@@ -236,8 +289,22 @@ class Scanner:
 
     # -- public -------------------------------------------------------------
 
-    def run(self, providers: tuple[str, ...] = ("claude", "codex")) -> ScanStats:
+    def run(
+        self, providers: tuple[str, ...] = ("claude", "codex"), *, since: float | None = None
+    ) -> ScanStats:
+        """Bring the store up to date with the files under the roots.
+
+        ``since`` is the earliest event time (epoch seconds) the caller will
+        report on. Files last changed more than ``MTIME_MARGIN`` before it are
+        left alone, with no cursor, for a later, wider scan; ``stats`` counts
+        them. ``None`` scans every file. Either way the files are read newest
+        first.
+        """
         start = time.monotonic()
+        cutoff_ns: int | None = None
+        if since is not None:
+            self.stats.modified_since = since - MTIME_MARGIN
+            cutoff_ns = int(self.stats.modified_since * 1_000_000_000)
         try:
             claude_files: list[tuple[str, str | None]] = []
             codex_threads: dict[str, list[str]] = {}
@@ -255,16 +322,39 @@ class Scanner:
                         m = _THREAD_ID.search(os.path.basename(path))
                         key = f"codex-thread:{m.group(1)}" if m else f"codex-file:{path}"
                         codex_threads.setdefault(key, []).append(path)
-            self._total_files = len(claude_files) + sum(len(v) for v in codex_threads.values())
-            if claude_files:
-                cursors = self.store.cursors("claude")
-                for path, account in claude_files:
-                    self._claude_file(path, account, cursors.get(path))
-            if codex_threads:
-                cursors = self.store.cursors("codex")
-                stats = _stat_all([p for c in codex_threads.values() for p in c])
-                for key, candidates in codex_threads.items():
-                    self._codex_thread(key, candidates, cursors.get(key), stats)
+            # One stat per file, in parallel; it follows symlinks, so the
+            # mtime is the target's: the bytes a read would see.
+            stats = _stat_all(
+                [p for p, _a in claude_files] + [p for c in codex_threads.values() for p in c]
+            )
+            claude_cursors = self.store.cursors("claude") if claude_files else {}
+            codex_cursors = self.store.cursors("codex") if codex_threads else {}
+            # What to read: (mtime, cursor key, provider, path, stat, files,
+            # account); files counts a Codex thread's copies. Newest first.
+            work: list[tuple[int, str, str, str, os.stat_result, int, str | None]] = []
+            for path, account in claude_files:
+                st = stats[path]
+                if st is None:
+                    self.stats.files_seen += 1
+                    self.stats.missing += 1
+                    continue
+                if not self._outside_window(st, cutoff_ns, claude_cursors.get(path), path):
+                    work.append((st.st_mtime_ns, path, "claude", path, st, 1, account))
+            for key, candidates in codex_threads.items():
+                chosen = self._choose(candidates, stats)
+                if chosen is None:
+                    self.stats.files_seen += len(candidates)
+                    continue
+                path, st = chosen
+                if not self._outside_window(st, cutoff_ns, codex_cursors.get(key), path):
+                    work.append((st.st_mtime_ns, key, "codex", path, st, len(candidates), None))
+            work.sort(key=lambda w: (-w[0], w[1]))
+            self._total_files = self.stats.files_seen + sum(w[5] for w in work)
+            for _mtime, key, provider, path, st, files, account in work:
+                if provider == "claude":
+                    self._claude_file(path, account, claude_cursors.get(key), st)
+                else:
+                    self._codex_thread(key, path, st, files, codex_cursors.get(key))
             self._flush()
         except KeyboardInterrupt:
             self.stats.interrupted = True
@@ -274,14 +364,24 @@ class Scanner:
             self.stats.seconds = time.monotonic() - start
         return self.stats
 
+    def _outside_window(
+        self, st: os.stat_result, cutoff_ns: int | None, cursor: tuple | None, path: str
+    ) -> bool:
+        """True for a file last changed before the window: count it and leave
+        it unread, with its cursor (if any) as it was."""
+        if cutoff_ns is None or st.st_mtime_ns >= cutoff_ns:
+            return False
+        self.stats.files_skipped += 1
+        if not _held(cursor, path, st):
+            self.stats.older_not_in_ledger += 1
+        return True
+
     # -- Claude Code ----------------------------------------------------------
 
-    def _claude_file(self, path: str, account: str | None, cursor: tuple | None) -> None:
+    def _claude_file(
+        self, path: str, account: str | None, cursor: tuple | None, st: os.stat_result
+    ) -> None:
         self.stats.files_seen += 1
-        st = _stat(path)
-        if st is None:
-            self.stats.missing += 1
-            return
         inode, size, mtime = _ino(st), st.st_size, st.st_mtime_ns
         offset = 0
         if cursor is not None:
@@ -349,25 +449,22 @@ class Scanner:
         )
         return found
 
-    def _codex_thread(
-        self,
-        key: str,
-        candidates: list[str],
-        cursor: tuple | None,
-        stats: dict[str, os.stat_result | None] | None = None,
-    ) -> None:
-        self.stats.files_seen += len(candidates)
-        found = self._pick(candidates, stats or {})
+    def _choose(
+        self, candidates: list[str], stats: dict[str, os.stat_result | None]
+    ) -> tuple[str, os.stat_result] | None:
+        """The file a thread is read from, or None when no copy is readable
+        (counted as missing, or as compressed with no zstd support)."""
+        found = self._pick(candidates, stats)
         self.stats.missing += len(candidates) - len(found)
-        if not found:
-            return
-        compressed = [x for x in found if x[0].endswith(".zst")]
-        if not ZSTD_AVAILABLE:
-            self.stats.skipped_compressed += len(compressed)
+        if found and not ZSTD_AVAILABLE:
+            self.stats.skipped_compressed += sum(1 for p, _s in found if p.endswith(".zst"))
             found = [x for x in found if not x[0].endswith(".zst")]
-            if not found:
-                return
-        path, st = found[0]
+        return found[0] if found else None
+
+    def _codex_thread(
+        self, key: str, path: str, st: os.stat_result, files: int, cursor: tuple | None
+    ) -> None:
+        self.stats.files_seen += files
         inode, size, mtime = _ino(st), st.st_size, st.st_mtime_ns
         state: dict = new_codex_state()
         offset = 0
