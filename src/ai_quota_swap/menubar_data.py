@@ -67,8 +67,41 @@ def _plan_label(record: dict | None, now: float) -> str:
         return ""
 
 
-def account_states(snapshot, provider: str, set_aside: dict[str, str], *, now: float) -> tuple[AccountState, ...]:
-    """An ``AccountsSnapshot``'s accounts as :class:`AccountState` rows."""
+def provider_lines(data_root: Path | None, provider: str):
+    """A provider's switch lines from the settings its engine runs on
+    (``autoswitch.threshold`` / ``weeklyThreshold``; ``codex.threshold`` for
+    Codex). Empty lines when the settings cannot be read."""
+    from ai_quota_swap.display import Lines
+    from ai_quota_swap.settings import load_engine_settings
+
+    if data_root is None:
+        return Lines()
+    try:
+        settings = load_engine_settings(Path(data_root), provider)
+    except Exception:
+        return Lines()
+    return Lines(five_hour=settings.threshold, weekly=settings.weekly_threshold)
+
+
+def _account_lines(acc, lines):
+    """An account's own threshold replaces the provider's 5h line, as in
+    ``qswap list``."""
+    from ai_quota_swap.display import Lines
+
+    own = getattr(getattr(acc, "policy", None), "threshold", None)
+    if own is None:
+        return lines
+    return Lines(five_hour=own, weekly=lines.weekly)
+
+
+def account_states(
+    snapshot, provider: str, set_aside: dict[str, str], *, now: float, lines=None,
+) -> tuple[AccountState, ...]:
+    """An ``AccountsSnapshot``'s accounts as :class:`AccountState` rows;
+    ``lines`` are the provider's switch lines."""
+    from ai_quota_swap.display import Lines
+
+    lines = lines or Lines()
     return tuple(
         AccountState(
             provider=provider,
@@ -83,6 +116,7 @@ def account_states(snapshot, provider: str, set_aside: dict[str, str], *, now: f
             login_expires_at=acc.login_expires_at,
             plan=_plan_label(acc.subscription_plan, now),
             org=(acc.org_name or "") if provider == "claude" else "",
+            lines=_account_lines(acc, lines),
         )
         for acc in snapshot.accounts
     )
@@ -108,7 +142,8 @@ def claude_state(switcher, source, *, full: bool, store_only: bool, now: float) 
     except ProviderError as e:
         return ProviderState("claude", live_email=live, error=error_text(e))
     set_aside = _quiet(switcher.set_aside_accounts, {}) or {}
-    accounts = account_states(snap, "claude", set_aside, now=now)
+    lines = provider_lines(getattr(switcher, "backup_dir", None), "claude")
+    accounts = account_states(snap, "claude", set_aside, now=now, lines=lines)
     found = None if accounts or live else _quiet(lambda: clis.cli_found("claude"))
     return ProviderState("claude", accounts, live_email=live, cli_found=found)
 
@@ -157,8 +192,10 @@ class CodexReader:
         except ProviderError as e:
             return ProviderState("codex", live_email=live, managed=count, error=error_text(e))
         set_aside = _quiet(switcher.set_aside_accounts, {}) or {}
+        lines = provider_lines(self.data_root, "codex")
         return ProviderState(
-            "codex", account_states(snap, "codex", set_aside, now=now), live_email=live, managed=count,
+            "codex", account_states(snap, "codex", set_aside, now=now, lines=lines),
+            live_email=live, managed=count,
         )
 
 

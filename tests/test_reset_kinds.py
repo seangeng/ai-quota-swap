@@ -420,7 +420,7 @@ class TestCountsByKind:
         assert _resets_badge(one_kind, time.time()) == "2 resets"
 
     def test_menu_bar_row(self):
-        # Held resets by kind, as a sentence (display.held_resets).
+        # Held resets by kind, compact and last (menubar.held_compact).
         from ai_quota_swap.display import Reading
         from ai_quota_swap.menubar import AccountState, account_row
 
@@ -433,12 +433,12 @@ class TestCountsByKind:
             return account_row(acc, now=now, stale_after_s=900).text
 
         mixed = _usage(grants=[fable("a", ends=far, left=2), weekly("w", ends=far)])
-        assert row(mixed).endswith(" · holds 2 Fable resets and 1 weekly reset")
-        assert row(_usage(grants=[fable("a", ends=far)])).endswith(" · holds 1 Fable reset")
-        assert "holds" not in row(_usage())
+        assert row(mixed).endswith(" · 2 Fable · 1 weekly resets")
+        assert row(_usage(grants=[fable("a", ends=far)])).endswith(" · 1 Fable reset")
+        assert "reset" not in row(_usage())
         # The login note stays last.
         due = row(mixed, login_expires_at=now + 3600)
-        assert due.index("holds 2 Fable") < due.index("re-login")
+        assert due.index("2 Fable") < due.index("re-login")
 
 
 class TestEventWording:

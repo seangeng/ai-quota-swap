@@ -21,21 +21,27 @@ The **title** is `⇄` followed by the active account's alias (or the part of it
 
 The **first row** says, in words, whether auto-switch is running for each provider and how old the active accounts' readings are: `Auto-switch off · usage read 2m ago`, `Auto-switch running for Claude Code and Codex · usage read just now`, `Auto-switch: Claude Code running, Codex off · usage as of 2h 0m ago`. When an engine stopped (it failed to start, or its thread ended) the row reads `⚠ Auto-switch stopped, click to restart` and a click restarts it; its tooltip says why. When the menu bar's own engine is off and a `qswap auto` in a terminal is running for that provider, the row says `running in qswap auto`.
 
-Then the **accounts**, one row each, the active one checked. With no Codex account managed this is Claude Code's list alone, as it always was. Once Codex manages one, there are two sections, *Claude Code accounts* and *Codex accounts*. A row reads like this:
+Then the **accounts**, one row each, the active one checked. With no Codex account managed this is Claude Code's list alone, as it always was. Once Codex manages one, there are two sections, *Claude Code accounts* and *Codex accounts*. A row is short enough to scan at a glance:
 
 ```text
-#1 personal (maya@example.com) · 5h 46% (in 2h 35m) · 7d 38% (in 3d 6h) · Fable 52% (in 3d 6h) · holds 1 Fable reset
+#1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset
+#3 night-shift · 5h 93% (resets in 38m) · 7d 81% · Fable 97% (resets in…
+#1 personal · 5h 100% (resets in 1h 12m) · 7d 64%
+#2 work · needs re-login
 ```
 
-- each window with its percentage and when it refills; `ahead of pace` on a weekly window that is being used faster than the week passes; `limit reached` at 100%; `extra 18%` for extra-usage spend;
-- `holds 1 Fable reset and 1 weekly reset` (Codex: `holds 1 reset credit`) for the usage resets it holds;
-- `disabled` for an account held out of rotation;
-- `needs re-login` for an account whose saved login was refused, or that the auto-switch engine set aside until its owner logs in again;
-- `usage unavailable (HTTP 503), retrying` when no reading could be taken, and `as of 3h 5m ago` on a reading older than three refresh intervals (at least 15 minutes);
+- the account's short name, `#1 personal`, or `#1 maya@example.com` when it has no alias;
+- each window as a bare percentage; a window at or past the account's own switch line (its threshold, else the provider's `autoswitch.threshold` or `codex.threshold`) adds when it resets, `(resets in 38m)`; `extra 18%` is extra-usage spend;
+- the usage resets it holds, last: `1 Fable reset`, `2 Fable · 1 weekly resets`, `1 reset credit` for Codex;
+- `disabled` for an account held out of rotation (`#4 side · disabled · 5h 0% · 7d 9%`);
+- in place of the percentages, a state in `qswap list`'s words: `needs re-login` for an account whose saved login was refused or that the auto-switch engine set aside until its owner logs in again; `usage unavailable (HTTP 503), retrying` when no reading could be taken; `usage not read yet`;
+- `as of 3h 5m ago` after the percentages of a reading older than three refresh intervals (at least 15 minutes);
 - `API key · $4.12 today · $212.40 this month of $500 (42%) · estimate` for an API-key account, as `qswap list` shows it;
 - `re-login in 5d 12h` at the end while a saved login nears its expiry.
 
-A row that needs you (needs re-login, a limit reached, an API-key account over its budget) is drawn in orange. Hovering over a row shows the account's full block as `qswap list` prints it, with reset clocks, the plan and the next step. Clicking a row switches that provider to the account. Switching to an account that needs re-login first asks, with the same explanation `qswap switch` gives when it refuses; *Switch anyway* is what `--anyway` does on the command line.
+A row is at most 72 characters; a longer one (two windows past their lines, a budgeted API-key account with a long name) ends in `…`.
+
+A row that needs you (needs re-login, a limit reached, an API-key account over its budget) is drawn in orange. Hovering over a row shows the account's full block as `qswap list` prints it, with every window's reset clock, `ahead of pace`, the plan, the full email, when held resets must be used, and the next step. Clicking a row switches that provider to the account. Switching to an account that needs re-login first asks, with the same explanation `qswap switch` gives when it refuses; *Switch anyway* is what `--anyway` does on the command line.
 
 With nothing managed the section says `No accounts are managed yet.` and the next step for each login on this machine; a line that names a live login adds it when clicked.
 

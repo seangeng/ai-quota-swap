@@ -388,6 +388,21 @@ class TestScenarioStates:
         assert "usage unknown until used" in r.stdout  # the Codex saved login
         assert all(len(line) <= 80 for line in r.stdout.splitlines())
 
+    @staticmethod
+    def _account_rows(outline: str) -> list[str]:
+        """The account rows of a --menubar outline: top-level rows under a
+        provider heading, without the check mark and attention marks."""
+        rows, inside = [], False
+        for line in outline.splitlines():
+            if line.endswith("accounts  (heading)"):
+                inside = True
+            elif line.startswith("────"):
+                inside = False
+            elif inside and not line.startswith("    "):
+                rows.append(line[2:].removeprefix("⚠ "))
+        assert rows
+        return rows
+
     def test_the_menu_bar_says_what_list_says(self):
         # --menubar prints ai_quota_swap.menubar.build_menu's description of
         # the seeded fleet: both providers, the API-key account, held resets.
@@ -396,18 +411,22 @@ class TestScenarioStates:
         out = r.stdout
         assert out.startswith("title: ⇄ personal · 46% · 38%\n")
         assert "Claude Code accounts  (heading)" in out and "Codex accounts  (heading)" in out
-        assert "✓ #1 personal (maya@example.com) · 5h 46%" in out
-        assert "holds 1 Fable reset" in out and "holds 1 reset credit" in out
+        assert "✓ #1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset\n" in out
+        assert "#3 night-shift · 5h 93% (resets in 38m) · 7d 81%" in out  # past its line
+        assert "#2 work · 5h 8% · 7d 15% · 1 reset credit\n" in out
         # After the menu bar's ledger scan the API-key account has a spend
         # figure, as `qswap list` has after `qswap usage`.
-        assert "#5 ci (api-key-5@token.local) · API key · $0.00 today · $0.00 this month · estimate" in out
-        assert "Codex #2 work (maya@northwind.example.com)" in out  # provider-named submenus
+        assert "#5 ci · API key · $0.00 today · $0.00 this month · estimate\n" in out
+        assert "Codex #2 work (maya@northwind.example.com)" in out  # submenus keep long labels
+        assert all(len(row) <= 72 for row in self._account_rows(out))
         r = _run(["trouble", "--menubar"])
         assert r.returncode == 0, r.stderr
-        assert "#2 work (maya@northwind.example.com) · needs re-login" in r.stdout
-        assert "#4 side (sam@example.org) · needs re-login" in r.stdout  # set aside
-        assert "usage unavailable (HTTP 503), retrying" in r.stdout
-        assert "as of 3h" in r.stdout
+        assert "#1 personal · 5h 100% (resets in 1h 12m) · 7d 64%" in r.stdout
+        assert "#2 work · needs re-login" in r.stdout
+        assert "#4 side · needs re-login" in r.stdout  # set aside
+        assert "#3 night-shift · usage unavailable (HTTP 503), retrying" in r.stdout
+        assert "#5 spare · 5h 40% · 7d 55% · as of 3h" in r.stdout
+        assert all(len(row) <= 72 for row in self._account_rows(r.stdout))
         r = _run(["usage", "--menubar"])
         assert r.returncode == 0, r.stderr
         assert "7 days $179.72 (estimated)" in r.stdout  # qswap usage's total

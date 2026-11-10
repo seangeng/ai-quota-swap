@@ -38,7 +38,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ai_quota_swap import display, launch_agent, oauth, pace  # noqa: F401  (launch_agent: tests patch it here)
+from ai_quota_swap import display, launch_agent, oauth
 from ai_quota_swap.exceptions import ClaudeSwitchError, ProviderError
 from ai_quota_swap.fsutil import atomic_write_text
 from ai_quota_swap.labels import account_label
@@ -376,38 +376,39 @@ def _set_tooltip(item, text: str) -> None:
         ns_item.setToolTip_(text)
 
 
+#: The widest an account row gets; :func:`display.fit` cuts a longer one
+#: (the tooltip carries the whole block).
+ROW_LIMIT = 72
+
+
 def _window_segment(
-    label: str, window: dict, now: float, *, ahead: bool = False
+    label: str, window: dict, now: float, *, line: float | None = None
 ) -> tuple[str, bool] | None:
-    """``5h 42% (in 2h 33m)``, ``7d 50% (ahead of pace, in 6d 0h)``,
-    ``Fable 100% (limit reached, in 1d 19h)``; and whether it is at its limit."""
+    """``5h 46%``; with ``(resets in 38m)`` once the window is at or past the
+    account's own switch ``line`` (or at 100%), where when it comes back is
+    what the reader wants. Also whether it is at its limit."""
     pct = window.get("pct")
     if not isinstance(pct, (int, float)):
         return None
-    facts: list[str] = []
-    at_limit = pct >= 100
-    if at_limit:
-        facts.append("limit reached")
-    elif ahead:
-        facts.append("ahead of pace")
-    countdown = _live_countdown(window, now)
-    if countdown:
-        facts.append(f"in {countdown}")
     seg = f"{label} {_pct(pct)}%"
-    if facts:
-        seg += f" ({', '.join(facts)})"
-    return seg, at_limit
+    if display.severity(pct, line) != "ok":
+        countdown = _live_countdown(window, now)
+        if countdown:
+            seg += f" (resets in {countdown})"
+    return seg, pct >= 100
 
 
 def usage_segments(
-    usage: dict, now: float, fetched_at: float | None = None
+    usage: dict, now: float, lines: display.Lines | None = None
 ) -> tuple[list[str], bool]:
     """A reading's windows as compact row segments, and whether any is at
-    its limit. A refused setup-token probe leads (the account is at its limit
-    until the refusal ends, however low the windows read); then 5h, 7d, the
-    per-model weekly limits, and extra-usage spend. Weekly windows whose reset
-    passed are rolled forward; "ahead of pace" is judged on the rolled window,
-    so a window rolled to 0% never reads as ahead."""
+    its limit: bare percentages (``5h 46% · 7d 38% · Fable 52%``), a
+    countdown only on a window at or past its switch line (``lines``; without
+    one, at 100%), ``extra 18%`` for extra-usage spend. A refused setup-token
+    probe leads (``limit reached``): the account is at its limit until the
+    refusal ends, however low the windows read. Weekly windows whose reset
+    passed are rolled forward."""
+    lines = lines or display.Lines()
     parts: list[str] = []
     limit = False
     rejected = usage.get("rejected")
@@ -415,18 +416,15 @@ def usage_segments(
         seg = "limit reached"
         countdown = _live_countdown(rejected, now)
         if countdown:
-            seg += f" (in {countdown})"
+            seg += f" (resets in {countdown})"
         parts.append(seg)
         limit = True
     for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
         window = usage.get(key)
-        ahead = False
         if key == "seven_day":
             window = _rolled_weekly_window(window, now)
-            result = pace.compute_pace(window, fetched_at=fetched_at)
-            ahead = bool(result and result.ahead)
         if isinstance(window, dict):
-            seg = _window_segment(label, window, now, ahead=ahead)
+            seg = _window_segment(label, window, now, line=lines.for_label(label))
             if seg:
                 parts.append(seg[0])
                 limit = limit or seg[1]
@@ -434,8 +432,8 @@ def usage_segments(
         window = _rolled_weekly_window(window, now)
         if not isinstance(window, dict) or not window.get("name"):
             continue
-        result = pace.compute_pace(window, fetched_at=fetched_at)
-        seg = _window_segment(str(window["name"]), window, now, ahead=bool(result and result.ahead))
+        name = str(window["name"])
+        seg = _window_segment(name, window, now, line=lines.for_label(name))
         if seg:
             parts.append(seg[0])
             limit = limit or seg[1]
@@ -446,21 +444,28 @@ def usage_segments(
 
 
 def usage_summary(
-    usage: dict | str | None, now: float | None = None, fetched_at: float | None = None
+    usage: dict | str | None, now: float | None = None, lines: display.Lines | None = None
 ) -> str:
-    """One-line usage summary of a reading (reset countdowns computed live).
-
-    ``fetched_at`` is the measurement's fetch time, used only to flag a weekly
-    window that's meaningfully ahead of pace (issue #125), never the 5h one. A
-    string is a state note, cut to its state; no reading at all is
-    ``usage unavailable``.
-    """
+    """One-line usage summary of a reading (:func:`usage_segments`). A string
+    is a state note, cut to its state; no reading at all is ``usage
+    unavailable``."""
     if isinstance(usage, str):
         return menu_note(usage)
     if usage is None:
         return display.USAGE_UNAVAILABLE
-    parts, _ = usage_segments(usage, time.time() if now is None else now, fetched_at)
+    parts, _ = usage_segments(usage, time.time() if now is None else now, lines)
     return " · ".join(parts) if parts else display.USAGE_UNAVAILABLE
+
+
+def held_compact(counts: Sequence[tuple[str, int]], provider: str | None = "claude") -> str:
+    """Held usage resets for a row: ``1 Fable reset``, ``2 weekly resets``,
+    ``1 reset credit`` (:func:`display.held_resets`); several kinds by count,
+    ``2 Fable · 1 weekly resets``."""
+    if not counts:
+        return ""
+    if provider == "codex" or len(counts) == 1:
+        return display.held_resets(counts, provider)
+    return " · ".join(f"{n} {label}" for label, n in counts) + " resets"
 
 
 def _local_part(email: str, limit: int = 12) -> str:
@@ -622,6 +627,9 @@ class AccountState:
     login_expires_at: float | None = None
     plan: str = ""
     org: str = ""
+    #: Its switch lines (its own threshold, else the provider's): a window
+    #: at or past one shows when it resets.
+    lines: display.Lines = display.Lines()
 
     def label(self, *, provider_prefix: bool = False, long: bool = True) -> str:
         """``#2 work (maya@example.com)``; ``Claude #2 work (…)`` with the prefix."""
@@ -906,7 +914,7 @@ def account_block(acc: AccountState, *, now: float, stale_after_s: float, show_p
         acc.number, reading,
         email=acc.email, alias=acc.alias, provider=acc.provider, show_provider=show_provider,
         active=acc.active, disabled=acc.disabled, plan=acc.plan, org=acc.org,
-        kind=acc.kind, set_aside=acc.set_aside, sentinel_notes=notes,
+        kind=acc.kind, lines=acc.lines, set_aside=acc.set_aside, sentinel_notes=notes,
         now=now, stale_after_s=stale_after_s, reset_strings=_reset_strings(now),
         api_lines=_api_lines,
     )
@@ -921,18 +929,23 @@ def block_text(block) -> str:
 def account_row(
     acc: AccountState, *, now: float, stale_after_s: float, action: Action | None = None
 ) -> Row:
-    """One account's row: ``#1 personal (maya@example.com) · 5h 46% (in 2h
-    35m) · 7d 38% (in 3d 6h) · holds 1 Fable reset``.
+    """One account's row, short enough to scan: ``#1 personal · 5h 46% · 7d
+    38% · Fable 52% · 1 Fable reset``.
 
-    The state words are ``qswap list``'s: ``needs re-login``, ``usage
-    unavailable (HTTP 503), retrying``, ``as of 3h ago``, ``API key · $4.12
-    today · …``, ``usage not read yet``. A stored login nearing its expiry
-    ends the row (``re-login in 5d 12h``), last so its position stays put.
+    The label is the short one; the windows are bare percentages, with a
+    countdown only on a window at or past the account's switch line (``5h 93%
+    (resets in 38m)``); held resets come last. A state replaces the
+    percentages, in ``qswap list``'s words: ``needs re-login``, ``usage
+    unavailable (HTTP 503), retrying``, ``usage not read yet``, ``API key ·
+    $4.12 today · …``; an old reading adds ``as of 3h ago``. A stored login
+    nearing its expiry ends the row (``re-login in 5d 12h``). The row is cut
+    to :data:`ROW_LIMIT` with :func:`display.fit`; the tooltip is the whole
+    block.
     """
     from ai_quota_swap import api_spend, resets
 
     block = account_block(acc, now=now, stale_after_s=stale_after_s)
-    parts = [acc.label()]
+    parts = [acc.label(long=False)]
     attention = False
     if acc.disabled:
         parts.append("disabled")
@@ -953,7 +966,7 @@ def account_row(
         parts.append(menu_note(block.notes[0]) if block.notes else display.USAGE_UNAVAILABLE)
     else:
         usage = rolled_usage(acc.usage(), now) or {}
-        segments, at_limit = usage_segments(usage, now, getattr(acc.entry, "fetched_at", None))
+        segments, at_limit = usage_segments(usage, now, acc.lines)
         parts.extend(segments or [display.USAGE_UNAVAILABLE])
         attention = at_limit
         if block.stale_s is not None:
@@ -961,17 +974,17 @@ def account_row(
             if block.error:
                 stale += f" ({display.error_label(block.error)})"
             parts.append(stale)
-        counts = resets.counts_by_kind(usage.get("resets"), now)
-        if counts:
-            parts.append(f"holds {display.held_resets(counts, acc.provider)}")
+        held = held_compact(resets.counts_by_kind(usage.get("resets"), now), acc.provider)
+        if held:
+            parts.append(held)
     if state != "needs-relogin":
         note = oauth.format_login_expiry(acc.login_expires_at, False, now)
         if note:
             parts.append(note)
             attention = attention or note == display.NEEDS_RELOGIN
     return Row(
-        " · ".join(parts), action=action, checked=acc.active, attention=attention,
-        tooltip=block_text(block),
+        display.fit(" · ".join(parts), ROW_LIMIT), action=action, checked=acc.active,
+        attention=attention, tooltip=block_text(block),
     )
 
 

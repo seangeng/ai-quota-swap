@@ -32,7 +32,7 @@ from ai_quota_swap.autoswitch import (
     ResetEvent,
     SwitchEvent,
 )
-from ai_quota_swap.display import Reading
+from ai_quota_swap.display import Lines, Reading
 from ai_quota_swap.exceptions import (
     ClaudeSwitchError,
     CodexLoginError,
@@ -249,15 +249,13 @@ def test_usage_summary_leads_with_a_refused_probe_as_limit_reached():
         "seven_day": {"pct": 30.0},
         "rejected": {"retry_after_s": 3600.0, "resets_at": _iso(3600)},
     }
-    assert menubar.usage_summary(usage, _NOW) == "limit reached (in 1h 0m) · 5h 20% · 7d 30%"
+    assert menubar.usage_summary(usage, _NOW) == "limit reached (resets in 1h 0m) · 5h 20% · 7d 30%"
 
 
-def test_usage_summary_window_at_its_limit_says_so():
-    assert menubar.usage_summary({"scoped": [{"name": "Fable", "pct": 100.0}]}, _NOW) == (
-        "Fable 100% (limit reached)"
-    )
+def test_usage_summary_window_at_its_limit_says_when_it_resets():
+    assert menubar.usage_summary({"scoped": [{"name": "Fable", "pct": 100.0}]}, _NOW) == "Fable 100%"
     assert menubar.usage_summary({"five_hour": {"pct": 100.0, "resets_at": _iso(600)}}, _NOW) == (
-        "5h 100% (limit reached, in 10m)"
+        "5h 100% (resets in 10m)"
     )
 
 
@@ -265,61 +263,40 @@ def test_usage_summary_never_rounds_up_to_the_limit():
     assert menubar.usage_summary({"five_hour": {"pct": 99.6}}, _NOW) == "5h 99%"
 
 
-def test_usage_summary_scoped_multiple_and_countdown():
+def test_usage_summary_bare_percentages_below_the_line():
     usage = {"scoped": [
         {"name": "Fable", "pct": 4.0, "resets_at": _iso(2 * 3600)},
         {"name": "Opus", "pct": 55.0},
     ]}
-    assert menubar.usage_summary(usage, _NOW) == "Fable 4% (in 2h 0m) · Opus 55%"
+    assert menubar.usage_summary(usage, _NOW, Lines(five_hour=90.0)) == "Fable 4% · Opus 55%"
 
 
-def test_usage_summary_string_and_none():
-    assert menubar.usage_summary("no credentials") == "no credentials"
-    assert menubar.usage_summary(None) == "usage unavailable"
-
-
-def test_usage_summary_seven_day_ahead_of_pace():
-    usage = {"seven_day": {"pct": 50.0, "resets_at": _iso(6 * 86400)}}
-    assert menubar.usage_summary(usage, _NOW, fetched_at=_NOW) == "7d 50% (ahead of pace, in 6d 0h)"
-
-
-def test_usage_summary_five_hour_never_shows_pace():
-    usage = {"five_hour": {"pct": 90.0, "resets_at": _iso(4 * 3600)}}
-    assert "ahead" not in menubar.usage_summary(usage, _NOW, fetched_at=_NOW)
-
-
-def test_usage_summary_scoped_ahead_of_pace():
-    usage = {"scoped": [{"name": "Fable", "pct": 50.0, "resets_at": _iso(6 * 86400)}]}
-    assert menubar.usage_summary(usage, _NOW, fetched_at=_NOW) == "Fable 50% (ahead of pace, in 6d 0h)"
-
-
-def test_usage_summary_limit_wins_over_pace():
-    usage = {"scoped": [{"name": "Fable", "pct": 100.0, "resets_at": _iso(6 * 86400)}]}
-    out = menubar.usage_summary(usage, _NOW, fetched_at=_NOW)
-    assert "limit reached" in out and "ahead" not in out
-
-
-def test_usage_summary_no_pace_without_fetched_at():
-    usage = {"seven_day": {"pct": 50.0, "resets_at": _iso(6 * 86400)}}
-    assert "ahead" not in menubar.usage_summary(usage, _NOW)
-
-
-def test_usage_summary_no_pace_on_a_window_rolled_to_zero():
-    usage = {"seven_day": {"pct": 95.0, "resets_at": _iso(-3 * 86400)}}
-    out = menubar.usage_summary(usage, _NOW, fetched_at=_NOW - 4 * 86400)
-    assert "ahead" not in out and "7d 0%" in out
-    usage = {"scoped": [{"name": "Fable", "pct": 95.0, "resets_at": _iso(-3 * 86400)}]}
-    out = menubar.usage_summary(usage, _NOW, fetched_at=_NOW - 4 * 86400)
-    assert "ahead" not in out and "Fable 0%" in out
-
-
-def test_usage_summary_live_countdown_from_resets_at():
+def test_usage_summary_countdown_from_the_switch_line():
     usage = {
-        "five_hour": {"pct": 42.0, "resets_at": _iso(2 * 3600 + 33 * 60)},
-        "seven_day": {"pct": 18.0, "resets_at": _iso(86400 + 19 * 3600)},
-        "spend": {"pct": 30.0},
+        "five_hour": {"pct": 93.0, "resets_at": _iso(38 * 60)},
+        "seven_day": {"pct": 81.0, "resets_at": _iso(86400 + 19 * 3600)},
+        "scoped": [{"name": "Fable", "pct": 97.0, "resets_at": _iso(86400 + 19 * 3600)}],
     }
-    assert menubar.usage_summary(usage, _NOW) == "5h 42% (in 2h 33m) · 7d 18% (in 1d 19h) · extra 30%"
+    assert menubar.usage_summary(usage, _NOW, Lines(five_hour=90.0)) == (
+        "5h 93% (resets in 38m) · 7d 81% · Fable 97% (resets in 1d 19h)"
+    )
+    # A weekly line of its own: the 7d and model windows answer to it.
+    assert menubar.usage_summary(usage, _NOW, Lines(five_hour=95.0, weekly=80.0)) == (
+        "5h 93% · 7d 81% (resets in 1d 19h) · Fable 97% (resets in 1d 19h)"
+    )
+
+
+def test_usage_summary_never_says_ahead_of_pace():
+    # Pace is in the tooltip (the list block), not the row.
+    usage = {"seven_day": {"pct": 50.0, "resets_at": _iso(6 * 86400)}}
+    assert menubar.usage_summary(usage, _NOW) == "7d 50%"
+
+
+def test_usage_summary_rolls_a_passed_weekly_window_to_zero():
+    usage = {"seven_day": {"pct": 95.0, "resets_at": _iso(-3 * 86400)}}
+    assert menubar.usage_summary(usage, _NOW, Lines(five_hour=90.0)) == "7d 0%"
+    usage = {"scoped": [{"name": "Fable", "pct": 95.0, "resets_at": _iso(-3 * 86400)}]}
+    assert menubar.usage_summary(usage, _NOW) == "Fable 0%"
 
 
 def test_usage_summary_omits_a_countdown_that_passed_or_is_missing():
@@ -380,11 +357,11 @@ _OK = {"five_hour": {"pct": 46.0, "resets_at": _iso(2 * 3600 + 35 * 60)},
        "seven_day": {"pct": 38.0, "resets_at": _iso(3 * 86400 + 6 * 3600)}}
 
 
-def test_row_names_the_account_with_its_label():
+def test_row_names_the_account_with_its_short_label():
     row = _row(_acct(alias="personal", usage=_OK, active=True))
-    assert row.text == "#1 personal (maya@example.com) · 5h 46% (in 2h 35m) · 7d 38% (in 3d 6h)"
+    assert row.text == "#1 personal · 5h 46% · 7d 38%"
     assert row.checked and not row.attention
-    assert _row(_acct(usage=_OK)).text.startswith("#1 maya@example.com · 5h 46%")
+    assert _row(_acct(usage=_OK)).text == "#1 maya@example.com · 5h 46% · 7d 38%"
 
 
 def test_row_tooltip_is_the_block_list_prints():
@@ -401,7 +378,7 @@ def test_row_disabled():
 def test_row_needs_relogin_from_the_sentinel():
     acc = _acct(alias="work", entry=Reading(sentinel=USAGE_RELOGIN_REQUIRED))
     row = _row(acc)
-    assert row.text == "#1 work (maya@example.com) · needs re-login"
+    assert row.text == "#1 work · needs re-login"
     assert row.attention
     assert "log in to it in Claude Code (/login), then run: qswap add" in row.tooltip
     assert "quarantine" not in row.text + row.tooltip
@@ -410,7 +387,7 @@ def test_row_needs_relogin_from_the_sentinel():
 def test_row_an_account_the_engine_set_aside_needs_relogin():
     acc = _acct(alias="side", usage=_OK, set_aside="invalid_grant")
     row = _row(acc)
-    assert row.text == "#1 side (maya@example.com) · needs re-login"
+    assert row.text == "#1 side · needs re-login"
     assert row.attention
     assert "needs re-login (its saved login was refused): log in to it" in " ".join(row.tooltip.split())
 
@@ -427,7 +404,7 @@ def test_row_unavailable_with_a_known_backoff():
 
 def test_row_stale_reading_says_as_of():
     acc = _acct(entry=Reading(last_good=_OK, fetched_at=_NOW - 3 * 3600, last_error="timeout"))
-    assert _row(acc).text.endswith("· 7d 38% (in 3d 6h) · as of 3h 0m ago (timed out)")
+    assert _row(acc).text == "#1 maya@example.com · 5h 46% · 7d 38% · as of 3h 0m ago (timed out)"
 
 
 def test_row_a_quiet_reading_is_not_called_old():
@@ -439,23 +416,37 @@ def test_row_a_quiet_reading_is_not_called_old():
 def test_row_at_its_limit_needs_attention():
     usage = {"five_hour": {"pct": 100.0, "resets_at": _iso(72 * 60)}, "seven_day": {"pct": 64.0}}
     row = _row(_acct(usage=usage))
-    assert "5h 100% (limit reached, in 1h 12m)" in row.text
+    assert row.text == "#1 maya@example.com · 5h 100% (resets in 1h 12m) · 7d 64%"
     assert row.attention
 
 
-def test_row_held_resets_of_two_kinds_as_a_sentence():
+def test_row_countdown_only_past_the_account_s_own_line():
+    usage = {"five_hour": {"pct": 93.0, "resets_at": _iso(38 * 60)}, "seven_day": {"pct": 81.0}}
+    assert _row(_acct(alias="night", usage=usage, lines=Lines(five_hour=90.0))).text == (
+        "#1 night · 5h 93% (resets in 38m) · 7d 81%"
+    )
+    # Its own threshold of 95 puts 93% under the line: no countdown.
+    assert _row(_acct(alias="night", usage=usage, lines=Lines(five_hour=95.0))).text == (
+        "#1 night · 5h 93% · 7d 81%"
+    )
+
+
+def test_row_held_resets_last_and_compact():
     far = _NOW + 120 * 86400
     usage = _reset_usage(grants=[fable("a", ends=far), weekly("w", ends=far)])
-    assert _row(_acct(usage=usage)).text.endswith("· holds 1 Fable reset and 1 weekly reset")
+    assert _row(_acct(usage=usage)).text == "#1 maya@example.com · 7d 30% · 1 Fable · 1 weekly resets"
+    usage = _reset_usage(grants=[fable("a", ends=far, left=2)])
+    assert _row(_acct(usage=usage)).text.endswith("· 7d 30% · 2 Fable resets")
     usage = _reset_usage(grants=[session("s", ends=far)])
-    assert _row(_acct(usage=usage)).text.endswith("· holds 1 five-hour reset")
+    assert _row(_acct(usage=usage)).text.endswith("· 1 five-hour reset")
+    assert "holds" not in _row(_acct(usage=usage)).text
 
 
 def test_row_codex_reset_credits():
     far = _NOW + 30 * 86400
     usage = _reset_usage(grants=[fable("c", ends=far)])
     row = _row(_acct(provider="codex", usage=usage))
-    assert row.text.endswith("· holds 1 reset credit")
+    assert row.text.endswith("· 1 reset credit")
 
 
 def _api_reading(used=212.40, limit=500.0, today=4.12, source="ledger"):
@@ -468,18 +459,23 @@ def test_row_api_key_spend_as_the_command_line_says():
     acc = _acct(number="5", email="ci@example.com", alias="ci", kind="api_key",
                 entry=Reading(sentinel=USAGE_API_KEY, api_spend=_api_reading()))
     row = _row(acc)
-    assert row.text == (
-        "#5 ci (ci@example.com) · API key · $4.12 today · $212.40 this month of $500 (42%) · estimate"
-    )
+    # qswap list's words, cut at the row limit; the tooltip has them whole.
+    assert row.text == "#5 ci · API key · $4.12 today · $212.40 this month of $500 (42%) · esti…"
+    assert "$212.40 this month of $500 (42%) · estimate" in row.tooltip
     assert not row.attention
+    without_budget = _acct(number="5", alias="ci", kind="api_key", entry=Reading(
+        sentinel=USAGE_API_KEY, api_spend=_api_reading(limit=None)))
+    assert _row(without_budget).text == "#5 ci · API key · $4.12 today · $212.40 this month · estimate"
 
 
 def test_row_api_key_over_budget_needs_attention():
     acc = _acct(number="5", kind="api_key",
                 entry=Reading(sentinel=USAGE_API_KEY, api_spend=_api_reading(used=520.0)))
     row = _row(acc)
-    assert "(104%, over budget)" in row.text
     assert row.attention
+    assert row.text.startswith("#5 maya@example.com · API key · $4.12 today · $520.00 this month")
+    assert len(row.text) <= menubar.ROW_LIMIT  # cut by display.fit
+    assert "(104%, over budget)" in row.tooltip
 
 
 def test_row_api_key_without_a_reading():
@@ -506,6 +502,103 @@ def test_row_login_due_and_past():
     assert past.text.endswith("· needs re-login") and past.attention
     later = _row(_acct(usage=_OK, login_expires_at=_NOW + 23 * 86400))
     assert "re-login" not in later.text
+
+
+_H, _D = 3600, 86400
+_FAR = _NOW + 60 * _D
+_CLAUDE_LINES = Lines(five_hour=90.0)
+_CODEX_LINES = Lines(five_hour=99.0)
+
+
+def _w(pct, resets_in):
+    return {"pct": float(pct), "resets_at": _iso(resets_in)}
+
+
+# The demo harness's `fleet` and `trouble` scenarios (scripts/demo/scenarios.py),
+# as the menu sees them: Claude Code's line at 90%, Codex's at 99%.
+_FLEET = [
+    _acct("1", "maya@example.com", alias="personal", active=True, lines=_CLAUDE_LINES, usage={
+        "five_hour": _w(46, 2 * _H + 35 * 60), "seven_day": _w(38, 3 * _D + 6 * _H),
+        "scoped": [{"name": "Fable", **_w(52, 3 * _D + 6 * _H)}],
+        "resets": _reset_usage(grants=[fable("f", ends=_FAR)])["resets"]}),
+    _acct("2", "maya@northwind.example.com", alias="work", lines=_CLAUDE_LINES, usage={
+        "spend": {"pct": 18.0, "used": 18.4, "limit": 100.0, "resets_at": _iso(20 * _D)},
+        "five_hour": _w(12, 4 * _H + 10 * 60), "seven_day": _w(21, 5 * _D + 2 * _H)}),
+    _acct("3", "ops@example.net", alias="night-shift", lines=_CLAUDE_LINES, usage={
+        "five_hour": _w(93, 38 * 60), "seven_day": _w(81, _D + 19 * _H),
+        "scoped": [{"name": "Fable", **_w(97, _D + 19 * _H)}],
+        "resets": _reset_usage(grants=[session("s", ends=_FAR)])["resets"]}),
+    _acct("4", "sam@example.org", alias="side", disabled=True, lines=_CLAUDE_LINES, usage={
+        "five_hour": _w(0, 5 * _H), "seven_day": _w(9, 6 * _D + _H)}),
+    _acct("5", "api-key-5@token.local", alias="ci", kind="api_key", entry=Reading(
+        sentinel=USAGE_API_KEY, api_spend=_api_reading(used=0.0, limit=None, today=0.0))),
+    _acct("1", "maya@example.com", provider="codex", active=True, lines=_CODEX_LINES, usage={
+        "five_hour": _w(22, 3 * _H + 40 * 60), "seven_day": _w(47, 4 * _D + 3 * _H)}),
+    _acct("2", "maya@northwind.example.com", provider="codex", alias="work", lines=_CODEX_LINES, usage={
+        "five_hour": _w(8, 4 * _H + 55 * 60), "seven_day": _w(15, 6 * _D + 2 * _H),
+        "resets": _reset_usage(grants=[fable("c", ends=_FAR)])["resets"]}),
+]
+_TROUBLE = [
+    _acct("1", "maya@example.com", alias="personal", active=True, lines=_CLAUDE_LINES, usage={
+        "five_hour": _w(100, _H + 12 * 60), "seven_day": _w(64, 3 * _D + 6 * _H)}),
+    _acct("2", "maya@northwind.example.com", alias="work", entry=Reading(sentinel=USAGE_RELOGIN_REQUIRED)),
+    _acct("3", "ops@example.net", alias="night-shift", entry=Reading(last_error="http-503")),
+    _acct("4", "sam@example.org", alias="side", set_aside="invalid_grant", lines=_CLAUDE_LINES,
+          usage={"five_hour": _w(5, 4 * _H + 40 * 60), "seven_day": _w(30, 4 * _D)}),
+    _acct("5", "lee@example.net", alias="spare", lines=_CLAUDE_LINES, entry=Reading(
+        last_good={"five_hour": _w(40, 2 * _H + 30 * 60), "seven_day": _w(55, 3 * _D)},
+        fetched_at=_NOW - (3 * _H + 4 * 60), last_error="timeout")),
+    _acct("1", "maya@example.com", provider="codex", active=True, lines=_CODEX_LINES, usage={
+        "five_hour": _w(41, 2 * _H + 5 * 60), "seven_day": _w(100, _D + 7 * _H)}),
+    _acct("2", "maya@northwind.example.com", provider="codex", alias="work",
+          entry=Reading(sentinel="usage unknown until used")),
+]
+
+
+def test_fleet_rows_are_short():
+    assert [_row(a).text for a in _FLEET] == [
+        "#1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset",
+        "#2 work · 5h 12% · 7d 21% · extra 18%",
+        # Two windows past the line: the row reaches the limit and fit cuts it.
+        "#3 night-shift · 5h 93% (resets in 38m) · 7d 81% · Fable 97% (resets in…",
+        "#4 side · disabled · 5h 0% · 7d 9%",
+        "#5 ci · API key · $0.00 today · $0.00 this month · estimate",
+        "#1 maya@example.com · 5h 22% · 7d 47%",
+        "#2 work · 5h 8% · 7d 15% · 1 reset credit",
+    ]
+
+
+def test_trouble_rows_are_short():
+    assert [_row(a).text for a in _TROUBLE] == [
+        "#1 personal · 5h 100% (resets in 1h 12m) · 7d 64%",
+        "#2 work · needs re-login",
+        "#3 night-shift · usage unavailable (HTTP 503), retrying",
+        "#4 side · needs re-login",
+        "#5 spare · 5h 40% · 7d 55% · as of 3h 4m ago (timed out)",
+        "#1 maya@example.com · 5h 41% · 7d 100% (resets in 1d 7h)",
+        "#2 work · usage unknown until used",
+    ]
+
+
+def test_no_account_row_exceeds_the_row_limit():
+    assert menubar.ROW_LIMIT == 72
+    for acc in _FLEET + _TROUBLE:
+        row = _row(acc)
+        assert len(row.text) <= menubar.ROW_LIMIT, row.text
+        # The tooltip keeps everything the row leaves out.
+        assert row.tooltip.splitlines()[0].startswith(acc.label(long=False))
+    night = _row(_FLEET[2])
+    assert "Fable   97%  resets" in night.tooltip and "Holds 1 five-hour reset" in night.tooltip
+
+
+def test_a_long_row_is_cut_by_the_shared_fit_helper():
+    from ai_quota_swap import display
+
+    acc = _acct("9", "a.very.long.address.for.a.shared.mailbox@example-corporation.com",
+                usage=_FLEET[2].entry.last_good, lines=_CLAUDE_LINES)
+    text = _row(acc).text
+    assert len(text) == menubar.ROW_LIMIT and text.endswith("…")
+    assert text == display.fit(text[:-1] + "x" * 40, menubar.ROW_LIMIT)
 
 
 def test_every_sentinel_note_fits_a_menu_row():
@@ -757,7 +850,7 @@ def test_claude_only_menu_looks_as_it_did():
     assert [s.key for s in menu.sections] == ["health", "claude", "switch", "manage", "app"]
     assert menu.section("claude").heading is None
     rows = menu.section("claude").rows
-    assert rows[0].text.startswith("#1 personal (maya@example.com) · 5h 46%")
+    assert rows[0].text == "#1 personal · 5h 46% · 7d 38%"
     assert rows[0].checked and rows[0].action == Action("switch", "claude", "1")
     assert not rows[1].checked and rows[1].action == Action("switch", "claude", "2")
     assert [r.text for r in menu.section("switch").rows] == ["Rotate to next", "Switch to best", "Next available"]
@@ -936,13 +1029,14 @@ def test_trouble_menu():
     ]
     rows = menubar.build_menu(_inp(_claude(*accounts))).section("claude").rows
     assert [r.attention for r in rows] == [True, True, False, True, False, False, True]
-    assert "5h 100% (limit reached, in 1h 12m)" in rows[0].text
-    assert rows[1].text.endswith("needs re-login")
-    assert rows[2].text.endswith("usage unavailable (HTTP 503), retrying")
-    assert rows[3].text.endswith("needs re-login")
-    assert "as of 3h 0m ago" in rows[4].text
-    assert rows[5].text.endswith("holds 1 Fable reset and 1 weekly reset")
-    assert "over budget" in rows[6].text and "API key" in rows[6].text
+    assert rows[0].text == "#1 personal · 5h 100% (resets in 1h 12m) · 7d 64%"
+    assert rows[1].text == "#2 w@x.com · needs re-login"
+    assert rows[2].text == "#3 o@x.com · usage unavailable (HTTP 503), retrying"
+    assert rows[3].text == "#4 s@x.com · needs re-login"
+    assert rows[4].text == "#5 l@x.com · 5h 46% · 7d 38% · as of 3h 0m ago (timed out)"
+    assert rows[5].text == "#6 f@x.com · 7d 30% · 1 Fable · 1 weekly resets"
+    assert rows[6].text.startswith("#7 ci@x.com · API key · $4.12 today · $520.00 this month")
+    assert all(len(r.text) <= menubar.ROW_LIMIT for r in rows)
     words = " ".join(r.text for r in rows)
     for banned in ("quarantined", "usage unknown", "Account-", "$$", "(!)", "rejected"):
         assert banned not in words
@@ -1037,7 +1131,7 @@ def test_every_action_has_a_handler():
 
 def test_outline_marks_state():
     out = _both_menu().outline(actions=True)
-    assert "✓ #1 personal (maya@example.com)" in out
+    assert "✓ #1 personal · 5h 46%" in out
     assert "Codex accounts  (heading)" in out
     assert "Add account ▸" in out
     assert "[switch codex 2]" in out

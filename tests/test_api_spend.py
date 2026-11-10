@@ -533,7 +533,10 @@ class TestTuiAndMenuBar:
         snap, _ = self._snapshot(fleet)
         accs = {a.number: a for a in menubar_data.account_states(snap, "claude", {}, now=NOW)}
         row = menubar.account_row(accs["3"], now=NOW, stale_after_s=900)
-        assert row.text.endswith("· API key · $10.00 today · $14.00 this month of $20 (70%)")
+        # qswap list's words, cut to the row limit; the tooltip has them whole.
+        assert row.text.startswith("#3 api-key-3@token.local · API key · $10.00 today · $14.00")
+        assert len(row.text) <= menubar.ROW_LIMIT
+        assert "$10.00 today · $14.00 this month of $20 (70%)" in row.tooltip
         assert not row.attention  # under budget
 
 
