@@ -343,14 +343,17 @@ class QswapApp(App):
 
     def _action_done(self, label: str, result: ActionResult, done) -> None:
         self.busy = False
+        self.source.invalidate()
         self.request_refresh()
         if done is not None and done(result):
             return
         if not result.ok:
             self.push_screen(OutputModal(f"{label} failed", result.output))
             return
-        if result.first_line:
-            self.notify(result.first_line)
+        lines = [line.strip() for line in result.lines]
+        if lines:
+            # What the command line said, the next step included.
+            self.notify("\n".join(lines[:4]), timeout=8 if len(lines) > 1 else 5)
 
     # -- switching ------------------------------------------------------------------
 

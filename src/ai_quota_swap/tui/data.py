@@ -224,10 +224,29 @@ class FleetSource:
     build one either), only for its live login.
     """
 
+    #: How long the set-aside list is reused. Reading it checks each set-aside
+    #: account's saved login (a Keychain call on macOS), which a dashboard
+    #: polling every few seconds should not repeat each time.
+    SET_ASIDE_TTL_S = 30.0
+
     def __init__(self, switchers: Mapping[str, object]) -> None:
         self.switchers = {p: s for p, s in switchers.items() if s is not None}
         self._sources = {p: SnapshotSource(s) for p, s in self.switchers.items()}  # type: ignore[arg-type]
         self._cli_found: dict[str, bool | None] = {}
+        self._set_aside: dict[str, tuple[float, dict]] = {}
+
+    def invalidate(self) -> None:
+        """Forget what is reused between passes (after an action)."""
+        self._set_aside.clear()
+
+    def _set_aside_for(self, provider: str, switcher: object) -> dict:
+        now = time.monotonic()
+        hit = self._set_aside.get(provider)
+        if hit is not None and now - hit[0] < self.SET_ASIDE_TTL_S:
+            return hit[1]
+        value = dict(_quiet(switcher, "set_aside_accounts", {}) or {})
+        self._set_aside[provider] = (now, value)
+        return value
 
     def take(self, *, full: bool = False, store_only: bool = False) -> Fleet:
         views = tuple(
@@ -250,7 +269,7 @@ class FleetSource:
                 snap = self._sources[provider].take(full=full, store_only=store_only)
         except ProviderError as e:
             return ProviderView(provider, lines=lines, error=str(e))
-        set_aside = _quiet(switcher, "set_aside_accounts", {}) if snap.accounts else {}
+        set_aside = self._set_aside_for(provider, switcher) if snap.accounts else {}
         live = None
         if snap.active_number is None:
             live = _quiet(switcher, "live_login_email", None)
@@ -260,7 +279,7 @@ class FleetSource:
                 self._cli_found[provider] = _cli_found(provider)
             found = self._cli_found[provider]
         return ProviderView(
-            provider, snap, set_aside=dict(set_aside or {}), live_email=live,
+            provider, snap, set_aside=dict(set_aside), live_email=live,
             cli_found=found, lines=lines, include_api_key_accounts=include_api,
         )
 

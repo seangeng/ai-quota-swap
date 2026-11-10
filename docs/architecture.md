@@ -97,12 +97,12 @@ Sizes are rounded and move with every change; they are here so you know what you
 
 | Module | Lines | What it does |
 |---|---|---|
-| `tui/app.py` | 600 | `QswapApp`: both providers' switchers, the snapshot poll loop, every action (switch, add, remove), the cost line |
+| `tui/app.py` | 700 | `QswapApp`: both providers' switchers, the snapshot poll loop, every action (switch, add, remove), the cost line |
 | `tui/dashboard.py` | 600 | The main screen and its menus, the switch picker and the watch screen |
 | `tui/autoview.py` | 500 | The live auto-switch screen: one real engine per provider, and "Next best" |
 | `tui/usageview.py` | 200 | The usage screen, over `ledger.usage.run_usage` and `ledger.report.render_text` |
-| `tui/widgets.py` | 700 | Usage bars; cards and one-line rows drawn from `display.AccountBlock`; the accounts panel and how it fits |
-| `tui/data.py` | 400 | `FleetSource` (each provider's snapshot and the facts around it), `block_for`, blocking actions, the ledger reads |
+| `tui/widgets.py` | 800 | Usage bars; cards and one-line rows drawn from `display.AccountBlock`; the accounts panel and how it fits |
+| `tui/data.py` | 500 | `FleetSource` (each provider's snapshot and the facts around it), `block_for`, blocking actions, the ledger reads |
 | `tui/modals.py` | 200 | Confirmations, token entry, a command to run elsewhere |
 | `tui/theme.py` | 100 | The Textual themes and shared colours |
 | `menubar.py` | 1,500 | The macOS menu bar app (rumps), a shell over the switcher and engine |
