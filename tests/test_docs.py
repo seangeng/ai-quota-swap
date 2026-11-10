@@ -148,6 +148,10 @@ def _broken(path: Path) -> list[str]:
     return out
 
 
+@pytest.mark.skipif(
+    not (REPO / ".git").exists(),
+    reason="links point at repository files (screenshots, recordings) an sdist does not ship",
+)
 @pytest.mark.parametrize("path", _markdown_files(), ids=lambda p: str(p.relative_to(REPO)))
 def test_links_resolve(path):
     broken = _broken(path)
