@@ -302,7 +302,8 @@ def export_accounts(
 
     out_path = Path(destination).expanduser()
     _atomic_write_file(out_path, serialized + "\n")
-    _eprint(f"Exported {len(accounts_payload)} account(s) to {out_path}")
+    count = len(accounts_payload)
+    _eprint(f"Exported {count} account{'' if count == 1 else 's'} to {out_path}")
 
 
 def import_accounts(

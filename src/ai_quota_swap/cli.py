@@ -595,10 +595,10 @@ def _alias_command(argv: list[str]) -> None:
 
         if args.unset:
             account_num = switcher.unset_alias(args.account)
-            print(f"{accent('Removed the alias')} of {switcher.label(account_num)}")
+            printer.say(f"{accent('Removed the alias')} of {switcher.label(account_num)}")
         else:
             account_num, normalized = switcher.set_alias(args.account, args.alias_name)
-            print(f"{accent('Named')} {switcher.label(account_num)}")
+            printer.say(f"{accent('Named')} {switcher.label(account_num)}")
     except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
@@ -2802,7 +2802,7 @@ def _dispatch(argv: list[str]) -> None:
         parser.error("--alias can only be used with 'add'")
 
     if args.force and not (args.import_ or args.switch_to):
-        parser.error("--force can only be used with 'import' or 'switch <num|email>'")
+        parser.error("--force can only be used with 'import' or 'switch ACCOUNT'")
 
     if args.full and not args.export:
         parser.error("--full can only be used with 'export'")

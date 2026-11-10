@@ -683,7 +683,7 @@ class TestEventWords:
         event = NoSwitchEvent(reason="no-candidates", context=EventContext(active="1"))
         assert event.human() == (
             "No account to switch to: no other account is in rotation. To add another "
-            "account, log in to it in Claude Code (/login), then run: qswap add"
+            "account, log in to it in Claude Code (/login), then: qswap add"
         )
         disabled = NoSwitchEvent(reason="no-candidates", context=EventContext(
             active="1", accounts=(AccountView("1"), AccountView("4", alias="side", state="disabled")),

@@ -3981,7 +3981,7 @@ class TestPerformSwitchPostDisplay:
         switcher._print_switch_followup()
 
         out = capsys.readouterr().out
-        assert "restart it to switch now" in out
+        assert "restart it to apply now" in out
         assert "30 seconds" in out
         assert "no restart needed" not in out
 

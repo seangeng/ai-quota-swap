@@ -122,7 +122,9 @@ def usage_error(prog: str, message: str, *, usage: str | None = None, as_json: b
             indent=2,
         ))
     else:
+        from ai_quota_swap.printer import wrap_message
+
         if usage:
             sys.stderr.write(usage)
-        sys.stderr.write(f"{prog}: error: {message}\n")
+        sys.stderr.write(wrap_message(f"{prog}: error: {message}") + "\n")
     sys.exit(EXIT_USAGE)

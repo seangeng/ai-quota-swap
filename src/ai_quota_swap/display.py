@@ -49,7 +49,7 @@ ADD_COMMANDS = {"claude": "qswap add", "codex": "qswap codex add"}
 #: How to add a further account without signing the current one out.
 ANOTHER_ACCOUNT_STEPS = {
     "claude": "To add another account, log in to it in Claude Code (/login), "
-              "then run: qswap add",
+              "then: qswap add",
     "codex": "To add another account without signing this one out, run: "
              "qswap codex login",
 }
@@ -211,7 +211,7 @@ def nothing_managed_lines(
     elif provider == "codex":
         lines.append(f"{name} is not logged in. Run codex login, then: {add}")
     else:
-        lines.append(f"{name} is not logged in. Start claude, log in with /login, then run: {add}")
+        lines.append(f"{name} is not logged in. Log in with claude (/login), then run: {add}")
     return lines
 
 
@@ -355,6 +355,19 @@ def header_line(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ") 
         facts.append((block.org, muted))
     tail_plain = "".join(f" · {text}" for text, _ in facts)
     prefix = []
+    number_len = len(f"#{block.number} ") if block.number not in (None, "") else 0
+    if block.show_provider and block.provider:
+        number_len += len(PROVIDER_SHORT.get(block.provider, block.provider)) + 1
+    name_len = min(len(block.alias or block.email or "account"), 24)
+    over = len(indent) + number_len + name_len + len(tail_plain) - width
+    if over > 0 and block.org and facts and facts[-1][0] == block.org:
+        # The organization gives way first, then goes altogether.
+        room_for_org = len(block.org) - over
+        if room_for_org >= 8:
+            facts[-1] = (fit(block.org, room_for_org), facts[-1][1])
+        else:
+            facts.pop()
+        tail_plain = "".join(f" · {text}" for text, _ in facts)
     if block.show_provider and block.provider:
         prefix.append(PROVIDER_SHORT.get(block.provider, block.provider))
     if block.number is not None and str(block.number) != "":

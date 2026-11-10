@@ -83,6 +83,7 @@ from ai_quota_swap.paths import (
     migrate_legacy_backup_dir,
 )
 from ai_quota_swap.printer import (
+    say,
     accent,
     bold_accent,
     bolded,
@@ -1522,13 +1523,13 @@ class CodexSwitcher:
             record = data["accounts"][num]
             email = record.get("email", "")
             if normalized is None and "threshold" not in record:
-                print(dimmed(
+                say(dimmed(
                     f"{self.label(num, email)} has no line of its own; it already "
                     "uses codex.threshold"
                 ))
                 return
             if normalized is not None and record.get("threshold") == normalized:
-                print(dimmed(f"{self.label(num, email)} already switches at {normalized:g}%"))
+                say(dimmed(f"{self.label(num, email)} already switches at {normalized:g}%"))
                 return
             if normalized is None:
                 record.pop("threshold", None)
@@ -1536,10 +1537,10 @@ class CodexSwitcher:
                 record["threshold"] = normalized
             self._write_registry(data)
         if normalized is None:
-            print(f"{accent('Cleared')} the switch line of {self.label(num, email)}; "
+            say(f"{accent('Cleared')} the switch line of {self.label(num, email)}; "
                   "it uses codex.threshold again")
         else:
-            print(f"{accent('Set')} the switch line of {self.label(num, email)} to {normalized:g}%")
+            say(f"{accent('Set')} the switch line of {self.label(num, email)} to {normalized:g}%")
 
     def set_account_priority(self, identifier: str, priority: object | None) -> None:
         normalized = 0 if priority is None else normalize_account_priority(priority)
@@ -1555,7 +1556,7 @@ class CodexSwitcher:
                 record.pop("priority", None)
             if changed:
                 self._write_registry(data)
-        print(f"{accent('Set')} the priority of {self.label(num)} to {normalized} "
+        say(f"{accent('Set')} the priority of {self.label(num)} to {normalized} "
               "(used by qswap codex auto)")
 
     def set_account_disabled(self, identifier: str, disabled: bool) -> None:

@@ -322,9 +322,8 @@ class TestCLI:
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
         assert excinfo.value.code == 64
-        assert (
-            "--force can only be used with 'import' or 'switch <num|email>'"
-            in capsys.readouterr().err
+        assert "--force can only be used with 'import' or 'switch ACCOUNT'" in " ".join(
+            capsys.readouterr().err.split()
         )
 
     def test_switch_to_force_forwarded(self):

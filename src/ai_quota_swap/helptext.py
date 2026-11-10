@@ -116,7 +116,7 @@ def _status() -> ArgumentParser:
 
 def _switch() -> ArgumentParser:
     p = _parser(
-        "switch", "[ACCOUNT] [--force] [--strategy best|next-available] [--json]",
+        "switch", "[ACCOUNT] [--force] [--strategy NAME] [--json]",
         "Make an account the active Claude Code login. Without ACCOUNT, move to "
         "the next one. An account that needs re-login is refused unless --force.",
         ["qswap switch 2", "qswap switch --strategy best", "qswap switch work --json"],
@@ -126,7 +126,7 @@ def _switch() -> ArgumentParser:
     p.add_argument("--force", action="store_true",
                    help="with ACCOUNT: switch even if it needs re-login, and write "
                         "its saved login without saving the current one first")
-    p.add_argument("--strategy", metavar="best|next-available",
+    p.add_argument("--strategy", metavar="NAME",
                    help="without ACCOUNT: 'best' picks the account with the most "
                         "quota left; 'next-available' skips accounts at their limit")
     p.add_argument("--model", metavar="NAMES",
@@ -261,8 +261,7 @@ def _watch() -> ArgumentParser:
 
 def _menubar() -> ArgumentParser:
     p = _parser(
-        "menubar", "[--install-service | --uninstall-service | --service-status | "
-                   "--foreground] [--auto-switch | --no-auto-switch]",
+        "menubar", "[SERVICE OPTION] [--auto-switch | --no-auto-switch]",
         "Run the macOS menu bar app as a background service that starts at "
         "login. Its auto-switch is off until you turn it on.",
         ["qswap menubar", "qswap menubar --auto-switch", "qswap menubar --service-status"],

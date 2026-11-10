@@ -72,6 +72,7 @@ from ai_quota_swap.models import (
     normalize_alias,
 )
 from ai_quota_swap.printer import (
+    say,
     abbreviate_path,
     accent,
     bold_accent,
@@ -1123,7 +1124,7 @@ class ClaudeAccountSwitcher:
         account_num = self._resolve_account_identifier(identifier)
         if not account_num:
             raise AccountNotFoundError(
-                f"No account found with identifier: {identifier}"
+                f"No account matches {identifier}; qswap list shows the accounts"
             )
         data = self._get_sequence_data() or {}
         record = data.get("accounts", {}).get(account_num)
@@ -1157,7 +1158,7 @@ class ClaudeAccountSwitcher:
         account_num = self._resolve_account_identifier(identifier)
         if not account_num:
             raise AccountNotFoundError(
-                f"No account found with identifier: {identifier}"
+                f"No account matches {identifier}; qswap list shows the accounts"
             )
         data = self._get_sequence_data() or {}
         record = data.get("accounts", {}).get(account_num)
@@ -1188,7 +1189,7 @@ class ClaudeAccountSwitcher:
         account_num = self._resolve_account_identifier(identifier)
         if not account_num:
             raise AccountNotFoundError(
-                f"No account found with identifier: {identifier}"
+                f"No account matches {identifier}; qswap list shows the accounts"
             )
         data = self._get_sequence_data() or {}
         record = data.get("accounts", {}).get(account_num)
@@ -1238,7 +1239,7 @@ class ClaudeAccountSwitcher:
         Returns the two resolved slot numbers ``(first_num, second_num)``.
         """
         if not self.sequence_file.exists():
-            raise ConfigError("No accounts are managed yet")
+            raise self._nothing_managed_error()
 
         # Local I/O only from here on, so the account lock can span the whole
         # resolve-validate-mutate sequence — a concurrent switch or usage-
@@ -1277,10 +1278,10 @@ class ClaudeAccountSwitcher:
 
         num_a = self._resolve_account_identifier(first)
         if not num_a:
-            raise AccountNotFoundError(f"No account found with identifier: {first}")
+            raise AccountNotFoundError(f"No account matches {first}; qswap list shows the accounts")
         num_b = self._resolve_account_identifier(second)
         if not num_b:
-            raise AccountNotFoundError(f"No account found with identifier: {second}")
+            raise AccountNotFoundError(f"No account matches {second}; qswap list shows the accounts")
         if num_a == num_b:
             raise ValidationError("Cannot swap an account with itself")
 
@@ -1681,13 +1682,13 @@ class ClaudeAccountSwitcher:
         """
         self._refuse_session_shell()
         if not self.sequence_file.exists():
-            raise ConfigError("No accounts are managed yet")
+            raise self._nothing_managed_error()
 
         target = target.strip()
         if not target.isdigit() or int(target) < 1:
             raise ValidationError(
-                f"Target slot must be a positive slot number, got: {target!r} "
-                f"(use `swap` to trade two accounts by identifier)"
+                f"a slot is a number from 1 up, not {target!r}; to trade two "
+                "accounts by name: qswap swap A B"
             )
         target = str(int(target))  # normalize "01" -> "1"
 
@@ -1701,7 +1702,7 @@ class ClaudeAccountSwitcher:
             num_src = self._resolve_account_identifier(account)
             if not num_src:
                 raise AccountNotFoundError(
-                    f"No account found with identifier: {account}"
+                    f"No account matches {account}; qswap list shows the accounts"
                 )
 
             data = self._get_sequence_data() or {}
@@ -2424,7 +2425,7 @@ class ClaudeAccountSwitcher:
             AccountNotFoundError: The identifier matches no managed account.
         """
         if not self.sequence_file.exists():
-            raise ConfigError("No accounts are managed yet")
+            raise self._nothing_managed_error()
 
         # resolve_account migrates org fields and hard-errors on ambiguity.
         account_num, email, _ = self.resolve_account(identifier)
@@ -2469,13 +2470,13 @@ class ClaudeAccountSwitcher:
 
         current = record.get("threshold")
         if normalized is None and "threshold" not in record:
-            print(dimmed(
+            say(dimmed(
                 f"{self.label(account_num, email)} has no line of its own; "
                 "it already uses autoswitch.threshold"
             ))
             return
         if normalized is not None and current == normalized:
-            print(dimmed(
+            say(dimmed(
                 f"{self.label(account_num, email)} already switches at {normalized:g}%"
             ))
             return
@@ -2489,13 +2490,13 @@ class ClaudeAccountSwitcher:
 
         if normalized is None:
             self._logger.info(f"Cleared threshold for account {account_num}: {email}")
-            print(f"{accent('Cleared')} the switch line of {self.label(account_num, email)}; "
+            say(f"{accent('Cleared')} the switch line of {self.label(account_num, email)}; "
                   "it uses autoswitch.threshold again")
         else:
             self._logger.info(
                 f"Set threshold {normalized:g} for account {account_num}: {email}"
             )
-            print(f"{accent('Set')} the switch line of {self.label(account_num, email)} "
+            say(f"{accent('Set')} the switch line of {self.label(account_num, email)} "
                   f"to {normalized:g}%")
 
     def set_account_priority(self, identifier: str, priority: object | None) -> None:
@@ -2511,7 +2512,7 @@ class ClaudeAccountSwitcher:
         if changed:
             data["lastUpdated"] = get_timestamp()
             self._write_json(self.sequence_file, data)
-        print(f"{accent('Set')} the priority of {self.label(account_num, email)} to "
+        say(f"{accent('Set')} the priority of {self.label(account_num, email)} to "
               f"{normalized} (used by the priority-consume-first strategy)")
 
     def set_account_disabled(self, identifier: str, disabled: bool) -> None:
@@ -2529,7 +2530,7 @@ class ClaudeAccountSwitcher:
             AccountNotFoundError: identifier doesn't match any account.
         """
         if not self.sequence_file.exists():
-            raise ConfigError("No accounts are managed yet")
+            raise self._nothing_managed_error()
 
         # resolve_account migrates org fields and hard-errors on ambiguity.
         account_num, email, _ = self.resolve_account(identifier)
@@ -4761,7 +4762,7 @@ class ClaudeAccountSwitcher:
         """
         self._refuse_session_shell()
         if not self.sequence_file.exists():
-            raise ConfigError("No accounts are managed yet")
+            raise self._nothing_managed_error()
 
         # Ensure org fields are migrated before resolving accounts
         self._get_sequence_data_migrated()
@@ -4806,7 +4807,7 @@ class ClaudeAccountSwitcher:
         account_num = self._resolve_account_identifier(identifier)
         if not account_num:
             raise AccountNotFoundError(
-                f"No account found with identifier: {identifier}"
+                f"No account matches {identifier}; qswap list shows the accounts"
             )
 
         data = self._get_sequence_data()
@@ -6921,7 +6922,7 @@ class ClaudeAccountSwitcher:
             ))
 
         if not self.sequence_file.exists():
-            raise ConfigError("No accounts are managed yet")
+            raise self._nothing_managed_error()
 
         identity = self._get_current_account()
 
@@ -6940,7 +6941,7 @@ class ClaudeAccountSwitcher:
             if not preferred and sequence:
                 preferred = sequence[0]
             if not preferred:
-                raise ConfigError("No accounts are managed yet")
+                raise self._nothing_managed_error()
 
             target = str(preferred)
             target_disabled = self._disabled_from_data(data, target)
@@ -7279,7 +7280,7 @@ class ClaudeAccountSwitcher:
         the recovery path for a live login gone stale (e.g. after --import).
         """
         if not self.sequence_file.exists():
-            raise ConfigError("No accounts are managed yet")
+            raise self._nothing_managed_error()
 
         # Ensure org fields are migrated before resolving accounts
         self._get_sequence_data_migrated()
@@ -7327,7 +7328,7 @@ class ClaudeAccountSwitcher:
         target_account = self._resolve_account_identifier(identifier)
         if not target_account:
             raise AccountNotFoundError(
-                f"No account found with identifier: {identifier}"
+                f"No account matches {identifier}; qswap list shows the accounts"
             )
 
         data = self._get_sequence_data()
@@ -7364,8 +7365,7 @@ class ClaudeAccountSwitcher:
                             f"{accent('Already on')} {self.label(target_account, email)}"
                         )
                         print(dimmed(
-                            "To rewrite the live login from the stored backup "
-                            "(e.g. after --import), run: "
+                            "To reload its saved login (after an import): "
                             f"qswap switch {target_account} --force"
                         ))
                         return None
@@ -7395,6 +7395,20 @@ class ClaudeAccountSwitcher:
                 f"Activated Account-{to['number']} ({to['email']}) from stored backup"
             )
         return result
+
+    def _nothing_managed_error(self) -> ConfigError:
+        """"No accounts are managed yet" with the next step for this machine."""
+        try:
+            email = self.live_login_email()
+        except Exception:
+            email = None
+        if email:
+            return ConfigError(
+                f"No accounts are managed yet. Add the current login ({email}) with: qswap add"
+            )
+        return ConfigError(
+            "No accounts are managed yet. Log in with claude (/login), then run: qswap add"
+        )
 
     def label(self, number: str | int | None, email: str | None = None, *, long: bool = True) -> str:
         """How this account is named in a message: ``#2 work (maya@example.com)``,
@@ -8481,7 +8495,7 @@ class ClaudeAccountSwitcher:
         if backend == "keychain":
             print(dimmed(
                 "Claude Code picks up the new account within 30 seconds; restart "
-                "it to switch now."
+                "it to apply now."
             ))
         else:
             print(dimmed("Claude Code uses the new account from its next message."))

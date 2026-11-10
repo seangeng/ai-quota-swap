@@ -28,7 +28,7 @@ from ai_quota_swap.models import (
     ACCOUNT_THRESHOLD_MIN,
 )
 from ai_quota_swap.paths import get_codex_data_dir
-from ai_quota_swap.printer import accent, bolded, dimmed, error, muted, warning
+from ai_quota_swap.printer import accent, bolded, dimmed, error, say, warning
 
 PROG = "qswap codex"
 
@@ -338,10 +338,10 @@ def _alias(argv: list[str]) -> None:
             return
         if args.unset:
             num = s.unset_alias(args.account)
-            print(f"{accent('Removed the alias')} of {s.label(num)}")
+            say(f"{accent('Removed the alias')} of {s.label(num)}")
         else:
             num, normalized = s.set_alias(args.account, args.alias_name)
-            print(f"{accent('Named')} {s.label(num)}")
+            say(f"{accent('Named')} {s.label(num)}")
 
     _run(args, action)
 

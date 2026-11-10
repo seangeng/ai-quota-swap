@@ -219,6 +219,12 @@ def wrap_message(msg: str, width: int = MESSAGE_WIDTH) -> str:
     return "\n".join(out)
 
 
+def say(msg: str) -> None:
+    """Print a message, wrapped to 80 columns (a confirmation whose account
+    label or path can make it long)."""
+    print(wrap_message(msg))
+
+
 def error(msg: str) -> None:
     """Print an error message (red) to stderr, wrapped to 80 columns."""
     print(_style(wrap_message(msg), _pal("red")), file=sys.stderr)
