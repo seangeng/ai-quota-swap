@@ -1142,6 +1142,10 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
         status = entry.last_good.get("resets") if isinstance(entry.last_good, dict) else None
         if status is None:
             why = entry.last_error or entry.sentinel or "no reading"
+            if codex and not entry.last_error and not entry.sentinel and isinstance(entry.last_good, dict):
+                # Read fine, but the usage answer carried no credit summary.
+                print(f"     {dimmed('└')} {dimmed('no reset credits reported')}")
+                continue
             print(f"     {dimmed('└')} {dimmed(f'reset status unavailable ({why})')}")
             continue
         grants = resets.unused_grants(status, now)

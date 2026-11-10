@@ -4,12 +4,14 @@ qswap can keep several OpenAI Codex CLI logins (ChatGPT accounts) and switch bet
 
 ## What works today
 
-- `qswap codex add`, `list`, `status`, `switch`, `remove`, `alias`, `disable`, `enable`, `threshold`, `priority`. `qswap codex help` lists them.
-- Live usage for every saved account, in `qswap codex list` and in a "Codex accounts" section of `qswap list`. `--json` works on `list`, `status` and `switch` (see [json-output.md](json-output.md)).
-- The plan (Plus, Pro, Team, ...) and any usage-reset credits the account holds.
-- `qswap usage` attributes Codex tokens to the account that was live, from the switches qswap records.
+- `qswap codex add`, `login`, `list`, `status`, `switch`, `remove`, `alias`, `disable`, `enable`, `threshold`, `priority`, `auto`, `reset`. `qswap codex help` lists them.
+- Live usage for every saved account, in `qswap codex list` and in a "Codex accounts" section of `qswap list`. `--json` works on `list`, `status`, `switch`, `reset` and `auto` (see [json-output.md](json-output.md)).
+- The plan (Plus, Pro, Team, ...) and any usage reset credits the account holds.
+- `qswap codex auto`: the same auto-switch engine as `qswap auto`, switching when the active account runs out (see [Automatic switching](#automatic-switching)).
+- `qswap codex reset`: list Codex usage reset credits and spend one, by hand or automatically (see [Usage reset credits](#usage-reset-credits)).
+- `qswap usage` attributes Codex tokens to the account that was live, from the switches qswap records, and notices a login changed outside qswap each time it runs.
 
-Not yet: `qswap codex auto`, spending reset credits, and `qswap codex run`.
+Not yet: `qswap codex run` (one account per terminal). Spending a credit has been tested only against a fake server; see [Usage reset credits](#usage-reset-credits).
 
 ## Add your first account
 
@@ -24,7 +26,16 @@ qswap codex add
 
 ## Add another account
 
-Do not run `codex login` again in your normal Codex home. Before it logs in, `codex login` signs the current login out at OpenAI, which also kills the copy qswap just saved. Log the next account in under an empty, throwaway Codex home instead:
+```bash
+qswap codex login                    # log in with the other account in the browser
+qswap codex login -- --device-auth   # arguments after -- go to codex login
+```
+
+Do not run plain `codex login` again in your normal Codex home: before it logs in, it signs the current login out at OpenAI, which also kills the copy qswap saved. `qswap codex login` avoids that. It makes a private, empty Codex home (mode 0700) inside qswap's data directory, runs `codex login` there with your terminal attached, saves the login it leaves the way `qswap codex add` does, and deletes the temporary home. Your normal `~/.codex` and the live account do not change; use `qswap codex switch` to move to the new account. Logging in to an account qswap already has updates its saved copy. `--alias NAME` and `--slot NUM` work as for `add`.
+
+If `codex login` fails, is interrupted, or leaves no `auth.json` (for example because a managed configuration forces keyring storage), nothing is saved and the temporary home is deleted. A temporary home a crash left behind is removed by the next `qswap codex login` once it is a day old.
+
+The same thing by hand, if `qswap codex login` cannot run `codex`:
 
 ```bash
 tmp="$(mktemp -d)"
@@ -32,8 +43,6 @@ CODEX_HOME="$tmp" codex login        # log in with the other account
 CODEX_HOME="$tmp" qswap codex add
 rm -rf "$tmp"                        # deleting the file does not sign the login out
 ```
-
-Repeat for each further account. Your normal `~/.codex` stays on the account it was on.
 
 ## Switch
 
@@ -68,6 +77,42 @@ Windows are named by their length: `5h` and `7d` as for Claude, anything else (a
 
 Usage is read from `https://chatgpt.com/backend-api/wham/usage` with each login's own token, on the same polling schedule as Claude accounts, so repeated `list` calls do not send repeated requests.
 
+## Automatic switching
+
+```bash
+qswap codex auto                     # foreground loop
+qswap codex auto --once; echo $?     # one tick, outcome in the exit code
+qswap codex auto --dry-run --json    # decisions as JSON events, nothing changed
+```
+
+It is the engine behind `qswap auto` (rules in [auto-switch.md](auto-switch.md)), run over the Codex accounts, with the same flags, output and exit codes. What differs:
+
+- **The line.** A Codex switch restarts the background server, which interrupts work in progress, so by default the engine switches only when the active account is out: `codex.threshold`, default 99, replaces `autoswitch.threshold`. Set it lower to switch earlier (`qswap config set codex.threshold 90`), or pass `--threshold`. Every other `autoswitch.*` setting (cooldown, hysteresis, strategy, weekly line, ...) and the per-account `qswap codex threshold` and `priority` apply as for Claude Code.
+- **Accounts it will not pick.** A saved login whose access token has expired reads "usage unknown until used" and is never a target: qswap does not refresh Codex logins, so it cannot know whether the account has room. Switch to it by hand once and Codex renews it.
+- **An idle live login.** When the live login's access token ran out while Codex was idle, the engine waits instead of failing over, as it does for Claude Code.
+- **A deferred switch.** When the live access token is about to expire while Codex runs on that home, a switch is refused for now (Codex may be renewing it). The engine reports `no-switch` with reason `switch-deferred` and tries again on the next tick; it is not an error.
+- **State.** Cooldown, quarantine and the daily cap on automatic credit spends are kept in `codex/autoswitch_state.json`, apart from Claude Code's. Settings are shared: they live in the one `settings.json`.
+
+With a single Codex account it never switches, but it still spends a credit when that account runs out (below).
+
+## Usage reset credits
+
+Some accounts hold credits that reset the account's Codex usage windows to 0% (Codex's `/usage`, "Redeem reset"). Each credit is used up when spent, and a spent credit cannot be undone.
+
+```bash
+qswap codex reset                    # every account's credits, and what auto would spend now
+qswap codex reset 2                  # spend one on account 2 (asks first; --yes skips the question)
+qswap codex reset 2 --grant <id> --yes
+```
+
+A credit resets the windows the account reports for its core Codex limit (5h and weekly, or weekly alone on Pro). Whether it also resets an additional, model-specific limit is not known, so qswap does not count on it.
+
+Automatic spending follows the same `resets.*` settings as Claude Code's usage resets, with the same meaning: `resets.auto` is `last-resort` by default (spend when the active account has reached `resets.threshold`, 95 by default, and no switch helps), or `active`, `on-limit`, `off`; `resets.minHoursLeft` keeps a credit when the window resets on its own soon anyway; `resets.expiryDays` spends credits that are about to expire. Before spending, qswap re-reads the account, reserves the spend in its state file so two engines cannot both spend, and stops after 3 automatic spends in 24 hours. `resets.enabled false` stops reading the credit list.
+
+Each spend carries a request id (a UUID) that qswap stores before sending; when the answer never arrives, the retry sends the same id, so the server cannot spend a second credit for it. An interrupted `qswap codex reset` says so; run `qswap codex reset` to see where things stand.
+
+Spending has only been tested against a fake server so far. The answer codes qswap maps (`reset`, `already_redeemed`, `nothing_to_reset`, `no_credit`) come from the open-source Codex CLI.
+
 ## What qswap never does
 
 - It never refreshes a Codex login, live or saved. Codex rotates its own tokens.
@@ -88,7 +133,10 @@ Never run `codex logout` on a login qswap has saved: it signs the login out at O
 | Key | Default | Meaning |
 |---|---|---|
 | `codex.restartDaemon` | `true` | Restart Codex's background server after a switch so new sessions use the new account. |
+| `codex.threshold` | `99` | `qswap codex auto`'s switch line, in place of `autoswitch.threshold` (50 to 99.9). |
+
+`autoswitch.*` (except the threshold) and `resets.*` apply to Codex as they do to Claude Code.
 
 ## Files
 
-Codex data lives in `codex/` inside qswap's data directory: `sequence.json` (the accounts), `credentials/account-N.json` (each saved login, byte for byte, mode 0600), `cache/usage.json`, and `activations.jsonl` (which account was live when, for `qswap usage`).
+Codex data lives in `codex/` inside qswap's data directory: `sequence.json` (the accounts), `credentials/account-N.json` (each saved login, byte for byte, mode 0600), `cache/usage.json`, `autoswitch_state.json` (the engine's cooldown, quarantine and credit spends), and `activations.jsonl` (which account was live when, for `qswap usage`). `qswap codex login` creates a `login-home-*` directory there while it runs and deletes it afterwards.

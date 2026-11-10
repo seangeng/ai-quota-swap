@@ -69,14 +69,17 @@ two accounts and needs two logins.
 
 ## Commands (first version)
 
-`qswap codex add | list | status | switch | remove | alias | disable | enable | threshold |
-priority | auto | reset`, plus the Codex section in `qswap list` and `list --json`.
+`qswap codex add | login | list | status | switch | remove | alias | disable | enable |
+threshold | priority | auto | reset`, plus the Codex section in `qswap list` and `list --json`.
 
 - `add` captures the login currently in `auth.json`. `codex login` over an existing login
   revokes it: every login flow first calls `clear_existing_auth_before_login`, which runs
   `logout_with_revoke` (`cli/src/login.rs` at rust-v0.164.0 and rust-v0.167.0). So a second
-  account is logged in under an empty, throwaway home (`CODEX_HOME="$tmp" codex login`) and
-  added from there (`CODEX_HOME="$tmp" qswap codex add`); see [../codex.md](../codex.md).
+  account is logged in under an empty home. `qswap codex login` (M2b) does that in one step:
+  a private 0700 home under `<data root>/codex/`, `codex login` run there with `CODEX_HOME`
+  set for the child only, the result saved with `add`'s code (without making it the recorded
+  active account), the home deleted in a `finally` and leftovers older than a day swept. The
+  manual recipe stays in [../codex.md](../codex.md) as a fallback.
 - `switch` follows the procedure below.
 
 Not in the first version: `run` (one `CODEX_HOME` per account), directory mappings, API-key
@@ -145,6 +148,23 @@ exactly as the Claude path stores its request id. Result mapping:
 Auto-spend goes through the shared engine path and the shared `resets.*` settings, with the
 same fresh-read, reservation, and daily cap as Claude. `qswap codex auto` is useful with a
 single account: it spends a credit when that account runs out.
+
+As built (M2b):
+
+- The request id is the provider's choice through two optional engine-host members
+  (`new_reset_request_id`, `is_reset_request_id`; see `providers.py`): Codex creates a
+  canonical UUID v4 and reuses a stored one only when it still is one. Claude keeps its
+  32-hex ids.
+- Credit ids are checked by Codex's own loose rule (printable, no whitespace, at most 200
+  characters), never by Anthropic's grant-id pattern.
+- `no_credit` maps to `unavailable`, which the shared bookkeeping treats as unsettled (retried
+  with the same request id after the 10-minute gap, and counted against the daily cap). The
+  account is re-read after every decided answer, `no_credit` included, so a stale credit list
+  is replaced at once.
+- `windows_reset` is reported in the result's `detail`; the claim's `cleared` stays empty
+  because the server does not say which windows it reset.
+- `allowed: false` with no window at 100% reads as `rejected`, which a credit is not counted
+  on to clear, so the planner never spends one on such an account.
 
 ## Open questions (need a second account or a throwaway login)
 

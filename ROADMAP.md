@@ -85,8 +85,15 @@ two Codex accounts.
   with two real accounts. `codex login` over an existing login revokes it (verified in the
   CLI source at rust-v0.164.0 and rust-v0.167.0), so a second account is logged in under a
   throwaway `CODEX_HOME`.
-- M2b: `qswap codex auto` on the shared engine; reset credits (list, manual spend, auto-spend
-  under the shared `resets.*` policy).
+- [x] M2b: `qswap codex auto` on the shared engine; reset credits (list, manual spend,
+  auto-spend under the shared `resets.*` policy). Done: `qswap codex auto` (the shared engine
+  over the Codex switcher, with its own state and the `codex.threshold` setting, default 99,
+  since a switch interrupts Codex), `qswap codex reset` (list and spend, with the same
+  bookkeeping, daily cap and request-id reuse as `qswap reset`; request ids are UUID v4), and
+  `qswap codex login` (logs a further account in under a private temporary `CODEX_HOME` and
+  saves it, so the live login is never signed out). `qswap usage` also notices a Codex login
+  changed outside qswap. Spending a credit is tested against a fake server only; the first
+  real spend is the maintainer's to make.
 - M2c: `qswap codex run`, one `CODEX_HOME` per account, for parallel accounts.
 
 Rules: qswap never refreshes a Codex login, never runs `codex logout`, and copies login
