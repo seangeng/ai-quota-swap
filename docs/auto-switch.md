@@ -55,23 +55,53 @@ Usage polling is adaptive — a couple of accounts per check, busy alternates wa
 
 It fails safe: if a usage check errors it keeps trusting the last-known numbers, for a bounded time, while retries back off, and an expired token on an idle machine makes it hold rather than fail over (Claude Code refreshes the token on your next message).
 
-An account whose refresh token has died is quarantined and reported until you either log in with it and re-run `qswap add --slot N`, or replace its stored credentials from a known-good export — a plain `qswap import backup.qswap` replaces dead-token slots on its own (`--force` is still required to replace other existing accounts; note a stale export can carry an already-superseded token). API-key accounts are never rotated onto unless you pass `--include-api-key-accounts`.
+An account whose refresh token has died is set aside: every view (`qswap list`, `qswap status`, the log) shows it as `needs re-login`, and `qswap switch N` refuses it unless `--force`, until you either log in with it and run `qswap add` (or `qswap add --slot N`), or replace its stored credentials from a known-good export — a plain `qswap import backup.qswap` replaces dead-token slots on its own (`--force` is still required to replace other existing accounts; note a stale export can carry an already-superseded token). API-key accounts are never rotated onto unless you pass `--include-api-key-accounts`.
 
 ## Running alongside Claude Code
 
 Runs safely alongside Claude Code: switches take the same credential locks Claude Code uses, so a swap never collides with a token refresh.
 
+## The log
+
+Without `--json`, `qswap auto` prints one line per check that says the decision in words, at most 80 columns:
+
+```text
+Auto-switch is running: switch at 90%, check every 60s. Ctrl-C stops it.
+14:20:00  #1 personal at 5h 86% (switch at 90%) · no switch needed
+          #2 work          5h 12% · 7d 21%
+          #3 night-shift   5h 93% · 7d 81%
+14:21:00  #1 personal at 5h 88% (switch at 90%) · no switch needed
+14:22:00  Switched #1 personal → #2 work · 5h reached 91%
+```
+
+The other accounts are listed on the first check, whenever a switch is being decided (the active account is at its line, a switch happens, or the engine is blocked), and on every check with `--verbose`. A blocked check names the reason for each candidate: `needs re-login`, `usage unavailable (HTTP 503)`, `as of 3h ago`. `--json` prints the events unchanged.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | `--once` switched to another account (or a loop was stopped) |
+| `1` | an error: network trouble, lock contention, nothing managed |
+| `2` | `--once`: nothing to do (no switch needed, or a switch was deferred) |
+| `3` | `--once`: blocked, a switch was wanted but no account can take over |
+| `64` | a usage error: unknown verb, bad flag, missing argument |
+| `130` | interrupted (Ctrl-C) |
+
+Usage errors are 64 rather than 2 for every qswap command, because 2 already means "nothing to do" here.
+
 ## Cron and systemd timers
 
-For cron/systemd timers, `--once` reports the outcome in its exit code (`0` switched, `1` error, `2` nothing to do, `3` blocked — no viable target), and `--json` emits one JSON event per line:
+For cron/systemd timers, `--once` reports the outcome in its exit code (table above), and `--json` emits one JSON event per line:
 
 ```bash
 */5 * * * * qswap auto --once --json >> ~/.qswap-auto.log 2>&1
 ```
 
+Each engine also records its last check in `autoswitch_heartbeat.json` in the data directory (a dry run too), which `qswap status` and `qswap doctor` read to say whether auto-switch is running.
+
 ## Codex accounts
 
-`qswap codex auto` runs these rules over the Codex accounts, with its own state (cooldown, quarantine, the daily cap on automatic credit spends) and the same settings, except one: its line is `codex.threshold` (default 99), because a Codex switch restarts Codex's background server and interrupts work in progress, so by default it moves only when the active account is out. A saved Codex login whose access token has expired reads "usage unknown until used" and is never picked, since qswap never refreshes a Codex login. When a switch is refused for now because a running Codex may be renewing the live token, the tick reports `no-switch` with reason `switch-deferred` and the next tick tries again. Codex usage reset credits are spent under the same `resets.*` settings as Claude Code's usage resets. Details: [codex.md](codex.md#automatic-switching).
+`qswap codex auto` runs these rules over the Codex accounts, with its own state (cooldown, quarantine, the daily cap on automatic credit spends) and the same settings, except one: its line is `codex.threshold` (default 99), because a Codex switch restarts Codex's background server and interrupts work in progress, so by default it moves only when the active account is out. A saved Codex login whose access token has expired reads "usage unknown until used" and is never picked automatically (`qswap codex switch N` picks it, with a one-line note), since qswap never refreshes a Codex login. When a switch is refused for now because a running Codex may be renewing the live token, the tick reports `no-switch` with reason `switch-deferred` and the next tick tries again. Codex usage reset credits are spent under the same `resets.*` settings as Claude Code's usage resets. Details: [codex.md](codex.md#automatic-switching).
 
 ## Defaults
 

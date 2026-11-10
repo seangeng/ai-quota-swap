@@ -149,7 +149,7 @@ The weekly ones exist because weekly quota left unused at its reset is lost.
 - `--model Fable` folds that model's weekly limit into the decision, for when you hit a per-model limit before the account-wide ones. Names are the per-model rows in `qswap list` (e.g. `Fable: 100%`), matched case-insensitively.
 - Accounts with no 5-hour window (Ultra) are judged on their 7-day and `--model` windows alone.
 - If a usage check fails it keeps using the last-known numbers for a limited time while it retries, and an expired token on an idle machine makes it hold rather than fail over.
-- An account whose refresh token has died is quarantined and reported until you [re-add it](#refresh-expired-tokens).
+- An account whose refresh token has died is set aside and shown as `needs re-login` until you [re-add it](#refresh-expired-tokens).
 - API-key accounts are never rotated onto unless you pass `--include-api-key-accounts`.
 
 For cron/systemd timers, `--once` reports the outcome in its exit code (`0` switched, `1` error, `2` nothing to do, `3` blocked — no viable target), and `--json` emits one JSON event per line:
@@ -202,7 +202,7 @@ When two resets would both clear the limit you hit, auto mode spends the narrowe
 - **Worth it, or kept.** A reset is skipped when its window refills on its own within `resets.minHoursLeft` (24h), or when another window would still sit over the line afterwards: a Fable reset does nothing for an account whose all-models weekly window stays at 98%, and a weekly reset does nothing for one whose Fable window, if the reset doesn't list it, stays at 100%. A Fable reset that also gives back Fable's share of the weekly window gets credit for it. A Fable reset is never spent for the all-models weekly limit itself, even though Claude Code offers one there.
 - **Not lost to expiry.** Every auto mode also spends a reset once its expiry is within `resets.expiryDays` (7) per reset held, at `resets.expiryThreshold` (50%), measured on the window that reset is for: the all-models weekly window for a weekly reset, the model's window for a Fable reset. Three resets expiring together start 21 days out, and the one closest to its deadline goes first, whatever its kind.
 - `resets.weeklyForModelLimit` (off) lets auto mode spend a weekly or full reset when only a per-model limit is reached.
-- **Never twice on old numbers.** After a claim, the account is held out until a reading taken after it arrives. An unconfirmed claim is retried with the same request id, so it can't spend a second reset. Auto spends at most 3 a day across all accounts, and never on disabled or quarantined accounts. `--dry-run` only reports.
+- **Never twice on old numbers.** After a claim, the account is held out until a reading taken after it arrives. An unconfirmed claim is retried with the same request id, so it can't spend a second reset. Auto spends at most 3 a day across all accounts, and never on disabled accounts or ones that need re-login. `--dry-run` only reports.
 - `resets.enabled false` stops reading reset status. The status rides on the normal usage request, with Claude Code's client agent string, because the server only reports resets to Claude Code.
 
 </details>
@@ -281,7 +281,7 @@ qswap add
 
 This will update the stored credentials without creating a duplicate.
 
-If the refresh token itself has died (auto-switch quarantines and reports such an account), log in with it and re-run `qswap add --slot N`, or replace its stored credentials from a known-good export: a plain `qswap import backup.qswap` replaces dead-token slots on its own (a stale export can carry an already-superseded token).
+If the refresh token itself has died (every view shows such an account as `needs re-login`, and auto-switch sets it aside), log in with it and run `qswap add`, or replace its stored credentials from a known-good export: a plain `qswap import backup.qswap` replaces dead-token slots on its own (a stale export can carry an already-superseded token).
 
 ### Other commands
 
@@ -297,10 +297,11 @@ qswap api org add               # Register an organization's Admin key, for exac
 qswap config                    # Show or edit settings (see Configuration below)
 qswap list                      # Show all accounts with 5h/7d usage and reset times
 qswap list --token-status       # Add source-labelled OAuth token diagnostics
-qswap status                    # Show current account
+qswap status                    # The active accounts, the counts, and whether auto-switch runs
+qswap doctor                    # Check that everything qswap needs is in place
 qswap add --slot 3              # Add account to a specific slot (prompts before overwrite)
 qswap add --alias dev           # Add account and give it a short alias
-qswap remove 2                  # Remove an account
+qswap remove 2                  # Remove an account (asks first; --yes in scripts)
 qswap disable 2                 # Hold an account out of auto-rotation (keeps its login)
 qswap enable 2                  # Return a disabled account to rotation
 qswap threshold 2 85            # Switch away from account 2 at 85%, not the global default
@@ -314,15 +315,15 @@ qswap alias 2 --unset           # Remove an account's alias
 qswap alias                     # List all aliases
 qswap move 2 1                  # Assign an account to a slot (relocates to an empty slot, swaps if taken)
 qswap swap 2 3                  # Exchange two accounts' slot numbers
-qswap unclaimed                 # List stashed credential entries (slot + why they were stashed)
+qswap unclaimed                 # List saved logins no account claims (and why they were kept)
 qswap unclaimed --purge ID      # Drop one (deletes its bytes; recover with /login + `qswap add`)
 qswap tui                       # Interactive dashboard (also: bare `qswap`)
 qswap watch                     # Dashboard, opened on the live watch page
 qswap upgrade                   # Upgrade ai-quota-swap to the latest version
-qswap purge                     # Remove all ai-quota-swap data
+qswap purge                     # Remove all ai-quota-swap data (asks first; --yes in scripts)
 ```
 
-The original flag spellings (`qswap --switch`, `qswap --list`, ...) keep working.
+`qswap help` shows the commands by task, and `qswap help COMMAND` (or `qswap COMMAND --help`) one command. The original flag spellings (`qswap --switch`, `qswap --list`, ...) keep working.
 
 ## Tips
 
@@ -337,7 +338,7 @@ The original flag spellings (`qswap --switch`, `qswap --list`, ...) keep working
   preserved instead of being overwritten by a slot's older snapshot
 - Account credentials stored securely using platform-appropriate methods
 - Switches (manual and automatic) hold Claude Code's own credential locks while writing, so a swap never interleaves with a token refresh
-- Auto-switch freshens a target's token before activating it, and quarantines accounts whose refresh token has died until you [re-add them](#refresh-expired-tokens)
+- Auto-switch freshens a target's token before activating it, and sets aside accounts whose refresh token has died (`needs re-login`) until you [re-add them](#refresh-expired-tokens)
 - Usage numbers refresh every few minutes — faster for an account being used or close to switching, slower for idle ones — keeping qswap comfortably inside Anthropic's rate limits however many dashboards you keep open on a machine. An age note like `· 6m ago` just means the next scheduled check hasn't come yet, not that something is stuck.
 - The plan shown after each slot (`· Ultra`, `· Pro`, `· Team`) comes from your account profile and refreshes every six hours, independently of usage; a subscription that has lapsed shows as a highlighted `Free`.
 
@@ -349,7 +350,7 @@ The original flag spellings (`qswap --switch`, `qswap --list`, ...) keep working
 | macOS | macOS Keychain | `~/.ai-quota-swap/` |
 | Linux / WSL | File-based (inside the backup directory, under `credentials/`) | `${XDG_DATA_HOME:-~/.local/share}/ai-quota-swap/` |
 
-Session-mode profiles (`qswap run`) live under the backup directory in `sessions/`. Tool preferences (`settings.json`) and auto-switch state (`autoswitch_state.json` — cooldown and quarantined accounts; delete it to reset) live in the backup directory root, as do the token ledger behind `qswap usage` (`ledger.db`, rebuilt from your session files if deleted), the record of which account was live when (`activations.jsonl`), and your own prices (`pricing.json`, optional). Organizations registered with `qswap api org add` are listed in `api_orgs.json` (no keys in it; each Admin key is stored like a saved login), and Anthropic's report answers are kept for a few minutes in `cache/admin_api.json`.
+Session-mode profiles (`qswap run`) live under the data directory in `sessions/`. Tool preferences (`settings.json`) and auto-switch state (`autoswitch_state.json`: cooldown and the accounts set aside until re-login; delete it to reset) and the engine's heartbeat (`autoswitch_heartbeat.json`) live in the data directory, as do the token ledger behind `qswap usage` (`ledger.db`, rebuilt from your session files if deleted), the record of which account was live when (`activations.jsonl`), and your own prices (`pricing.json`, optional). Organizations registered with `qswap api org add` are listed in `api_orgs.json` (no keys in it; each Admin key is stored like a saved login), and Anthropic's report answers are kept for a few minutes in `cache/admin_api.json`.
 
 On Linux/WSL, set `XDG_DATA_HOME` to override the default location.
 
@@ -385,7 +386,7 @@ qswap menubar --foreground          # run attached to this terminal, for debuggi
 
 ### Configuration
 
-Tool preferences live in `settings.json` in the backup root; `qswap config` reads and edits it with validation, so you never have to find the file or guess valid ranges.
+Tool preferences live in `settings.json` in the data directory; `qswap config` reads and edits it with validation, so you never have to find the file or guess valid ranges.
 
 <details>
 <summary>Commands & usage</summary>
@@ -443,7 +444,7 @@ The input is `qswap list --json` output. Each row with `usageStatus: "ok"` is ma
 
 ### JSON output for scripting
 
-Add `--json` to `list`, `status`, or `switch` to emit a single machine-readable JSON object on stdout (human-readable notices go to stderr). Useful for scripting auto-swap and quota tracking.
+Add `--json` to `list`, `status`, `switch`, `reset`, `priority`, `config`, `usage`, `budget` or `doctor` to emit a single machine-readable JSON object on stdout (human-readable notices go to stderr). Useful for scripting auto-swap and quota tracking.
 
 ```bash
 qswap list --json                   # all accounts with usage/quota
@@ -470,6 +471,19 @@ qswap switch 2 --json
 Every payload carries a `schemaVersion` (currently `1`); on a handled error stdout is `{"schemaVersion":1,"error":{...}}` with a non-zero exit code. `--switch`/`--switch-to` report `{"switched": true|false, "from": …, "to": …, "reason": …}`.
 
 </details>
+
+#### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | success (`auto --once`: switched) |
+| `1` | failure; under `--json` the error envelope is on stdout |
+| `2` | `auto --once` only: nothing to do |
+| `3` | `auto --once` only: blocked, no account can take over |
+| `64` | usage error: unknown verb, bad flag, missing argument |
+| `130` | interrupted (Ctrl-C) |
+
+A command that needs a yes (`remove`, `purge`, `reset N`, `add --slot` onto a taken slot) never asks without a terminal: it stops with exit 1 and a line naming `--yes`.
 
 `qswap auto --json` emits an event *stream* instead — one JSON object per line (`{"schemaVersion":1,"event":"switch","ts":…, …}` with kinds like `poll`, `switch`, `no-switch`, `account-quarantined`, `all-exhausted`, `error`). The contract is additive: new kinds and fields may appear, so scripts should ignore unknown ones.
 

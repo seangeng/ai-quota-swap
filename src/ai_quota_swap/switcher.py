@@ -6388,6 +6388,7 @@ class ClaudeAccountSwitcher:
         accounts = []
         seq_data = self._get_sequence_data() or {}
         now = self._usage_store.clock()
+        set_aside = self.set_aside_accounts()
         for num, email, org_name, org_uuid, is_active, creds, alias in accounts_info:
             if is_active:
                 active_num = num
@@ -6416,6 +6417,13 @@ class ClaudeAccountSwitcher:
                     budget=_record_budget(seq_data, str(num)),
                 )
             )
+            # Additive: the state every text view calls "needs re-login".
+            held = set_aside.get(str(num))
+            accounts[-1]["needsRelogin"] = held is not None or (
+                entry.sentinel == USAGE_RELOGIN_REQUIRED
+            )
+            if held is not None:
+                accounts[-1]["setAside"] = {"reason": held}
         payload = {
             "schemaVersion": SCHEMA_VERSION,
             "activeAccountNumber": active_num,
@@ -6715,6 +6723,10 @@ class ClaudeAccountSwitcher:
         }
         if alias:
             active["alias"] = alias
+        held = self.set_aside_accounts().get(str(account_num))
+        active["needsRelogin"] = held is not None or entry.sentinel == USAGE_RELOGIN_REQUIRED
+        if held is not None:
+            active["setAside"] = {"reason": held}
         budget = _record_budget(data, account_num)
         if budget is not None:
             active["budget"] = budget

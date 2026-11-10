@@ -999,6 +999,10 @@ class CodexSwitcher:
         # A ChatGPT account id names personal accounts too; only a workspace
         # plan makes the account an organization.
         row["isOrganization"] = is_workspace_plan(self._plan_type(plan))
+        held = self.set_aside_accounts().get(info.number)
+        row["needsRelogin"] = held is not None
+        if held is not None:
+            row["setAside"] = {"reason": held}
         return row
 
     def list_payload(self, fetch: set[str] | None = None) -> dict:
