@@ -117,14 +117,18 @@ figure.
 
 ### M4. API accounts
 
+Design: [docs/design/api-accounts.md](docs/design/api-accounts.md).
+
 API-key accounts currently read "API key (no quota)".
 
-- With an Anthropic Admin key: real usage and cost from `GET /v1/organizations/usage_report/messages`
-  and `/v1/organizations/cost_report`, plus org rate limits.
-- Without one: spend estimated from the M3 ledger.
-- A monthly budget per API account. The engine stops routing to an account at its budget.
-- Opt-in overflow: when every subscription is exhausted, fall back to an API account with a cap.
-- OpenAI API keys for Codex, same shape (endpoints to verify).
+- Spend today and this month on every API-key account row: exact per key from Anthropic's
+  Admin API when an organization's Admin key is registered, otherwise estimated from the
+  local ledger.
+- `qswap api org add|list|remove` for Admin keys; qswap only sends GET requests with them.
+- `qswap budget`: a monthly budget per API account. The engine stops routing to an account
+  at its budget.
+- `qswap usage --billed`: an organization's actual usage and cost as Anthropic reports it.
+- Later: OpenAI organization usage.
 
 ### M5. Engine
 
