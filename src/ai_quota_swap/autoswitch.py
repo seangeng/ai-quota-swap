@@ -611,6 +611,108 @@ def _mutate_state_file(state_path: Path, mutator: Callable[[dict], None]) -> dic
         return state
 
 
+# -- heartbeat ------------------------------------------------------------------
+#
+# Where a running engine says it is alive, for `qswap status` and `qswap
+# doctor`. A file of its own, never the state file: it is presence, not a
+# decision input, so even a dry-run engine writes it, and nothing reads it to
+# decide anything. Written after every tick (best-effort; a failed write never
+# touches the tick).
+
+HEARTBEAT_FILENAME = "autoswitch_heartbeat.json"
+# How late a loop engine may be past its announced next tick and still count
+# as running (a slow tick, a laptop waking up).
+HEARTBEAT_GRACE_S = 120.0
+
+
+def write_heartbeat(
+    backup_dir: Path,
+    *,
+    mode: str,
+    dry_run: bool,
+    last_tick_at: float,
+    next_tick_at: float | None,
+    started_at: float | None = None,
+    host: str = "qswap auto",
+    pid: int | None = None,
+) -> None:
+    """Record that an engine just ticked. ``mode`` is ``"loop"`` or
+    ``"once"``; ``next_tick_at`` is when a loop expects to tick again."""
+    import os
+
+    beat = {
+        "schemaVersion": STATE_SCHEMA_VERSION,
+        "pid": os.getpid() if pid is None else pid,
+        "host": host,
+        "mode": mode,
+        "dryRun": bool(dry_run),
+        "startedAt": started_at,
+        "lastTickAt": last_tick_at,
+        "nextTickAt": next_tick_at,
+    }
+    try:
+        atomic_write_json(Path(backup_dir) / HEARTBEAT_FILENAME, beat)
+    except Exception as e:  # presence only; never break a tick over it
+        _logger.debug("heartbeat write failed: %r", e)
+
+
+def read_heartbeat(backup_dir: Path) -> dict | None:
+    """The last heartbeat any engine wrote under ``backup_dir``, or None."""
+    beat = _read_state_file(Path(backup_dir) / HEARTBEAT_FILENAME)
+    if not isinstance(beat.get("lastTickAt"), (int, float)):
+        return None
+    return beat
+
+
+def engine_running(beat: dict | None, now: float, *, grace_s: float = HEARTBEAT_GRACE_S) -> bool:
+    """Whether a heartbeat comes from a loop engine that is still ticking:
+    its announced next tick is not more than ``grace_s`` overdue."""
+    if not beat or beat.get("mode") != "loop":
+        return False
+    next_at = beat.get("nextTickAt")
+    if not isinstance(next_at, (int, float)):
+        return False
+    return now <= next_at + grace_s
+
+
+def set_aside_accounts(
+    backup_dir: Path,
+    *,
+    identity: Callable[[str], tuple[str, str | None] | None] | None = None,
+) -> dict[str, str]:
+    """Accounts the engine holds out until their owner logs in again
+    (account number → reason, e.g. ``"invalid_grant"``). Read-only; every
+    view uses this to say ``needs re-login`` for them.
+
+    ``identity(number)`` gives the slot's ``(email, refresh-token
+    fingerprint)`` now; an entry whose account or login has been replaced
+    since is left out, by the same rule the engine releases it on its next
+    tick (``_release_recovered_quarantines``).
+    """
+    state = _read_state_file(Path(backup_dir) / STATE_FILENAME)
+    quarantine = state.get("quarantine")
+    if not isinstance(quarantine, dict):
+        return {}
+    out = {}
+    for number, entry in quarantine.items():
+        if not isinstance(entry, dict):
+            continue
+        if identity is not None:
+            try:
+                now_id = identity(str(number))
+            except Exception:
+                now_id = None
+            if now_id is None:
+                continue
+            email_now, fingerprint = now_id
+            if not email_now or email_now != entry.get("email"):
+                continue
+            if fingerprint != entry.get("refreshTokenFingerprint"):
+                continue
+        out[str(number)] = str(entry.get("reason") or "")
+    return out
+
+
 def record_reset_claim(
     backup_dir: Path,
     number: str,
@@ -1046,6 +1148,9 @@ class AutoSwitchEngine:
         # (account, month) budget warnings this engine has emitted; the state
         # file carries them across processes, this covers dry-run too.
         self._budget_warned: set[tuple[str, str]] = set()
+        # Who runs this engine, for the heartbeat (`qswap status`, `doctor`).
+        self.host_label = "qswap auto"
+        self._started_at = clock()
 
     # -- state file ---------------------------------------------------------
 
@@ -3304,6 +3409,16 @@ class AutoSwitchEngine:
                 )
                 outcome = TickOutcome.ERROR
             delay = self._next_delay(outcome)
+            now = self.clock()
+            write_heartbeat(
+                self.switcher.backup_dir,
+                mode="loop",
+                dry_run=self.dry_run,
+                last_tick_at=now,
+                next_tick_at=now + delay,
+                started_at=self._started_at,
+                host=self.host_label,
+            )
             if delay > self.settings.interval_seconds * 1.5:
                 until = datetime.now(timezone.utc) + timedelta(seconds=delay)
                 self._emit(

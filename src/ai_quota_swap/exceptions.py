@@ -13,6 +13,17 @@ class ProviderError(Exception):
     pass
 
 
+class ConfirmationRequiredError(ProviderError):
+    """A command needs a yes from the user and there is no terminal to ask on.
+
+    Nothing was changed. The message names the flag that confirms it
+    (``--yes``), so a script can add it (docs/design/ux.md: a prompt is only
+    shown on a terminal).
+    """
+
+    pass
+
+
 class ProviderUnavailableError(ProviderError):
     """The selected provider has no implementation in this version."""
 
