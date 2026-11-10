@@ -470,7 +470,13 @@ class TestListJson:
         fleet._write_json(fleet.sequence_file, data)
         before = {r["number"]: r for r in fleet.list_accounts(json_output=True)["accounts"]}
         assert {k: v for k, v in row.items() if k not in ("apiSpend", "budget")} == before[3]
-        assert rows[1] == before[1]
+
+        # The reading's age is wall-clock time between the two calls, so it can
+        # tick over on a slow machine; everything else must be identical.
+        def stable(r):
+            return {k: v for k, v in r.items() if k != "usageAgeSeconds"}
+
+        assert stable(rows[1]) == stable(before[1])
         assert "apiSpend" not in rows[1] and "budget" not in rows[1]
 
     def test_status_json_for_an_active_api_key(self, fleet, at_now, temp_home):
