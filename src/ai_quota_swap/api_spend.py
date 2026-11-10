@@ -602,7 +602,7 @@ def set_budget(switcher, identifier: str, amount: object | None) -> tuple[str, s
     num, email, data, record = switcher._resolve_for_policy_write(identifier)
     if record.get("kind") != "api_key":
         raise BudgetError(
-            f"Account-{num} ({email}) is a subscription account; budgets apply to "
+            f"#{num} {email} is a subscription account; budgets apply to "
             "API-key accounts"
         )
     current = budget_from_record(record)

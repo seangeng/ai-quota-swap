@@ -147,7 +147,7 @@ def login_time_left(
     ``None`` means "nothing to say": the stamp is unknown (logins older than
     the field, API-key slots), the expiry is further out than
     ``LOGIN_DUE_WITHIN_S``, or the slot is quarantined, whose usage sentinel
-    already reads "re-login needed". Otherwise the seconds left, ``0.0`` once
+    already reads "needs re-login". Otherwise the seconds left, ``0.0`` once
     the stamp is past.
     """
     if quarantined or expires_at is None:
@@ -166,7 +166,7 @@ def format_login_expiry(
     short: bool = False,
 ) -> str | None:
     """``"re-login in 5d 12h"`` while a stored login is due (see
-    :func:`login_time_left`), ``"re-login needed"`` once its stamp is past,
+    :func:`login_time_left`), ``"needs re-login"`` once its stamp is past,
     ``None`` when there is nothing to say. The countdown is the reset
     counters' (:func:`format_countdown`); ``short`` keeps its first unit
     (``"re-login in 5d"``) for rows with little room.
@@ -175,7 +175,7 @@ def format_login_expiry(
     if left is None:
         return None
     if left <= 0:
-        return "re-login needed"
+        return "needs re-login"
     countdown = format_countdown(left)
     return f"re-login in {countdown.split(' ')[0] if short else countdown}"
 
@@ -1260,7 +1260,7 @@ def _persist(
         _logger.warning(
             "Refreshed OAuth token for account %s (%s) but failed to persist it: %r. "
             "The refresh token on disk may now be stale; if the next refresh fails "
-            "with invalid_grant, re-run `qswap --add-account` after logging in.",
+            "with invalid_grant, run qswap add again after logging in.",
             account_num,
             email,
             e,
@@ -1269,6 +1269,6 @@ def _persist(
         # other ``--json`` commands, whose stdout is one machine-readable object.
         print_warning(
             f"Warning: failed to save refreshed token for account {account_num} ({email}). "
-            f"If the next refresh fails, re-run `qswap --add-account` after logging in.",
+            f"If the next refresh fails, run qswap add again after logging in.",
             file=sys.stderr,
         )

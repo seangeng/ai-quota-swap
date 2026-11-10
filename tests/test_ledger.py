@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -16,7 +17,14 @@ from ai_quota_swap import paths
 from ai_quota_swap.ledger import readers, scanner
 from ai_quota_swap.ledger.activations import ActivationLog, record_activation
 from ai_quota_swap.ledger.pricing import PriceTable, normalize_model
-from ai_quota_swap.ledger.report import build_report, day_bounds, render_text, report_to_json
+from ai_quota_swap.ledger.report import (
+    Row,
+    build_report,
+    day_bounds,
+    fit_label,
+    render_text,
+    report_to_json,
+)
 from ai_quota_swap.ledger.scanner import Scanner, default_config
 from ai_quota_swap.ledger.store import DB_FILENAME, LedgerStore
 from tests.ledger_fixtures import (
@@ -46,6 +54,7 @@ class Env:
         self.projects = paths.get_claude_config_home() / "projects"
         self.codex = paths.get_codex_home()
         self.registry: dict | None = None
+        self.codex_registry: dict | None = None
 
     def transcript(self, name: str = "sess-1.jsonl", slug: str = "-work-demo-app") -> Path:
         return self.projects / slug / name
@@ -105,7 +114,7 @@ class Env:
                 since=kw.pop("since", DAY),
                 until=kw.pop("until", date.fromtimestamp(T0 + 86400)),
                 by=by,
-                registries={"claude": self.registry},
+                registries={"claude": self.registry, "codex": self.codex_registry},
                 logs={
                     "claude": ActivationLog.load(self.data),
                     "codex": ActivationLog.load(self.data / "codex"),
@@ -637,7 +646,7 @@ class TestAttribution:
         ])
         env.scan()
         rows = {r.label: r.totals.requests for r in env.report("account").rows}
-        assert rows == {"Account-2 (b@example.com)": 3, "Account-1 (a@example.com)": 1}
+        assert rows == {"#2 b@example.com": 3, "#1 a@example.com": 1}
 
     def test_default_session_spanning_a_switch_follows_the_switch(self, env):
         env.registry = _registry((1, "a@example.com", "uuid-a"), (2, "b@example.com", "uuid-b"))
@@ -651,7 +660,7 @@ class TestAttribution:
         ])
         env.scan()
         rows = {r.label: r.totals.requests for r in env.report("account").rows}
-        assert rows == {"Account-1 (a@example.com)": 1, "Account-2 (b@example.com)": 1}
+        assert rows == {"#1 a@example.com": 1, "#2 b@example.com": 1}
 
     def test_session_started_before_the_first_activation_stays_unattributed(self, env):
         env.registry = _registry((2, "b@example.com", "uuid-b"))
@@ -678,7 +687,7 @@ class TestAttribution:
         write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0 + 5)])
         env.scan()
         rep = env.report("account")
-        assert [r.label for r in rep.rows] == ["x@example.com (not managed by qswap)"]
+        assert [r.label for r in rep.rows] == ["x@example.com (not managed)"]
         assert rep.rows[0].extra["account"] == {"number": None, "email": "x@example.com"}
 
     def test_linked_run_profile_history_is_not_scanned_twice(self, env):
@@ -821,7 +830,8 @@ class TestReportGrouping:
     def test_by_account(self, mixed):
         rep = mixed.report("account")
         rows = {r.label: r.totals.requests for r in rep.rows}
-        assert rows == {"Account-1 (a@example.com)": 2, "unattributed": 2}
+        # Claude and Codex usage both appear, so the account names its provider.
+        assert rows == {"Claude #1 a@example.com": 2, "unattributed": 2}
         assert rep.unattributed_share == pytest.approx(
             rep.unattributed_tokens / rep.total.tokens
         )
@@ -869,6 +879,259 @@ class TestReportGrouping:
         assert "Total" in text
         assert "estimates at API list prices" in text
         assert datetime.fromtimestamp(T0).strftime("%Y-%m-%d") in text
+
+
+# -- text output: 80 columns, labels, empty states ------------------------------------
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+LONG_ALIAS = "the-overnight-batch-runner-for-the-platform-team"
+LONG_EMAIL = "someone.with.a.very.long.name@subdomain.example-corporation.com"
+LONG_CWD = "/work/" + "deeply/nested/" * 5 + "a-project-with-a-rather-long-name"
+LONG_MODEL = "claude-zeta-9-experimental-preview-20261231"
+
+
+def _plain_lines(text: str) -> list[str]:
+    return _ANSI.sub("", text).splitlines()
+
+
+def _codex_rollout(env: Env, thread: str, ts: float, *, cwd: str = "/work/demo-app") -> None:
+    write_lines(env.rollout(thread), [
+        codex_meta(ts, thread, cwd=cwd), codex_turn(ts, "gpt-6.1-sol"),
+        codex_record(ts + 1, thread, f"resp-{thread[-1]}"),
+    ])
+
+
+@pytest.fixture
+def two_providers(env) -> Env:
+    """Claude #1 (no alias) and #2 ``work``, Codex #2 ``work``: two accounts
+    numbered 2, one per provider, each with usage."""
+    env.registry = {"accounts": {
+        "1": {"email": "a@example.com", "uuid": "uuid-a", "organizationUuid": ""},
+        "2": {"email": "w@example.com", "uuid": "uuid-w", "organizationUuid": "org-w",
+              "alias": "work"},
+    }}
+    env.codex_registry = {"accounts": {
+        "2": {"email": "w@example.com", "organizationUuid": "ws-1", "alias": "work"},
+    }}
+    record_activation(env.data, number=2, email="w@example.com", org="org-w", now=T0)
+    record_activation(env.data, number=1, email="a@example.com", org="", now=T0 + 100)
+    record_activation(env.data / "codex", number=2, email="w@example.com", org="ws-1", now=T0)
+    write_lines(env.transcript(), [
+        claude_line(mid="msg_1", ts=T0 + 10), claude_line(mid="msg_2", ts=T0 + 200),
+    ])
+    _codex_rollout(env, THREAD_A, T0 + 5)
+    env.scan()
+    return env
+
+
+class TestTextReport:
+    def test_the_footnote_wraps_to_80_columns(self, mixed):
+        lines = _plain_lines(render_text(mixed.report("day")))
+        assert all(len(line) <= 80 for line in lines)
+        at = lines.index(
+            "Costs are estimates at API list prices (Anthropic and OpenAI pricing pages,"
+        )
+        assert lines[at + 1] == "2026-11-10). Subscription usage is not billed this way."
+
+    def test_accounts_name_their_provider_when_both_appear(self, two_providers):
+        rep = two_providers.report("account")
+        assert sorted(r.label for r in rep.rows) == [
+            "Claude #1 a@example.com", "Claude #2 work", "Codex #2 work",
+        ]
+        text = render_text(rep)
+        assert "Account-" not in text
+        assert all(len(line) <= 80 for line in _plain_lines(text))
+        rows = {r["label"]: r for r in report_to_json(rep)["rows"]}
+        assert rows["Codex #2 work"]["provider"] == "codex"
+        assert rows["Codex #2 work"]["key"] == "w@example.com|ws-1"
+        assert rows["Claude #2 work"]["provider"] == "claude"
+        assert rows["Claude #2 work"]["account"] == {"number": 2, "email": "w@example.com"}
+
+    def test_one_providers_view_leaves_the_provider_out(self, two_providers):
+        assert [r.label for r in two_providers.report("account", provider="codex").rows] == [
+            "#2 work"
+        ]
+        assert sorted(
+            r.label for r in two_providers.report("account", provider="claude").rows
+        ) == ["#1 a@example.com", "#2 work"]
+
+    def test_a_key_both_providers_use_stays_two_rows(self, env):
+        env.registry = _registry((1, "a@example.com", "uuid-a"))
+        env.codex_registry = {"accounts": {"1": {"email": "a@example.com"}}}
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0)
+        record_activation(env.data / "codex", number=1, email="a@example.com", org="", now=T0)
+        write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0 + 10)])
+        _codex_rollout(env, THREAD_A, T0 + 5)
+        env.scan()
+        rep = env.report("account")
+        assert {r.label: r.totals.requests for r in rep.rows} == {
+            "Claude #1 a@example.com": 1, "Codex #1 a@example.com": 1,
+        }
+        doc = report_to_json(rep)
+        assert sorted((r["provider"], r["key"]) for r in doc["rows"]) == [
+            ("claude", "a@example.com|"), ("codex", "a@example.com|"),
+        ]
+
+    def test_unattributed_usage_of_both_providers_is_one_row(self, env):
+        write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0 + 10)])
+        _codex_rollout(env, THREAD_A, T0 + 5)
+        env.scan()
+        rep = env.report("account")
+        assert [(r.label, r.totals.requests) for r in rep.rows] == [("unattributed", 2)]
+        assert report_to_json(rep)["rows"][0]["provider"] is None
+
+    def test_the_desktop_app_and_an_unmanaged_login_are_labelled_clearly(self, env):
+        record_activation(env.data, number=None, email="x@example.com", org="", now=T0)
+        write_lines(env.transcript(), [
+            claude_line(mid="msg_1", ts=T0 + 5),
+            claude_line(mid="msg_2", ts=T0 + 6, entrypoint="claude-desktop"),
+        ])
+        _codex_rollout(env, THREAD_A, T0 + 5)
+        env.scan()
+        labels = {r.label for r in env.report("account").rows}
+        assert labels == {"Claude x@example.com (not managed)", "Claude desktop app",
+                          "unattributed"}
+
+    def test_a_long_unmanaged_email_is_cut_but_keeps_not_managed(self, env):
+        record_activation(env.data, number=None, email=LONG_EMAIL, org="", now=T0)
+        write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0 + 5)])
+        env.scan()
+        lines = _plain_lines(render_text(env.report("account")))
+        row = next(line for line in lines if "not managed" in line)
+        assert len(row) <= 80
+        assert "…" in row and "someone.with" in row
+        assert row.split("  ")[1].endswith(" (not managed)")
+
+    def test_session_rows_fit_and_cut_the_project(self, env):
+        write_lines(env.transcript(), [
+            claude_line(mid="msg_1", ts=T0, session="sess-long-project", cwd=LONG_CWD),
+            claude_line(mid="msg_2", ts=T0, session="sess-short", cwd="/work/demo-app"),
+        ])
+        env.scan()
+        lines = _plain_lines(render_text(env.report("session")))
+        assert all(len(line) <= 80 for line in lines)
+        assert lines[2].startswith("  Session   Project ")
+        long_row = next(line for line in lines if line.startswith("  sess-lon"))
+        assert long_row.startswith("  sess-lon  …")
+        assert "  sess-sho  /work/demo-app " in "\n".join(lines)
+
+    def test_a_cut_path_starts_at_a_directory_when_one_is_in_reach(self):
+        row = Row(key="p", label="/work/clients/northwind/checkout-api", cut="start")
+        assert fit_label(row, 20) == "…/checkout-api"
+        assert fit_label(row, 80) == row.label
+        session = Row(key="s", label="80f2eb9b  /work/a-very-long-project-name",
+                      head="80f2eb9b  ", cut="start")
+        cut = fit_label(session, 20)
+        assert cut.startswith("80f2eb9b  …") and len(cut) == 20
+
+    def test_a_cut_account_label_keeps_its_start_and_tail(self):
+        row = Row(key="k", label=f"Claude {LONG_EMAIL} (not managed)", tail=" (not managed)")
+        cut = fit_label(row, 27)
+        assert len(cut) == 27
+        assert cut == "Claude someo… (not managed)"
+        assert fit_label(Row(key="k", label="Claude #2 " + LONG_ALIAS), 27) == (
+            "Claude #2 the-overnight-ba…"
+        )
+
+    @pytest.mark.parametrize("by", ["day", "model", "account", "project", "provider", "session"])
+    def test_every_line_fits_80_columns_with_long_names(self, env, by):
+        env.registry = {"accounts": {
+            "1": {"email": LONG_EMAIL, "uuid": "uuid-l", "organizationUuid": "",
+                  "alias": LONG_ALIAS},
+            "2": {"email": "b" * 60 + "@example.com", "uuid": "uuid-b",
+                  "organizationUuid": ""},
+        }}
+        env.codex_registry = {"accounts": {"1": {"email": LONG_EMAIL, "alias": LONG_ALIAS}}}
+        record_activation(env.data, number=1, email=LONG_EMAIL, org="", now=T0)
+        record_activation(env.data, number=2, email="b" * 60 + "@example.com", org="",
+                          now=T0 + 50)
+        record_activation(env.data, number=None, email="c" * 70 + "@example.com", org="",
+                          now=T0 + 100)
+        record_activation(env.data / "codex", number=1, email=LONG_EMAIL, org="", now=T0)
+        write_lines(env.transcript(), [
+            claude_line(mid="msg_1", ts=T0 + 10, cwd=LONG_CWD, session="s" * 40),
+            claude_line(mid="msg_2", ts=T0 + 60, model=LONG_MODEL, cwd=LONG_CWD + "-2"),
+            claude_line(mid="msg_3", ts=T0 + 110, cwd="/work/demo-app"),
+        ])
+        _codex_rollout(env, THREAD_A, T0 + 5, cwd=LONG_CWD)
+        env.scan()
+        text = render_text(
+            env.report(by),
+            notes=["A note that is long enough to need wrapping at eighty columns, "
+                   "as the scan's notes about skipped or unreadable files are."],
+            last_line="1,234 older session files are not in the ledger yet. Use a wider "
+                      "--days or --since to include the ones you need, or --all for all.",
+        )
+        lines = _plain_lines(text)
+        assert lines[0].startswith("Token usage")
+        too_wide = [line for line in lines if len(line) > 80]
+        assert too_wide == []
+        assert any("No price for: " + LONG_MODEL in line for line in lines)
+
+
+class TestEmptyReport:
+    """A report with no usage is a sentence and a next step, not a zero table."""
+
+    def test_a_range_with_no_usage_says_so_and_suggests_more_days(self, mixed):
+        since, until = date(2026, 1, 1), date(2026, 1, 7)
+        rep = mixed.report("day", since=since, until=until)
+        assert rep.empty
+        assert render_text(rep) == (
+            "No usage between 2026-01-01 and 2026-01-07.\n"
+            "To look further back: qswap usage --days 30"
+        )
+
+    def test_the_hint_keeps_the_provider_and_grouping(self, mixed):
+        rep = mixed.report("account", since=date(2026, 1, 1), until=date(2026, 3, 1),
+                           provider="codex")
+        assert render_text(rep) == (
+            "No Codex usage between 2026-01-01 and 2026-03-01.\n"
+            "To look further back: qswap usage --provider codex --days 90 --by account"
+        )
+
+    def test_one_day_and_a_very_long_range(self, mixed):
+        day = date(2026, 1, 1)
+        assert render_text(mixed.report("day", since=day, until=day)).splitlines()[0] == (
+            "No usage on 2026-01-01."
+        )
+        long = mixed.report("day", since=date(2024, 1, 1), until=date(2025, 6, 1))
+        assert render_text(long) == "No usage between 2024-01-01 and 2025-06-01."
+
+    def test_notes_and_the_last_line_still_show(self, mixed):
+        rep = mixed.report("day", since=date(2026, 1, 1), until=date(2026, 1, 7))
+        text = render_text(rep, notes=["Skipped 2 compressed Codex session files."],
+                           last_line="1 older session file is not in the ledger yet.")
+        assert text.splitlines()[-2:] == [
+            "Skipped 2 compressed Codex session files.",
+            "1 older session file is not in the ledger yet.",
+        ]
+
+    def test_no_session_files_names_the_directories(self, env):
+        rep = env.report("day")
+        rep.searched_dirs = ("~/.claude/projects", "~/.codex/sessions",
+                             "~/.codex/archived_sessions")
+        lines = render_text(rep).splitlines()
+        assert lines == [
+            "No Claude Code or Codex session files were found in ~/.claude/projects,",
+            "~/.codex/sessions or ~/.codex/archived_sessions.",
+            "Use Claude Code or Codex, then run qswap usage again.",
+        ]
+
+    def test_an_empty_ledger_without_a_scan(self, env):
+        rep = env.report("day", since=DAY, until=DAY)
+        rep.unscanned = True
+        assert render_text(rep).splitlines() == [
+            f"No usage on {DAY.isoformat()} in the ledger.",
+            "Run the command again without --no-scan to read new session files.",
+        ]
+
+    def test_json_keeps_its_shape(self, env, mixed):
+        empty = report_to_json(mixed.report("day", since=date(2026, 1, 1),
+                                            until=date(2026, 1, 7)))
+        full = report_to_json(mixed.report("day"))
+        assert set(empty) == set(full)
+        assert len(empty["rows"]) == 7 and empty["total"]["requests"] == 0
 
 
 def test_a_switch_during_a_long_scan_is_picked_up(env, monkeypatch):

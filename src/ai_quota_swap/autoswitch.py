@@ -57,7 +57,11 @@ from ai_quota_swap.exceptions import (
     ProviderError,
     RetryableSwitchError,
 )
-from ai_quota_swap.json_output import SCHEMA_VERSION, USAGE_TOKEN_EXPIRED
+from ai_quota_swap.json_output import (
+    SCHEMA_VERSION,
+    USAGE_RELOGIN_REQUIRED,
+    USAGE_TOKEN_EXPIRED,
+)
 from ai_quota_swap.lines import BindingWindow, binding_window, window_line
 from ai_quota_swap.locking import FileLock
 from ai_quota_swap.models import AccountPolicy
@@ -68,7 +72,7 @@ from ai_quota_swap.poll_policy import (
 )
 from ai_quota_swap.settings import AutoSwitchSettings, atomic_write_json, parse_model_names
 from ai_quota_swap.switcher import ClaudeAccountSwitcher
-from ai_quota_swap.usage_store import due_candidate, plan_oversleeps_interval
+from ai_quota_swap.usage_store import STALE_OK_S, due_candidate, plan_oversleeps_interval
 
 STATE_FILENAME = "autoswitch_state.json"
 STATE_SCHEMA_VERSION = 1
@@ -234,13 +238,78 @@ def _below_line_detail(
 # ---------------------------------------------------------------------------
 
 
+def _human_only(default=None, *, factory=None):
+    """A field for human text only: never in ``to_json()``, never compared
+    (an event built by hand still equals the engine's), never in ``repr``."""
+    if factory is not None:
+        return field(default_factory=factory, kw_only=True, compare=False, repr=False)
+    return field(default=default, kw_only=True, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class AccountView:
+    """How the engine saw one account on one tick, for human text only
+    (``autolog``); never part of any ``to_json()``.
+
+    ``state`` is one of:
+
+    - ``"ok"``: a reading the engine decides on (``windows``; ``age_s`` when
+      it is older than ``STALE_OK_S`` but still trusted);
+    - ``"stale"``: only a reading too old to decide on (``windows``,
+      ``age_s``, ``error`` the fetch error since);
+    - ``"unavailable"``: no reading; ``error`` is the last fetch error;
+    - ``"not-read"``: never read;
+    - ``"needs-relogin"``: set aside until its owner logs in again
+      (``set_aside`` is the engine's reason) or its login was refused;
+    - ``"sentinel"``: another provider state (``sentinel``);
+    - ``"api-key"``: an API-key account (``used``: the engine may land on it
+      as a last resort);
+    - ``"disabled"``: held out of rotation by its owner;
+    - ``"no-login"``: no saved login to switch to.
+
+    ``line`` / ``weekly_line`` are its switch lines this tick.
+    """
+
+    number: str
+    email: str = ""
+    alias: str = ""
+    state: str = "ok"
+    windows: tuple[tuple[str, float], ...] = ()
+    line: float | None = None
+    weekly_line: float | None = None
+    age_s: float | None = None
+    error: str | None = None
+    set_aside: str | None = None
+    sentinel: str | None = None
+    used: bool = False
+
+
+@dataclass(frozen=True)
+class EventContext:
+    """What an event's human text needs beyond its JSON: the provider, the
+    accounts' aliases, and how the engine saw every account on the tick that
+    emitted it. Attached by the engine to every event (``context``); never
+    part of ``to_json()``."""
+
+    provider: str = "claude"
+    names: Mapping[str, str] = field(default_factory=dict)  # account number -> alias
+    accounts: tuple[AccountView, ...] = ()
+    active: str | None = None  # the active account's number on that tick
+
+
 @dataclass(frozen=True)
 class AutoSwitchEvent:
     """Base event. ``to_json()`` payloads are additive: consumers must ignore
-    unknown ``event`` kinds and unknown fields."""
+    unknown ``event`` kinds and unknown fields.
+
+    ``human()`` is one self-contained sentence (the menu bar shows it as a
+    notification, the dashboard as a log line); its words live in
+    :mod:`ai_quota_swap.autolog`. ``context`` and every other field marked
+    human-only feed that text and are never serialized."""
 
     kind: ClassVar[str] = "event"
     ts: str = field(default_factory=_now_iso, kw_only=True)
+    context: EventContext | None = _human_only()
 
     def _fields(self) -> dict:
         return {}
@@ -291,50 +360,15 @@ class PollEvent(AutoSwitchEvent):
             fields["weeklyThreshold"] = self.weekly_threshold
         return fields
 
-    def _describe(self, num: str) -> str:
-        wins = self.windows.get(num)
-        if wins:
-            return " · ".join(f"{name} {pct:.0f}%" for name, pct in wins.items())
-        h = self.headroom.get(num)
-        if h is not None:
-            return f"{100 - h:.0f}%"
-        err = self.fetch_errors.get(num)
-        return f"? ({err})" if err else "?"
-
     def human(self) -> str:
-        if self.active is None:
-            return "poll: no active account"
-        num = self.active.get("number")
-        h = self.headroom.get(str(num))
-        line = self.threshold
-        wins = self.windows.get(str(num))
-        if wins:
-            # Name the binding window and quote ITS line: "93% used (switch
-            # at 85%)" reads as a contradiction once the weekly window has a
-            # line of its own, and the bare pct hid which window bound (the
-            # #115 ambiguity). Same rule as the engine's trigger.
-            binding = binding_window(
-                ((label, pct, None) for label, pct in wins.items()),
-                self.threshold,
-                self.weekly_threshold,
-            )
-            used = f"{binding.label} {binding.pct:.0f}% used"
-            line = binding.line
-        elif h is not None:
-            used = f"{100 - h:.0f}% used"
-        else:
-            err = self.fetch_errors.get(str(num))
-            used = f"usage unknown ({err})" if err else "usage unknown"
-        others = ", ".join(
-            f"#{n}: {self._describe(n)}"
-            for n in self.headroom
-            if n != str(num)
-        )
-        tail = f" | others: {others}" if others else ""
-        return (
-            f"Account-{num} ({self.active.get('email')}): {used} "
-            f"(switch at {pct_label(line)}%){tail}"
-        )
+        """``#1 personal at 5h 86% (switch at 90%); others: #2 work at 5h
+        12% · 7d 21%; …``. The active account's binding window is named and
+        quoted against ITS line (the engine's trigger rule): a bare pct hid
+        which window bound (#115), and "93% (switch at 85%)" reads as a
+        contradiction once the weekly window has a line of its own."""
+        from ai_quota_swap import autolog
+
+        return autolog.poll_sentence(self)
 
 
 @dataclass(frozen=True)
@@ -345,6 +379,14 @@ class SwitchEvent(AutoSwitchEvent):
     to_ref: dict | None
     warnings: list[str] = field(default_factory=list)
     dry_run: bool = False
+    # Human-only: what the reason words quote. ``binding`` is the active
+    # account's binding window when the engine decided ("5h reached 91%");
+    # ``over_budget`` an API-key account at its budget; ``priority_up``
+    # whether the target outranks the active (False: same tier, sooner
+    # weekly reset).
+    binding: BindingWindow | None = _human_only()
+    over_budget: bool = _human_only(False)
+    priority_up: bool | None = _human_only()
 
     def _fields(self) -> dict:
         return {
@@ -356,16 +398,10 @@ class SwitchEvent(AutoSwitchEvent):
         }
 
     def human(self) -> str:
-        src = (
-            f"Account-{self.from_ref.get('number')}" if self.from_ref else "(none)"
-        )
-        dst = (
-            f"Account-{self.to_ref.get('number')} ({self.to_ref.get('email')})"
-            if self.to_ref
-            else "?"
-        )
-        prefix = "[dry-run] would switch" if self.dry_run else "Switched"
-        return f"{prefix} {src} -> {dst} ({self.trigger})"
+        """``Switched #1 personal → #2 work · 5h reached 91%``."""
+        from ai_quota_swap import autolog
+
+        return autolog.switch_sentence(self)
 
 
 @dataclass(frozen=True)
@@ -373,12 +409,23 @@ class NoSwitchEvent(AutoSwitchEvent):
     kind: ClassVar[str] = "no-switch"
     reason: str
     detail: str = ""
+    # Human-only facts behind ``reason``: the active account's binding window
+    # (below-threshold), the account that could not be re-read (stale-usage),
+    # and the cooldown still to run (cooldown). The accounts behind a blocked
+    # tick are in ``context.accounts``.
+    binding: BindingWindow | None = _human_only()
+    account: str | None = _human_only()
+    wait_s: float | None = _human_only()
 
     def _fields(self) -> dict:
         return {"reason": self.reason, "detail": self.detail}
 
     def human(self) -> str:
-        return f"no switch: {self.reason}" + (f" ({self.detail})" if self.detail else "")
+        """Why the engine stayed, in words; a blocked tick names each other
+        account's reason and the next step."""
+        from ai_quota_swap import autolog
+
+        return autolog.no_switch_sentence(self)
 
 
 @dataclass(frozen=True)
@@ -388,23 +435,18 @@ class QuarantineEvent(AutoSwitchEvent):
     email: str
     reason: str
     # The provider's own recovery step for the human line (not in JSON).
-    # Empty: Claude Code's, re-adding the login into the same slot.
+    # Empty: Claude Code's, logging in to it again and re-adding it.
     recover: str = ""
 
     def _fields(self) -> dict:
         return {"number": self.number, "email": self.email, "reason": self.reason}
 
     def human(self) -> str:
-        if self.recover:
-            return (
-                f"Account-{self.number} ({self.email}) quarantined: {self.reason}. "
-                f"{self.recover}"
-            )
-        return (
-            f"Account-{self.number} ({self.email}) quarantined: {self.reason}. "
-            f"Log in with it and run 'qswap --add-account --slot {self.number}' "
-            "to recover."
-        )
+        """``#4 side needs re-login: its saved login was refused. Log in to
+        it in Claude Code (/login), then run: qswap add``."""
+        from ai_quota_swap import autolog
+
+        return autolog.quarantine_sentence(self)
 
 
 @dataclass(frozen=True)
@@ -418,7 +460,10 @@ class UnquarantineEvent(AutoSwitchEvent):
         return {"number": self.number, "email": self.email, "reason": self.reason}
 
     def human(self) -> str:
-        return f"Account-{self.number} ({self.email}) back in rotation ({self.reason})"
+        """``#4 side is back in rotation (login replaced)``."""
+        from ai_quota_swap import autolog
+
+        return autolog.unquarantine_sentence(self)
 
 
 @dataclass(frozen=True)
@@ -430,9 +475,10 @@ class AllExhaustedEvent(AutoSwitchEvent):
         return {"earliestResetAt": self.earliest_reset_at}
 
     def human(self) -> str:
-        if self.earliest_reset_at:
-            return f"all accounts exhausted; earliest reset {self.earliest_reset_at}"
-        return "all accounts exhausted; no reset time known"
+        """``All accounts are at their limit; the first resets 15:32 · in 1h 12m``."""
+        from ai_quota_swap import autolog
+
+        return autolog.exhausted_sentence(self)
 
 
 @dataclass(frozen=True)
@@ -445,7 +491,10 @@ class SleepEvent(AutoSwitchEvent):
         return {"seconds": round(self.seconds, 1), "until": self.until}
 
     def human(self) -> str:
-        return f"sleeping {self.seconds / 60:.0f}m (until {self.until})"
+        """``Sleeping 12m, until 14:32``."""
+        from ai_quota_swap import autolog
+
+        return autolog.sleep_sentence(self)
 
 
 @dataclass(frozen=True)
@@ -458,7 +507,7 @@ class ErrorEvent(AutoSwitchEvent):
         return {"message": self.message, "transient": self.transient}
 
     def human(self) -> str:
-        return f"error: {self.message}" + (" (will retry)" if self.transient else "")
+        return f"Error: {self.message}" + (" (will retry)" if self.transient else "")
 
 
 @dataclass(frozen=True)
@@ -474,7 +523,7 @@ class ConfigWarningEvent(AutoSwitchEvent):
         return {"message": self.message}
 
     def human(self) -> str:
-        return f"warning: {self.message}"
+        return f"Warning: {self.message}"
 
 
 @dataclass(frozen=True)
@@ -504,12 +553,10 @@ class BudgetWarningEvent(AutoSwitchEvent):
         }
 
     def human(self) -> str:
-        who = f"Account-{self.account.get('number')} ({self.account.get('email')})"
-        estimate = " (estimate)" if self.source == "ledger" else ""
-        return (
-            f"{who} has spent ${self.used:,.2f} of its ${self.limit:,.2f} monthly "
-            f"budget ({self.pct:.0f}%){estimate}"
-        )
+        """``#5 ci has spent $410.00 of its $500.00 monthly budget (82%)``."""
+        from ai_quota_swap import autolog
+
+        return autolog.budget_sentence(self)
 
 
 @dataclass(frozen=True)
@@ -541,35 +588,11 @@ class ResetEvent(AutoSwitchEvent):
         return bool(self.result and self.result.get("result") == "reset")
 
     def human(self) -> str:
-        from ai_quota_swap.resets import scope_noun
+        """``Used a Fable reset on #1 personal · Fable reached 100%, 3d
+        before it resets on its own · 1 left on this grant``."""
+        from ai_quota_swap import autolog
 
-        plan = self.plan
-        who = f"Account-{self.account.get('number')} ({self.account.get('email')})"
-        why = f"{plan['window']} {plan['pct']:.0f}%"
-        hours = plan.get("hoursLeft")
-        if hours is not None:
-            why += f", {_hours_label(hours)} before it resets on its own"
-        what = f"a {scope_noun(plan.get('scope'), plan.get('grantKind'))}"
-        if self.dry_run:
-            return f"[dry-run] would use {what} on {who} ({plan['reason']}: {why})"
-        result = self.result or {}
-        if self.used:
-            left = result.get("resetsLeft")
-            tail = f" · {left} left on this grant" if isinstance(left, int) else ""
-            return f"Used {what} on {who} ({plan['reason']}: {why}){tail}"
-        detail = result.get("reason") or result.get("detail") or ""
-        return (
-            f"Did not use {what} on {who}: {result.get('result', 'error')}"
-            + (f" ({str(detail).replace('_', ' ')})" if detail else "")
-        )
-
-
-def _hours_label(hours: float) -> str:
-    if hours >= 48:
-        return f"{hours / 24:.0f}d"
-    if hours >= 1:
-        return f"{hours:.0f}h"
-    return f"{max(hours * 60, 0):.0f}m"
+        return autolog.reset_sentence(self)
 
 
 # A claim's record keeps the account out of the planner until a reading taken
@@ -609,6 +632,108 @@ def _mutate_state_file(state_path: Path, mutator: Callable[[dict], None]) -> dic
         mutator(state)
         atomic_write_json(state_path, state)
         return state
+
+
+# -- heartbeat ------------------------------------------------------------------
+#
+# Where a running engine says it is alive, for `qswap status` and `qswap
+# doctor`. A file of its own, never the state file: it is presence, not a
+# decision input, so even a dry-run engine writes it, and nothing reads it to
+# decide anything. Written after every tick (best-effort; a failed write never
+# touches the tick).
+
+HEARTBEAT_FILENAME = "autoswitch_heartbeat.json"
+# How late a loop engine may be past its announced next tick and still count
+# as running (a slow tick, a laptop waking up).
+HEARTBEAT_GRACE_S = 120.0
+
+
+def write_heartbeat(
+    backup_dir: Path,
+    *,
+    mode: str,
+    dry_run: bool,
+    last_tick_at: float,
+    next_tick_at: float | None,
+    started_at: float | None = None,
+    host: str = "qswap auto",
+    pid: int | None = None,
+) -> None:
+    """Record that an engine just ticked. ``mode`` is ``"loop"`` or
+    ``"once"``; ``next_tick_at`` is when a loop expects to tick again."""
+    import os
+
+    beat = {
+        "schemaVersion": STATE_SCHEMA_VERSION,
+        "pid": os.getpid() if pid is None else pid,
+        "host": host,
+        "mode": mode,
+        "dryRun": bool(dry_run),
+        "startedAt": started_at,
+        "lastTickAt": last_tick_at,
+        "nextTickAt": next_tick_at,
+    }
+    try:
+        atomic_write_json(Path(backup_dir) / HEARTBEAT_FILENAME, beat)
+    except Exception as e:  # presence only; never break a tick over it
+        _logger.debug("heartbeat write failed: %r", e)
+
+
+def read_heartbeat(backup_dir: Path) -> dict | None:
+    """The last heartbeat any engine wrote under ``backup_dir``, or None."""
+    beat = _read_state_file(Path(backup_dir) / HEARTBEAT_FILENAME)
+    if not isinstance(beat.get("lastTickAt"), (int, float)):
+        return None
+    return beat
+
+
+def engine_running(beat: dict | None, now: float, *, grace_s: float = HEARTBEAT_GRACE_S) -> bool:
+    """Whether a heartbeat comes from a loop engine that is still ticking:
+    its announced next tick is not more than ``grace_s`` overdue."""
+    if not beat or beat.get("mode") != "loop":
+        return False
+    next_at = beat.get("nextTickAt")
+    if not isinstance(next_at, (int, float)):
+        return False
+    return now <= next_at + grace_s
+
+
+def set_aside_accounts(
+    backup_dir: Path,
+    *,
+    identity: Callable[[str], tuple[str, str | None] | None] | None = None,
+) -> dict[str, str]:
+    """Accounts the engine holds out until their owner logs in again
+    (account number → reason, e.g. ``"invalid_grant"``). Read-only; every
+    view uses this to say ``needs re-login`` for them.
+
+    ``identity(number)`` gives the slot's ``(email, refresh-token
+    fingerprint)`` now; an entry whose account or login has been replaced
+    since is left out, by the same rule the engine releases it on its next
+    tick (``_release_recovered_quarantines``).
+    """
+    state = _read_state_file(Path(backup_dir) / STATE_FILENAME)
+    quarantine = state.get("quarantine")
+    if not isinstance(quarantine, dict):
+        return {}
+    out = {}
+    for number, entry in quarantine.items():
+        if not isinstance(entry, dict):
+            continue
+        if identity is not None:
+            try:
+                now_id = identity(str(number))
+            except Exception:
+                now_id = None
+            if now_id is None:
+                continue
+            email_now, fingerprint = now_id
+            if not email_now or email_now != entry.get("email"):
+                continue
+            if fingerprint != entry.get("refreshTokenFingerprint"):
+                continue
+        out[str(number)] = str(entry.get("reason") or "")
+    return out
 
 
 def record_reset_claim(
@@ -1046,6 +1171,14 @@ class AutoSwitchEngine:
         # (account, month) budget warnings this engine has emitted; the state
         # file carries them across processes, this covers dry-run too.
         self._budget_warned: set[tuple[str, str]] = set()
+        # Who runs this engine, for the heartbeat (`qswap status`, `doctor`).
+        self.host_label = "qswap auto"
+        self._started_at = clock()
+        # What this tick's events need for their human text (aliases, how
+        # each account stood), attached by `_emit`; and the facts a switch's
+        # reason quotes. Neither is ever serialized or read by a decision.
+        self._context: EventContext | None = None
+        self._tick_cause: dict = {}
 
     # -- state file ---------------------------------------------------------
 
@@ -1229,9 +1362,16 @@ class AutoSwitchEngine:
             }
 
         self._mutate_state(add)
+        if self._context is not None and self._context.accounts:
+            # The rest of this tick's text sees it as set aside too.
+            self._context = replace(self._context, accounts=tuple(
+                replace(v, state="needs-relogin", set_aside=reason) if v.number == number else v
+                for v in self._context.accounts
+            ))
+        recover = getattr(self.switcher, "recover_hint", None)
         self._emit(QuarantineEvent(
             number=number, email=email, reason=reason,
-            recover=getattr(self.switcher, "recover_hint", None) or "",
+            recover=recover if isinstance(recover, str) else "",
         ))
 
     def _release_recovered_quarantines(self, state: dict) -> dict:
@@ -1541,6 +1681,10 @@ class AutoSwitchEngine:
         self._sleep_until_ts = None
         self._blocked_wait_long = False
         self._idle_hold_slow = False
+        self._tick_cause = {}
+        self._context = EventContext(
+            provider=self._provider_id(), names=self._alias_names()
+        )
         settings = self.settings
         priority_mode = settings.strategy == "priority-consume-first"
         state = self._read_state()
@@ -1609,6 +1753,13 @@ class AutoSwitchEngine:
             quarantined,
             threshold=thresholds[current],
             weekly_threshold=settings.weekly_threshold,
+        )
+        self._context = replace(
+            self._context or EventContext(),
+            accounts=self._account_views(
+                entries, usage, state, current, thresholds, settings
+            ),
+            active=current,
         )
         self._emit(
             PollEvent(
@@ -1695,6 +1846,7 @@ class AutoSwitchEngine:
                                 active_headroom,
                                 thresholds[current],
                             ),
+                            binding=active_binding,
                         )
                     )
                     return TickOutcome.NO_ACTION
@@ -1754,8 +1906,15 @@ class AutoSwitchEngine:
                 return TickOutcome.NO_ACTION
             trigger = "failover"
 
+        # What a switch this tick would quote as its reason (human text only).
+        self._tick_cause = {
+            "binding": active_binding,
+            "over_budget": active_over_budget,
+            "policies": policies,
+        }
+
         if trigger in ("proactive", "consume-first", "priority") and self._in_cooldown(state):
-            self._emit(NoSwitchEvent(reason="cooldown"))
+            self._emit(NoSwitchEvent(reason="cooldown", wait_s=self._cooldown_left(state)))
             return TickOutcome.NO_ACTION
 
         # -- candidate selection ------------------------------------------
@@ -1800,6 +1959,7 @@ class AutoSwitchEngine:
                     detail=_below_line_detail(
                         active_binding, active_headroom, thresholds[current]
                     ),
+                    binding=active_binding,
                 )
             )
             return TickOutcome.NO_ACTION
@@ -2087,6 +2247,7 @@ class AutoSwitchEngine:
                                 "this tick (backoff or a concurrent poller); "
                                 "retrying"
                             ),
+                            account=num,
                         )
                     )
                     if priority_mode and not priority_active_ready:
@@ -2968,6 +3129,7 @@ class AutoSwitchEngine:
         trigger: str,
         left: tuple[float | None, float],
     ) -> TickOutcome:
+        cause = self._switch_cause(number)
         if self.dry_run:
             current = self.switcher.current_account_number()
             current_email = self.switcher.account_email(current) if current else ""
@@ -2977,6 +3139,7 @@ class AutoSwitchEngine:
                     from_ref=_ref(current, current_email) if current else None,
                     to_ref=_ref(number, email),
                     dry_run=True,
+                    **cause,
                 )
             )
             return TickOutcome.SWITCHED
@@ -2990,7 +3153,9 @@ class AutoSwitchEngine:
         with self._state_lock():
             state = self._read_state()
             if trigger in ("proactive", "consume-first", "priority") and self._in_cooldown(state):
-                self._emit(NoSwitchEvent(reason="cooldown"))
+                self._emit(
+                    NoSwitchEvent(reason="cooldown", wait_s=self._cooldown_left(state))
+                )
                 return TickOutcome.NO_ACTION
 
             try:
@@ -3040,6 +3205,7 @@ class AutoSwitchEngine:
                 from_ref=result.get("from"),
                 to_ref=result.get("to"),
                 warnings=result.get("warnings", []),
+                **cause,
             )
         )
         return TickOutcome.SWITCHED
@@ -3079,6 +3245,142 @@ class AutoSwitchEngine:
         if not isinstance(last, (int, float)):
             return False
         return (self.clock() - last) < self.settings.cooldown_seconds
+
+    def _cooldown_left(self, state: dict) -> float | None:
+        """Seconds of cooldown still to run, for the no-switch text."""
+        last = state.get("lastSwitchAt")
+        if not isinstance(last, (int, float)):
+            return None
+        return max(0.0, self.settings.cooldown_seconds - (self.clock() - last))
+
+    # -- human text ----------------------------------------------------------
+    #
+    # What the events' words need beyond their JSON: aliases, the provider,
+    # and how each account stood this tick. Best-effort and read-only: a
+    # failure here costs a label, never a tick, and no decision reads it.
+
+    def _provider_id(self) -> str:
+        provider = getattr(self.switcher, "provider_id", None)
+        return provider if isinstance(provider, str) and provider else "claude"
+
+    def _alias_names(self) -> dict[str, str]:
+        """Account number -> alias, read once per tick."""
+        lister = getattr(self.switcher, "list_aliases", None)
+        if lister is None:
+            return {}
+        try:
+            return {
+                str(row[0]): str(row[1])
+                for row in lister()
+                if isinstance(row, (tuple, list)) and len(row) >= 2 and row[1]
+            }
+        except Exception as e:  # labels only; never cost the tick
+            _logger.debug("could not read aliases for the auto log: %r", e)
+            return {}
+
+    def _switch_cause(self, number: str) -> dict:
+        """The human-only facts a ``SwitchEvent`` quotes as its reason."""
+        cause = self._tick_cause
+        priority_up = None
+        policies = cause.get("policies")
+        current = self._context.active if self._context is not None else None
+        if isinstance(policies, Mapping) and current is not None:
+            mine = policies.get(current, AccountPolicy()).priority
+            theirs = policies.get(number, AccountPolicy()).priority
+            priority_up = theirs > mine
+        return {
+            "binding": cause.get("binding"),
+            "over_budget": bool(cause.get("over_budget")),
+            "priority_up": priority_up,
+        }
+
+    def _account_views(
+        self,
+        entries: Mapping[str, object],
+        usage: Mapping[str, dict | str | None],
+        state: dict,
+        current: str,
+        thresholds: Mapping[str, float],
+        settings: AutoSwitchSettings,
+    ) -> tuple[AccountView, ...]:
+        """How every managed account stands on this tick, for human text:
+        what the per-account comparison and a blocked tick's reasons say."""
+        try:
+            quarantine = state.get("quarantine")
+            quarantine = quarantine if isinstance(quarantine, dict) else {}
+            switchable = set(self.switcher.switchable_account_numbers())
+            lister = getattr(self.switcher, "disabled_account_numbers", None)
+            disabled = set(lister()) if lister is not None else set()
+            names = self._context.names if self._context is not None else {}
+            numbers = sorted(
+                {str(n) for n in (*entries, *switchable, *disabled)},
+                key=lambda n: (0, int(n)) if n.isdigit() else (1, n),
+            )
+            return tuple(
+                self._account_view(
+                    num, entries.get(num), usage.get(num), quarantine,
+                    switchable, disabled, current, thresholds, settings, names,
+                )
+                for num in numbers
+            )
+        except Exception as e:  # labels only; never cost the tick
+            _logger.debug("could not describe accounts for the auto log: %r", e)
+            return ()
+
+    def _account_view(
+        self,
+        num: str,
+        entry: object,
+        value: dict | str | None,
+        quarantine: Mapping,
+        switchable: set[str],
+        disabled: set[str],
+        current: str,
+        thresholds: Mapping[str, float],
+        settings: AutoSwitchSettings,
+        names: Mapping[str, str],
+    ) -> AccountView:
+        base = AccountView(
+            number=num,
+            email=self.switcher.account_email(num) or "",
+            alias=names.get(num, ""),
+            line=thresholds[num],
+            weekly_line=settings.weekly_threshold,
+        )
+        if num in quarantine:
+            reason = quarantine[num].get("reason") if isinstance(quarantine[num], dict) else None
+            return replace(base, state="needs-relogin", set_aside=str(reason) if reason else None)
+        if value == USAGE_RELOGIN_REQUIRED:
+            return replace(base, state="needs-relogin")
+        if num != current:
+            if num in disabled:
+                return replace(base, state="disabled")
+            if num not in switchable:
+                return replace(base, state="no-login")
+        if self.switcher.account_kind_for(num) == "api_key":
+            return replace(base, state="api-key", used=bool(settings.include_api_key_accounts))
+        age = getattr(entry, "age_s", None)
+        if isinstance(value, dict):
+            return replace(
+                base,
+                windows=tuple(_window_pcts(value, self._models).items()),
+                age_s=age if isinstance(age, (int, float)) and age > STALE_OK_S else None,
+            )
+        if isinstance(value, str):
+            return replace(base, state="sentinel", sentinel=value)
+        error = getattr(entry, "last_error", None)
+        last_good = getattr(entry, "last_good", None)
+        if isinstance(last_good, dict):
+            return replace(
+                base,
+                state="stale",
+                windows=tuple(_window_pcts(last_good, self._models).items()),
+                age_s=age if isinstance(age, (int, float)) else None,
+                error=error,
+            )
+        if error:
+            return replace(base, state="unavailable", error=error)
+        return replace(base, state="not-read")
 
     def _warn_budgets(self, state: dict, entries: Mapping[str, object]) -> None:
         """One ``budget-warning`` per API-key account per UTC month, once its
@@ -3207,6 +3509,11 @@ class AutoSwitchEngine:
         return datetime.fromtimestamp(earliest, tz=timezone.utc)
 
     def _emit(self, event: AutoSwitchEvent) -> None:
+        # Every event carries this tick's context for its human text (an
+        # event that brought its own keeps it). Human-only: to_json() and
+        # equality never see it.
+        if self._context is not None and getattr(event, "context", True) is None:
+            event = replace(event, context=self._context)
         self.on_event(event)
 
     # -- loop -------------------------------------------------------------------
@@ -3304,6 +3611,16 @@ class AutoSwitchEngine:
                 )
                 outcome = TickOutcome.ERROR
             delay = self._next_delay(outcome)
+            now = self.clock()
+            write_heartbeat(
+                self.switcher.backup_dir,
+                mode="loop",
+                dry_run=self.dry_run,
+                last_tick_at=now,
+                next_tick_at=now + delay,
+                started_at=self._started_at,
+                host=self.host_label,
+            )
             if delay > self.settings.interval_seconds * 1.5:
                 until = datetime.now(timezone.utc) + timedelta(seconds=delay)
                 self._emit(

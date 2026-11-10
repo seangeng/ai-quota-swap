@@ -10,9 +10,10 @@ from pathlib import Path
 
 from ai_quota_swap.ledger.activations import ActivationLog
 from ai_quota_swap.ledger.pricing import PriceTable
-from ai_quota_swap.ledger.report import Report, build_report, day_bounds
+from ai_quota_swap.ledger.report import Report, build_report, day_bounds, home_path
 from ai_quota_swap.ledger.scanner import (
     ZSTD_AVAILABLE,
+    ScanConfig,
     Scanner,
     ScanStats,
     clear_progress,
@@ -46,6 +47,16 @@ def older_history_line(stats: ScanStats | None) -> str | None:
         f"{n:,} older session files are not in the ledger yet. "
         "Use a wider --days or --since to include the ones you need, or --all for all of them."
     )
+
+
+def searched_dirs(config: ScanConfig, providers: tuple[str, ...]) -> tuple[str, ...]:
+    """The directories a scan over ``providers`` looks in, home spelled ``~``."""
+    dirs: list[Path] = []
+    if "claude" in providers:
+        dirs.extend(root.path for root in config.claude_roots)
+    if "codex" in providers:
+        dirs.extend(config.codex_roots)
+    return tuple(home_path(d) for d in dirs)
 
 
 def resolve_range(
@@ -92,6 +103,7 @@ def run_usage(
     """
     data_root = Path(data_root)
     store = LedgerStore(data_root / DB_FILENAME)
+    searched: tuple[str, ...] | None = None
     try:
         stats: ScanStats | None = None
         if rescan:
@@ -101,13 +113,16 @@ def run_usage(
             # The report's first hour, as build_report computes it.
             window = None if rescan or scan_all else day_bounds(since, until)[0] * 3600
             show = tty_progress() if progress else None
-            scanner = Scanner(store, default_config(data_root, registry), progress=show)
+            config = default_config(data_root, registry)
+            scanner = Scanner(store, config, progress=show)
             try:
                 stats = scanner.run(providers, since=window)
             finally:
                 if show is not None:
                     clear_progress()
             store.set_meta(LAST_SCAN_META, f"{time.time():.3f}")
+            if not stats.files_seen and not stats.files_skipped:
+                searched = searched_dirs(config, providers)
         logs = {
             "claude": ActivationLog.load(data_root),
             "codex": ActivationLog.load(data_root / "codex"),
@@ -126,6 +141,8 @@ def run_usage(
             logs=logs,
             prices=PriceTable.load(data_root),
         )
+        report.searched_dirs = searched
+        report.unscanned = stats is None
     finally:
         store.close()
     notes: list[str] = []

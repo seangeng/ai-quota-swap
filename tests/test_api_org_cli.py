@@ -110,7 +110,7 @@ class TestAdd:
         out, err = capsys.readouterr()
         assert prompts == ["Admin API key (input hidden): "]
         assert "Registered organization 'acme-corp' (Acme Corp)." in out
-        assert "Linked Account-3" in out and '"Dev laptop"' in out
+        assert "Linked #3 api-key-3@token.local" in out and '"Dev laptop"' in out
         assert "manage your whole organization" in err
         for text in (out, err, caplog.text):
             assert ADMIN_KEY not in text
@@ -143,7 +143,8 @@ class TestAdd:
             run_main(["api", "org", "add", "acme"])
         assert exc.value.code == 1
         err = capsys.readouterr().err
-        assert "not an Admin API key" in err and "nothing was saved" in err
+        flat = " ".join(err.split())
+        assert "not an Admin API key" in flat and "nothing was saved" in flat
         assert KEY_A not in err
         assert anthropic.calls == []
         assert not (data_root() / "api_orgs.json").exists()
@@ -213,7 +214,7 @@ class TestList:
         capsys.readouterr()
         run_main(["api", "org", "list"])
         out = capsys.readouterr().out
-        assert "acme" in out and "Acme Corp" in out and "linked: Account-2" in out
+        assert "acme" in out and "Acme Corp" in out and "linked: #2" in out
         assert ADMIN_KEY not in out
         run_main(["api", "org", "list", "--json"])
         doc = json.loads(capsys.readouterr().out)
@@ -242,7 +243,7 @@ class TestRemove:
         assert (data_root() / "cache" / "admin_api.json").exists()
         run_main(["api", "org", "remove", "acme"])
         out = capsys.readouterr().out
-        assert "Removed organization 'acme'" in out and "Unlinked: Account-3" in out
+        assert "Removed organization 'acme'" in out and "Unlinked: #3" in out
         assert not _secret_file("acme").exists()
         assert OrgRegistry(data_root()).orgs() == []
         rec = record(make_switcher(), 3)
@@ -259,8 +260,8 @@ class TestRemove:
     def test_bare_api_prints_help(self, linux, capsys):
         with pytest.raises(SystemExit) as exc:
             run_main(["api"])
-        assert exc.value.code == 2
-        assert "org" in capsys.readouterr().out
+        assert exc.value.code == 64  # a usage error: its help goes to stderr
+        assert "org" in capsys.readouterr().err
 
 
 class TestSecretStore:

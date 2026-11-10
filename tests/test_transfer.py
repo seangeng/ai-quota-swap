@@ -402,7 +402,7 @@ class TestConflictPolicy:
 
         err = capsys.readouterr().err
         assert "alice@example.com is your current live login" in err
-        assert "qswap --switch-to 1 --force" in err
+        assert "qswap switch 1 --force" in err
 
     def test_import_without_matching_live_login_prints_no_hint(
         self, temp_home: Path, capsys
@@ -1388,7 +1388,7 @@ class TestExportSkipsBrokenSlots:
 
         captured = capsys.readouterr()
         # Warning must be on stderr, not stdout, so pipe mode stays JSON-clean.
-        assert "Skipping Account-1" in captured.err
+        assert "Skipping #1 alice@example.com" in captured.err
         assert "alice@example.com" in captured.err
         assert "Skipping Account-1" not in captured.out
 
@@ -1405,7 +1405,7 @@ class TestExportSkipsBrokenSlots:
 
         envelope = json.loads(out.read_text())
         assert [a["email"] for a in envelope["accounts"]] == ["bob@example.com"]
-        assert "Skipping Account-1" in capsys.readouterr().err
+        assert "Skipping #1 alice@example.com" in capsys.readouterr().err
 
     def test_explicit_account_with_missing_credentials_hard_fails(
         self, temp_home: Path
@@ -1489,7 +1489,7 @@ class TestExportSkipsBrokenSlots:
         envelope = json.loads(captured.out)
         assert [a["email"] for a in envelope["accounts"]] == ["bob@example.com"]
         # Warning is on stderr.
-        assert "Skipping Account-1" in captured.err
+        assert "Skipping #1 alice@example.com" in captured.err
 
 
 # ---------------------------------------------------------------------------

@@ -59,7 +59,6 @@ import logging
 import math
 import os
 import re
-import shutil
 import urllib.error
 import urllib.request
 from collections.abc import Iterable, Mapping, Sequence
@@ -161,7 +160,9 @@ def detect_cli_version() -> str:
     if _VERSION_RE.match(env):
         version = env
     if version is None:
-        found = shutil.which("claude")
+        from ai_quota_swap import clis
+
+        found = clis.find_cli("claude")
         if found:
             real = Path(os.path.realpath(found))
             if _VERSION_RE.match(real.name):
@@ -1188,7 +1189,7 @@ def kept_note(plan: ResetPlan) -> str:
     :func:`kept_by_scope`)."""
     noun = plan.noun
     return (
-        f"Auto keeps the {noun} on Account-{plan.account}: only {plan.window} is at its "
+        f"Auto keeps the {noun} on #{plan.account}: only {plan.window} is at its "
         f"limit ({plan.pct:.0f}%), and a {noun} {scope_phrase(plan.scope)} "
         "(resets.weeklyForModelLimit true would spend it)."
     )

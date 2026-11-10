@@ -124,7 +124,7 @@ class TestPurgeWindows:
         cred_file = switcher.credentials_dir / f".creds-1-{EMAIL}.enc"
         assert cred_file.exists()
 
-        with patch("builtins.input", return_value="y"):
+        with patch("builtins.input", return_value="y"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.purge()
 
         assert not cred_file.exists()

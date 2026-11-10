@@ -441,14 +441,16 @@ class TestListText:
     def test_api_key_row(self, fleet, at_now, capsys):
         fleet.list_accounts()
         out = capsys.readouterr().out
-        assert "API key · $10.00 today · $14.00 this month of $20 (70%)" in out
-        assert "API key (no quota)" not in out
+        # The header says "API key"; the line under it is the spend.
+        assert "· API key" in out
+        assert "$10.00 today · $14.00 this month of $20 (70%)" in out
+        assert "no quota; billed per token" not in out
 
     def test_without_a_reading_the_row_is_unchanged(self, env, capsys):
         s = make_switcher()
         seed_api_key(s, 3, KEY_A)
         s.list_accounts()
-        assert "API key (no quota)" in capsys.readouterr().out
+        assert "no quota; billed per token" in capsys.readouterr().out
 
 
 class TestListJson:
@@ -543,13 +545,13 @@ class TestBudgetCommand:
         run_main(["budget", "3", "500"])
         assert record(make_switcher(), 3)["budget"] == 500.0
         out = capsys.readouterr().out
-        assert "Set a monthly budget of $500 for Account-3" in out
+        assert "Set a monthly budget of $500 for #3 api-key-3@token.local" in out
         assert "not a cap at Anthropic" in out
         run_main(["budget", "3", "$1,200.50"])
         assert record(make_switcher(), 3)["budget"] == 1200.5
         run_main(["budget", "3", "off"])
         assert "budget" not in record(make_switcher(), 3)
-        assert "Removed the budget for Account-3" in capsys.readouterr().out
+        assert "Removed the budget for #3 api-key-3@token.local" in capsys.readouterr().out
         run_main(["budget", "3", "off"])
         assert "has no budget" in capsys.readouterr().out
 

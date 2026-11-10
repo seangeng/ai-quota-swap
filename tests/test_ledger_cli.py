@@ -7,7 +7,7 @@ import json
 import os
 import sys
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +15,7 @@ import pytest
 
 from ai_quota_swap import cli, paths
 from ai_quota_swap.ledger import activations
+from ai_quota_swap.ledger.report import home_path
 from ai_quota_swap.ledger.activations import (
     ActivationLog,
     observe_live_login,
@@ -160,7 +161,7 @@ class TestUsageCommand:
     )
     def test_bad_flags(self, capsys, args, message):
         code, _out, err = run_cli(*args, capsys=capsys)
-        assert code == 2
+        assert code == 64
         assert message in err
 
     def test_ledger_error_is_a_json_envelope(self, capsys):
@@ -181,10 +182,11 @@ class TestUsageCommand:
     def test_older_files_are_left_out_and_the_report_says_so(self, old_history, capsys):
         code, out, _ = run_cli(capsys=capsys)
         assert code == 0
-        assert out.rstrip("\n").splitlines()[-1] == (
-            "2 older session files are not in the ledger yet. Use a wider --days or --since "
-            "to include the ones you need, or --all for all of them."
-        )
+        # The report's last line, wrapped to 80 columns.
+        assert out.rstrip("\n").splitlines()[-2:] == [
+            "2 older session files are not in the ledger yet. Use a wider --days or --since",
+            "to include the ones you need, or --all for all of them.",
+        ]
         code, out, _ = run_cli("--json", capsys=capsys)
         doc = json.loads(out)
         assert doc["total"]["requests"] == 4
@@ -221,7 +223,13 @@ class TestUsageCommand:
     def test_help_lists_usage(self, capsys):
         with patch.object(sys, "argv", ["qswap", "help"]), pytest.raises(SystemExit):
             cli.main()
-        assert "usage [--days N]" in capsys.readouterr().out
+        assert "usage                 tokens and estimated cost" in capsys.readouterr().out
+
+    def test_every_line_fits_80_columns(self, history, capsys):
+        for by in ("day", "model", "account", "project", "provider", "session"):
+            code, out, _ = run_cli("--by", by, capsys=capsys)
+            assert code == 0
+            assert [line for line in out.splitlines() if len(line) > 80] == [], by
 
     def test_usage_observes_the_live_login_first(self, history, capsys):
         home = Path.home()
@@ -232,6 +240,84 @@ class TestUsageCommand:
         log = ActivationLog.load(paths.get_backup_root())
         assert [a.account for a in log.activations] == ["a@example.com|"]
         assert log.activations[0].source == "observed"
+
+
+class TestUsageEmptyStates:
+    """No session files, or none in the range: a sentence and the next step."""
+
+    def test_first_run_with_no_session_files_says_where_it_looked(self, capsys):
+        code, out, err = run_cli(capsys=capsys)
+        assert code == 0, err
+        lines = out.splitlines()
+        assert all(len(line) <= 80 for line in lines)
+        text = " ".join(lines)
+        assert text.startswith("No Claude Code or Codex session files were found in ")
+        # The test's Codex home is outside ~ and longer than a line, so it is
+        # broken across lines: compare without the breaks.
+        squeezed = "".join(out.split())
+        for d in (
+            paths.get_claude_config_home() / "projects",
+            paths.get_codex_home() / "sessions",
+            paths.get_codex_home() / "archived_sessions",
+        ):
+            assert home_path(d) in squeezed
+        # Home is spelled ~ (the Claude config home is under it), with this
+        # platform's separator: ~/ on POSIX, ~\ on Windows (report.home_path).
+        tilde = home_path(Path.home() / "x")[:-1]
+        assert tilde == ("~\\" if os.sep == "\\" else "~/")
+        assert tilde in text
+        assert text.endswith("Use Claude Code or Codex, then run qswap usage again.")
+        assert "Token usage" not in out and "$0.00" not in out and "Total" not in out
+
+    def test_first_run_json_keeps_its_shape(self, history, capsys):
+        full = json.loads(run_cli("--json", capsys=capsys)[1])
+        for f in (history["projects"] / "sess-1.jsonl", history["rollout"]):
+            f.unlink()
+        code, out, _ = run_cli("--json", "--rescan", capsys=capsys)
+        empty = json.loads(out)
+        assert code == 0
+        assert set(empty) == set(full)
+        assert len(empty["rows"]) == 7 and empty["total"]["requests"] == 0
+        assert empty["scan"]["filesSeen"] == 0
+
+    def test_no_codex_files_with_provider_codex(self, capsys):
+        projects = paths.get_claude_config_home() / "projects" / "-work-demo-app"
+        write_lines(projects / "sess-1.jsonl", [claude_line(mid="msg_1", ts=time.time() - 60)])
+        code, out, _ = run_cli("--provider", "codex", capsys=capsys)
+        assert code == 0
+        assert all(len(line) <= 80 for line in out.splitlines())
+        codex = paths.get_codex_home()
+        expected = (
+            f"No Codex session files were found in {home_path(codex / 'sessions')} or "
+            f"{home_path(codex / 'archived_sessions')}. "
+            "Use Codex, then run qswap usage --provider codex again."
+        )
+        # Compared without whitespace: the test's long Codex home is broken
+        # across lines.
+        assert "".join(out.split()) == "".join(expected.split())
+        assert "~/.claude" not in out  # only the directories this run read
+        # Claude Code's own report is a table.
+        code, out, _ = run_cli("--provider", "claude", capsys=capsys)
+        assert "Token usage" in out
+
+    def test_a_range_with_no_usage_says_so(self, history, capsys):
+        today = date.today()
+        since, until = today - timedelta(days=400), today - timedelta(days=394)
+        code, out, _ = run_cli("--since", since.isoformat(), "--until", until.isoformat(),
+                               capsys=capsys)
+        assert code == 0
+        assert out == (
+            f"No usage between {since.isoformat()} and {until.isoformat()}.\n"
+            "To look further back: qswap usage --days 30\n"
+        )
+
+    def test_an_empty_ledger_without_a_scan(self, history, capsys):
+        code, out, _ = run_cli("--no-scan", "--days", "1", capsys=capsys)
+        assert code == 0
+        assert out.splitlines() == [
+            f"No usage on {date.today().isoformat()} in the ledger.",
+            "Run the command again without --no-scan to read new session files.",
+        ]
 
 
 # -- the activation log writers -------------------------------------------------

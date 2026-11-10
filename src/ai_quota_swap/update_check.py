@@ -456,14 +456,12 @@ def run_self_upgrade(current_version: str | None = None) -> int:
     cmd = commands.get(method or "")
     if cmd is None:
         error(
-            "Could not detect install method (looked for uv tool / pipx).\n"
-            f"  sys.prefix:     {sys.prefix}\n"
-            f"  sys.executable: {sys.executable}\n"
-            "To upgrade manually, run one of:\n"
+            "qswap could not tell how it was installed, so it cannot upgrade itself.\n"
+            "Upgrade it the way you installed it:\n"
             "  uv tool upgrade ai-quota-swap\n"
             "  pipx upgrade ai-quota-swap\n"
             f"  {sys.executable} -m pip install --upgrade '{INSTALL_SOURCE}'\n"
-            "If you installed with `pip install -e .`, use `git pull` instead."
+            "  git pull                      # a source checkout"
         )
         return 1
 

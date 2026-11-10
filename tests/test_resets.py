@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ai_quota_swap import clis
 from ai_quota_swap import oauth, resets
 from ai_quota_swap.autoswitch import (
     MAX_AUTO_RESETS_PER_DAY,
@@ -291,13 +292,13 @@ class TestCliVersion:
         binary.write_text("")
         link = tmp_path / "claude"
         link.symlink_to(binary)
-        monkeypatch.setattr(resets.shutil, "which", lambda _name: str(link))
+        monkeypatch.setattr(clis, "find_cli", lambda _name: str(link))
         assert resets.detect_cli_version() == "2.1.500"
 
     def test_fallback(self, monkeypatch, tmp_path):
         monkeypatch.setattr(resets, "_cli_version_cache", None)
         monkeypatch.delenv("QSWAP_CLAUDE_CLI_VERSION", raising=False)
-        monkeypatch.setattr(resets.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(clis, "find_cli", lambda _name: None)
         monkeypatch.setattr(resets.Path, "home", lambda: tmp_path)
         assert resets.detect_cli_version() == resets.FALLBACK_CLI_VERSION
 
@@ -784,7 +785,7 @@ class TestEngine:
         assert [c[:2] for c in calls] == [("1", "g-fable")]
         event = next(e for e in h.events if isinstance(e, ResetEvent))
         assert event.used and event.plan["reason"] == "last-resort"
-        assert "Used a Fable reset on Account-1" in event.human()
+        assert "Used a Fable reset on #1 a@example.com" in event.human()
         # The refill lands in the same tick: below its line, so no switch.
         assert outcome is TickOutcome.NO_ACTION
         assert h.active_number() == 1
@@ -830,7 +831,8 @@ class TestEngine:
         _, calls = self._tick(h, before)
         assert calls == []
         event = next(e for e in h.events if isinstance(e, ResetEvent))
-        assert event.dry_run and event.human().startswith("[dry-run] would use a Fable reset")
+        assert event.dry_run and event.human().startswith("Would use a Fable reset")
+        assert event.human().endswith("(dry run)")
         assert "resetClaims" not in h.state()
 
     def test_switch_preferred_when_it_helps(self, h):
@@ -876,7 +878,7 @@ class TestEngine:
         payload = event.to_json()
         assert payload["event"] == "limit-reset"
         assert payload["result"]["result"] == "cooldown"
-        assert "Did not use a Fable reset on Account-1" in event.human()
+        assert "Did not use a Fable reset on #1 a: cooldown" in event.human()
 
 
 # -- list output -------------------------------------------------------------------

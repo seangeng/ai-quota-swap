@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from ai_quota_swap import clis
 from ai_quota_swap import macos_keychain
-from ai_quota_swap import session as session_mod
 from ai_quota_swap.credentials import (
     CLAUDE_CODE_KEYCHAIN_SERVICE,
     CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE,
@@ -366,7 +366,7 @@ class TestSessionGuard:
 
     def test_run_rejects_before_exec(self, temp_home: Path, monkeypatch):
         mgr = SessionManager(self._seed_api_key_account())
-        monkeypatch.setattr(session_mod.shutil, "which", lambda name: "/fake/claude")
+        monkeypatch.setattr(clis, "find_cli", lambda name: "/fake/claude")
         with pytest.raises(SessionError, match="does not support API-key accounts"):
             mgr.run("2", [], share=True)
 

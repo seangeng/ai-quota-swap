@@ -52,6 +52,16 @@ def _no_update_check(monkeypatch):
     monkeypatch.setattr("ai_quota_swap.update_check.check_for_update", lambda v: None)
 
 
+def _real_path_lookup(monkeypatch) -> None:
+    """These tests put a stand-in ``codex`` on the real PATH (or empty it), so
+    they need the real lookup back, not conftest's fixed answer."""
+    import shutil
+
+    from ai_quota_swap import clis
+
+    monkeypatch.setattr(clis, "find_cli", shutil.which)
+
+
 def run(argv: list[str], capsys, *, answer: str | None = None, tty: bool = False) -> tuple[int, str, str]:
     with patch.object(sys, "argv", ["qswap", *argv]), \
          patch.object(sys.stdin, "isatty", return_value=tty), \
@@ -60,7 +70,8 @@ def run(argv: list[str], capsys, *, answer: str | None = None, tty: bool = False
             if answer is None:
                 cli.main()
             else:
-                with patch("builtins.input", return_value=answer):
+                with patch("builtins.input", return_value=answer), \
+                     patch("ai_quota_swap.prompts.interactive", return_value=tty):
                     cli.main()
             code = 0
         except SystemExit as e:
@@ -192,7 +203,8 @@ class TestCodexAuto:
         two.fetch.answers["acct-b"] = UsageOutcome(usage=_reading(100))
         code, out, _ = run(["codex", "auto", "--once"], capsys)
         assert code == 2
-        assert "Used a weekly reset on Account-2 (a@example.com) (last-resort: 7d 100%" in out
+        assert "Used a weekly reset on #2 a@example.com · 7d reached 100%, no account" in out
+        assert "last-resort" not in out  # the reason in words
         assert [c[:2] for c in two.consumed] == [("acct-a", CREDIT_ID)]
         assert codex_usage.is_uuid4(two.consumed[0][2])
         assert _state(two)["resetClaims"]["2"]["auto"] is True
@@ -204,7 +216,7 @@ class TestCodexAuto:
         monkeypatch.setattr(AutoSwitchEngine, "run_loop", lambda self: 0)
         code, out, _ = run(["codex", "auto", "--dry-run"], capsys)
         assert code == 0
-        assert "Codex auto-switch running: threshold 99%, every 60s (dry-run)" in out
+        assert "Codex auto-switch dry run: would switch at 99% · every 60s" in out
 
 
 # -- qswap codex reset -------------------------------------------------------------------
@@ -214,14 +226,16 @@ class TestCodexReset:
     def test_list(self, two, capsys):
         code, out, _ = run(["codex", "reset"], capsys)
         assert code == 0
-        assert out.startswith("Codex usage reset credits   auto: last-resort")
-        assert "2: a@example.com (active)" in out
-        assert "1× weekly reset   clears all weekly usage · usable now · use by" in out
-        assert CREDIT_ID in out
-        assert "1: b@example.com\n     └ no reset credits reported" in out
+        assert out.startswith("Reset credits\nAuto: last-resort")
+        assert "#2 a@example.com · active" in out
+        assert "1 reset credit · clears all weekly usage" in out
+        assert "usable now · use by" in out
+        assert f"id {CREDIT_ID}" in out
+        assert "#1 b@example.com\n     └ no reset credits reported" in out
         # #1 has room, so last-resort would not spend now.
-        assert "Auto would not use a credit right now." in out
-        assert "Auto credits spent in the last 24h: 0/3" in out
+        assert "Auto would not use a reset credit right now." in out
+        assert "Spent automatically in the last 24h: 0 of 3." in out
+        assert all(len(line) <= 80 for line in out.splitlines())
 
     def test_list_json(self, two, capsys):
         code, out, _ = run(["codex", "reset", "--json"], capsys)
@@ -235,7 +249,7 @@ class TestCodexReset:
     def test_spend_with_yes(self, two, capsys):
         code, out, err = run(["codex", "reset", "2", "--yes"], capsys)
         assert code == 0, err
-        assert "Used a Codex usage reset credit on Account-2 (a@example.com): 7d reset" in out
+        assert "Used a reset credit on #2 a@example.com: 7d reset" in out
         assert "· 0 credits left" in out
         ((account_id, credit_id, request_id),) = two.consumed
         assert (account_id, credit_id) == ("acct-a", CREDIT_ID)
@@ -258,17 +272,17 @@ class TestCodexReset:
     def test_asks_first_and_can_be_kept(self, two, capsys):
         code, out, _ = run(["codex", "reset", "2"], capsys, answer="n", tty=True)
         assert code == 0
-        assert f"Account-2 (a@example.com) · Codex usage reset credit · {CREDIT_ID}" in out
+        assert "#2 a@example.com · reset credit" in out
+        assert f"id {CREDIT_ID}" in out
         assert "Resets 7d (now 100%) to 0%" in out
-        assert "Kept — nothing was spent." in out
+        assert "Kept; nothing was spent." in out
         assert two.consumed == []
 
     def test_refuses_a_non_tty_without_yes(self, two, capsys):
         code, _, err = run(["codex", "reset", "2"], capsys)
         assert code == 1
         assert err.strip() == (
-            "Error: refusing to spend a Codex usage reset credit without --yes "
-            "in a non-interactive shell"
+            "Error: qswap codex reset needs --yes when there is no terminal to ask on"
         )
         assert two.consumed == []
 
@@ -276,8 +290,8 @@ class TestCodexReset:
         two.answer = KeyboardInterrupt()
         code, out, _ = run(["codex", "reset", "2", "--yes"], capsys)
         assert code == 130
-        assert ("Interrupted mid-claim — the credit may have been used; "
-                "`qswap codex reset` shows where things stand") in out
+        assert ("Interrupted mid-claim; the reset credit may have been used. "
+                "qswap codex reset shows where things stand.") in out
         pending = _state(two)["resetClaims"]["2"]
         assert pending["result"] == "pending" and pending["settled"] is False
         two.answer = ClaimResult("reset")
@@ -293,17 +307,17 @@ class TestCodexReset:
     def test_an_unknown_credit(self, two, capsys):
         code, _, err = run(["codex", "reset", "2", "--grant", "nope", "--yes"], capsys)
         assert code == 1
-        assert "has no credit 'nope' (`qswap codex reset` lists them)" in err
+        assert "has no reset credit 'nope' (qswap codex reset lists them)" in " ".join(err.split())
 
     def test_an_account_without_credits(self, two, capsys):
         code, _, err = run(["codex", "reset", "1", "--yes"], capsys)
         assert code == 1
-        assert "no Codex usage reset credit status for Account-1" in err
+        assert "#1 b@example.com reports no reset credits; nothing to spend" in err
 
     def test_help(self, env, capsys):
         code, out, _ = run(["codex", "reset", "--help"], capsys)
         assert code == 0 and out.startswith("usage: qswap codex reset")
-        assert "Codex usage reset credits" in out
+        assert "List Codex reset credits" in out
 
 
 # -- qswap codex login -------------------------------------------------------------------
@@ -356,7 +370,7 @@ class TestCodexLogin:
         runner = _Runner(new)
         code, out, err = _login(one, monkeypatch, capsys, runner, "--alias", "work", "--", "--device-auth")
         assert code == 0, err
-        assert "Added Account 2: b@example.com" in out
+        assert "Added #2 work (b@example.com)" in out
         ((home, args, mode, own_codex_home),) = runner.calls
         assert args == ["--device-auth"]
         assert home.parent == one.root / "codex" and home.name.startswith(LOGIN_HOME_PREFIX)
@@ -378,7 +392,7 @@ class TestCodexLogin:
         renewed = make_login(**LOGIN_A, access_suffix="fresh-login")
         code, out, _ = _login(one, monkeypatch, capsys, _Runner(renewed))
         assert code == 0
-        assert "Updated saved login for Account 1 (a@example.com)." in out
+        assert "Updated the saved login of #1 a@example.com" in out
         assert (one.root / "codex" / "credentials" / "account-1.json").read_bytes() == renewed
         assert list(_registry(one)["accounts"]) == ["1"]
         assert (one.codex_home / "auth.json").read_bytes() == one.live
@@ -398,7 +412,7 @@ class TestCodexLogin:
         before = (one.root / "codex" / "sequence.json").read_bytes()
         code, _, err = _login(one, monkeypatch, capsys, runner)
         assert code == 1
-        assert err.strip() == f"Error: {message}"
+        assert " ".join(err.split()) == f"Error: {message}"
         assert (one.root / "codex" / "sequence.json").read_bytes() == before
         assert _login_homes(one) == []
         assert (one.codex_home / "auth.json").read_bytes() == one.live
@@ -432,7 +446,8 @@ class TestCodexLogin:
         code, out, _ = run(["codex", "login", "--help"], capsys)
         assert code == 0 and "temporary Codex" in out and "--device-auth" in out
         code, out, _ = run(["codex", "add", "--help"], capsys)
-        assert code == 0 and "qswap codex login" in out
+        assert code == 0 and "qswap codex login" in " ".join(out.split())
+        code, out, _ = run(["codex", "help"], capsys)
         assert 'CODEX_HOME="$tmp" codex login' in out  # the manual fallback stays
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell stand-in for codex")
@@ -445,6 +460,7 @@ class TestCodexLogin:
         fake.write_text('#!/bin/sh\necho "$@" > "$CODEX_HOME/argv"\nexit 3\n')
         fake.chmod(0o755)
         monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+        _real_path_lookup(monkeypatch)
         home = tmp_path / "login-home"
         home.mkdir()
         outcome = REAL_RUN_CODEX_LOGIN(home, ["--device-auth"])
@@ -454,6 +470,7 @@ class TestCodexLogin:
 
     def test_the_real_runner_without_codex_on_path(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PATH", str(tmp_path))
+        _real_path_lookup(monkeypatch)
         assert REAL_RUN_CODEX_LOGIN(tmp_path, []) == LoginRun(None, "codex is not on PATH")
 
 

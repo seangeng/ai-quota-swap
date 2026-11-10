@@ -6,6 +6,18 @@ The first release under the name ai-quota-swap, version 0.1.0. The project start
 
 The package is `ai-quota-swap` and the command `qswap`. It keeps its own data directory, Keychain service, LaunchAgent and `QSWAP_*` environment variables, so it installs beside claude-swap. Accounts move across with `cswap export` and `qswap import`.
 
+### Command line
+
+- `qswap --help` is a map of the commands grouped by task; every verb has its own `--help`, and `qswap help VERB` prints it. Bare `qswap` off a terminal prints a three-line hint.
+- `qswap doctor` checks Claude Code, Codex, the data directory, the saved-login store, the macOS menu bar service and install location, and auto-switch, and says how to fix anything that is not right. `--json`, and `--online` for network checks.
+- One wording everywhere: accounts are `#2 work`; an account the tool will not use until its owner logs in again is `needs re-login` (in `list`, `status`, the auto log and `--json` as `needsRelogin`); a failed reading is `usage unavailable (HTTP 503), retrying`; an old one `as of 3h 5m ago`.
+- `list` and `status` share one account block, coloured by severity (yellow from the account's switch line, red at the limit, which is also said in words). `status` covers Claude Code and Codex and says whether auto-switch is running.
+- `qswap auto` prints one line per check, in words, and lists the other accounts when a switch is being decided (`--verbose`: on every check).
+- `switch N` refuses an account that needs re-login unless `--anyway` (which only overrides that refusal; `--force` keeps its meaning), and warns before switching to one whose usage cannot be read or is old. A rotation (`switch` with no account, `--strategy best` or `next-available`, `qswap codex switch`) skips such accounts, one line each, as it skips disabled ones.
+- Read-only commands never ask; a question is only asked on a terminal, and without one the command stops with a line naming `--yes` (now on `remove`, `purge`, `add --slot`, `add-token --slot` and `qswap codex remove`). Cancelling `purge` changes nothing, the menu bar included.
+- Usage errors exit 64 (not 2, which `auto --once` uses for "nothing to do"); every `--json` failure is the error envelope, and every payload carries `schemaVersion`. `priority --json` is new.
+- Every message fits 80 columns, and names commands by verb, never by a legacy flag.
+
 ### Codex (experimental)
 
 - `qswap codex add`, `list`, `status`, `switch`, `remove`, `alias`, `disable`, `enable`, `threshold` and `priority` keep several Codex CLI logins and switch between them.
@@ -24,7 +36,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 
 ### Usage resets
 
-- `qswap reset` lists every account's usage resets and spends one. `qswap list` gains a `resets:` row, the dashboard a badge, and the menu bar a notification.
+- `qswap reset` lists every account's usage resets and spends one. `qswap list` says what an account holds ("Holds 1 Fable reset"), the dashboard shows a badge, and the menu bar a notification.
 - The auto-switch engine spends resets under `resets.auto` (`last-resort` by default, or `active`, `on-limit`, `off`), only on a fresh reading, at most 3 a day, with a request id that makes a retry safe.
 - Resets have kinds (Fable or another model, 5-hour, weekly, full), read from the windows they clear. The planner spends the narrowest one that helps, and spends a weekly or full reset on a per-model limit only when `resets.weeklyForModelLimit` allows it. JSON output gains `scope`.
 

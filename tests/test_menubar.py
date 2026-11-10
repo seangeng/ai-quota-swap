@@ -293,7 +293,7 @@ def test_format_account_label_login_past():
     label = menubar.format_account_label(
         2, "loc@example.com", _USAGE, now=now, login_expires_at=now - 60
     )
-    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30% · re-login needed"
+    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30% · needs re-login"
 
 
 def test_format_account_label_quarantined_row_already_says_it():
@@ -303,7 +303,7 @@ def test_format_account_label_quarantined_row_already_says_it():
         2, "loc@example.com", menubar.SENTINEL_NOTES[USAGE_RELOGIN_REQUIRED],
         now=now, login_expires_at=now - 60, quarantined=True,
     )
-    assert label == "2  loc@example.com  re-login needed"
+    assert label == "2  loc@example.com  needs re-login"
 
 
 def test_format_account_label_usage_unavailable_still_carries_the_note():
@@ -814,7 +814,7 @@ def test_menu_note_keeps_the_state_and_drops_the_remedy():
 
     note = menubar.SENTINEL_NOTES[USAGE_RELOGIN_REQUIRED]
     assert "qswap add" in note, "premise: the note carries a remedy"
-    assert menubar.menu_note(note) == "re-login needed"
+    assert menubar.menu_note(note) == "needs re-login"
 
 
 def test_every_sentinel_note_fits_a_menu_row():
@@ -843,7 +843,7 @@ def test_account_row_shows_the_sentinel_state_not_the_remedy():
     label = menubar.format_account_label(
         2, "b@x.com", menubar.SENTINEL_NOTES[USAGE_RELOGIN_REQUIRED]
     )
-    assert label.endswith("re-login needed")
+    assert label.endswith("needs re-login")
     assert "qswap add" not in label
 
 

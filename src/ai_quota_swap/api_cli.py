@@ -79,7 +79,9 @@ def _api_key_infos(switcher) -> dict[str, tuple]:
 
 
 def _label(num: str, email: str) -> str:
-    return f"Account-{num} ({email})"
+    from ai_quota_swap.labels import account_label
+
+    return account_label(num, email=email)
 
 
 # -- qswap api ------------------------------------------------------------------
@@ -88,26 +90,24 @@ def _label(num: str, email: str) -> str:
 def api_command(argv: list[str]) -> None:
     """Handle ``qswap api org add [NAME] | list | remove NAME``."""
     prog = _cli()._prog_name()
-    parser = argparse.ArgumentParser(
+    from ai_quota_swap.argparsing import ArgumentParser
+
+    parser = ArgumentParser(
         prog=f"{prog} api",
         description=(
-            "Register an organization's Admin API key so API-key accounts show the "
-            "spend Anthropic records for their key, and `usage --billed` shows the "
-            "organization's billed usage and cost."
+            "Register an organization's Admin API key, so API-key accounts show "
+            "what Anthropic recorded for their key and usage --billed shows the "
+            "organization's billed cost."
         ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""
-Examples:
+        epilog=f"""examples:
   {prog} api org add               # paste the key at the hidden prompt
   {prog} api org add acme < key.txt
   {prog} api org list
-  {prog} api org remove acme
 
-The key is read from a hidden prompt or stdin, never from an argument. It is
-stored in the macOS Keychain (elsewhere, a 0600 file in the data directory).
-Without a registered organization, {ENV_VAR} is used for the command that
-sees it and is never stored. See docs/api-accounts.md.
-        """,
+The key is read from a hidden prompt or stdin, never from an argument, and
+kept in the macOS Keychain (elsewhere, a private file in the data directory).
+See docs/api-accounts.md.
+""",
     )
     groups = parser.add_subparsers(dest="group", metavar="org")
     org = groups.add_parser("org", help="Registered organizations")
@@ -124,8 +124,8 @@ sees it and is never stored. See docs/api-accounts.md.
     p_rm.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.group != "org" or not args.action:
-        parser.print_help()
-        sys.exit(2)
+        parser.print_help(sys.stderr)
+        sys.exit(64)
 
     try:
         switcher = _cli()._switcher(debug=getattr(args, "debug", False))
@@ -250,7 +250,7 @@ def _org_list(switcher, *, as_json: bool) -> None:
         return
     print(bolded("Organizations (Admin API):"))
     for o in orgs:
-        accounts = ", ".join(f"Account-{n}" for n in sorted(linked.get(o.name, []), key=int))
+        accounts = ", ".join(f"#{n}" for n in sorted(linked.get(o.name, []), key=int))
         tail = f"   linked: {accounts}" if accounts else "   no linked accounts"
         print(f"  {o.name}  {muted(o.organization_name or '')}  "
               f"{dimmed('key in ' + _STORAGE_WORDS.get(o.storage, o.storage))}{dimmed(tail)}")
@@ -277,7 +277,7 @@ def _org_remove(switcher, name: str) -> None:
             f"item 'ai-quota-swap' / 'admin-org-{target}' in Keychain Access."
         )
     if nums:
-        print(dimmed(f"  Unlinked: {', '.join('Account-' + n for n in sorted(nums, key=int))}."))
+        print(dimmed(f"  Unlinked: {', '.join('#' + n for n in sorted(nums, key=int))}."))
 
 
 # -- qswap budget ---------------------------------------------------------------
@@ -309,29 +309,29 @@ def _budget_line(reading: dict | None, budget: float | None) -> str:
 def budget_command(argv: list[str]) -> None:
     """Handle ``qswap budget [ACCOUNT [AMOUNT|off]]``."""
     prog = _cli()._prog_name()
-    parser = argparse.ArgumentParser(
+    from ai_quota_swap.argparsing import ArgumentParser
+
+    parser = ArgumentParser(
         prog=f"{prog} budget",
         description=(
-            "Set, remove or list a monthly spend budget (US dollars, UTC month) for an "
-            "API-key account. At its budget, auto-switch stops using the account."
+            "Set, remove or list a monthly spend budget (US dollars, UTC month) for "
+            "an API-key account. At its budget, auto-switch stops using it."
         ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""
-Examples:
-  {prog} budget 3 500        # $500 a month for account 3
-  {prog} budget ci 49.50     # by alias or email too
+        epilog=f"""examples:
+  {prog} budget 3 500        # $500 a month for #3
   {prog} budget 3 off        # remove it
   {prog} budget              # every API-key account's budget and spend
 
 {NOT_A_CAP}
-        """,
+""",
     )
-    parser.add_argument("account", nargs="?", metavar="NUM|EMAIL|ALIAS",
-                        help="API-key account. Omit to list.")
+    parser.add_argument("account", nargs="?", metavar="ACCOUNT",
+                        help="an API-key account (number, email or alias); omit to list")
     parser.add_argument("amount", nargs="?", metavar="AMOUNT|off",
-                        help="Dollars per month, or 'off' to remove the budget")
-    parser.add_argument("--json", action="store_true", help="Machine-readable output")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+                        help="dollars per month, or 'off' to remove the budget")
+    parser.add_argument("--json", action="store_true",
+                        help="machine-readable output (docs/json-output.md)")
+    parser.add_argument("--debug", action="store_true", help="log debug detail")
     args = parser.parse_args(argv)
 
     try:
@@ -378,7 +378,7 @@ def _budget_list(switcher, account: str | None, *, as_json: bool) -> None:
         num, email, _org = switcher.resolve_account(account)
         if num not in infos:
             raise api_spend.BudgetError(
-                f"Account-{num} ({email}) is a subscription account; budgets apply to API-key accounts"
+                f"{_label(num, email)} is a subscription account; budgets apply to API-key accounts"
             )
         infos = {num: infos[num]}
     readings = api_spend.readings(switcher, infos) if infos else {}
@@ -516,8 +516,8 @@ def billed_report(
     orgs = registry.active_orgs(env)
     if not orgs:
         notes.append(
-            f"No organization registered: add one with qswap api org add, or set "
-            f"{ENV_VAR} for one command."
+            "No organization registered: add one with qswap api org add,\n"
+            f"or set {ENV_VAR} for one command."
         )
         return result
     if end_dt <= start_dt:
@@ -647,7 +647,7 @@ def _label_keys(org, rows: dict, records: dict, *, now: float, cache: AdminCache
             continue
         name = names.get(key) or key
         num = accounts.get(key)
-        row.label = f"{name} (Account-{num})" if num else name
+        row.label = f"{name} (#{num})" if num else name
 
 
 def _ordered(rows: dict, grouping: str) -> list[BilledRow]:

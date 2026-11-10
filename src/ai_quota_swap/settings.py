@@ -271,7 +271,7 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         ),
         SettingSpec(
             "updates", "check", "check", "bool",
-            help="Check PyPI once a day and print a hint when a newer release exists",
+            help="Check once a day for a newer release and print a hint when there is one",
         ),
         SettingSpec(
             "usage", "headerProbe", "header_probe", "bool",
@@ -615,9 +615,12 @@ def setting_spec(dotted_key: str) -> SettingSpec:
     """Look up a spec by dotted key; unknown keys raise with the valid list."""
     spec = SETTING_SPECS.get(dotted_key)
     if spec is None:
+        import difflib
+
+        close = difflib.get_close_matches(dotted_key, list(SETTING_SPECS), n=1)
+        hint = f"did you mean {close[0]}? " if close else ""
         raise ConfigError(
-            f"unknown setting '{dotted_key}'\n"
-            f"Valid keys: {', '.join(SETTING_SPECS)}"
+            f"unknown setting '{dotted_key}'; {hint}qswap config lists the settings"
         )
     return spec
 

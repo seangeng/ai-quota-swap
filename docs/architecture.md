@@ -26,6 +26,12 @@ Sizes are rounded and move with every change; they are here so you know what you
 | `printer.py` | 200 | Terminal colours and the accent, muted and warning styles |
 | `appearance.py` | 200 | Light or dark terminal detection (OSC 11) and theme choice |
 | `labels.py` | <100 | The one spelling of an account in messages (`#2 work`) |
+| `display.py` | 700 | The shared state phrases (needs re-login, usage unavailable, as of, nothing managed) and the account block `list` and `status` print; pure functions the dashboard and menu bar can import |
+| `prompts.py` | 100 | The one place a question is asked: never off a terminal, a no on cancel |
+| `argparsing.py` | 100 | The `ArgumentParser` every verb uses: exit 64, the JSON envelope under `--json`, help at 80 columns |
+| `helptext.py` | 300 | `qswap --help` (the map), the bare-`qswap` hint, and the help of the verbs rewritten to legacy flags |
+| `autolog.py` | 1,100 | The `qswap auto` log: one line per check, in words |
+| `doctor.py` | 1,200 | `qswap doctor`, the read-only self-check |
 | `json_output.py` | 500 | The `--json` row and envelope shapes, schema version 1 |
 | `__main__.py` | <100 | `python -m ai_quota_swap` |
 
@@ -126,7 +132,8 @@ sessions/<n>-<email>/    `qswap run` profiles
 history-conflicts/       transcripts a history merge kept rather than overwrite
 cache/                   usage store (usage.json), plans, the update check, Admin API answers
 settings.json            `qswap config`
-autoswitch_state.json    engine cooldown, quarantine, health counters, reset claims
+autoswitch_state.json    engine cooldown, quarantine (accounts set aside: "needs re-login"), health counters, reset claims
+autoswitch_heartbeat.json  when a running engine last checked, for `qswap status` and `qswap doctor`
 mappings.json            `qswap map`
 ledger.db                `qswap usage`; rebuilt from session files if deleted
 activations.jsonl        which Claude account was live when
@@ -149,9 +156,10 @@ On macOS the saved logins and Admin keys are Keychain items under the service `a
 
 | To change | Start at | Also read |
 |---|---|---|
-| What `qswap list` prints | `switcher._usage_rows` and `_usage_entry_lines` (the rows), `ClaudeAccountSwitcher.list_accounts` (the layout), `codex_cli.extend_unified_list` (the Codex section) | [design/ux.md](design/ux.md); `json_output.account_row` if `--json` changes too |
+| What `qswap list` prints | `display.render_block` and `block_from_entry` (one account's block, both providers), `ClaudeAccountSwitcher._account_block` and `list_accounts`, `CodexSwitcher.account_block`, `cli._list_accounts` (both providers and the first run) | [design/ux.md](design/ux.md); `json_output.account_row` if `--json` changes too |
+| A message's words | `display.py` for any account state; `labels.account_label` for an account's name; `prompts.confirm` for a question | [design/ux.md](design/ux.md) |
 | A new setting | A field on the section's dataclass in `settings.py` (`ResetSettings`, `AutoSwitchSettings`, ...), its `load_*_settings` function, and a `SettingSpec` in `SETTING_SPECS`, which `qswap config` validates and lists | The Configuration section of the README |
-| A new verb | `cli._dispatch`: a verb with its own parser gets a `_<verb>_command(argv)` handler; a verb that maps to a legacy flag goes in `_SUBCOMMAND_FLAGS`. Codex verbs: `codex_cli.dispatch` | The Commands section of [design/ux.md](design/ux.md) |
+| A new verb | `cli._dispatch`: a verb with its own parser gets a `_<verb>_command(argv)` handler built on `argparsing.ArgumentParser` and listed in `_OWN_PARSER_VERBS`; a verb that maps to a legacy flag goes in `_SUBCOMMAND_FLAGS` and gets a help page in `helptext.LEGACY_VERB_HELP`. Add it to `helptext.MAIN_HELP`. Codex verbs: `codex_cli.dispatch` and `codex_cli.HELP` | The Commands section of [design/ux.md](design/ux.md) |
 | How usage is fetched | `ClaudeAccountSwitcher._collect_usage_entries`, `UsageStore.reserve` and `record`, `oauth.try_fetch_usage_for_account`, `oauth.build_usage_result`; for Codex, `codex/usage.py` | `poll_policy.py`, Contract 2 in [design/providers.md](design/providers.md) |
 | The auto-switch decision | `AutoSwitchEngine._tick_inner` and `_rank_candidates`; the lines in `lines.py` | [auto-switch.md](auto-switch.md) |
 | Reset planning | `resets.plan_reset` and `grant_scope`; the engine's call in `AutoSwitchEngine._maybe_use_reset`; the manual path in `cli._reset_command` | The Usage resets section of the README |

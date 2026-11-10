@@ -360,7 +360,8 @@ class TestEventText:
         pair.engine._quarantine("1", "b@example.com", "invalid_grant")
         (event,) = pair.of(QuarantineEvent)
         assert event.reason == "invalid_grant"
-        assert event.human().endswith("Log in to it again with 'qswap codex login' to recover.")
+        assert event.human().endswith("needs re-login: its saved login was refused. "
+                                      "Log in to it again: qswap codex login")
         assert set(event.to_json()) == {"schemaVersion", "event", "ts", "number", "email", "reason"}
 
 
@@ -416,7 +417,7 @@ class TestEngineResetCredits:
         h.tick()
         assert h.consumed == []
         (event,) = h.of(ResetEvent)
-        assert event.dry_run and event.human().startswith("[dry-run] would use a weekly reset")
+        assert event.dry_run and event.human().startswith("Would use a weekly reset")
         assert "resetClaims" not in h.state()
 
     def test_unknown_outcome_counts_and_retries_with_the_same_request_id(self, h):

@@ -1,0 +1,1212 @@
+"""``qswap doctor``: a read-only self-check.
+
+One line per check, each marked ``ok``, ``warn`` or ``fail``, and for anything
+that does not pass, the command that fixes it on the next line
+(docs/design/ux.md: every message says what to run next, fits 80 columns, uses
+colour only together with a word). ``--json`` prints the same checks as data,
+``--online`` adds two reachability checks; without it nothing touches the
+network. Exit status 0 when no check fails, 1 when one does.
+
+Doctor never changes anything and never asks a question. In particular it
+builds no switcher (constructing one creates the data directory and runs
+migrations); it reads the files a switcher would read, directly. Everything
+that touches the system (PATH, ``claude --version``, files, ``launchctl``, the
+Keychain, the platform, the clock, the network) goes through :class:`Probes`,
+so tests swap in fakes and run the same on every platform. Every probe is
+called under ``except Exception``: one that fails, or that a sandbox refuses,
+reads as "unknown" and never ends the command.
+
+Check ids are stable names (``claude.cli``, ``codex.storage``, ...). Which
+ones appear depends on the machine: menu bar checks only on macOS, the
+permission check not on Windows, a provider's login checks only once its
+command or files exist, the network checks only with ``--online``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import platform as _platform
+import plistlib
+import re
+import stat
+import subprocess
+import sys
+import time
+import tomllib
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+from ai_quota_swap import paths
+from ai_quota_swap.models import Platform
+
+#: The ``schemaVersion`` of ``qswap doctor --json``.
+SCHEMA_VERSION = 1
+
+PASS, WARN, FAIL, SKIP = "pass", "warn", "fail", "skip"
+STATUSES = (PASS, WARN, FAIL, SKIP)
+
+#: Groups in output order: (JSON id, text heading).
+GROUPS = (
+    ("claude", "Claude Code"),
+    ("codex", "Codex"),
+    ("data", "Data directory"),
+    ("menubar", "Menu bar"),
+    ("auto", "Auto-switch"),
+    ("install", "qswap"),
+    ("network", "Network"),
+)
+
+#: The mark each status prints as.
+MARKS = {PASS: "ok", WARN: "warn", FAIL: "fail", SKIP: "skip"}
+
+#: Hosts the ``--online`` checks reach.
+ANTHROPIC_URL = "https://api.anthropic.com/"
+CHATGPT_URL = "https://chatgpt.com/"
+NETWORK_TIMEOUT_S = 5.0
+
+#: How long ``claude --version`` / ``codex --version`` may take.
+VERSION_TIMEOUT_S = 10.0
+#: How long ``launchctl print`` may take.
+LAUNCHCTL_TIMEOUT_S = 5.0
+
+#: A Keychain service nothing ever creates: looking it up answers "not found"
+#: when the Keychain works, without decrypting or writing anything.
+KEYCHAIN_PROBE_SERVICE = "ai-quota-swap-doctor-probe"
+
+#: Folders macOS keeps from background services (privacy protection).
+PROTECTED_FOLDERS = ("Documents", "Desktop", "Downloads")
+
+CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash"
+CLAUDE_INSTALL_WINDOWS = "irm https://claude.ai/install.ps1 | iex"
+CODEX_INSTALL = "npm install -g @openai/codex"
+
+MENUBAR_LOG_HINT = "its log: ~/Library/Logs/com.aiquotaswap.menubar.err"
+
+_VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.]+)?")
+
+
+# -- checks ------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Check:
+    """One line of the report.
+
+    ``fix`` is the command (or short instruction) that clears a ``warn`` or
+    ``fail``; ``hint`` is a dim line for a passing check that has a next step
+    anyway ("start one with qswap auto").
+    """
+
+    id: str
+    group: str
+    status: str
+    summary: str
+    fix: str | None = None
+    hint: str | None = None
+
+    def to_json(self) -> dict:
+        return {
+            "id": self.id,
+            "group": self.group,
+            "status": self.status,
+            "summary": self.summary,
+            "fix": self.fix,
+        }
+
+
+# -- probes ------------------------------------------------------------------------
+
+
+def _read_bytes(path: Path) -> bytes | None:
+    """A file's bytes; None when it does not exist. Other errors raise."""
+    try:
+        return Path(path).read_bytes()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _dir_mode(path: Path) -> int:
+    return stat.S_IMODE(os.stat(path).st_mode)
+
+
+def _cli_version(path: str) -> str | None:
+    """``<path> --version``'s output, or None when it exits non-zero."""
+    from ai_quota_swap import spawn
+
+    proc = spawn.run(
+        [path, "--version"],
+        capture_output=True,
+        text=True,
+        timeout=VERSION_TIMEOUT_S,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout or proc.stderr
+
+
+def _launchctl_print() -> tuple[int, str]:
+    """``(exit code, stdout)`` of ``launchctl print`` for the menu bar job."""
+    from ai_quota_swap import launch_agent, spawn
+
+    proc = spawn.run(
+        ["/bin/launchctl", "print", launch_agent.service_target()],
+        capture_output=True,
+        text=True,
+        timeout=LAUNCHCTL_TIMEOUT_S,
+        check=False,
+    )
+    return proc.returncode, proc.stdout or ""
+
+
+def _keychain_answers() -> None:
+    """Raise unless the login Keychain answers a read-only item lookup.
+
+    Looks up an item that never exists: a working Keychain says "not found"
+    (exit 44, ``get_password`` returns None) and nothing is decrypted or
+    written. A locked, denied or missing Keychain raises.
+    """
+    from ai_quota_swap import macos_keychain
+
+    macos_keychain.get_password(KEYCHAIN_PROBE_SERVICE, macos_keychain.keychain_account_name())
+
+
+def _codex_keyring_login(home: Path) -> bool:
+    from ai_quota_swap.codex import auth as codex_auth
+
+    return codex_auth._keyring_login_present(home)
+
+
+def _heartbeat(backup_dir: Path) -> dict | None:
+    from ai_quota_swap import autoswitch
+
+    return autoswitch.read_heartbeat(backup_dir)
+
+
+def _install_paths() -> list[str]:
+    import ai_quota_swap
+
+    return [sys.prefix, sys.executable, os.path.dirname(os.path.abspath(ai_quota_swap.__file__))]
+
+
+def _install_info() -> dict:
+    """Python version, install method (``uv``/``pipx``/None), build, editable."""
+    from importlib import metadata
+
+    from ai_quota_swap.update_check import _detect_install_method, install_identity
+
+    editable = False
+    try:
+        raw = metadata.distribution("ai-quota-swap").read_text("direct_url.json")
+        if raw:
+            editable = bool((json.loads(raw).get("dir_info") or {}).get("editable"))
+    except Exception:
+        editable = False
+    return {
+        "python": _platform.python_version(),
+        "method": _detect_install_method(),
+        "identity": install_identity(),
+        "editable": editable,
+    }
+
+
+def _reach(url: str) -> str:
+    """``"HTTP 404"``: any HTTP answer means the host is reachable. Raises
+    when it is not (no route, DNS, TLS, timeout)."""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        url, method="HEAD", headers={"User-Agent": "ai-quota-swap doctor"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT_S) as resp:
+            return f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        return f"HTTP {e.code}"
+
+
+# Thin wrappers so a default looks its target up at call time: a test (or the
+# demo harness) that replaces ``Path.home`` or ``paths.get_backup_root`` is
+# then honoured here too.
+
+
+def _platform_now() -> Platform:
+    return Platform.detect()
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _home() -> Path:
+    return Path.home()
+
+
+def _claude_config_path() -> Path:
+    return paths.get_global_config_path()
+
+
+def _codex_home() -> Path:
+    return paths.get_codex_home()
+
+
+def _data_dir() -> Path:
+    return paths.get_backup_root()
+
+
+def _which(name: str) -> str | None:
+    from ai_quota_swap import clis
+
+    return clis.find_cli(name)
+
+
+def _exists(path: Path) -> bool:
+    return os.path.exists(path)
+
+
+def _is_dir(path: Path) -> bool:
+    return os.path.isdir(path)
+
+
+def _access(path: Path, mode: int) -> bool:
+    return os.access(path, mode)
+
+
+@dataclass(frozen=True)
+class Probes:
+    """Every way doctor touches the system, as replaceable callables.
+
+    :func:`default_probes` gives the real ones; tests take those and replace
+    what they fake (``dataclasses.replace``). A probe may raise anything: the
+    checks treat a raise as "could not tell".
+    """
+
+    platform: Callable[[], Platform]
+    now: Callable[[], float]
+    home: Callable[[], Path]
+    claude_config_path: Callable[[], Path]
+    codex_home: Callable[[], Path]
+    data_dir: Callable[[], Path]
+    which: Callable[[str], str | None]
+    cli_version: Callable[[str], str | None]
+    read_bytes: Callable[[Path], bytes | None]
+    exists: Callable[[Path], bool]
+    is_dir: Callable[[Path], bool]
+    dir_mode: Callable[[Path], int]
+    access: Callable[[Path, int], bool]
+    heartbeat: Callable[[Path], dict | None]
+    keychain_answers: Callable[[], None]
+    codex_keyring_login: Callable[[Path], bool]
+    launchctl_print: Callable[[], tuple[int, str]]
+    install_paths: Callable[[], list[str]]
+    install_info: Callable[[], dict]
+    reach: Callable[[str], str]
+
+
+def default_probes() -> Probes:
+    """The real probes, looked up when called (so a module-level patch of,
+    say, ``doctor._cli_version`` takes effect)."""
+    return Probes(
+        platform=_platform_now,
+        now=_now,
+        home=_home,
+        claude_config_path=_claude_config_path,
+        codex_home=_codex_home,
+        data_dir=_data_dir,
+        which=_which,
+        cli_version=_cli_version,
+        read_bytes=_read_bytes,
+        exists=_exists,
+        is_dir=_is_dir,
+        dir_mode=_dir_mode,
+        access=_access,
+        heartbeat=_heartbeat,
+        keychain_answers=_keychain_answers,
+        codex_keyring_login=_codex_keyring_login,
+        launchctl_print=_launchctl_print,
+        install_paths=_install_paths,
+        install_info=_install_info,
+        reach=_reach,
+    )
+
+
+def _try(fn: Callable, *args, default=None):
+    """``(fn(*args), None)``, or ``(default, the exception)``."""
+    try:
+        return fn(*args), None
+    except Exception as e:  # a probe that fails or is refused reads as unknown
+        return default, e
+
+
+def _reason(exc: BaseException | None) -> str:
+    """A short, one-line reason for a failed probe."""
+    if exc is None:
+        return "unknown"
+    if isinstance(exc, (subprocess.TimeoutExpired, TimeoutError)):
+        return "timed out"
+    reason = getattr(exc, "reason", None)  # urllib.error.URLError wraps the cause
+    if isinstance(reason, TimeoutError):
+        return "timed out"
+    if isinstance(reason, BaseException):
+        text = getattr(reason, "strerror", None) or str(reason)
+    elif isinstance(reason, str) and reason:
+        text = reason
+    else:
+        text = getattr(exc, "strerror", None) or str(exc)
+    text = (text or "").strip()
+    text = text.splitlines()[0] if text else type(exc).__name__
+    return text if len(text) <= 48 else text[:47] + "…"
+
+
+# -- small helpers -------------------------------------------------------------------
+
+
+def parse_version(output: str | None) -> str | None:
+    """The first version number in ``--version`` output (``"2.1.4 (Claude
+    Code)"`` → ``"2.1.4"``, ``"codex-cli 0.167.0"`` → ``"0.167.0"``)."""
+    if not output:
+        return None
+    match = _VERSION_RE.search(output)
+    return match.group(0) if match else None
+
+
+def parse_launchctl_print(text: str) -> dict:
+    """The job's own fields from ``launchctl print``: ``state``, ``pid``,
+    ``last_exit`` (int, or None when it never exited) and ``last_signal``.
+
+    Only lines at a single tab are the job's; deeper ones belong to nested
+    objects that repeat the same keys (see ``launch_agent._job_state``).
+    """
+    out: dict = {"state": None, "pid": None, "last_exit": None, "last_signal": None}
+    for line in (text or "").splitlines():
+        if not line.startswith("\t") or line.startswith("\t\t"):
+            continue
+        key, sep, value = line.strip().partition(" = ")
+        if not sep:
+            continue
+        value = value.strip()
+        if key == "state" and out["state"] is None:
+            out["state"] = value
+        elif key == "pid" and out["pid"] is None and value.isdigit():
+            out["pid"] = int(value)
+        elif key == "last exit code" and out["last_exit"] is None:
+            head = value.split(":", 1)[0].strip()
+            if head.lstrip("-").isdigit():
+                out["last_exit"] = int(head)
+        elif key == "last terminating signal" and out["last_signal"] is None:
+            out["last_signal"] = value
+    return out
+
+
+def _abbr(path: object, home: Path | None) -> str:
+    """``path`` with the home directory spelled ``~``."""
+    text = str(path)
+    if home is None:
+        return text
+    base = str(home).rstrip("/\\")
+    if base and text == base:
+        return "~"
+    if base and (text.startswith(base + "/") or text.startswith(base + "\\")):
+        return "~" + text[len(base):]
+    return text
+
+
+def _read_json(probes: Probes, path: Path) -> tuple[dict | None, BaseException | None]:
+    """``(data, None)``; ``(None, None)`` when absent; ``(None, error)`` when
+    unreadable or not a JSON object."""
+    raw, err = _try(probes.read_bytes, path)
+    if err is not None:
+        return None, err
+    if raw is None:
+        return None, None
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeDecodeError) as e:
+        return None, ValueError(f"not valid JSON ({e.__class__.__name__})")
+    if not isinstance(data, dict):
+        return None, ValueError("not a JSON object")
+    return data, None
+
+
+def _accounts(data: dict | None) -> dict:
+    accounts = (data or {}).get("accounts")
+    return accounts if isinstance(accounts, dict) else {}
+
+
+def claude_slot(data: dict | None, email: str, organization_uuid: str) -> str | None:
+    """The managed number for a Claude login: same ``(email, organizationUuid)``.
+
+    The rule of ``ClaudeAccountSwitcher._find_account_slot``, kept here so
+    doctor need not import the switcher; a test holds the two together.
+    """
+    for num, account in _accounts(data).items():
+        if not isinstance(account, dict):
+            continue
+        if (account.get("email") == email
+                and account.get("organizationUuid", "") == organization_uuid):
+            return str(num)
+    return None
+
+
+def codex_slot(data: dict | None, user_id: str, account_id: str, email: str) -> str | None:
+    """The managed number for a Codex login: same ``(uuid, organizationUuid)``,
+    or ``(email, organizationUuid)`` for a record saved without a uuid.
+
+    The rule of ``CodexSwitcher._slot_for_identity`` (a test holds the two
+    together).
+    """
+    for num, record in _accounts(data).items():
+        if not isinstance(record, dict):
+            continue
+        org = record.get("organizationUuid", "") or ""
+        uuid = (record.get("uuid") or "").strip()
+        if org != account_id:
+            continue
+        if uuid and uuid == user_id:
+            return str(num)
+        if not uuid and record.get("email") == email:
+            return str(num)
+    return None
+
+
+def _label(num: str, record: dict, email: str) -> str:
+    from ai_quota_swap.labels import account_label
+
+    alias = record.get("alias") if isinstance(record.get("alias"), str) else None
+    return account_label(num, alias=alias or None, email=email)
+
+
+def under_protected_folder(path: str, home: Path) -> str | None:
+    """``"Documents"`` when ``path`` lies in ``~/Documents`` (likewise Desktop,
+    Downloads), else None. Compares both the given and the resolved spelling,
+    case-insensitively like the default macOS volume."""
+
+    def spellings(p: str) -> set[str]:
+        out = {os.path.normpath(p)}
+        try:
+            out.add(os.path.realpath(p))
+        except (OSError, ValueError):
+            pass
+        return {s.casefold() for s in out}
+
+    candidates = spellings(path)
+    for folder in PROTECTED_FOLDERS:
+        for root in spellings(str(Path(home) / folder)):
+            for cand in candidates:
+                if cand == root or cand.startswith(root.rstrip(os.sep) + os.sep):
+                    return folder
+    return None
+
+
+# -- the checks, by group -------------------------------------------------------------
+
+
+@dataclass
+class _Facts:
+    """What several groups need, computed once."""
+
+    platform: Platform
+    home: Path | None
+    data_dir: Path | None
+    codex_home: Path | None
+    claude_bin: str | None
+    codex_bin: str | None
+    codex_present: bool = False
+    codex_registry: dict | None = None
+    codex_registry_error: BaseException | None = None
+    menubar_configured: bool = False
+    menubar_login: bool = False  # the plist sits in ~/Library/LaunchAgents
+    menubar_plist: Path | None = None
+
+
+def _claude_checks(p: Probes, f: _Facts) -> list[Check]:
+    from ai_quota_swap.display import provider_name
+
+    name = provider_name("claude")
+    checks: list[Check] = []
+    if f.claude_bin:
+        raw, _ = _try(p.cli_version, f.claude_bin)
+        version = parse_version(raw)
+        summary = f"{name} {version} on PATH" if version else f"{name} on PATH, version unknown"
+        checks.append(Check("claude.cli", "claude", PASS, summary))
+    else:
+        install = CLAUDE_INSTALL_WINDOWS if f.platform == Platform.WINDOWS else CLAUDE_INSTALL
+        # Codex alone is a working setup, so a missing Claude Code then only warns.
+        checks.append(Check(
+            "claude.cli", "claude", WARN if f.codex_bin else FAIL,
+            f"{name} was not found (claude is not on PATH)", fix=install,
+        ))
+
+    config_path, err = _try(p.claude_config_path)
+    data, read_err = (None, err) if err is not None else _read_json(p, config_path)
+    if read_err is not None:
+        where = _abbr(config_path, f.home) if config_path is not None else "its config"
+        checks.append(Check(
+            "claude.login", "claude", WARN,
+            f"could not read {where} ({_reason(read_err)})",
+            fix="claude, then /login",
+        ))
+        return checks
+    oauth = (data or {}).get("oauthAccount")
+    oauth = oauth if isinstance(oauth, dict) else {}
+    email = oauth.get("emailAddress") if isinstance(oauth.get("emailAddress"), str) else ""
+    if not email:
+        checks.append(Check(
+            "claude.login", "claude", WARN, f"{name} is not logged in",
+            fix="claude, then /login, then qswap add",
+        ))
+        return checks
+    checks.append(Check("claude.login", "claude", PASS, f"logged in as {email}"))
+
+    org = oauth.get("organizationUuid", "") or ""
+    registry, reg_err = (None, None)
+    if f.data_dir is not None:
+        registry, reg_err = _read_json(p, f.data_dir / "sequence.json")
+    if reg_err is not None:
+        seq = _abbr(f.data_dir / "sequence.json", f.home)
+        checks.append(Check(
+            "claude.managed", "claude", WARN,
+            f"could not read the account list ({_reason(reg_err)})",
+            fix=f"repair or move {seq}, then run qswap list",
+        ))
+        return checks
+    slot = claude_slot(registry, email, org)
+    if slot is None:
+        checks.append(Check(
+            "claude.managed", "claude", WARN, "that login is not managed by qswap",
+            fix="qswap add",
+        ))
+    else:
+        record = _accounts(registry).get(slot) or {}
+        checks.append(Check(
+            "claude.managed", "claude", PASS,
+            f"managed by qswap as {_label(slot, record, email)}",
+        ))
+    return checks
+
+
+def _codex_store_mode(p: Probes, config: Path) -> tuple[str, BaseException | None]:
+    """``cli_auth_credentials_store`` from ``config.toml``; ``"file"`` when unset."""
+    raw, err = _try(p.read_bytes, config)
+    if err is not None:
+        return "file", err
+    if raw is None:
+        return "file", None
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        return "file", ValueError(f"not valid TOML ({e.__class__.__name__})")
+    value = data.get("cli_auth_credentials_store", "file")
+    return (value if isinstance(value, str) else repr(value)), None
+
+
+def _codex_checks(p: Probes, f: _Facts) -> list[Check]:
+    from ai_quota_swap.codex import auth as codex_auth
+    from ai_quota_swap.display import provider_name
+
+    name = provider_name("codex")
+    if not f.codex_present:
+        return [Check("codex.cli", "codex", SKIP, f"{name} was not found; it is optional")]
+
+    checks: list[Check] = []
+    if f.codex_bin:
+        raw, _ = _try(p.cli_version, f.codex_bin)
+        version = parse_version(raw)
+        summary = f"{name} {version} on PATH" if version else f"{name} on PATH, version unknown"
+        checks.append(Check("codex.cli", "codex", PASS, summary))
+    else:
+        checks.append(Check(
+            "codex.cli", "codex", WARN, f"{name} was not found (codex is not on PATH)",
+            fix=CODEX_INSTALL,
+        ))
+
+    home = f.codex_home
+    if home is None:
+        return checks
+    config = home / codex_auth.CONFIG_FILENAME
+    shown = _abbr(config, f.home)
+    to_file = f'set cli_auth_credentials_store = "file" in {shown}, then codex login'
+    mode, err = _codex_store_mode(p, config)
+    if err is not None:
+        checks.append(Check(
+            "codex.storage", "codex", WARN, f"could not read {shown} ({_reason(err)})",
+            fix=f"repair {shown}",
+        ))
+    elif mode in ("keyring", "auto"):
+        checks.append(Check(
+            "codex.storage", "codex", FAIL,
+            f'{name} keeps its login in the OS keyring (cli_auth_credentials_store = '
+            f'"{mode}"); qswap supports file storage only',
+            fix=to_file,
+        ))
+        return checks
+    elif mode == "ephemeral":
+        checks.append(Check(
+            "codex.storage", "codex", FAIL,
+            f'{name} keeps its login in memory only (cli_auth_credentials_store = '
+            f'"ephemeral"); there is no login file for qswap to manage',
+            fix=to_file,
+        ))
+        return checks
+    elif mode != "file":
+        checks.append(Check(
+            "codex.storage", "codex", FAIL,
+            f"unrecognized cli_auth_credentials_store = {mode}; qswap supports "
+            "file storage only",
+            fix=to_file,
+        ))
+        return checks
+
+    auth_file = home / codex_auth.AUTH_FILENAME
+    raw, read_err = _try(p.read_bytes, auth_file)
+    if err is None and read_err is None and raw is None:
+        in_keyring, _ = _try(p.codex_keyring_login, home, default=False)
+        if in_keyring:
+            checks.append(Check(
+                "codex.storage", "codex", FAIL,
+                f"{name}'s login is in the OS keyring (no auth.json, but a keyring "
+                "entry exists); qswap supports file storage only",
+                fix="codex login",
+            ))
+            return checks
+    if err is None:
+        checks.append(Check(
+            "codex.storage", "codex", PASS, f"{name} keeps its login in auth.json (file storage)",
+        ))
+
+    relogin = "codex login, then qswap codex add"
+    if read_err is not None:
+        checks.append(Check(
+            "codex.login", "codex", WARN,
+            f"could not read {_abbr(auth_file, f.home)} ({_reason(read_err)})",
+            fix=relogin,
+        ))
+        return checks
+    if raw is None:
+        checks.append(Check(
+            "codex.login", "codex", WARN, f"{name} is not logged in", fix=relogin,
+        ))
+        return checks
+    try:
+        login = codex_auth.parse_login(raw)
+    except Exception as e:  # CodexLoginError: an API-key login, a broken file
+        checks.append(Check("codex.login", "codex", WARN, str(e), fix=relogin))
+        return checks
+    checks.append(Check("codex.login", "codex", PASS, f"logged in as {login.email}"))
+
+    if f.codex_registry_error is not None:
+        seq = _abbr(paths.get_codex_data_dir(f.data_dir) / "sequence.json", f.home)
+        checks.append(Check(
+            "codex.managed", "codex", WARN,
+            f"could not read the Codex account list ({_reason(f.codex_registry_error)})",
+            fix=f"repair or move {seq}, then run qswap codex list",
+        ))
+        return checks
+    slot = codex_slot(f.codex_registry, login.user_id, login.account_id, login.email)
+    if slot is None:
+        checks.append(Check(
+            "codex.managed", "codex", WARN, "that login is not managed by qswap",
+            fix="qswap codex add",
+        ))
+    else:
+        record = _accounts(f.codex_registry).get(slot) or {}
+        checks.append(Check(
+            "codex.managed", "codex", PASS,
+            f"managed by qswap as {_label(slot, record, login.email)}",
+        ))
+    return checks
+
+
+def _data_checks(p: Probes, f: _Facts) -> list[Check]:
+    if f.data_dir is None:
+        return [Check("data.dir", "data", WARN, "could not work out the data directory",
+                      fix="check HOME and XDG_DATA_HOME")]
+    dd = f.data_dir
+    shown = _abbr(dd, f.home)
+    checks: list[Check] = []
+    exists, _ = _try(p.exists, dd, default=False)
+    is_dir, _ = _try(p.is_dir, dd, default=False)
+    if exists and not is_dir:
+        return [Check("data.dir", "data", FAIL, f"{shown} is not a directory",
+                      fix=f"move {shown} aside")]
+    if not exists:
+        checks.append(Check("data.dir", "data", PASS, f"{shown} (not created yet)",
+                            hint="qswap add creates it"))
+    else:
+        checks.append(Check("data.dir", "data", PASS, shown))
+        if f.platform != Platform.WINDOWS:
+            mode, _ = _try(p.dir_mode, dd)
+            if isinstance(mode, int):
+                if mode & 0o077:
+                    checks.append(Check(
+                        "data.permissions", "data", WARN,
+                        f"other users can open it (mode {mode:o})",
+                        fix=f"chmod 700 {shown}",
+                    ))
+                else:
+                    checks.append(Check(
+                        "data.permissions", "data", PASS, f"private to you (mode {mode:o})",
+                    ))
+
+    if f.platform == Platform.MACOS:
+        _, err = _try(p.keychain_answers)
+        if err is None:
+            checks.append(Check(
+                "data.store", "data", PASS,
+                "saved logins are kept in the login Keychain, which is responding",
+            ))
+        else:
+            rc = re.search(r"rc=(-?\d+)", str(err))  # KeychainError names the exit code
+            why = f"security exited {rc.group(1)}" if rc else _reason(err)
+            checks.append(Check(
+                "data.store", "data", WARN,
+                f"the login Keychain did not respond ({why}); saved logins fall back "
+                "to files in the data directory",
+                fix="security unlock-keychain",
+            ))
+    else:
+        creds = _abbr(dd / "credentials", f.home)
+        usable = True
+        if exists:
+            usable, _ = _try(p.access, dd, os.R_OK | os.W_OK | os.X_OK, default=True)
+        if usable:
+            checks.append(Check(
+                "data.store", "data", PASS, f"saved logins are kept in files in {creds}",
+            ))
+        else:
+            checks.append(Check(
+                "data.store", "data", FAIL,
+                f"saved logins are kept in {creds}, but you cannot write to {shown}",
+                fix=f"chmod u+rwx {shown}",
+            ))
+    return checks
+
+
+def _menubar_running_check(p: Probes) -> Check:
+    result, err = _try(p.launchctl_print)
+    if err is not None or not isinstance(result, tuple):
+        return Check(
+            "menubar.running", "menubar", WARN,
+            f"could not ask launchd whether it runs ({_reason(err)})",
+            fix="launchctl print gui/$(id -u)/com.aiquotaswap.menubar",
+        )
+    code, text = result
+    if code != 0:
+        return Check(
+            "menubar.running", "menubar", WARN, "set up but not loaded by launchd",
+            fix="qswap menubar",
+        )
+    job = parse_launchctl_print(text)
+    if job["pid"] is not None:
+        return Check("menubar.running", "menubar", PASS, f"running (pid {job['pid']})")
+    if job["last_signal"]:
+        return Check(
+            "menubar.running", "menubar", FAIL,
+            f"not running; it was stopped by a signal ({job['last_signal']})",
+            fix="qswap menubar", hint=MENUBAR_LOG_HINT,
+        )
+    if job["last_exit"] is not None and job["last_exit"] != 0:
+        return Check(
+            "menubar.running", "menubar", FAIL,
+            f"not running; it last exited with code {job['last_exit']}",
+            fix="qswap menubar", hint=MENUBAR_LOG_HINT,
+        )
+    if job["last_exit"] == 0:
+        # A deliberate Quit: a clean exit, which launchd leaves stopped.
+        return Check("menubar.running", "menubar", PASS, "not running (it was quit)",
+                     hint="qswap menubar starts it again")
+    state = job["state"] or "unknown"
+    return Check(
+        "menubar.running", "menubar", WARN, f"loaded but not running (state {state})",
+        fix="qswap menubar",
+    )
+
+
+def _plist_program(p: Probes, plist: Path | None) -> str | None:
+    if plist is None:
+        return None
+    raw, _ = _try(p.read_bytes, plist)
+    if not raw:
+        return None
+    try:
+        data = plistlib.loads(raw)
+    except Exception:
+        return None
+    args = data.get("ProgramArguments") if isinstance(data, dict) else None
+    if isinstance(args, list) and args and isinstance(args[0], str):
+        return args[0]
+    return None
+
+
+def _menubar_checks(p: Probes, f: _Facts) -> list[Check]:
+    if f.platform != Platform.MACOS:
+        if f.data_dir is None:
+            return []
+        settings = f.data_dir / "menubar_settings.json"
+        present, _ = _try(p.exists, settings, default=False)
+        if not present:
+            return []
+        return [Check(
+            "menubar.platform", "menubar", WARN, "the menu bar is macOS-only; it cannot run here",
+            fix="qswap auto switches accounts on this platform",
+            hint=f"remove {_abbr(settings, f.home)} to clear this warning",
+        )]
+
+    checks: list[Check] = []
+    if not f.menubar_configured:
+        checks.append(Check("menubar.service", "menubar", PASS, "not set up",
+                            hint="qswap menubar starts it, now and at every login"))
+    else:
+        checks.append(Check(
+            "menubar.service", "menubar", PASS,
+            "set up · starts at login" if f.menubar_login else "set up · Start at login is off",
+        ))
+        checks.append(_menubar_running_check(p))
+
+    installed, _ = _try(p.install_paths, default=[])
+    offenders: list[tuple[str, str]] = []
+    if f.home is not None:
+        for path in installed or []:
+            folder = under_protected_folder(str(path), f.home)
+            if folder:
+                offenders.append((str(path), folder))
+        program = _plist_program(p, f.menubar_plist)
+        program_folder = under_protected_folder(program, f.home) if program else None
+    else:
+        program, program_folder = None, None
+
+    from ai_quota_swap.update_check import INSTALL_SOURCE
+
+    reinstall = f"uv tool install {INSTALL_SOURCE}"
+    if offenders:
+        path, folder = offenders[0]
+        fix = reinstall + (", then qswap menubar" if f.menubar_configured else "")
+        checks.append(Check(
+            "menubar.location", "menubar", FAIL,
+            f"qswap runs from {_abbr(path, f.home)}; macOS keeps background "
+            f"services out of ~/{folder}",
+            fix=fix,
+        ))
+    elif program and program_folder:
+        checks.append(Check(
+            "menubar.location", "menubar", FAIL,
+            f"the menu bar service runs {_abbr(program, f.home)}; macOS keeps "
+            f"background services out of ~/{program_folder}",
+            fix="qswap menubar",
+        ))
+    elif installed:
+        checks.append(Check(
+            "menubar.location", "menubar", PASS,
+            "installed outside ~/Documents, ~/Desktop and ~/Downloads",
+        ))
+    return checks
+
+
+def _auto_checks(p: Probes, f: _Facts) -> list[Check]:
+    from ai_quota_swap import autoswitch
+    from ai_quota_swap.display import ago, provider_name
+
+    if f.data_dir is None:
+        return []
+    now, _ = _try(p.now, default=None)
+    if not isinstance(now, (int, float)):
+        now = time.time()
+    providers = [("claude", f.data_dir)]
+    codex_dir = paths.get_codex_data_dir(f.data_dir)
+    codex_beat, _ = _try(p.heartbeat, codex_dir)
+    if f.codex_present or codex_beat:
+        providers.append(("codex", codex_dir))
+    checks: list[Check] = []
+    for provider, directory in providers:
+        name = provider_name(provider)
+        beat, err = (codex_beat, None) if provider == "codex" else _try(p.heartbeat, directory)
+        if provider == "codex":
+            start = "qswap codex auto"
+        elif f.platform == Platform.MACOS:
+            start = "qswap auto or qswap menubar --auto-switch"
+        else:
+            start = "qswap auto"
+        hint = f"start one with {start}"
+        beat = beat if isinstance(beat, dict) else None
+        last = beat.get("lastTickAt") if beat else None
+        ticked = ago(now - last) if isinstance(last, (int, float)) else ""
+        running = bool(beat) and autoswitch.engine_running(beat, now)
+        if running:
+            pid = beat.get("pid")
+            facts = [f"{name}: running" + (f" (pid {pid})" if isinstance(pid, int) else "")]
+            if ticked:
+                facts.append(f"last ticked {ticked}")
+            if beat.get("dryRun"):
+                facts.append("dry run, switches nothing")
+            checks.append(Check(f"auto.{provider}", "auto", PASS, " · ".join(facts)))
+        else:
+            summary = f"{name}: not running"
+            if ticked:
+                summary += f" · last ticked {ticked}"
+            checks.append(Check(f"auto.{provider}", "auto", PASS, summary, hint=hint))
+    return checks
+
+
+def _install_checks(p: Probes, f: _Facts) -> list[Check]:
+    from ai_quota_swap.update_check import describe_identity
+
+    info, err = _try(p.install_info, default=None)
+    info = info if isinstance(info, dict) else {}
+    python = info.get("python") or _platform.python_version()
+    checks = [Check("install.python", "install", PASS, f"Python {python}")]
+    build = describe_identity(info.get("identity")) if info.get("identity") else "unknown"
+    method = info.get("method")
+    if err is not None:
+        how = f"install method unknown ({_reason(err)})"
+    elif method == "uv":
+        how = "installed with uv tool"
+    elif method == "pipx":
+        how = "installed with pipx"
+    elif info.get("editable"):
+        how = "installed from a source checkout (editable)"
+    else:
+        how = "installed with pip or from source"
+    checks.append(Check("install.method", "install", PASS, f"ai-quota-swap {build} · {how}"))
+    return checks
+
+
+def _network_checks(p: Probes, f: _Facts) -> list[Check]:
+    checks: list[Check] = []
+    fix = "check the network connection and any proxy (HTTPS_PROXY)"
+    for check_id, url, needed in (
+        ("network.anthropic", ANTHROPIC_URL, True),
+        ("network.chatgpt", CHATGPT_URL, f.codex_present),
+    ):
+        host = url.split("//", 1)[1].rstrip("/")
+        answer, err = _try(p.reach, url)
+        if err is None:
+            checks.append(Check(check_id, "network", PASS, f"{host} answers ({answer})"))
+        else:
+            checks.append(Check(
+                check_id, "network", FAIL if needed else WARN,
+                f"cannot reach {host} ({_reason(err)})", fix=fix,
+            ))
+    return checks
+
+
+def _gather_facts(p: Probes) -> _Facts:
+    from ai_quota_swap import launch_agent
+
+    platform, _ = _try(p.platform, default=Platform.UNKNOWN)
+    if not isinstance(platform, Platform):
+        platform = Platform.UNKNOWN
+    home, _ = _try(p.home)
+    data_dir, _ = _try(p.data_dir)
+    codex_home, _ = _try(p.codex_home)
+    claude_bin, _ = _try(p.which, "claude")
+    codex_bin, _ = _try(p.which, "codex")
+    facts = _Facts(
+        platform=platform,
+        home=Path(home) if home is not None else None,
+        data_dir=Path(data_dir) if data_dir is not None else None,
+        codex_home=Path(codex_home) if codex_home is not None else None,
+        claude_bin=claude_bin or None,
+        codex_bin=codex_bin or None,
+    )
+    if facts.data_dir is not None:
+        registry, err = _read_json(p, paths.get_codex_data_dir(facts.data_dir) / "sequence.json")
+        facts.codex_registry, facts.codex_registry_error = registry, err
+    codex_files = False
+    if facts.codex_home is not None:
+        for name in ("auth.json", "config.toml"):
+            found, _ = _try(p.exists, facts.codex_home / name, default=False)
+            codex_files = codex_files or bool(found)
+    facts.codex_present = bool(
+        facts.codex_bin or codex_files or _accounts(facts.codex_registry)
+        or facts.codex_registry_error is not None
+    )
+    if platform == Platform.MACOS and facts.home is not None:
+        login = launch_agent.plist_path(home=facts.home)
+        login_found, _ = _try(p.exists, login, default=False)
+        session_found = False
+        session = None
+        if facts.data_dir is not None:
+            session = launch_agent.session_plist_path(backup_dir=facts.data_dir)
+            session_found, _ = _try(p.exists, session, default=False)
+        facts.menubar_configured = bool(login_found or session_found)
+        facts.menubar_login = bool(login_found)
+        facts.menubar_plist = login if login_found else (session if session_found else None)
+    return facts
+
+
+_SECTIONS: tuple[tuple[str, Callable[[Probes, _Facts], list[Check]]], ...] = (
+    ("claude", _claude_checks),
+    ("codex", _codex_checks),
+    ("data", _data_checks),
+    ("menubar", _menubar_checks),
+    ("auto", _auto_checks),
+    ("install", _install_checks),
+)
+
+
+def run_checks(probes: Probes | None = None, *, online: bool = False) -> list[Check]:
+    """Every check, in output order. Never raises: a section that fails
+    unexpectedly becomes one ``warn`` line saying so."""
+    p = probes if probes is not None else default_probes()
+    facts = _gather_facts(p)
+    sections = list(_SECTIONS)
+    if online:
+        sections.append(("network", _network_checks))
+    checks: list[Check] = []
+    for group, section in sections:
+        try:
+            checks.extend(section(p, facts))
+        except Exception as e:  # a bug here must not end the report
+            checks.append(Check(
+                f"{group}.error", group, WARN,
+                f"this check could not run ({type(e).__name__}: {_reason(e)})",
+                fix="qswap doctor --json shows the rest; please report this",
+            ))
+    return checks
+
+
+def counts(checks: Iterable[Check]) -> dict[str, int]:
+    """``{"pass": n, "warn": n, "fail": n, "skip": n}``."""
+    out = dict.fromkeys(STATUSES, 0)
+    for check in checks:
+        out[check.status] = out.get(check.status, 0) + 1
+    return out
+
+
+def exit_code(checks: Iterable[Check]) -> int:
+    """1 when any check failed, else 0."""
+    return 1 if any(c.status == FAIL for c in checks) else 0
+
+
+# -- output -------------------------------------------------------------------------
+
+
+def to_json(checks: list[Check], *, online: bool) -> dict:
+    """The ``--json`` payload."""
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "checks": [c.to_json() for c in checks],
+        "counts": counts(checks),
+        "online": online,
+    }
+
+
+def summary_line(tally: Mapping[str, int]) -> str:
+    """``"2 warnings, no failures"``."""
+
+    def phrase(n: int, word: str) -> str:
+        if n == 0:
+            return f"no {word}s"
+        return f"{n} {word}{'' if n == 1 else 's'}"
+
+    return f"{phrase(tally.get(WARN, 0), 'warning')}, {phrase(tally.get(FAIL, 0), 'failure')}"
+
+
+def _mark_style(status: str) -> Callable[[str], str]:
+    from ai_quota_swap import printer
+
+    return {
+        PASS: printer.muted,
+        WARN: printer.yellowed,
+        FAIL: printer.reddened,
+        SKIP: printer.dimmed,
+    }.get(status, printer.muted)
+
+
+def _check_lines(check: Check, width: int) -> list[str]:
+    from ai_quota_swap.display import fit, wrap
+    from ai_quota_swap.printer import dimmed, muted
+
+    body = " " * 8
+    lines = [fit(line, width) for line in wrap(check.summary, width, body)]
+    mark = MARKS.get(check.status, check.status)
+    first = f"  {_mark_style(check.status)(mark.ljust(4))}  "
+    rest_style = dimmed if check.status == SKIP else (lambda s: s)
+    out = [first + rest_style(lines[0][8:])] + [rest_style(line) for line in lines[1:]]
+    if check.fix and check.status in (WARN, FAIL):
+        fix_lines = [fit(line, width) for line in wrap(f"fix: {check.fix}", width, body, " " * 13)]
+        out.append(body + muted("fix:") + fix_lines[0][8 + 4:])
+        out.extend(fix_lines[1:])
+    if check.hint:
+        out.extend(dimmed(fit(line, width)) for line in wrap(check.hint, width, body))
+    return out
+
+
+def render_text(checks: list[Check], *, online: bool, width: int = 80) -> list[str]:
+    """The text report, one string per line, each at most ``width`` columns."""
+    from ai_quota_swap.display import fit, wrap
+    from ai_quota_swap.printer import bolded, dimmed, muted, reddened, yellowed
+
+    width = max(40, min(80, width))
+    lines: list[str] = []
+    for group, title in GROUPS:
+        members = [c for c in checks if c.group == group]
+        if not members:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(bolded(title))
+        for check in members:
+            lines.extend(_check_lines(check, width))
+    if not online:
+        lines.append("")
+        note = "Network checks skipped; run qswap doctor --online to include them."
+        lines.extend(dimmed(fit(line, width)) for line in wrap(note, width))
+    tally = counts(checks)
+    text = summary_line(tally)
+    style = reddened if tally[FAIL] else yellowed if tally[WARN] else muted
+    lines.append("")
+    lines.append(style(text))
+    return lines
+
+
+# -- the command --------------------------------------------------------------------
+
+
+def _parser():
+    from ai_quota_swap.argparsing import ArgumentParser
+
+    parser = ArgumentParser(
+        prog="qswap doctor",
+        description=(
+            "Check that qswap, Claude Code and Codex are set up and working, and\n"
+            "say how to fix anything that is not. Reads only; changes nothing."
+        ),
+        epilog=(
+            "examples:\n"
+            "  qswap doctor\n"
+            "  qswap doctor --online      # also check the network\n"
+            "  qswap doctor --json"
+        ),
+    )
+    parser.add_argument("--json", action="store_true", help="print the checks as JSON")
+    parser.add_argument(
+        "--online", action="store_true",
+        help="also check that api.anthropic.com and chatgpt.com can be reached",
+    )
+    return parser
+
+
+def doctor_command(argv: list[str], *, probes: Probes | None = None) -> None:
+    """``qswap doctor [--json] [--online]``. Exits 1 when a check fails,
+    64 on a usage error; returns normally otherwise."""
+    from ai_quota_swap.argparsing import help_width
+
+    args = _parser().parse_args(argv)
+    try:
+        checks = run_checks(probes, online=args.online)
+    except KeyboardInterrupt:
+        print("Cancelled; nothing was changed.", file=sys.stderr)
+        sys.exit(130)
+    if args.json:
+        print(json.dumps(to_json(checks, online=args.online), indent=2))
+    else:
+        for line in render_text(checks, online=args.online, width=help_width()):
+            print(line)
+    code = exit_code(checks)
+    if code:
+        sys.exit(code)

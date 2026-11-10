@@ -708,6 +708,37 @@ def _fake_codex_processes(monkeypatch):
     monkeypatch.setattr(processes, "run_codex_login", _no_login)
 
 
+#: Where every test finds the CLIs unless it says otherwise (see _fixed_clis).
+FAKE_CLI_DIR = "/usr/local/bin"
+
+
+@pytest.fixture(autouse=True)
+def _fixed_clis(monkeypatch):
+    """Determinism: every test sees both CLIs installed, whatever this machine has.
+
+    ``ai_quota_swap.clis.find_cli`` is the one place qswap asks whether
+    ``claude`` or ``codex`` is on PATH (the empty-state next step, `doctor`,
+    launching `claude`, running `codex`). Left to the real PATH, a developer
+    with both installed and a CI runner with neither would see different
+    output. Tests of "not installed" patch ``clis.find_cli`` themselves, for
+    example with :func:`no_cli`.
+    """
+    from ai_quota_swap import clis
+
+    monkeypatch.setattr(clis, "find_cli", lambda name: f"{FAKE_CLI_DIR}/{name}")
+
+
+def no_cli(*missing: str):
+    """A ``clis.find_cli`` replacement for which the named commands (all of
+    them, when none are named) are not installed."""
+    def find_cli(name: str) -> str | None:
+        if missing and name not in missing:
+            return f"{FAKE_CLI_DIR}/{name}"
+        return None
+
+    return find_cli
+
+
 @pytest.fixture(autouse=True)
 def _block_network(request):
     """Safety net: no test may open a real outbound connection.

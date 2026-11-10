@@ -580,7 +580,7 @@ class TestAddAccountRefresh:
 
         # Should have printed update message
         output = capsys.readouterr().out
-        assert "Updated credentials" in output
+        assert "Updated the saved login of" in output
 
         # Verify credentials were actually updated
         assert "new-token" in stored["creds"]
@@ -1613,10 +1613,10 @@ class TestListAccountsUsage:
             switcher.list_accounts()
 
         output = capsys.readouterr().out
-        assert "test@example.com [personal] (active)" in output
+        assert "#1 test@example.com · active" in output
         assert "account2@example.com" in output
-        assert "├ 5h:" in output
-        assert "└ 7d:" in output
+        assert "├ 5h " in output
+        assert "└ 7d " in output
         assert "10%" in output
         assert "50%" in output
 
@@ -1641,9 +1641,9 @@ class TestListAccountsUsage:
             switcher.list_accounts()
 
         output = capsys.readouterr().out
-        assert "  1: dev (test@example.com) [personal] (active)" in output
+        assert "  #1 dev (test@example.com) · active" in output
         # unaliased account keeps rendering plain email, no spurious parens
-        assert "  2: account2@example.com" in output
+        assert "  #2 account2@example.com" in output
         assert "(account2@example.com)" not in output
 
     def test_list_shows_usage_null_reset(
@@ -1673,8 +1673,8 @@ class TestListAccountsUsage:
             switcher.list_accounts()
 
         output = capsys.readouterr().out
-        assert "5h:   0%" in output
-        assert "7d: 100%" in output
+        assert "5h       0%" in output
+        assert "7d     100%" in output
         assert "usage unavailable" not in output
 
     def test_list_no_credentials(
@@ -1691,7 +1691,7 @@ class TestListAccountsUsage:
             switcher.list_accounts()
 
         output = capsys.readouterr().out
-        assert "no credentials" in output
+        assert "no saved login" in output
 
     def test_list_never_writes_live_while_claude_code_running(
         self, temp_home: Path, mock_claude_config: Path, sample_sequence_data: dict
@@ -3969,9 +3969,9 @@ class TestPerformSwitchPostDisplay:
         assert data["activeAccountNumber"] == 2
 
         output = capsys.readouterr().out
-        assert "Switched to" in output
-        assert "usage display unavailable" in output
-        assert "no restart needed" in output
+        assert "Switched #1" in output
+        assert "Usage could not be shown" in output
+        assert "from its next message" in output
 
     def test_switch_followup_macos(self, temp_home: Path, capsys):
         """macOS shows the ~30s cache note; a restart applies it instantly."""
@@ -3981,7 +3981,7 @@ class TestPerformSwitchPostDisplay:
         switcher._print_switch_followup()
 
         out = capsys.readouterr().out
-        assert "apply immediately" in out
+        assert "restart it to apply now" in out
         assert "30 seconds" in out
         assert "no restart needed" not in out
 
@@ -3994,7 +3994,7 @@ class TestPerformSwitchPostDisplay:
             switcher._print_switch_followup()
 
             out = capsys.readouterr().out
-            assert "no restart needed" in out, plat
+            assert "from its next message" in out, plat
             assert "30 seconds" not in out, plat
 
     def test_switch_with_unset_active_account_does_not_write_none_backup(
@@ -4508,8 +4508,8 @@ class TestSwitchToSelfSlotAndForce:
         assert creds[("1", "test@example.com")] == self.IMPORTED_1
         assert live["creds"] == self.LIVE_1
         out = capsys.readouterr().out
-        assert "Already on" in out and "Account-1" in out
-        assert "qswap --switch-to 1 --force" in out
+        assert "Already on" in out and "#1 test@example.com" in out
+        assert "qswap switch 1 --force" in out
 
     def test_force_self_activation_restores_imported_creds(
         self,
@@ -4535,7 +4535,7 @@ class TestSwitchToSelfSlotAndForce:
         assert creds[("1", "test@example.com")] == self.IMPORTED_1
         data = switcher._get_sequence_data()
         assert data["activeAccountNumber"] == 1
-        assert "Activated" in capsys.readouterr().out
+        assert "Restored the live login of #1" in capsys.readouterr().out
 
     def test_force_cross_slot_skips_backup_of_current(
         self,
@@ -4931,7 +4931,7 @@ class TestAddAccountOrgFields:
              patch.object(switcher, "_read_active_credentials", return_value=ActiveCredentials(fake_creds, False)), \
              patch.object(switcher, "_write_account_credentials"):
             switcher.add_account()
-        assert "Updated credentials" in f.getvalue()
+        assert "Updated the saved login of" in f.getvalue()
 
         seq = json.loads((get_backup_root() / "sequence.json").read_text())
         assert len(seq["accounts"]) == 1
@@ -5022,9 +5022,13 @@ class TestListAccountsOrgDisplay:
             switcher.list_accounts()
 
         out = capsys.readouterr().out
-        assert "Acme Corp" in out
-        assert "personal" in out
-        assert "(active)" in out
+        # An organization account names its organization; a personal one
+        # shows no tag (the old "[personal]" needed a legend).
+        assert "· Acme Corp" in out
+        headers = [ln for ln in out.splitlines() if ln.startswith("  #")]
+        assert sum("Acme Corp" in ln for ln in headers) == 1
+        assert any("Acme Corp" not in ln for ln in headers)
+        assert "· active" in out
 
     def test_active_account_detected_by_org_uuid(self, temp_home, mock_credentials_file,
                                                    sample_sequence_data_with_org, capsys):
@@ -5049,9 +5053,9 @@ class TestListAccountsOrgDisplay:
             switcher.list_accounts()
 
         out = capsys.readouterr().out
-        lines = [ln for ln in out.splitlines() if "(active)" in ln]
+        lines = [ln for ln in out.splitlines() if "· active" in ln]
         assert len(lines) == 1
-        assert "personal" in lines[0]
+        assert "Acme Corp" not in lines[0]  # the personal one is active
 
 
 # ── Task 8: backward compatibility ───────────────────────────────────────────
@@ -5081,7 +5085,8 @@ class TestBackwardCompatibility:
 
         out = capsys.readouterr().out
         assert "account1@example.com" in out
-        assert "personal" in out
+        # No org fields: shown as a personal account, with no org tag.
+        assert "  #1 account1@example.com" in out
 
     def test_status_with_old_sequence_json(self, temp_home, sample_sequence_data, capsys):
         """status should display personal for old sequence.json entries."""
@@ -5104,7 +5109,8 @@ class TestBackwardCompatibility:
 
         out = capsys.readouterr().out
         assert "account1@example.com" in out
-        assert "personal" in out
+        # No org fields: shown as a personal account, with no org tag.
+        assert "  #1 account1@example.com · active" in out
 
 
 class TestUpgradeMigration:
@@ -5136,7 +5142,7 @@ class TestUpgradeMigration:
         switcher.status()
 
         out = capsys.readouterr().out
-        assert "Account-1" in out
+        assert "#1 user@example.com" in out
         assert "not managed" not in out
 
     def test_list_after_upgrade_marks_active(
@@ -5160,7 +5166,7 @@ class TestUpgradeMigration:
             switcher.list_accounts()
 
         out = capsys.readouterr().out
-        assert "(active)" in out
+        assert "· active" in out
 
     def test_migration_uses_live_config_over_backup(
         self, temp_home, sample_sequence_data_pre_v06
@@ -5342,7 +5348,7 @@ class TestAddAccountSlot:
         switcher = self._make_switcher(temp_home, email="b@example.com")
         with patch.object(switcher, "_read_active_credentials", return_value=ActiveCredentials(fake_creds, False)), \
              patch.object(switcher, "_write_account_credentials"), \
-             patch("builtins.input", return_value="n"):
+             patch("builtins.input", return_value="n"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.add_account(slot=3)
 
         # Slot 3 should still be account A
@@ -5366,7 +5372,7 @@ class TestAddAccountSlot:
         with patch.object(switcher, "_read_active_credentials", return_value=ActiveCredentials(fake_creds, False)), \
              patch.object(switcher, "_write_account_credentials"), \
              patch.object(switcher, "_delete_account_credentials"), \
-             patch("builtins.input", return_value="y"):
+             patch("builtins.input", return_value="y"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.add_account(slot=3)
 
         data = switcher._get_sequence_data()
@@ -5423,7 +5429,7 @@ class TestAddAccountSlot:
         switcher = self._make_switcher(temp_home, email="a@example.com")
         with patch.object(switcher, "_read_active_credentials", return_value=ActiveCredentials(fake_creds, False)), \
              patch.object(switcher, "_write_account_credentials"), \
-             patch("builtins.input", return_value="n"):
+             patch("builtins.input", return_value="n"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.add_account(slot=3)
 
         # Both slots should be untouched
@@ -5506,7 +5512,7 @@ class TestPurgeLegacyCleanup:
         switcher, backup_dir, legacy = self._make_switcher_then_recreate_legacy(monkeypatch)
         (legacy / "ghost.txt").write_text("should be removed")
 
-        with patch("builtins.input", return_value="y"):
+        with patch("builtins.input", return_value="y"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.purge()
 
         assert not legacy.exists()
@@ -5517,7 +5523,7 @@ class TestPurgeLegacyCleanup:
     ):
         switcher, backup_dir, legacy = self._make_switcher_then_recreate_legacy(monkeypatch)
 
-        with patch("builtins.input", return_value="n"):
+        with patch("builtins.input", return_value="n"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.purge()
 
         out = capsys.readouterr().out
@@ -5536,7 +5542,7 @@ class TestPurgeLegacyCleanup:
         assert not legacy.exists()
 
         switcher = ClaudeAccountSwitcher()
-        with patch("builtins.input", return_value="n"):
+        with patch("builtins.input", return_value="n"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.purge()
 
         out = capsys.readouterr().out
@@ -5571,7 +5577,7 @@ class TestPurgeQuarantineWarning:
         switcher._setup_directories()
         run_dir = self._quarantine(switcher, 3)
 
-        with patch("builtins.input", return_value="n"):
+        with patch("builtins.input", return_value="n"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.purge()
 
         out = capsys.readouterr().out
@@ -5591,7 +5597,7 @@ class TestPurgeQuarantineWarning:
             parents=True
         )
 
-        with patch("builtins.input", return_value="n"):
+        with patch("builtins.input", return_value="n"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.purge()
 
         assert "history-conflicts" not in capsys.readouterr().out
@@ -5603,7 +5609,7 @@ class TestPurgeQuarantineWarning:
         switcher._setup_directories()
         run_dir = self._quarantine(switcher, 1)
 
-        with patch("builtins.input", return_value="y"):
+        with patch("builtins.input", return_value="y"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.purge()
 
         assert not run_dir.exists()
@@ -5620,7 +5626,7 @@ class TestPurgeQuarantineWarning:
         lock = temp_home / ".claude" / MIGRATION_LOCK
         lock.touch()
 
-        with patch("builtins.input", return_value="y"):
+        with patch("builtins.input", return_value="y"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.purge()
 
         assert not switcher.backup_dir.exists()  # purge did run
@@ -5776,7 +5782,7 @@ class TestAddAccountFromToken:
         data = switcher._get_sequence_data()
         assert len(data["accounts"]) == 1
         out = capsys.readouterr().out
-        assert "Updated token" in out
+        assert "Updated the token of" in out
 
     def test_update_in_place_writes_scopes(self, temp_home):
         """Refreshing an existing account in place must also seed default scopes."""
@@ -5985,7 +5991,7 @@ class TestPurge:
             },
         })
 
-        with patch("builtins.input", return_value="y"), \
+        with patch("builtins.input", return_value="y"), patch("ai_quota_swap.prompts.interactive", return_value=True), \
              patch("ai_quota_swap.switcher.macos_keychain") as mock_kc:
             switcher.purge()
 
@@ -6106,7 +6112,7 @@ class TestSwitchSkipsBrokenSlots:
             s.switch()
 
         out = capsys.readouterr().out
-        assert "Skipping Account-2" in out
+        assert "Skipped #2 b@example.com: no saved login" in out
 
         data = s._get_sequence_data()
         assert data["activeAccountNumber"] == 3
@@ -6136,8 +6142,9 @@ class TestSwitchSkipsBrokenSlots:
         s.switch()  # must not raise
 
         out = capsys.readouterr().out
-        assert "Skipping Account-2" in out
-        assert "No other accounts have valid" in out
+        assert "Skipped #2 b@example.com: no saved login" in out
+        assert "No other account can take over" in out
+        assert "re-add one: qswap add --slot 2" in " ".join(out.split())
 
         # Active account unchanged.
         data = s._get_sequence_data()
@@ -6210,7 +6217,7 @@ class TestSwitchSkipsBrokenSlots:
             s.switch()
 
         out = capsys.readouterr().out
-        assert "Skipping Account-1" in out
+        assert "Skipped #1 a@example.com: no saved login" in out
 
         data = s._get_sequence_data()
         assert data["activeAccountNumber"] == 2
@@ -6228,7 +6235,7 @@ class TestSwitchSkipsBrokenSlots:
         with patch.object(s, "list_accounts"):
             s.switch()
 
-        assert "Skipping Account-1 (disabled)" in capsys.readouterr().out
+        assert "Skipped #1 a@example.com: disabled." in capsys.readouterr().out
         assert s._get_sequence_data()["activeAccountNumber"] == 2
 
     def test_fresh_machine_all_broken_raises(self, temp_home: Path):
@@ -6356,7 +6363,7 @@ class TestUsageAwareSwitch:
 
         out = capsys.readouterr().out
         assert "All accounts are at their 5h/7d limit" in out
-        assert "staying on Account-1" in out
+        assert "staying on #1 a@example.com" in out
         assert s._get_sequence_data()["activeAccountNumber"] == 1  # unchanged
 
     def test_best_current_usage_unavailable_stays(self, temp_home: Path, capsys):
@@ -6456,7 +6463,7 @@ class TestUsageAwareSwitch:
             s.switch(strategy="next-available")
 
         out = capsys.readouterr().out
-        assert "Skipping Account-2 (at 5h/7d limit)" in out
+        assert "Skipped #2 b@example.com: at its 5h/7d limit." in out
         assert s._get_sequence_data()["activeAccountNumber"] == 3
 
     @staticmethod
@@ -6493,7 +6500,7 @@ class TestUsageAwareSwitch:
 
         out = capsys.readouterr().out
         assert "Using configured model limits: Fable (from autoswitch.model)" in out
-        assert "Skipping Account-2 (at Fable limit)" in out
+        assert "Skipped #2 b@example.com: at its Fable limit." in out
         assert s._get_sequence_data()["activeAccountNumber"] == 3
 
     def test_next_available_without_models_ignores_scoped(
@@ -6607,7 +6614,7 @@ class TestUsageAwareSwitch:
             s.switch(strategy="next-available")
 
         out = capsys.readouterr().out
-        assert "staying on Account-1" in out
+        assert "staying on #1 a@example.com" in out
         # No switch onto an exhausted account; stays on the current one.
         assert s._get_sequence_data()["activeAccountNumber"] == 1
         mock_list.assert_not_called()
@@ -6987,10 +6994,10 @@ class TestMacosKeychainFallback:
 
         s.list_accounts()
         out = capsys.readouterr().out
-        assert "test@example.com" in out and "(active)" in out
+        assert "test@example.com" in out and "· active" in out
         # The active row shows the intentional, actionable line — not the
         # misleading "no credentials" that prompted the re-login.
-        assert "keychain unavailable — locked or in use; try again" in out
+        assert "Keychain unavailable: it is locked or busy; unlock it and try again" in out
 
     def test_active_write_falls_back_to_file_and_clears_stale_keychain(
         self, temp_home: Path, monkeypatch, block_real_keychain
@@ -9189,6 +9196,8 @@ class TestRemoveAccountPrunesMappings:
         assert store.get(temp_home) is not None
 
         monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+
+        monkeypatch.setattr("ai_quota_swap.prompts.interactive", lambda: True)
         switcher.remove_account("1")
 
         assert store.get(temp_home) is None
@@ -9228,7 +9237,7 @@ class TestRemoveAccountPrunesMappings:
         with patch.object(switcher, "_read_active_credentials", return_value=ActiveCredentials(fake_creds, False)), \
              patch.object(switcher, "_write_account_credentials"), \
              patch.object(switcher, "_delete_account_credentials"), \
-             patch("builtins.input", return_value="y"):
+             patch("builtins.input", return_value="y"), patch("ai_quota_swap.prompts.interactive", return_value=True):
             switcher.add_account(slot=3)
 
         assert store.get(temp_home) is None
@@ -9300,6 +9309,8 @@ class TestSwitchRemoveGatesAcceptAlias:
         switcher._write_json(switcher.sequence_file, sample_sequence_data)
 
         monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+
+        monkeypatch.setattr("ai_quota_swap.prompts.interactive", lambda: True)
         with patch.object(switcher, "_delete_account_files"):
             switcher.remove_account("dev")
 
@@ -9479,7 +9490,7 @@ class TestDisableEnableAccount:
         assert s.switchable_account_numbers() == ["1", "3"]
         data = s._get_sequence_data()
         assert data["accounts"]["2"]["disabled"] is True
-        assert "Disabled Account-2" in capsys.readouterr().out
+        assert "Disabled #2 b@example.com" in capsys.readouterr().out
 
     def test_enable_clears_flag_and_restores_position(self, temp_home, capsys):
         s = self._setup(temp_home)
@@ -9497,7 +9508,7 @@ class TestDisableEnableAccount:
         assert s.switchable_account_numbers() == ["1", "2", "3"]
         data = s._get_sequence_data()
         assert "disabled" not in data["accounts"]["2"]
-        assert "Enabled Account-2" in capsys.readouterr().out
+        assert "Enabled #2 b@example.com" in capsys.readouterr().out
 
     def test_disable_by_email(self, temp_home):
         s = self._setup(temp_home)
@@ -9567,7 +9578,7 @@ class TestDisableEnableAccount:
             s.switch()
 
         out = capsys.readouterr().out
-        assert "Skipping Account-2 (disabled)" in out
+        assert "Skipped #2 b@example.com: disabled." in out
         assert s._get_sequence_data()["activeAccountNumber"] == 3
 
     def test_best_strategy_ignores_disabled_candidate(self, temp_home):
@@ -9679,7 +9690,7 @@ class TestDisableEnableAccount:
         capsys.readouterr()
         s.set_account_disabled("2", True)  # now nothing left in rotation
 
-        assert "No accounts remain in rotation" in capsys.readouterr().out
+        assert "No account is left in rotation" in capsys.readouterr().out
 
     # -- display -----------------------------------------------------------
 
@@ -9695,10 +9706,12 @@ class TestDisableEnableAccount:
             s.list_accounts()
 
         out = capsys.readouterr().out
-        assert "(disabled)" in out
+        assert "· disabled" in out
         # Marker attaches to the disabled row, not the enabled one.
-        disabled_line = next(ln for ln in out.splitlines() if ln.strip().startswith("2:"))
-        assert "(disabled)" in disabled_line
+        disabled_line = next(ln for ln in out.splitlines() if ln.strip().startswith("#2 "))
+        assert "· disabled" in disabled_line
+        enabled_line = next(ln for ln in out.splitlines() if ln.strip().startswith("#1 "))
+        assert "disabled" not in enabled_line
 
     def test_json_list_carries_disabled_field(self, temp_home):
         s = self._setup(temp_home)

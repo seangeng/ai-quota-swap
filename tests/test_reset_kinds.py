@@ -249,7 +249,7 @@ class TestRule3NoBroadResetForANarrowLimit:
         kept = resets.kept_by_scope(real, widened)
         assert kept is widened
         assert resets.kept_note(kept) == (
-            "Auto keeps the weekly reset on Account-1: only Fable is at its limit (100%), "
+            "Auto keeps the weekly reset on #1: only Fable is at its limit (100%), "
             "and a weekly reset clears all weekly usage "
             "(resets.weeklyForModelLimit true would spend it)."
         )
@@ -451,8 +451,8 @@ class TestEventWording:
         ("full", "full", "full reset"),
     ])
     def test_each_kind_named(self, scope, kind, noun):
-        assert self._event(scope, kind).human().startswith(f"Used a {noun} on Account-1")
-        assert self._event(scope, kind, dry_run=True).human().startswith(f"[dry-run] would use a {noun} on")
+        assert self._event(scope, kind).human().startswith(f"Used a {noun} on #1 a@example.com")
+        assert self._event(scope, kind, dry_run=True).human().startswith(f"Would use a {noun} on")
         assert f"Did not use a {noun}" in self._event(scope, kind, result="cooldown").human()
 
     def test_json_carries_scope(self):
@@ -512,6 +512,7 @@ def _run(h, argv, usage, capsys, *, answer="n", tty=False):
         patch.object(h.switcher, "refresh_account_usage", side_effect=entries.get),
         patch.object(h.switcher, "claim_usage_reset", side_effect=claim),
         patch("sys.stdin.isatty", return_value=tty),
+        patch("ai_quota_swap.prompts.interactive", return_value=tty),
         patch("builtins.input", return_value=answer),
     ):
         try:
@@ -536,41 +537,42 @@ class TestResetCommand:
 
     def test_grant_lines_name_the_kind_grouped_narrowest_first(self, h, capsys):
         out = self._list(h, capsys, _live(d7=31, fable_pct=100, grants=_held(), next_id="wk"))
-        fable_line = "1× Fable reset    clears Fable usage only · usable now · use by"
-        weekly_line = "1× weekly reset   clears all weekly usage · usable now · use by"
+        fable_line = "1 Fable reset · clears Fable usage only"
+        weekly_line = "1 weekly reset · clears all weekly usage · next"
         assert fable_line in out and weekly_line in out
         assert out.index(fable_line) < out.index(weekly_line)
-        assert "wk · next" in out
+        assert "usable now · use by" in out and "id wk" in out
+        assert all(len(line) <= 80 for line in out.splitlines())
 
     def test_a_only_fable_at_its_limit_uses_the_fable_reset(self, h, capsys):
         out = self._list(h, capsys, _live(d7=31, fable_pct=100, grants=_held(), next_id="wk"))
-        assert "Auto would now use a Fable reset on Account-1 (last-resort: Fable 100%" in out
+        assert "Auto would now use a Fable reset on #1 a@example.com (Fable at 100%" in out
         assert "Auto keeps" not in out
 
     def test_b_weekly_at_its_limit_uses_the_weekly_reset(self, h, capsys):
         out = self._list(h, capsys, _live(d7=100, fable_pct=20, grants=_held(), next_id="wk"))
-        assert "Auto would now use a weekly reset on Account-1 (last-resort: 7d 100%" in out
+        assert "Auto would now use a weekly reset on #1 a@example.com (7d at 100%" in out
 
     def test_c_both_at_their_limits(self, h, capsys):
         # No share reported: only the weekly reset (which lists Fable) frees both.
         out = self._list(h, capsys, _live(d7=100, fable_pct=100, grants=_held(), next_id="wk"))
-        assert "Auto would now use a weekly reset on Account-1 (last-resort: 7d 100%" in out
+        assert "Auto would now use a weekly reset on #1 a@example.com (7d at 100%" in out
         # With Fable's share known, giving it back is enough: the Fable reset.
         out = self._list(h, capsys, _live(d7=100, fable_pct=100, share=45, grants=_held(), next_id="wk"))
-        assert "Auto would now use a Fable reset on Account-1 (last-resort: Fable 100%" in out
+        assert "Auto would now use a Fable reset on #1 a@example.com (Fable at 100%" in out
 
     def test_a_kept_weekly_reset_is_explained(self, h, capsys):
         out = self._list(h, capsys, _live(d7=31, fable_pct=100, grants=[weekly("wk", ends=_far())]))
         assert "Auto would not use a reset right now." in out
-        assert ("Auto keeps the weekly reset on Account-1: only Fable is at its limit (100%), "
-                "and a weekly reset clears all weekly usage") in out
+        assert ("Auto keeps the weekly reset on #1: only Fable is at its limit (100%), "
+                "and a weekly reset clears all weekly usage") in " ".join(out.split())
 
     def test_no_explanation_once_the_setting_allows_it(self, h, capsys):
         from ai_quota_swap.settings import set_setting
 
         set_setting(h.switcher.backup_dir, "resets.weeklyForModelLimit", "true")
         out = self._list(h, capsys, _live(d7=31, fable_pct=100, grants=[weekly("wk", ends=_far())]))
-        assert "Auto would now use a weekly reset on Account-1 (last-resort: Fable 100%" in out
+        assert "Auto would now use a weekly reset on #1 a@example.com (Fable at 100%" in out
 
     def test_json_carries_scope_and_the_setting(self, h, capsys):
         import json
@@ -588,24 +590,24 @@ class TestResetCommand:
         usage = {"1": _live(d7=31, fable_pct=100, grants=_held(), next_id="wk"), **self.PEER}
         code, out, _, claimed = _run(h, ["1", "--grant", "wk"], usage, capsys, answer="n", tty=True)
         assert code == 0 and claimed == []
-        assert "Account-1 (a@example.com) · weekly reset · wk" in out
+        assert "#1 a@example.com · weekly reset" in out and "id wk" in out
         assert "  Clears all weekly usage" in out
         assert "This weekly reset clears all weekly usage; only Fable is at its limit (7d is at 31%)." in out
-        assert "Kept — nothing was spent." in out
+        assert "Kept; nothing was spent." in out
 
     def test_manual_default_is_the_narrowest_useful_reset(self, h, capsys):
         usage = {"1": _live(d7=31, fable_pct=100, grants=_held(), next_id="wk"), **self.PEER}
         code, out, err, claimed = _run(h, ["1", "--yes"], usage, capsys)
         assert code == 0, err
         assert claimed == [("1", "fb")]
-        assert "Used a Fable reset on Account-1 (a@example.com)" in out
+        assert "Used a Fable reset on #1 a@example.com" in out
 
     def test_manual_weekly_is_not_restricted(self, h, capsys):
         usage = {"1": _live(d7=31, fable_pct=100, grants=_held(), next_id="wk"), **self.PEER}
         code, out, err, claimed = _run(h, ["1", "--grant", "wk", "--yes"], usage, capsys)
         assert code == 0, err
         assert claimed == [("1", "wk")]
-        assert "Used a weekly reset on Account-1 (a@example.com): 7d refilled" in out
+        assert "Used a weekly reset on #1 a@example.com: 7d refilled" in out
 
     def test_manual_default_for_the_weekly_limit(self, h, capsys):
         usage = {"1": _live(d7=99, fable_pct=20, grants=_held(), next_id="fb"), **self.PEER}

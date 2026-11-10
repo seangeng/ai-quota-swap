@@ -61,6 +61,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
+from ai_quota_swap import clis
 from ai_quota_swap import macos_keychain, spawn
 from ai_quota_swap.claude_locks import proper_lockfile
 from ai_quota_swap.exceptions import (
@@ -771,7 +772,7 @@ class SessionManager:
         and a session on the default login is the one thing an account
         switch can later pull out from under it.
         """
-        claude_bin = shutil.which("claude")
+        claude_bin = clis.find_cli("claude")
         if not claude_bin:
             raise SessionError(
                 "'claude' was not found on PATH. Install Claude Code first."
@@ -804,7 +805,7 @@ class SessionManager:
         if current is not None and current == (email, org_uuid):
             if require_session:
                 raise SessionError(
-                    f"Account-{account_num} ({email}) is the active default "
+                    f"{self.switcher.label(account_num, email)} is the active default "
                     "login, so this launch would run plain claude on the "
                     "default login rather than in a session profile (a "
                     "second copy of the active credential would drift). "
@@ -813,7 +814,7 @@ class SessionManager:
                 )
             print(
                 dimmed(
-                    f"Account-{account_num} ({email}) is already the active "
+                    f"{self.switcher.label(account_num, email)} is already the active "
                     "default login — launching claude directly."
                 )
             )
@@ -843,7 +844,7 @@ class SessionManager:
         )
 
         print(
-            f"{accent('Launching')} Account-{account_num} ({email}) "
+            f"{accent('Launching')} {self.switcher.label(account_num, email)} "
             f"{muted('[session mode]')}"
         )
         env = {
@@ -924,7 +925,7 @@ class SessionManager:
         profile, no auth-override scrubbing), so whatever the default login
         resolves to is what runs.
         """
-        claude_bin = shutil.which("claude")
+        claude_bin = clis.find_cli("claude")
         if not claude_bin:
             raise SessionError(
                 "'claude' was not found on PATH. Install Claude Code first."
@@ -958,9 +959,9 @@ class SessionManager:
         """
         if self.switcher._account_kind(account_num) == "api_key":
             raise SessionError(
-                f"Account-{account_num} ({email}) is an API-key account; "
-                "'qswap run' (session mode) does not support API-key accounts yet. "
-                "Use 'qswap --switch-to' to make it your default login instead."
+                f"{self.switcher.label(account_num, email)} is an API-key account; "
+                "qswap run does not support API-key accounts yet.\n"
+                f"Make it the active login instead: qswap switch {account_num}"
             )
 
     # -- bootstrap -------------------------------------------------------
@@ -1040,22 +1041,22 @@ class SessionManager:
                 # credentials is correct because nothing was spent.
                 if outcome.stashed:
                     raise SessionError(
-                        f"Account-{account_num}'s refreshed credential could "
+                        f"{self.switcher.label(account_num, long=False)}'s refreshed credential could "
                         f"not be stored, so the backup still holds a spent "
                         f"grant. The successor is stashed — please retry, and "
                         f"the next run adopts it automatically."
                     )
                 raise SessionError(
-                    f"Account-{account_num}'s refreshed credential could "
+                    f"{self.switcher.label(account_num, long=False)}'s refreshed credential could "
                     f"neither be stored nor stashed, so the backup holds a "
                     f"spent grant and the successor is gone. Fix the storage "
                     f"failure first; retrying before that spends nothing but "
                     f"earns a strike. If the slot strikes, log in again and "
-                    f"re-add it: qswap --add-account --slot {account_num}"
+                    f"re-add it: qswap add --slot {account_num}"
                 )
             if outcome.error is not None:
                 warning(
-                    f"Could not refresh the token for Account-{account_num}; "
+                    f"Could not refresh the token for {self.switcher.label(account_num, long=False)}; "
                     "continuing with the stored credentials."
                 )
 
@@ -1115,7 +1116,7 @@ class SessionManager:
                 verdict = "valid"
             if verdict in ("unknown", "unreachable"):
                 raise SessionError(
-                    f"Session profile for Account-{account_num} ({email}) could "
+                    f"Session profile for {self.switcher.label(account_num, email)} could "
                     f"not be verified: `claude auth status` did not run or did "
                     f"not answer. The profile is left in place — check that "
                     f"`claude` is on PATH, then retry."
@@ -1123,9 +1124,9 @@ class SessionManager:
             if verdict != "valid":
                 self._cleanup_failed_session(session_dir)
                 raise SessionError(
-                    f"Session profile for Account-{account_num} ({email}) failed "
+                    f"Session profile for {self.switcher.label(account_num, email)} failed "
                     f"validation. Log in with that account and re-add it: "
-                    f"qswap --add-account --slot {account_num}"
+                    f"qswap add --slot {account_num}"
                 )
         # Lock released here, before any exec.
 
@@ -1170,13 +1171,13 @@ class SessionManager:
                 # Third copy of the switch path's message; same reason not to
                 # send the user to a re-add over a locked Keychain.
                 raise SessionError(
-                    f"Account-{account_num}'s backup is in the macOS Keychain "
+                    f"{self.switcher.label(account_num, long=False)}'s backup is in the macOS Keychain "
                     f"but it is unreadable right now (locked or no GUI "
                     f"session). Retry from a GUI terminal; do not re-add."
                 )
             raise SessionError(
-                f"Account-{account_num} has no stored credentials. "
-                f"Re-add with: qswap --add-account --slot {account_num}"
+                f"{self.switcher.label(account_num, long=False)} has no stored credentials. "
+                f"Re-add with: qswap add --slot {account_num}"
             )
 
         # The pre-lock refresh (see run(): the consume gate must not run
@@ -1192,8 +1193,8 @@ class SessionManager:
         oauth_account = config_data.get("oauthAccount")
         if not oauth_account:
             raise SessionError(
-                f"Account-{account_num} has no stored config backup. "
-                f"Re-add with: qswap --add-account --slot {account_num}"
+                f"{self.switcher.label(account_num, long=False)} has no stored config backup. "
+                f"Re-add with: qswap add --slot {account_num}"
             )
 
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -1271,7 +1272,7 @@ class SessionManager:
         # subprocess won't resolve it (PATHEXT isn't applied) — it raises
         # FileNotFoundError. `shutil.which` finds the shim; when it finds
         # nothing at all the run below still raises, and that is "unknown".
-        claude_bin = shutil.which("claude") or "claude"
+        claude_bin = clis.find_cli("claude") or "claude"
         try:
             result = spawn.run(
                 [claude_bin, "auth", "status", "--json"],

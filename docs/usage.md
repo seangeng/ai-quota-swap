@@ -21,6 +21,41 @@ A run reads only the session files its dates need, newest first. A file last cha
 
 Compressed Codex files need Python 3.14 or newer, or the `zstandard` package. Without either, they are skipped and the report says how many.
 
+## What it prints
+
+```text
+$ qswap usage --by account
+Token usage, 2026-11-04 to 2026-11-10, Claude Code and Codex, by account
+
+  Account                    Input  Output  Cache read  Cache write  Est. cost
+  Claude #1 personal          1.5M    2.5M        117M         6.0M     $88.44
+  Claude #2 work              1.4M    2.4M        112M         5.7M     $79.70
+  Claude #3 night-shift       132K    238K       11.1M         607K      $8.85
+  Codex #2 work               549K   87.9K        1.6M            0      $2.00
+  Codex #1 maya@example.com   232K   43.5K        688K            0      $0.72
+  Total                       3.8M    5.3M        242M        12.3M    $179.72
+
+Costs are estimates at API list prices (Anthropic and OpenAI pricing pages,
+2026-11-10). Subscription usage is not billed this way.
+```
+
+Accounts are named as everywhere else in qswap: `#2 work`, or `#1 maya@example.com` when the account has no alias. Claude and Codex number their accounts separately, so when the report holds both providers' usage each account starts with its provider (`Claude #2 work`, `Codex #2 work`). A login qswap does not manage is its email followed by `(not managed)`.
+
+The output fits 80 columns. A label too long for its column is cut with `…`: account and model names lose their end, project paths their start (`…/checkout-api`). `--json` always has the whole label.
+
+When there is nothing to show, the report says why instead of printing a table of zeros:
+
+```text
+$ qswap usage
+No Claude Code or Codex session files were found in ~/.claude/projects,
+~/.codex/sessions or ~/.codex/archived_sessions.
+Use Claude Code or Codex, then run qswap usage again.
+
+$ qswap usage --since 2026-10-01 --until 2026-10-05
+No usage between 2026-10-01 and 2026-10-05.
+To look further back: qswap usage --days 30
+```
+
 ## What the numbers mean
 
 | Column | Meaning |
@@ -100,7 +135,7 @@ Transcripts do not record which account served them, so qswap keeps its own reco
 - **Before the first line, usage is unattributed.** qswap starts the record the first time it runs after this feature arrived; it does not guess at older history.
 - **A login change made outside qswap** is attributed from the moment qswap notices it, not from when it happened.
 - **`qswap run` sessions.** When a profile keeps its own history, its files belong to its account. When history is shared (the default), its transcripts land in the same folder as everyone else's and nothing in a line says which profile wrote it. Claude Code does stamp each session with the account that started it; a session that started on an account other than the default login is a `run` session (a profile's login never changes), so the whole session goes to that account. A session on the default login follows the record above, including through a switch in the middle of it. Sessions from Claude Code versions that predate the stamp are attributed by time.
-- **The Claude desktop app** runs Claude Code on its own login, which qswap does not switch. Its sessions are listed as "Claude desktop app (its own login)".
-- **Codex** is attributed from `codex/activations.jsonl` in the data directory, which Codex account switching will write; until then Codex usage is unattributed.
+- **The Claude desktop app** runs Claude Code on its own login, which qswap does not switch. Its sessions are listed as "Claude desktop app", apart from every account.
+- **Codex** keeps its own record, `codex/activations.jsonl` in the data directory, by the same rules: a line each time qswap switches Codex accounts (`qswap codex switch`, `qswap codex auto`), and each time it notices the live Codex login changed some other way, when `qswap list`, `qswap codex list`, `qswap codex status` or `qswap usage` runs. Codex usage from before its first line is unattributed.
 
 `qswap usage --by account` shows the unattributed share under the table, and `--json` reports it as `unattributedShare`.

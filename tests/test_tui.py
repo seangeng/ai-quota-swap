@@ -308,7 +308,7 @@ class TestFormatting:
         # active account, not that the user must re-login.
         assert (
             tui_data.sentinel_label(USAGE_TOKEN_EXPIRED)
-            == "token expired — refresh deferred this pass; retries automatically"
+            == "token expired — the refresh retries automatically"
         )
         from ai_quota_swap.switcher import SENTINEL_NOTES
 
@@ -329,7 +329,7 @@ class TestFormatting:
             age_s=720.0,
         )
         card = account_card_text(make_account(1, active=True, entry=entry), 80).plain
-        assert "token expired — refresh deferred this pass; retries automatically" in card
+        assert "token expired — the refresh retries automatically" in card
         assert "last seen 53% used" in card
 
         no_history = account_card_text(
@@ -1782,15 +1782,17 @@ class TestBareInvocation:
         assert excinfo.value.code == 0
         assert "switcher" in launched
 
-    def test_bare_non_tty_keeps_usage_error(self, monkeypatch, temp_home):
+    def test_bare_non_tty_keeps_usage_error(self, monkeypatch, temp_home, capsys):
         import ai_quota_swap.cli as cli
+        import ai_quota_swap.tui as tui
 
         monkeypatch.setattr(sys, "argv", ["qswap"])
         monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
         monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-        with pytest.raises(SystemExit) as excinfo:
-            cli.main()
-        assert excinfo.value.code == 2  # argparse usage error
+        monkeypatch.setattr(tui, "run", lambda *a, **k: pytest.fail("no dashboard off a terminal"))
+        cli.main()  # a three-line hint, exit 0; never the dashboard
+        out = capsys.readouterr().out
+        assert "qswap help" in out and "qswap list" in out
 
     def test_qswap_watch_opens_tui_on_watch_page(self, monkeypatch, temp_home):
         import ai_quota_swap.cli as cli

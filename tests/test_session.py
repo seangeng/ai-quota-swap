@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ai_quota_swap import clis
 from ai_quota_swap import fsutil
 from ai_quota_swap import macos_keychain
 from ai_quota_swap import oauth
@@ -819,7 +820,7 @@ class TestIsSessionValid:
         """
         tmp_path.mkdir(exist_ok=True)
         resolved = "/fake/bin/claude.CMD"
-        monkeypatch.setattr(session_mod.shutil, "which", lambda name: resolved)
+        monkeypatch.setattr(clis, "find_cli", lambda name: resolved)
         seen_argv = {}
 
         def capture_run(argv, *a, **k):
@@ -1512,13 +1513,13 @@ def capture_exec(monkeypatch):
 
     monkeypatch.setattr(session_mod.SessionManager, "_exec", fake_exec)
     monkeypatch.setattr(
-        session_mod.shutil, "which", lambda name: f"/fake/bin/{name}"
+        clis, "find_cli", lambda name: f"/fake/bin/{name}"
     )
 
 
 class TestRun:
     def test_claude_not_on_path(self, manager, monkeypatch):
-        monkeypatch.setattr(session_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(clis, "find_cli", lambda name: None)
         with pytest.raises(SessionError, match="not found on PATH"):
             manager.run("2", [])
 
@@ -1596,7 +1597,7 @@ class TestRun:
             manager.switcher.backup_dir, ACCOUNT_NUM, ACCOUNT_EMAIL
         )
         assert exc.value.env["CLAUDE_CONFIG_DIR"] == str(session_dir)
-        assert "overriding it for this launch" in capsys.readouterr().out
+        assert "overriding it for this launch" in " ".join(capsys.readouterr().out.split())
 
     def test_preset_config_dir_fast_paths_for_active_default_account(
         self, manager, capture_exec, monkeypatch, capsys
@@ -1677,7 +1678,7 @@ class TestRun:
         assert exc.value.env["ANTHROPIC_API_KEY"] == "sk-ant-key"
 
     def test_exec_default_claude_not_on_path(self, manager, monkeypatch):
-        monkeypatch.setattr(session_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(clis, "find_cli", lambda name: None)
         with pytest.raises(SessionError, match="not found on PATH"):
             manager.exec_default([])
 
@@ -1747,6 +1748,8 @@ class TestGuards:
         block_real_keychain.set_password(service, account, "creds")
 
         monkeypatch.setattr("builtins.input", lambda *a: "y")
+
+        monkeypatch.setattr("ai_quota_swap.prompts.interactive", lambda: True)
         seeded_switcher.remove_account(ACCOUNT_NUM)
 
         assert not session_dir.exists()
@@ -1792,6 +1795,8 @@ class TestGuards:
         block_real_keychain.set_password(service, account, "creds")
 
         monkeypatch.setattr("builtins.input", lambda *a: "y")
+
+        monkeypatch.setattr("ai_quota_swap.prompts.interactive", lambda: True)
         seeded_switcher.purge()
 
         assert block_real_keychain.get_password(service, account) is None
@@ -3545,7 +3550,7 @@ class TestShareHistoryWindows:
     def test_run_accepts_the_flag(self, win_history, monkeypatch):
         source, session_dir, mgr = win_history
         monkeypatch.setattr(
-            session_mod.shutil, "which", lambda _name: "/usr/bin/claude"
+            clis, "find_cli", lambda _name: "/usr/bin/claude"
         )
 
         def past_the_resolver(_identifier):

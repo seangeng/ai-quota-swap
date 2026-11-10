@@ -6,9 +6,25 @@ The same three commands under `qswap codex` (`qswap codex list --json`, ...) pri
 
 ## Contract
 
-- Every payload carries a `schemaVersion` (currently `1`).
-- On a handled error stdout is `{"schemaVersion":1,"error":{...}}` with a non-zero exit code.
-- `--switch`/`--switch-to` report `{"switched": true|false, "from": …, "to": …, "reason": …}`.
+- Every payload carries a `schemaVersion` (currently `1`), including `qswap reset --json` and `qswap codex reset --json`.
+- Every failure under `--json` is the error envelope on stdout, `{"schemaVersion":1,"error":{"type":…,"message":…}}`: a handled error exits 1, a usage error (unknown verb, bad flag, missing argument) exits 64 with `type` `"UsageError"`. `message` is for people; key scripts on `type` and the exit code.
+- `--switch`/`--switch-to` report `{"switched": true|false, "from": …, "to": …, "strategy": …, "reason": …, "message": …, "warnings": […]}`. A target whose usage could not be read, or is old, adds a line to `warnings`; one that needs re-login is refused with the error envelope (type `SwitchError`) unless `--anyway`. A rotation (`switch` with no account) skips such accounts and lists each in `warnings` as `Skipped Account-N (needs re-login)`.
+- Payloads only gain fields. The human-readable strings inside them (`message`, `warnings`) keep the spelling scripts saw before (`Account-2`), even where the text output now says `#2 work`.
+
+## Commands with `--json`
+
+| Command | Payload |
+|---|---|
+| `list`, `codex list` | `{schemaVersion, activeAccountNumber, accounts}`, plus `providers.codex` (below) |
+| `status`, `codex status` | `{schemaVersion, active, totalManagedAccounts}`; `qswap status` adds `providers.codex` (Codex's `{active, totalManagedAccounts}`, when a Codex account is managed or a Codex login is live) and `autoSwitch` (`{running, providers, dryRun, lastTickAt}`: whether an engine's heartbeat is current; `lastTickAt` is epoch seconds or `null`). `totalManagedAccounts` stays the Claude Code count. |
+| `switch`, `codex switch` | the switch result above |
+| `reset`, `codex reset` | `{schemaVersion, auto, plan, accounts}`; with an account, `{schemaVersion, account, grantId, result}` (see [Usage resets](#usage-resets)) |
+| `priority`, `codex priority` | `{schemaVersion, accounts: [{number, email, priority}]}`; with an account and a tier, `{schemaVersion, account: {number, email}, priority}` |
+| `config`, `config list` | `{schemaVersion, path, settings: [{key, value, isSet}]}`; `config get KEY --json`: `{schemaVersion, key, value, isSet}` |
+| `auto`, `codex auto` | an event stream (below) |
+| `usage` | below |
+| `budget`, `api org list` | below |
+| `doctor` | `{schemaVersion, checks: [{id, group, status, summary, fix}], counts: {pass, warn, fail, skip}, online}`; `status` is `pass`, `warn`, `fail` or `skip`, `fix` the command to run or `null`. Exit 1 when any check fails. |
 
 ## Usage windows
 
@@ -34,6 +50,8 @@ These apply to `list` rows and the managed active row from `status --json`. All 
 | `loginExpiresAt` | the stored login records when its refresh token expires | ISO-8601 UTC: the moment the slot will need a fresh `/login` and `qswap add --slot N`, so a script can warn a few days ahead instead of discovering `relogin_required`. Absent when Claude Code recorded no such date for that login. |
 | `budget` | a monthly budget is set with `qswap budget` (API-key accounts only) | Dollars a month, e.g. `500.0`. |
 | `apiSpend` | the row is an API-key account and its spend is known, it has a budget, or an organization is registered ([api-accounts.md](api-accounts.md)) | `used` (dollars this UTC month, `null` when unknown), `limit` (the budget or `null`), `pct` (`used` over `limit`, or `null`), `currency` (`"USD"`), `today` (dollars today, UTC), `source` (`"admin-api"`: Anthropic's usage report for the key, priced at list prices; `"ledger"`: an estimate from this machine's transcripts; `null`: no figure), `month` (`"2026-11"`), `resetsAt` (the next month's start), and when known `asOf` (when the figure was read), `organization` and `apiKeyId` (the linked key), `unpricedTokens` (tokens of models without a price, left out of `used`), `note` (why the figure is not Anthropic's, e.g. `"Admin API rate limited"`). The row's `usageStatus` stays `api_key` and `usage` stays `null`. |
+| `needsRelogin` | always (`list` rows and the managed `status` row) | `true` when the account will not be used until its owner logs in again: its saved login was refused, or the auto-switch engine set it aside. The text views say `needs re-login`. |
+| `setAside` | the auto-switch engine holds the account out | `{"reason": …}`, e.g. `"invalid_grant"` (the saved login was refused) or `"identity-conflict"`; cleared when the login is replaced (`qswap add`). |
 | `plan` | the slot's subscription plan has been read from the profile endpoint at least once | `label` as the human views print it (`Ultra`, `Max 5x`, `Pro`, `Team`, `Free`), the raw `tier`, then `organizationType`, `billingType`, `subscriptionStatus` and `planDisplayName` when the profile carried them, `expired` (`true` once the subscription is `canceled` and the account is back on the free tier; the human views show that as a highlighted `Free`) and `fetchedAt`, the last successful profile read. Plans refresh on their own six-hour cadence, not with usage. |
 
 ## Pace fields on weekly windows
@@ -103,7 +121,7 @@ One object with `schemaVersion`, the request (`by`, `since`, `until` as local da
 
 | Field | Meaning |
 |---|---|
-| `rows` | One per group, in the order the text view prints them. `key` is the date (`--by day`), model id, project path, provider (`claude`/`codex`), session id, or account key (`email\|org`, `null` for unattributed, `desktop` for the Claude desktop app). Account rows add `account: {number, email}`; session rows add `provider` and `project`. |
+| `rows` | One per group, in the order the text view prints them. `key` is the date (`--by day`), model id, project path, provider (`claude`/`codex`), session id, or account key (`email\|org`, `null` for unattributed, `desktop` for the Claude desktop app). Account rows add `account: {number, email}` and `provider` (`claude`, `codex`, or `null` for unattributed usage); session rows add `provider` and `project`. |
 | `total` | The same token fields over every row. |
 | token fields (rows and `total`) | `input` (not from the cache), `output` (thinking and reasoning included), `cacheRead`, `cacheWrite5m`, `cacheWrite1h`, `reasoning` (the part of `output` the CLI reported as thinking or reasoning), `requests` (responses), `totalTokens`, `costUsd` (estimate at API prices; `null` when every token in the row is from a model without a price), `unpricedTokens`. |
 | `unpricedModels` | `[{model, tokens}]` for models the price table does not cover. |

@@ -125,8 +125,8 @@ class TestOutcomes:
         text = _billed_text(capsys)
         assert text.splitlines() == [
             "Billed by Anthropic, 2026-11-08 to 2026-11-10 (UTC days), by day",
-            "No organization registered: add one with qswap api org add, or set "
-            "ANTHROPIC_ADMIN_KEY for one command.",
+            "No organization registered: add one with qswap api org add,",
+            "or set ANTHROPIC_ADMIN_KEY for one command.",
         ]
         assert anthropic.calls == []
 
@@ -154,7 +154,7 @@ class TestOutcomes:
     def test_key_and_workspace_need_billed(self, env, capsys):
         with pytest.raises(SystemExit) as exc:
             run_main(["usage", "--by", "key"])
-        assert exc.value.code == 2
+        assert exc.value.code == 64
         assert "--by key needs --billed" in capsys.readouterr().err
 
     def test_unsupported_grouping_falls_back_to_days(self, env, anthropic, capsys):
@@ -204,7 +204,7 @@ class TestGroupings:
         text = _billed_text(capsys, "--by", "key")
         assert "Est. cost" in text
         row = [l for l in text.splitlines() if "Dev laptop" in l][0]
-        assert "Dev laptop (Account-3)" in row and row.split()[-1] == "$4.00"
+        assert "Dev laptop (#3)" in row and row.split()[-1] == "$4.00"
         assert [l for l in text.splitlines() if "Console usage" in l]
         assert "$6.00" in [l for l in text.splitlines() if l.strip().startswith("Total")][0]
         assert "Per-key cost is estimated from tokens" in text

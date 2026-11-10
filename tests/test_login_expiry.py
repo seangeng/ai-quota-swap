@@ -95,8 +95,8 @@ class TestFormatLoginExpiry:
         assert oauth.format_login_expiry(NOW + 45 * 60, False, NOW, short=True) == "re-login in 45m"
 
     def test_past(self):
-        assert oauth.format_login_expiry(NOW - 10, False, NOW) == "re-login needed"
-        assert oauth.format_login_expiry(NOW, False, NOW, short=True) == "re-login needed"
+        assert oauth.format_login_expiry(NOW - 10, False, NOW) == "needs re-login"
+        assert oauth.format_login_expiry(NOW, False, NOW, short=True) == "needs re-login"
 
     def test_silent_when_there_is_nothing_to_say(self):
         assert oauth.format_login_expiry(None, False, NOW) is None
@@ -159,19 +159,19 @@ class TestCliList:
             switcher.list_accounts()
 
         lines = capsys.readouterr().out.splitlines()
-        line_7d = next(line for line in lines if "7d:" in line)
-        (line_login,) = [line for line in lines if "login:" in line]
-        assert line_login.lstrip().startswith("└ login:")
+        line_7d = next(line for line in lines if "7d " in line and "resets" in line)
+        (line_login,) = [line for line in lines if "login " in line and "expires" in line]
+        assert line_login.lstrip().startswith("└ login ")
         assert line_login.endswith("in 5d 12h")
-        # Clock under clock, countdown under countdown.
+        # Clock under clock; both say "· in" before the countdown.
         assert line_login.index("expires ") + len("expires ") == line_7d.index("resets ") + len("resets ")
-        assert line_login.index("  in ") == line_7d.index("  in ")
+        assert " · in " in line_login and " · in " in line_7d
 
     def test_past_row(self):
         now = time.time()
         lines = _usage_entry_lines(UsageEntry(last_good=_MEASURED, fetched_at=now), now - 60)
         (line,) = [line for line in lines if "login:" in line]
-        assert line.startswith("└ ") and "expired " in line and line.endswith("re-login needed")
+        assert line.startswith("└ ") and "expired " in line and line.endswith("needs re-login")
 
     def test_under_a_sentinel_and_a_missing_measurement(self):
         now = time.time()
@@ -184,7 +184,7 @@ class TestCliList:
     def test_quarantined_block_says_it_once(self):
         now = time.time()
         lines = _usage_entry_lines(UsageEntry(sentinel=USAGE_RELOGIN_REQUIRED), now - 60)
-        assert lines[0].startswith("re-login needed")
+        assert lines[0].startswith("needs re-login")
         assert len(lines) == 1
 
     def test_age_note_stays_on_the_last_usage_row(self):
@@ -228,7 +228,7 @@ class TestCardAndMiniRow:
         )
         lines = widgets.account_card_text(acc, 100, now=now).plain.splitlines()
         assert "re-login" not in lines[0]
-        assert lines[1].lstrip().startswith("⚠ re-login needed")
+        assert lines[1].lstrip().startswith("⚠ needs re-login")
         mini = widgets.mini_account_text(acc, now).plain
         assert mini.count("re-login") == 1
 
@@ -240,7 +240,7 @@ class TestCardAndMiniRow:
     def test_past_stamp_without_the_sentinel_yet(self):
         now = time.time()
         acc = _replace_login(make_account(2), now - 60)
-        assert widgets.mini_account_text(acc, now).plain.endswith(" · re-login needed")
+        assert widgets.mini_account_text(acc, now).plain.endswith(" · needs re-login")
 
 
 def _seven(expires_at: float | None) -> list[AccountSnapshot]:

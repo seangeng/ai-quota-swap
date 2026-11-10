@@ -92,7 +92,10 @@ def normalize_account_threshold(value: object) -> float:
         try:
             pct = float(value.strip())
         except ValueError:
-            raise ValueError(f"threshold {range_text}, got {value!r}") from None
+            raise ValueError(
+                f"threshold must be a number from {ACCOUNT_THRESHOLD_MIN:g} to "
+                f"{ACCOUNT_THRESHOLD_MAX:g} (percent used), not {value!r}"
+            ) from None
     else:
         pct = float(value)
     # NaN fails every comparison and infinity passes the lower bound, so both
