@@ -762,6 +762,26 @@ class TestCLI:
         assert "auto-switch: on" in capsys.readouterr().out
 
     @pytest.mark.parametrize(
+        "saved, expected",
+        [
+            ({"auto_switch_enabled": True, "codex_auto_switch_enabled": True},
+             "auto-switch: on for Claude Code and Codex"),
+            ({"codex_auto_switch_enabled": True}, "auto-switch: on for Codex, off for Claude Code"),
+        ],
+    )
+    def test_service_status_reports_codex_auto_switch(
+        self, monkeypatch, tmp_path, capsys, saved, expected
+    ):
+        path = self._menubar_settings(monkeypatch, tmp_path)
+        path.write_text(json.dumps(saved))
+        self._service_harness(monkeypatch, ["qswap", "menubar", "--service-status"])
+
+        with pytest.raises(SystemExit):
+            cli.main()
+
+        assert expected in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
         "argv",
         [
             ["qswap", "menubar", "--foreground", "--auto-switch"],

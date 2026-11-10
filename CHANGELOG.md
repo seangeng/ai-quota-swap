@@ -27,6 +27,16 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `qswap codex reset` lists and spends Codex reset credits, and auto mode spends them under the same `resets.*` settings as Claude.
 - qswap never refreshes a Codex login and never runs `codex logout`. Tested against fakes; not yet run with two real Codex accounts.
 
+### Menu bar (macOS)
+
+- Codex accounts get a section of their own once Codex manages one; clicking a row switches that provider, and the add, disable and remove menus cover both, named with their provider.
+- One auto-switch toggle per provider (*Auto-switch Claude Code*, *Auto-switch Codex*), each hosting that provider's engine in its own thread with its own settings (`codex.threshold` for Codex). The first row says, in words, which engines run; *Settings → Title follows* puts Claude Code's, Codex's or the closest-to-its-limit account in the title.
+- Every row and notification uses the command line's words: `#2 work`, `needs re-login` (also for an account the engine set aside), `usage unavailable (HTTP 503), retrying`, `as of 3h 5m ago`, held resets by kind, `extra`, API-key spend. Notifications are titled `ai-quota-swap` and say each thing once, across both engines.
+- A cost row, `Today $12.40 · 7 days $179.72 (estimated)`, from the ledger, which the menu bar scans in the background every 15 minutes.
+- Adding from a token is one dialog (token, optional email, setup-token or API key); removing asks what `qswap remove` asks; switching to an account that needs re-login asks first with `qswap switch`'s explanation.
+- `menubar_settings.json` gains `codex_auto_switch_enabled` and `title_follows`; an older file loads as before, and keys a build does not know are kept.
+- The menu is described by one pure function (`menubar.build_menu`) and drawn by a thin rumps layer; `scripts/demo/run.py SCENARIO --menubar` prints it.
+
 ### Usage and cost
 
 - `qswap usage` reports tokens and an estimated cost at API prices from the session files Claude Code and Codex write, by day, account, model, project, provider or session. It runs locally and stores no message content.

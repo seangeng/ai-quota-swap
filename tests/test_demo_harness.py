@@ -388,6 +388,32 @@ class TestScenarioStates:
         assert "usage unknown until used" in r.stdout  # the Codex saved login
         assert all(len(line) <= 80 for line in r.stdout.splitlines())
 
+    def test_the_menu_bar_says_what_list_says(self):
+        # --menubar prints ai_quota_swap.menubar.build_menu's description of
+        # the seeded fleet: both providers, the API-key account, held resets.
+        r = _run(["fleet", "--menubar"])
+        assert r.returncode == 0, r.stderr
+        out = r.stdout
+        assert out.startswith("title: ⇄ personal · 46% · 38%\n")
+        assert "Claude Code accounts  (heading)" in out and "Codex accounts  (heading)" in out
+        assert "✓ #1 personal (maya@example.com) · 5h 46%" in out
+        assert "holds 1 Fable reset" in out and "holds 1 reset credit" in out
+        # After the menu bar's ledger scan the API-key account has a spend
+        # figure, as `qswap list` has after `qswap usage`.
+        assert "#5 ci (api-key-5@token.local) · API key · $0.00 today · $0.00 this month · estimate" in out
+        assert "Codex #2 work (maya@northwind.example.com)" in out  # provider-named submenus
+        r = _run(["trouble", "--menubar"])
+        assert r.returncode == 0, r.stderr
+        assert "#2 work (maya@northwind.example.com) · needs re-login" in r.stdout
+        assert "#4 side (sam@example.org) · needs re-login" in r.stdout  # set aside
+        assert "usage unavailable (HTTP 503), retrying" in r.stdout
+        assert "as of 3h" in r.stdout
+        r = _run(["usage", "--menubar"])
+        assert r.returncode == 0, r.stderr
+        assert "7 days $179.72 (estimated)" in r.stdout  # qswap usage's total
+        r = _run(["empty-claude", "--menubar"])
+        assert "Claude Code is logged in as maya@example.com. Add it with: qswap add" in r.stdout
+
     def test_trouble_seeds_a_quarantine_the_engine_honours(self):
         # After `list` reads it, the quarantined account (4) has a fresh,
         # readable reading with headroom, and auto still finds no candidate:

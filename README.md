@@ -357,7 +357,7 @@ On Linux/WSL, set `XDG_DATA_HOME` to override the default location.
 ## Menu bar (macOS)
 
 <details>
-<summary>Optional macOS menu bar app — usage at a glance, click to switch</summary>
+<summary>Optional macOS menu bar app: usage at a glance, click to switch</summary>
 
 Needs the `menubar` extra (macOS only):
 
@@ -367,18 +367,18 @@ uv tool install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quo
 qswap menubar
 ```
 
-Shows every account's 5h / 7d / spend usage and switches with a click (specific / rotate / best / next-available), plus the TUI's add / disable-enable / remove / refresh actions. `qswap menubar` hands it to launchd and returns: it keeps running after you close the terminal, comes back at login, and is restarted if it crashes. *Quit* in the menu stops it until the next login; *Settings → Start at login* turns the login start off.
+Shows every Claude Code and Codex account's usage in the words `qswap list` uses (`#2 work · 5h 46% (in 2h 35m) · 7d 38%`, `needs re-login`, `usage unavailable (HTTP 503), retrying`, `holds 1 Fable reset`), a row with today's and the last seven days' estimated cost from `qswap usage`'s ledger, and switches with a click (an account, or Claude Code's rotate / best / next-available). It also adds, disables, enables and removes accounts for both providers. Codex appears once it manages an account, in a section of its own. `qswap menubar` hands it to launchd and returns: it keeps running after you close the terminal, comes back at login, and is restarted if it crashes. *Quit* in the menu stops it until the next login; *Settings → Start at login* turns the login start off.
 
-Auto-switching is off until you turn it on, with *Settings → Auto-switch accounts* or `qswap menubar --auto-switch`. It runs the same engine as [`qswap auto`](#automatic-switching) with the same `autoswitch.*` settings, so the menu bar and CLI stay in sync, and the menu's first row shows whether it is running, off, or stopped (click to restart) and when usage was last refreshed.
+Auto-switching is off until you turn it on, per provider: *Settings → Auto-switch Claude Code* (or `qswap menubar --auto-switch`) and, once Codex manages an account, *Settings → Auto-switch Codex*. Each runs the same engine as [`qswap auto`](#automatic-switching) or `qswap codex auto` with the same settings, so the menu bar and CLI stay in sync, and the menu's first row says, for each, whether it is running, off, or stopped (click to restart), and how old the readings are. Notifications, titled `ai-quota-swap`, say when an engine switched or used a usage reset, and once each when an account needs re-login, every account is at its limit, or an API-key account nears its budget.
 
 ```bash
 qswap menubar --service-status      # running? pid? starts at login? auto-switch on?
-qswap menubar --auto-switch         # turn auto-switch on (--no-auto-switch: off)
+qswap menubar --auto-switch         # turn Claude Code's auto-switch on (--no-auto-switch: off)
 qswap menubar --uninstall-service   # stop it and remove the LaunchAgent
 qswap menubar --foreground          # run attached to this terminal, for debugging
 ```
 
-`qswap upgrade` restarts a running menu bar when the build changed. The wrapper app in `/Applications`, file locations, environment handling and the Login Items switch are in [docs/menubar.md](docs/menubar.md).
+`qswap upgrade` restarts a running menu bar when the build changed. What every row and notification means, the settings file, the wrapper app in `/Applications`, file locations, environment handling and the Login Items switch are in [docs/menubar.md](docs/menubar.md).
 
 </details>
 

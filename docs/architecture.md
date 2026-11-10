@@ -104,7 +104,11 @@ Sizes are rounded and move with every change; they are here so you know what you
 | `tui/data.py` | 200 | Snapshots and blocking actions, always off the UI thread |
 | `tui/modals.py` | 200 | Confirmations and token entry |
 | `tui/theme.py` | 100 | The Textual themes and shared colours |
-| `menubar.py` | 1,500 | The macOS menu bar app (rumps), a shell over the switcher and engine |
+| `menubar.py` | 1,600 | The menu bar's settings, its typed menu description and `build_menu`, the one pure function that turns both providers' state into the whole menu; the title, the health row, the dialogs' words |
+| `menubar_app.py` | 700 | The rumps glue: draws a `Menu`, maps each `Action` to a handler; only loaded with rumps |
+| `menubar_data.py` | 300 | The menu bar's blocking reads (both providers, the ledger's cost totals, the log, heartbeats), always off the main thread |
+| `menubar_engines.py` | 300 | One auto-switch engine per provider, each in its own thread; noticing switches made outside the menu bar |
+| `menubar_notify.py` | 300 | Notification texts and their de-duplication across the two engines |
 | `launch_agent.py` | 900 | Running the menu bar under launchd |
 | `app_bundle.py` | 300 | The wrapper `.app` that gives the menu bar a bundle id |
 
@@ -139,7 +143,7 @@ ledger.db                `qswap usage`; rebuilt from session files if deleted
 activations.jsonl        which Claude account was live when
 pricing.json             your own prices (optional)
 api_orgs.json            registered organizations, without keys
-menubar_settings.json    menu bar display preferences
+menubar_settings.json    menu bar preferences and its auto-switch toggles
 ai-quota-swap.log        the log
 .lock, .migrations.json  the registry lock, and the migrations already applied
 codex/                   the Codex provider's data root
@@ -166,6 +170,6 @@ On macOS the saved logins and Admin keys are Keychain items under the service `a
 | A Codex behaviour | `CodexSwitcher` (`switch_to`, `_handle_holders`, `login_new_account`), `codex/auth.py`, `codex/processes.py` | [design/codex.md](design/codex.md), [codex.md](codex.md) |
 | The ledger and prices | `ledger/readers.py` (what counts), `ledger/report.py` (grouping and attribution), the tables in `ledger/pricing.py` | [design/ledger.md](design/ledger.md), [usage.md](usage.md) |
 | The dashboard | `tui/dashboard.py` (screens), `tui/widgets.py` (cards and bars), `tui/app.py` (actions) | `scripts/demo/tour.py` screenshots every screen |
-| The menu bar | `menubar.run` and its pure formatting helpers, `launch_agent.py` | [menubar.md](menubar.md) |
+| The menu bar | `menubar.build_menu` (every row and its words), `menubar_notify.Notifier` (notifications), `menubar_app` (drawing and handlers), `launch_agent.py`; `scripts/demo/run.py fleet --menubar` prints the menu for a scenario | [menubar.md](menubar.md) |
 
 API-key spend and budgets are in `api_spend.py` and `admin_api.py`; [design/api-accounts.md](design/api-accounts.md) explains them.
