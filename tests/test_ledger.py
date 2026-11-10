@@ -244,6 +244,26 @@ class TestIncrementalScan:
         assert stats.bytes_read == len(claude_line(mid="msg_2", ts=T0 + 10)) + 1
         assert env.sums()["requests"] == 2
 
+    def test_crlf_lines_are_counted_and_resumed_at_the_right_byte(self, env):
+        # Claude Code writes "\n" everywhere, but a transcript copied through
+        # a tool that translates line endings arrives with "\r\n". The cursor
+        # is a byte offset, so it must land after the "\r\n" and an append
+        # must read only the new line.
+        path = env.transcript()
+        path.parent.mkdir(parents=True)
+        first = claude_line(mid="msg_1", ts=T0)
+        second = claude_line(mid="msg_2", ts=T0 + 10)
+        path.write_bytes((first + "\r\n").encode())
+        assert env.scan().bytes_read == len(first) + 2
+        assert env.sums()["requests"] == 1
+        with open(path, "ab") as f:
+            f.write((second + "\r\n").encode())
+        stats = env.scan()
+        assert stats.events == 1
+        assert stats.bytes_read == len(second) + 2
+        assert env.sums()["requests"] == 2
+        assert env.scan().bytes_read == 0
+
     def test_unchanged_files_are_not_read_again(self, env):
         write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0)])
         env.scan()
@@ -404,16 +424,36 @@ class TestCodex:
         # Resumed at the old offset: only the appended line was read.
         assert stats.bytes_read == len(codex_record(T0 + 9, THREAD_A, "resp-2")) + 1
 
+    def test_a_crlf_rollout_resumes_at_the_right_byte_with_its_reader_state(self, env):
+        # Same as the Claude case: "\r\n" endings must not shift the cursor,
+        # and the model read before it still applies after it.
+        path = env.rollout(THREAD_A)
+        path.parent.mkdir(parents=True)
+        head = [codex_meta(T0, THREAD_A), codex_turn(T0, "gpt-5.4"),
+                codex_record(T0 + 1, THREAD_A, "resp-1")]
+        path.write_bytes("".join(line + "\r\n" for line in head).encode())
+        env.scan()
+        tail = codex_record(T0 + 9, THREAD_A, "resp-2")
+        with open(path, "ab") as f:
+            f.write((tail + "\r\n").encode())
+        stats = env.scan()
+        assert stats.bytes_read == len(tail) + 2
+        store = env.store()
+        rows = store.conn.execute(
+            "SELECT model, sum(requests) FROM buckets WHERE provider = 'codex' GROUP BY 1"
+        ).fetchall()
+        store.close()
+        assert rows == [("gpt-5.4", 2)]
+
     @pytest.mark.skipif(not scanner.ZSTD_AVAILABLE, reason="needs zstd support")
     def test_compressed_in_place_is_not_counted_again(self, env):
-        from compression import zstd  # noqa: PLC0415 - only on 3.14+
-
         lines = [codex_meta(T0, THREAD_A), codex_turn(T0),
                  codex_record(T0 + 1, THREAD_A, "resp-1")]
         live = write_lines(env.rollout(THREAD_A), lines)
         env.scan()
         data = live.read_bytes()
-        env.rollout(THREAD_A, zst=True).write_bytes(zstd.compress(data))
+        # The scanner's own zstd: the stdlib's from 3.14, `zstandard` before.
+        env.rollout(THREAD_A, zst=True).write_bytes(scanner._zstd.compress(data))
         live.unlink()
         env.scan()
         assert env.sums("codex")["requests"] == 1

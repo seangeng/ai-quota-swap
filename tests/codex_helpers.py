@@ -7,8 +7,11 @@ no real email, id or token appears anywhere.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
+import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 from ai_quota_swap.codex import auth as codex_auth
@@ -93,6 +96,88 @@ def write_live(codex_home: Path, raw: bytes) -> Path:
     path.write_bytes(raw)
     path.chmod(0o600)
     return path
+
+
+# -- Codex's credential locks, taken the way Codex takes them ---------------------
+#
+# Codex 0.167 locks auth.lock and auth.json.lock with Rust's File::lock and
+# File::try_lock: flock(LOCK_EX) on macOS and Linux, and on Windows
+# LockFileEx(LOCKFILE_EXCLUSIVE_LOCK) over the whole file (offset 0, length
+# 2**64 - 1). These take the same lock from the test process, so a test can
+# play Codex's part on every platform.
+
+if sys.platform == "win32":
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class _Overlapped(ctypes.Structure):
+        _fields_ = [
+            ("Internal", ctypes.c_void_p),
+            ("InternalHigh", ctypes.c_void_p),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        ]
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.LockFileEx.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+        wintypes.DWORD, ctypes.POINTER(_Overlapped),
+    ]
+    _kernel32.LockFileEx.restype = wintypes.BOOL
+    _kernel32.UnlockFileEx.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(_Overlapped),
+    ]
+    _kernel32.UnlockFileEx.restype = wintypes.BOOL
+    _LOCKFILE_FAIL_IMMEDIATELY = 0x1
+    _LOCKFILE_EXCLUSIVE_LOCK = 0x2
+    _ALL = 0xFFFFFFFF
+
+    def _try_lock(fh) -> bool:
+        return bool(_kernel32.LockFileEx(
+            msvcrt.get_osfhandle(fh.fileno()),
+            _LOCKFILE_EXCLUSIVE_LOCK | _LOCKFILE_FAIL_IMMEDIATELY,
+            0, _ALL, _ALL, ctypes.byref(_Overlapped()),
+        ))
+
+    def _unlock(fh) -> None:
+        _kernel32.UnlockFileEx(
+            msvcrt.get_osfhandle(fh.fileno()), 0, _ALL, _ALL, ctypes.byref(_Overlapped())
+        )
+else:
+    import fcntl
+
+    def _try_lock(fh) -> bool:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
+
+    def _unlock(fh) -> None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def codex_holds_lock(path: Path) -> Iterator[None]:
+    """Hold ``path`` (which must exist) locked the way Codex does."""
+    with open(path, "r+b") as fh:
+        assert _try_lock(fh), f"{path} is already locked"
+        try:
+            yield
+        finally:
+            _unlock(fh)
+
+
+def codex_could_lock(path: Path) -> bool:
+    """Whether Codex's try-lock on ``path`` would succeed now; released at once."""
+    with open(path, "r+b") as fh:
+        if not _try_lock(fh):
+            return False
+        _unlock(fh)
+        return True
 
 
 def window(seconds: int, pct: float, reset_in: float = 3600.0, now: float | None = None) -> dict:

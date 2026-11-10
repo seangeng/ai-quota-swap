@@ -245,7 +245,8 @@ class TestActivationWriters:
             "ts": "1970-01-01T00:01:40.500Z", "number": 2, "email": "b@example.com",
             "org": "o", "source": "switch",
         }
-        assert ((tmp_path / "activations.jsonl").stat().st_mode & 0o777) == 0o600
+        if sys.platform != "win32":  # Windows keeps privacy in ACLs, not mode bits
+            assert ((tmp_path / "activations.jsonl").stat().st_mode & 0o777) == 0o600
 
     def test_observe_writes_only_on_change(self, tmp_path):
         assert observe_live_login(tmp_path, number=1, email="a@example.com", org="")
