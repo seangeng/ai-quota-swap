@@ -59,7 +59,13 @@ build-backend = "hatchling.build"
 packages = ["src/ai_quota_swap"]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-xdist>=3.5"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-xdist>=3.5",
+    "textual-serve>=1.1.3",
+    "time-machine>=3.6.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

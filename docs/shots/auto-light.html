@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1200">
+<meta name="color-scheme" content="light">
+<title>qswap auto</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { display: flex; justify-content: center; }
+  .window {
+    width: 1200px; box-sizing: border-box; overflow: hidden;
+    background: #fbfaf7; border: 1px solid #d9d7d1; border-radius: 12px;
+  }
+  .titlebar {
+    position: relative; height: 40px; display: flex; align-items: center;
+    background: #ecebe7; border-bottom: 1px solid #d9d7d1;
+  }
+  .dots { display: flex; gap: 8px; padding-left: 16px; }
+  .dots i { display: block; width: 12px; height: 12px; border-radius: 50%; }
+  .dots i:nth-child(1) { background: #ff5f57; }
+  .dots i:nth-child(2) { background: #febc2e; }
+  .dots i:nth-child(3) { background: #28c840; }
+  .title {
+    position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
+    font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: #6d6c68;
+  }
+  .screen {
+    margin: 0; padding: 20px 28px 24px; color: #242422;
+    font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
+      "DejaVu Sans Mono", "Liberation Mono", monospace;
+    font-size: 15px; line-height: 1.5; white-space: pre;
+    font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
+    tab-size: 8;
+  }
+  .prompt { color: #8a8984; }
+  .cmd { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="window" id="window">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="title">qswap auto</div></div>
+<pre class="screen"><span class="prompt">$</span> <span class="cmd">qswap auto</span>
+<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Auto-switch running: threshold 90%, every 60s — Ctrl-C to stop</span>
+14:20:00  <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Account-1 (maya@example.com): 5h 78% used (switch at 90%) | others: #2: 5h 12% · 7d 21%, #3: 5h 93% · 7d 81%</span>
+14:20:00  <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">no switch: below-threshold (5h 78.5% &lt; 90%)</span>
+14:21:00  <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Account-1 (maya@example.com): 5h 88% used (switch at 90%) | others: #2: 5h 12% · 7d 21%, #3: 5h 93% · 7d 81%</span>
+14:21:00  <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">no switch: below-threshold (5h 88.5% &lt; 90%)</span>
+14:22:00  <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Account-1 (maya@example.com): 5h 91% used (switch at 90%) | others: #2: 5h 12% · 7d 21%, #3: 5h 93% · 7d 81%</span>
+14:22:00  <span style="color: #954c2a; text-decoration-color: #954c2a">Switched Account-1 -&gt; Account-2 (maya@northwind.example.com) (proactive)</span></pre>
+</div>
+</body>
+</html>
