@@ -1272,7 +1272,11 @@ class TestAccountMenus:
 
             assert isinstance(app.screen, ConfirmModal)
             body = app.screen.query_one(".modal-body", Static).render().plain
-            assert body.startswith("Stop managing Codex #2 work (maya@northwind.example.com)?")
+            assert body.startswith(
+                "Stop managing Codex #2 work (maya@northwind.example.com) and delete "
+                "qswap's saved copy of its login?"
+            )
+            assert "Do not run codex logout" in body
             await pilot.press("y")
             await settle(pilot)
             assert ("remove", "2", True) in codex.calls
@@ -1285,6 +1289,10 @@ class TestAccountMenus:
             await settle(pilot)
             await menu_select(pilot, "remove-menu")
             await menu_select(pilot, "remove:claude:1")
+            from textual.widgets import Static
+
+            body = app.screen.query_one(".modal-body", Static).render().plain
+            assert body == "Remove #1 user1@example.com and delete its saved login?"
             await pilot.press("n")
             await settle(pilot)
             assert not any(call[0] == "remove" for call in fake.calls)

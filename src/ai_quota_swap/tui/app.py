@@ -458,19 +458,23 @@ class QswapApp(App):
             done=done,
         )
 
+    #: The question ``qswap remove`` / ``qswap codex remove`` asks, and what
+    #: the command line says after it, for the same account.
+    _REMOVE_QUESTIONS = {
+        "claude": "Remove {name} and delete its saved login?",
+        "codex": "Stop managing {name} and delete qswap's saved copy of its login?",
+    }
+
     def confirm_remove(self, provider: str, number: str) -> None:
         name = self.label(provider, number)
+        question = self._REMOVE_QUESTIONS.get(provider, self._REMOVE_QUESTIONS["claude"])
+        message = question.format(name=name)
         if provider == "codex":
-            detail = ("Only qswap's saved copy of its login is deleted; the login itself "
-                      "stays signed in. Do not run codex logout to clean up.")
-        else:
-            detail = "qswap deletes its saved copy of the login and its config backup."
+            message += ("\n\nThe login itself stays signed in. Do not run codex logout to "
+                        "clean up: it signs the login out at OpenAI, and every saved copy "
+                        "of it stops working.")
         self.push_screen(
-            ConfirmModal(
-                f"Stop managing {name}?\n\n{detail}",
-                title="Remove account",
-                yes_label="Remove",
-            ),
+            ConfirmModal(message, title="Remove account", yes_label="Remove"),
             partial(self._on_remove_confirm, provider, number),
         )
 
