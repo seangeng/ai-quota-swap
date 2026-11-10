@@ -30,6 +30,7 @@ from tests.ledger_fixtures import (
 )
 
 THREAD = "00000000-0000-4000-8000-0000000000c1"
+THREAD_OLD = "00000000-0000-4000-8000-0000000000c2"
 
 
 def run_cli(*args: str, capsys) -> tuple[int, str, str]:
@@ -62,6 +63,24 @@ def history() -> dict:
     return {"now": now, "projects": projects, "rollout": rollout}
 
 
+@pytest.fixture
+def old_history(history) -> dict:
+    """``history`` plus a transcript and a rollout last changed 30 days ago."""
+    then = history["now"] - 30 * 86400
+    old = write_lines(history["projects"] / "sess-old.jsonl", [
+        claude_line(mid="msg_old", ts=then, session="sess-old"),
+    ])
+    os.utime(old, (then, then))
+    rollout = history["rollout"].parent / rollout_name(THREAD_OLD)
+    write_lines(rollout, [
+        codex_meta(then, THREAD_OLD),
+        codex_turn(then, "gpt-6.1-sol"),
+        codex_record(then + 5, THREAD_OLD, "resp-old"),
+    ])
+    os.utime(rollout, (then + 5, then + 5))
+    return history
+
+
 class TestUsageCommand:
     def test_default_text_report(self, history, capsys):
         code, out, err = run_cli(capsys=capsys)
@@ -71,6 +90,7 @@ class TestUsageCommand:
         assert "Total" in out
         assert "estimates at API list prices" in out
         assert "No price for: claude-zeta-9" in out
+        assert "not in the ledger yet" not in out  # nothing older was left out
         assert "\033" not in out  # not a terminal: plain text
         assert err == ""  # no progress line off a TTY
 
@@ -132,6 +152,8 @@ class TestUsageCommand:
             (["--days", "0"], "--days must be at least 1"),
             (["--days", "3", "--since", "2026-11-01"], "not allowed with"),
             (["--no-scan", "--rescan"], "not allowed with"),
+            (["--all", "--rescan"], "not allowed with"),
+            (["--all", "--no-scan"], "not allowed with"),
             (["--since", "11/05/2026"], "not a date"),
             (["--by", "week"], "invalid choice"),
         ],
@@ -155,6 +177,46 @@ class TestUsageCommand:
             code, _out, err = run_cli(capsys=capsys)
         assert code == 130
         assert "run qswap usage again to continue" in err
+
+    def test_older_files_are_left_out_and_the_report_says_so(self, old_history, capsys):
+        code, out, _ = run_cli(capsys=capsys)
+        assert code == 0
+        assert out.rstrip("\n").splitlines()[-1] == (
+            "2 older session files are not in the ledger yet. Use a wider --days or --since "
+            "to include the ones you need, or --all for all of them."
+        )
+        code, out, _ = run_cli("--json", capsys=capsys)
+        doc = json.loads(out)
+        assert doc["total"]["requests"] == 4
+        assert (doc["scan"]["filesSkipped"], doc["scan"]["olderFilesNotInLedger"]) == (2, 2)
+        assert isinstance(doc["scan"]["modifiedSince"], str)
+        # A wider request reads them...
+        code, out, _ = run_cli("--json", "--days", "40", capsys=capsys)
+        doc = json.loads(out)
+        assert doc["total"]["requests"] == 6
+        assert (doc["scan"]["filesSkipped"], doc["scan"]["olderFilesNotInLedger"]) == (0, 0)
+        # ...and the default report no longer mentions them.
+        code, out, _ = run_cli(capsys=capsys)
+        assert "not in the ledger yet" not in out
+        assert json.loads(run_cli("--json", capsys=capsys)[1])["scan"]["filesSkipped"] == 2
+
+    def test_all_reads_everything_without_rebuilding(self, old_history, capsys):
+        run_cli("--json", capsys=capsys)  # a first, narrow run
+        code, out, _ = run_cli("--json", "--all", capsys=capsys)
+        doc = json.loads(out)
+        assert code == 0
+        assert doc["scan"]["modifiedSince"] is None
+        assert (doc["scan"]["filesSkipped"], doc["scan"]["olderFilesNotInLedger"]) == (0, 0)
+        assert doc["scan"]["newEvents"] == 2  # only the two old files were new
+        assert doc["total"]["requests"] == 4  # the report still covers the last 7 days
+        code, out, _ = run_cli("--json", "--no-scan", "--days", "40", capsys=capsys)
+        assert json.loads(out)["total"]["requests"] == 6
+
+    def test_rescan_reads_everything(self, old_history, capsys):
+        code, out, _ = run_cli("--json", "--rescan", capsys=capsys)
+        doc = json.loads(out)
+        assert doc["scan"]["newEvents"] == 6
+        assert (doc["scan"]["filesSkipped"], doc["scan"]["modifiedSince"]) == (0, None)
 
     def test_help_lists_usage(self, capsys):
         with patch.object(sys, "argv", ["qswap", "help"]), pytest.raises(SystemExit):
@@ -183,7 +245,8 @@ class TestActivationWriters:
             "ts": "1970-01-01T00:01:40.500Z", "number": 2, "email": "b@example.com",
             "org": "o", "source": "switch",
         }
-        assert ((tmp_path / "activations.jsonl").stat().st_mode & 0o777) == 0o600
+        if sys.platform != "win32":  # Windows keeps privacy in ACLs, not mode bits
+            assert ((tmp_path / "activations.jsonl").stat().st_mode & 0o777) == 0o600
 
     def test_observe_writes_only_on_change(self, tmp_path):
         assert observe_live_login(tmp_path, number=1, email="a@example.com", org="")

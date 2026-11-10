@@ -38,7 +38,7 @@ from pathlib import Path
 
 from ai_quota_swap import macos_keychain
 from ai_quota_swap.exceptions import CodexLoginError, LockError
-from ai_quota_swap.fsutil import atomic_write_bytes
+from ai_quota_swap.fsutil import atomic_write_bytes, readlink
 from ai_quota_swap.locking import FileLock
 from ai_quota_swap.paths import get_codex_home
 
@@ -385,7 +385,11 @@ def resolve_auth_file(path: Path) -> Path:
     """Follow a symlink chain the way Codex 0.167 does (``resolve_auth_file``).
 
     Each hop is read with ``readlink`` and joined to the link's directory when
-    relative; a missing end is allowed; more than 40 hops is an error.
+    relative; a missing end is allowed; more than 40 hops is an error. On
+    Windows an absolute hop comes back as ``\\\\?\\C:\\...``; the prefix is
+    dropped (see :func:`fsutil.readlink`) so the path, the commit lock beside
+    it and every message spell the file the ordinary way, and a later relative
+    hop's ``..`` is normalized. The lock file is the same file either way.
     """
     current = path
     for _ in range(40):
@@ -395,7 +399,7 @@ def resolve_auth_file(path: Path) -> Path:
             return current
         if not stat.S_ISLNK(st.st_mode):
             return current
-        target = Path(os.readlink(current))
+        target = Path(readlink(current))
         current = target if target.is_absolute() else current.parent / target
     raise CodexLoginError(f"{path}: too many symlinks")
 

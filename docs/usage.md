@@ -17,7 +17,7 @@ qswap usage --json
 
 Nothing is sent anywhere. Only token counts, model names, project directories, session ids and timestamps are kept, in `ledger.db` in the qswap data directory. No message content is stored.
 
-The first run reads your whole history and can take minutes on a large one; it shows progress in a terminal, and Ctrl-C keeps what was read so far, so the next run picks up from there. Later runs read only what was added since.
+A run reads only the session files its dates need, newest first. A file last changed more than a day before the first day cannot hold usage from those days, so it waits until a wider `--days` or `--since`, or `--all`, asks for it, and the report ends with a line saying how many such files are not in the ledger yet (`scan.olderFilesNotInLedger` in `--json`). Progress shows in a terminal, Ctrl-C keeps what was read so far so the next run picks up from there, and later runs read only what was added since.
 
 Compressed Codex files need Python 3.14 or newer, or the `zstandard` package. Without either, they are skipped and the report says how many.
 
@@ -71,6 +71,7 @@ Put a `pricing.json` next to `ledger.db` in the qswap data directory (`~/.ai-quo
 | `--json` | The same data as JSON with `schemaVersion: 1` |
 | `--no-scan` | Report from the ledger without reading new session data |
 | `--rescan` | Rebuild the ledger from the session files |
+| `--all` | Read every session file into the ledger, not only those the dates need, without rebuilding it |
 
 ## How usage is attributed to accounts
 

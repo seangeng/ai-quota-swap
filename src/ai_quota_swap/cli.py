@@ -1216,9 +1216,10 @@ Examples:
   qswap usage --since 2026-11-01 --until 2026-11-07 --by account
   qswap usage --provider codex --by project
   qswap usage --json
+  qswap usage --all                  # read your whole history into the ledger
 
-The first run reads your whole history and can take a while; later runs
-read only what was added. See docs/usage.md for what the numbers mean.
+A run reads only the session files its dates need, newest first, and only
+what was added since the last run. See docs/usage.md for what the numbers mean.
         """,
     )
     span = parser.add_mutually_exclusive_group()
@@ -1245,6 +1246,10 @@ read only what was added. See docs/usage.md for what the numbers mean.
     scan.add_argument(
         "--rescan", action="store_true",
         help="Rebuild the ledger from the session files (slow on a large history)",
+    )
+    scan.add_argument(
+        "--all", action="store_true", dest="scan_all",
+        help="Read every session file, not only those the dates need (no rebuild)",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args(argv)
@@ -1297,6 +1302,7 @@ read only what was added. See docs/usage.md for what the numbers mean.
             provider=args.provider,
             scan=not args.no_scan,
             rescan=args.rescan,
+            scan_all=args.scan_all,
             registry=registry,
             progress=not args.json,
         )
@@ -1321,7 +1327,7 @@ read only what was added. See docs/usage.md for what the numbers mean.
             payload["notes"] = result.notes
         print(json.dumps(payload, indent=2))
         return
-    print(render_text(result.report, notes=result.notes))
+    print(render_text(result.report, notes=result.notes, last_line=result.older_history))
 
 
 _CODEX_AUTO_DESCRIPTION = (

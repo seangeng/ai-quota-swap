@@ -107,8 +107,9 @@ class TestProcessHome:
         monkeypatch.setattr(sys, "platform", "linux")
         environ = f"HOME={tmp_path}\0CODEX_HOME={tmp_path}/h2\0".encode()
         real_read = Path.read_bytes
+        # as_posix: on Windows str(Path("/proc/7/environ")) has backslashes.
         monkeypatch.setattr(Path, "read_bytes",
-                            lambda self: environ if str(self) == "/proc/7/environ" else real_read(self))
+                            lambda self: environ if self.as_posix() == "/proc/7/environ" else real_read(self))
         assert processes.process_codex_home(7) == (tmp_path / "h2").resolve()
 
 
