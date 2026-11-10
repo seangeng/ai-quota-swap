@@ -216,7 +216,8 @@ class TestCodexReset:
         assert code == 0
         assert out.startswith("Codex usage reset credits   auto: last-resort")
         assert "2: a@example.com (active)" in out
-        assert "1× weekly  usable now · use by" in out and CREDIT_ID in out
+        assert "1× weekly reset   clears all weekly usage · usable now · use by" in out
+        assert CREDIT_ID in out
         assert "1: b@example.com\n     └ no reset credits reported" in out
         # #1 has room, so last-resort would not spend now.
         assert "Auto would not use a credit right now." in out

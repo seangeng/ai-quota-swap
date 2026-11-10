@@ -174,7 +174,20 @@ qswap reset 2                  # use one on account 2 (asks first; --yes to skip
 qswap config set resets.auto on-limit   # how auto-switch spends them (below)
 ```
 
-`qswap list` shows a `resets:` row under any account that holds one. Whenever the auto engine runs (`qswap auto`, the dashboard's live mode, the menu bar), `resets.auto` decides when it spends one, at most one per tick:
+Resets are not interchangeable. A Fable reset clears only Fable usage; a weekly reset clears all weekly usage. Spend the wrong one and it either does nothing for the limit you hit or uses up a reset worth more. Each reset has a kind, read from the windows it clears:
+
+| Kind | Clears | Auto mode spends it when |
+|---|---|---|
+| Fable reset (or another model's) | that model's weekly limit, and gives back what the model used of the all-models weekly limit | that model's limit is reached |
+| 5-hour reset | the 5-hour window | the 5-hour window is reached |
+| weekly reset | the all-models weekly window, and any per-model window it also lists | the all-models weekly window is reached |
+| full reset | the 5-hour and the all-models weekly windows (every Codex credit is one) | the 5-hour or the all-models weekly window is reached |
+
+When two resets would both clear the limit you hit, auto mode spends the narrower one: a Fable reset before a weekly one, even when the weekly one is listed first or expires sooner. It never spends a weekly or full reset when only a per-model limit is reached, unless you allow it with `qswap config set resets.weeklyForModelLimit true`; `qswap reset` says when that rule is the only thing keeping a reset back. A reset whose shape qswap doesn't recognize, or that lists a window qswap doesn't know, is shown as "reset" with the windows it names and is never spent automatically.
+
+`qswap reset N` can spend any kind. Without `--grant` it picks the narrowest reset that clears a limit you've hit, and before you confirm a weekly or full reset on a per-model limit it says what you'd give up: "This weekly reset clears all weekly usage; only Fable is at its limit (7d is at 31%)."
+
+`qswap list` shows a `resets:` row under any account that holds one, counted by kind once the account holds more than one kind (`2 Fable · 1 weekly · use by Mar 9`); the dashboard and the menu bar count them the same way. Whenever the auto engine runs (`qswap auto`, the dashboard's live mode, the menu bar), `resets.auto` decides when it spends one, at most one per tick:
 
 | `resets.auto` | Uses a reset when |
 |---|---|
@@ -186,8 +199,9 @@ qswap config set resets.auto on-limit   # how auto-switch spends them (below)
 <details>
 <summary>Guards & settings</summary>
 
-- **Worth it, or kept.** A reset is skipped when its window refills on its own within `resets.minHoursLeft` (24h), or when another window would still sit over the line afterwards (a Fable reset does nothing for an account whose all-models weekly window stays at 98%). A Fable reset that also gives back Fable's share of the weekly window gets credit for it.
-- **Not lost to expiry.** Every auto mode also spends a reset once its expiry is within `resets.expiryDays` (7) per reset held, at `resets.expiryThreshold` (50%). Three resets expiring together start 21 days out.
+- **Worth it, or kept.** A reset is skipped when its window refills on its own within `resets.minHoursLeft` (24h), or when another window would still sit over the line afterwards: a Fable reset does nothing for an account whose all-models weekly window stays at 98%, and a weekly reset does nothing for one whose Fable window, if the reset doesn't list it, stays at 100%. A Fable reset that also gives back Fable's share of the weekly window gets credit for it. A Fable reset is never spent for the all-models weekly limit itself, even though Claude Code offers one there.
+- **Not lost to expiry.** Every auto mode also spends a reset once its expiry is within `resets.expiryDays` (7) per reset held, at `resets.expiryThreshold` (50%), measured on the window that reset is for: the all-models weekly window for a weekly reset, the model's window for a Fable reset. Three resets expiring together start 21 days out, and the one closest to its deadline goes first, whatever its kind.
+- `resets.weeklyForModelLimit` (off) lets auto mode spend a weekly or full reset when only a per-model limit is reached.
 - **Never twice on old numbers.** After a claim, the account is held out until a reading taken after it arrives. An unconfirmed claim is retried with the same request id, so it can't spend a second reset. Auto spends at most 3 a day across all accounts, and never on disabled or quarantined accounts. `--dry-run` only reports.
 - `resets.enabled false` stops reading reset status. The status rides on the normal usage request, with Claude Code's client agent string, because the server only reports resets to Claude Code.
 
@@ -385,6 +399,7 @@ qswap config set autoswitch.model Fable   # per-model switching (see "auto"); Fa
 qswap config set run.shareHistory false   # each account keeps its own chat history (see "run")
 qswap config set updates.check false      # no daily PyPI lookup for the "newer version" hint
 qswap config set usage.headerProbe true   # opt in: setup-token usage via a 1-token request (see "add-token")
+qswap config set resets.weeklyForModelLimit true  # let auto spend a weekly reset on a Fable limit (see "Usage resets")
 qswap config unset autoswitch.threshold   # back to the default
 qswap config path                         # where settings.json lives
 ```

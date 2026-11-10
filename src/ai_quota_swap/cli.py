@@ -803,6 +803,9 @@ Examples:
   qswap codex reset 2 --grant <credit id> --yes
   qswap codex reset --json
 
+Every credit is a full reset: it clears the 5-hour and weekly windows the
+account has (on a weekly-only plan it acts as a weekly reset).
+
 Automatic use (qswap codex auto) follows the same resets.* settings as
 Claude Code's resets, with a daily cap of 3 automatic spends for Codex:
   qswap config set resets.auto last-resort   # default
@@ -842,11 +845,22 @@ Examples:
   qswap reset 2 --grant launch-2610-fable --yes
   qswap reset --json
 
+Resets are not interchangeable:
+  Fable reset    clears Fable usage only (and gives back what Fable used of
+                 the weekly limit)
+  5-hour reset   clears 5-hour usage only
+  weekly reset   clears all weekly usage
+  full reset     clears all usage (5-hour and weekly)
+
 Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
   qswap config set resets.auto last-resort   # default
   qswap config set resets.auto active        # the account in use, at its limit
   qswap config set resets.auto on-limit
   qswap config set resets.auto off
+Auto spends the narrowest reset that does the job, and a weekly or full reset
+only for the 5-hour or all-models weekly limit; for a per-model limit alone:
+  qswap config set resets.weeklyForModelLimit true
+`qswap reset N` spends any kind, and says what it trades first.
         """,
     )
     parser.add_argument("account", nargs="?", metavar="NUM|EMAIL|ALIAS")
@@ -913,18 +927,15 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
                 error(f"Error: Account-{num} has no {what} '{args.grant}' (`{command}` lists them)")
                 sys.exit(1)
         else:
-            usable = sorted(
-                (g for g in grants if resets.grant_unusable_reason(g, now) is None),
-                key=lambda g: (
-                    g["id"] != status.get("next_grant_id"),
-                    resets.parse_ts(g.get("ends_at")) or math.inf,
-                ),
-            )
+            # One that clears a window at the line first, the narrowest
+            # first: with only Fable at its limit, a Fable reset before a
+            # weekly one.
+            usable = resets.manual_order(status, last_good, rs.threshold, now)
             if not usable:
                 error(f"Error: Account-{num} has no {noun} it can use right now")
                 for g in resets.unused_grants(status, now):
                     print(dimmed(
-                        f"  {resets.grant_kind(g)} ({g['id']}): "
+                        f"  {resets.reset_name(g)} ({g['id']}): "
                         f"{resets.grant_unusable_reason(g, now)}"
                     ))
                 sys.exit(1)
@@ -934,7 +945,7 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
             error(f"Error: that {'credit' if codex else 'reset'} can't be used right now ({unusable})")
             sys.exit(1)
 
-        kind = resets.grant_kind(grant)
+        name = resets.reset_name(grant)
         if not args.yes:
             if not sys.stdin.isatty():
                 error(f"Error: refusing to spend a {noun} without --yes in a non-interactive shell")
@@ -942,11 +953,15 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
             if codex:
                 from ai_quota_swap import codex_cli
 
-                print(codex_cli.describe_credit(num, email, grant, last_good, status, now))
+                print(codex_cli.describe_credit(
+                    num, email, grant, last_good, status, now, threshold=rs.threshold,
+                ))
                 answer = input(f"Use this {noun}? [y/N] ")
             else:
-                print(_describe_reset(num, email, grant, last_good, status, now))
-                answer = input(f"Use this {kind} reset? [y/N] ")
+                print(_describe_reset(
+                    num, email, grant, last_good, status, now, threshold=rs.threshold,
+                ))
+                answer = input(f"Use this {name}? [y/N] ")
             if answer.strip().lower() not in ("y", "yes"):
                 print(dimmed("Kept — nothing was spent."))
                 return
@@ -984,8 +999,8 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
             left = f" · {result.resets_left} left on this grant" if result.resets_left is not None else ""
             cleared = ", ".join(
                 resets.WINDOW_LABELS.get(k) or k for k in result.cleared
-            ) or kind
-            print(accent(f"Used a {kind} reset on Account-{num} ({email}): {cleared} refilled{left}"))
+            ) or resets.grant_kind(grant)
+            print(accent(f"Used a {name} on Account-{num} ({email}): {cleared} refilled{left}"))
             fresh = switcher.usage_entries_by_account(fetch=set()).get(num)
             if fresh is not None:
                 from ai_quota_swap.switcher import _usage_entry_lines
@@ -1016,17 +1031,24 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
 
 
 def _describe_reset(
-    num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float
+    num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float,
+    *, threshold: float = 95.0,
 ) -> str:
-    """What spending ``grant`` would do, in the terms Claude Code uses."""
+    """What spending ``grant`` would do, in the terms Claude Code uses, and
+    what it trades when it is broader than the limit reached."""
     from ai_quota_swap import resets
     from ai_quota_swap.oauth import reset_clock_string
     from datetime import datetime, timezone
 
-    kind = resets.grant_kind(grant)
-    lines = [bolded(f"Account-{num} ({email}) · {kind} reset · {grant['id']}")]
+    name = resets.reset_name(grant)
+    lines = [bolded(f"Account-{num} ({email}) · {name} · {grant['id']}")]
     if grant.get("label"):
         lines.append(dimmed(f"  {grant['label']}"))
+    phrase = resets.clears_phrase(grant)
+    lines.append(f"  {phrase[:1].upper()}{phrase[1:]}")
+    trade = resets.trade_note(grant, usage, threshold)
+    if trade:
+        lines.append(yellowed(f"  {trade}"))
     refills = []
     for key in grant.get("clears") or ():
         label = resets.WINDOW_LABELS.get(key) or key
@@ -1098,6 +1120,16 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
     rs = switcher.reset_settings()
     settings = load_engine_settings(_settings_root(switcher), _provider.get())
     plan = preview_reset_plan(switcher, settings, entries, now=now)
+    # A broad reset kept only because a per-model limit is all that is
+    # reached: what auto would do if resets.weeklyForModelLimit allowed it.
+    kept = None
+    if plan is None and rs.auto != "off" and not rs.weekly_for_model_limit:
+        from dataclasses import replace
+
+        kept = resets.kept_by_scope(None, preview_reset_plan(
+            switcher, settings, entries, now=now,
+            reset_settings=replace(rs, weekly_for_model_limit=True),
+        ))
     state = _read_state_file(switcher.backup_dir / STATE_FILENAME)
     used_today = reset_claims_today(state, now)
     current = switcher.current_account_number()
@@ -1120,6 +1152,7 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
                 "minHoursLeft": rs.min_hours_left,
                 "expiryDays": rs.expiry_days,
                 "expiryThreshold": rs.expiry_threshold,
+                "weeklyForModelLimit": rs.weekly_for_model_limit,
                 "usedToday": used_today,
                 "maxPerDay": MAX_AUTO_RESETS_PER_DAY,
             },
@@ -1154,6 +1187,12 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
             note = f"not eligible ({reason})" if not status.get("eligible") and reason else "no resets held"
             print(f"     {dimmed('└')} {dimmed(note)}")
             continue
+        # Grouped by kind, narrowest first; each line says what it clears.
+        grants = sorted(enumerate(grants), key=lambda item: (
+            resets.SCOPE_BREADTH[resets.grant_scope(item[1])], resets.grant_kind(item[1]), item[0],
+        ))
+        grants = [g for _, g in grants]
+        width = max(len(resets.reset_name(g)) for g in grants)
         for j, g in enumerate(grants):
             branch = dimmed("└" if j == len(grants) - 1 else "├")
             why_not = resets.grant_unusable_reason(g, now)
@@ -1163,11 +1202,14 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
                 state_text += f" · use by {end}"
             tag = " · next" if g["id"] == status.get("next_grant_id") else ""
             count = f"{g['resets_left']}×"
-            line = f"{count:>3} {resets.grant_kind(g):<7} {state_text}"
+            line = (
+                f"{count:>3} {resets.reset_name(g):<{width}}   "
+                f"{resets.clears_phrase(g)} · {state_text}"
+            )
             print(f"     {branch} {muted(line)}  {dimmed(g['id'] + tag)}")
     if rs.auto != "off":
         if plan is not None:
-            what = "a Codex usage reset credit" if codex else f"a {plan.grant_kind} reset"
+            what = "a Codex usage reset credit" if codex else f"a {plan.noun}"
             hours = f", {plan.hours_left / 24:.1f}d before it resets on its own" if plan.hours_left else ""
             print(accent(
                 f"Auto would now use {what} on Account-{plan.account} "
@@ -1175,6 +1217,8 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
             ))
         else:
             print(dimmed(f"Auto would not use a {'credit' if codex else 'reset'} right now."))
+            if kept is not None:
+                print(dimmed(resets.kept_note(kept)))
         print(dimmed(
             f"Auto {'credits spent' if codex else 'resets'} in the last 24h: "
             f"{used_today}/{MAX_AUTO_RESETS_PER_DAY}"

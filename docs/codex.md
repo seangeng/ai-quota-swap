@@ -105,9 +105,16 @@ qswap codex reset 2                  # spend one on account 2 (asks first; --yes
 qswap codex reset 2 --grant <id> --yes
 ```
 
-A credit resets the windows the account reports for its core Codex limit (5h and weekly, or weekly alone on Pro). Whether it also resets an additional, model-specific limit is not known, so qswap does not count on it.
+Every credit is a full reset (Codex titles them "Full reset (Weekly + 5 hr)"). It resets the windows the account reports for its core Codex limit: 5h and weekly, or weekly alone on Pro, where it works as a weekly reset. `qswap codex reset` names each credit that way:
 
-Automatic spending follows the same `resets.*` settings as Claude Code's usage resets, with the same meaning: `resets.auto` is `last-resort` by default (spend when the active account has reached `resets.threshold`, 95 by default, and no switch helps), or `active`, `on-limit`, `off`; `resets.minHoursLeft` keeps a credit when the window resets on its own soon anyway; `resets.expiryDays` spends credits that are about to expire. Before spending, qswap re-reads the account, reserves the spend in its state file so two engines cannot both spend, and stops after 3 automatic spends in 24 hours. `resets.enabled false` stops reading the credit list.
+```
+  2: a@example.com (active)
+     └  1× full reset   clears all usage · usable now · use by Dec 9  rlrc_6f1b0d8e · next
+```
+
+Whether a credit also resets an additional, model-specific limit is not known, so qswap does not count on it: auto mode never spends a credit for an additional limit alone.
+
+Automatic spending follows the same `resets.*` settings as Claude Code's usage resets, with the same meaning and the same kind rules (see [Usage resets](../README.md#usage-resets)): `resets.auto` is `last-resort` by default (spend when the active account has reached `resets.threshold`, 95 by default, and no switch helps), or `active`, `on-limit`, `off`; `resets.minHoursLeft` keeps a credit when the window resets on its own soon anyway; `resets.expiryDays` spends credits that are about to expire. A credit is spent only for the 5-hour or weekly window, since those are what it resets. Before spending, qswap re-reads the account, reserves the spend in its state file so two engines cannot both spend, and stops after 3 automatic spends in 24 hours. `resets.enabled false` stops reading the credit list.
 
 Each spend carries a request id (a UUID) that qswap stores before sending; when the answer never arrives, the retry sends the same id, so the server cannot spend a second credit for it. An interrupted `qswap codex reset` says so; run `qswap codex reset` to see where things stand.
 

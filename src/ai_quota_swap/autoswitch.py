@@ -531,6 +531,7 @@ class ResetEvent(AutoSwitchEvent):
         return {
             "account": self.account,
             "plan": self.plan,
+            "scope": self.plan.get("scope"),
             "result": self.result,
             "dryRun": self.dry_run,
         }
@@ -540,13 +541,15 @@ class ResetEvent(AutoSwitchEvent):
         return bool(self.result and self.result.get("result") == "reset")
 
     def human(self) -> str:
+        from ai_quota_swap.resets import scope_noun
+
         plan = self.plan
         who = f"Account-{self.account.get('number')} ({self.account.get('email')})"
         why = f"{plan['window']} {plan['pct']:.0f}%"
         hours = plan.get("hoursLeft")
         if hours is not None:
             why += f", {_hours_label(hours)} before it resets on its own"
-        what = f"a {plan['grantKind']} reset"
+        what = f"a {scope_noun(plan.get('scope'), plan.get('grantKind'))}"
         if self.dry_run:
             return f"[dry-run] would use {what} on {who} ({plan['reason']}: {why})"
         result = self.result or {}
@@ -694,14 +697,17 @@ def preview_reset_plan(
     entries: Mapping[str, object],
     *,
     now: float | None = None,
+    reset_settings=None,
 ):
     """The reset the engine's policy would spend right now on ``entries``
     (``usage_entries_by_account()``), or None — for ``qswap reset`` to show.
-    Same inputs as :meth:`AutoSwitchEngine._maybe_use_reset`, no side effects."""
+    Same inputs as :meth:`AutoSwitchEngine._maybe_use_reset`, no side effects.
+    ``reset_settings`` replaces the configured ``resets.*`` (to ask what a
+    different setting would do)."""
     from ai_quota_swap import resets
 
     now = time.time() if now is None else now
-    rs = switcher.reset_settings()
+    rs = reset_settings if reset_settings is not None else switcher.reset_settings()
     if not rs.enabled:
         return None
     state = _read_state_file(switcher.backup_dir / STATE_FILENAME)

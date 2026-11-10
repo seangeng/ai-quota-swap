@@ -225,6 +225,9 @@ def _resets_row(usage: dict) -> tuple[str, str] | None:
 
         ├ Fable:   6%   resets Nov 15 03:00  in 5d 5h
         └ resets:   3   Fable · use by Mar 9
+
+    Several kinds are counted apiece (``3   2 Fable · 1 weekly · use by
+    Mar 9``): one kind of reset cannot stand in for another.
     """
     from ai_quota_swap import resets
 
