@@ -1,4 +1,4 @@
-"""Tests for `cswap move` (ClaudeAccountSwitcher.move_account)."""
+"""Tests for `qswap move` (ClaudeAccountSwitcher.move_account)."""
 
 import json
 import os
@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from claude_swap import macos_keychain
-from claude_swap.credentials import CredentialStore
-from claude_swap.exceptions import (
+from ai_quota_swap import macos_keychain
+from ai_quota_swap.credentials import CredentialStore
+from ai_quota_swap.exceptions import (
     AccountNotFoundError,
     ConfigError,
     CredentialError,
     SessionError,
     ValidationError,
 )
-from claude_swap.models import Platform
-from claude_swap.session import keychain_service_name
-from claude_swap.switcher import ClaudeAccountSwitcher
+from ai_quota_swap.models import Platform
+from ai_quota_swap.session import keychain_service_name
+from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
 
 class TestMoveAccount:
@@ -88,7 +88,7 @@ class TestMoveAccount:
             def __exit__(self, *exc):
                 return False
 
-        monkeypatch.setattr("claude_swap.switcher.FileLock", SpyLock)
+        monkeypatch.setattr("ai_quota_swap.switcher.FileLock", SpyLock)
         switcher.move_account("2", "5")
 
         assert entered == [switcher.lock_file]
@@ -124,7 +124,7 @@ class TestMoveAccount:
             def __exit__(self, *exc):
                 return False
 
-        monkeypatch.setattr("claude_swap.switcher.FileLock", SpyLock)
+        monkeypatch.setattr("ai_quota_swap.switcher.FileLock", SpyLock)
         num_src, num_target, swapped = switcher.move_account("1", "2")
 
         assert (num_src, num_target, swapped) == ("1", "2", True)
@@ -241,7 +241,7 @@ class TestMoveAccount:
         ever reached — and raises ``ConfigError`` instead. The invariant
         this test exists to pin (nothing committed, the stale item
         survives) is unchanged; only which guard catches it first is."""
-        from claude_swap.credentials import SECURITY_SERVICE
+        from ai_quota_swap.credentials import SECURITY_SERVICE
 
         switcher = ClaudeAccountSwitcher()
         self._write(switcher, sample_sequence_data)
@@ -587,7 +587,7 @@ class TestMoveSessionProfileKeychain:
     On macOS the profile's credential lives in a keychain item whose service
     name is the hash of the profile DIR PATH
     (``session.keychain_service_name``), so ``os.replace`` on the dir leaves
-    the item behind at the old name. Nothing in cswap ever names that service
+    the item behind at the old name. Nothing in qswap ever names that service
     again -- ``purge`` enumerates the profile dirs that still exist -- so an
     entry missed here is permanent.
     """

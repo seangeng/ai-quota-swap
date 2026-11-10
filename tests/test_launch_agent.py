@@ -1,4 +1,4 @@
-"""Tests for the launchd LaunchAgent that keeps ``cswap menubar`` alive.
+"""Tests for the launchd LaunchAgent that keeps ``qswap menubar`` alive.
 
 ``subprocess.run`` is patched throughout so the real ``launchctl`` is never
 driven: these assert the argv this module *shapes* and how it reads launchctl's
@@ -20,10 +20,10 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_swap import app_bundle, launch_agent
-from claude_swap.exceptions import ClaudeSwitchError
+from ai_quota_swap import app_bundle, launch_agent
+from ai_quota_swap.exceptions import ClaudeSwitchError
 
-PROGRAM = ["/Users/x/.local/bin/cswap"]
+PROGRAM = ["/Users/x/.local/bin/qswap"]
 UID = 501
 
 
@@ -66,7 +66,7 @@ def _router(responses: dict[str, subprocess.CompletedProcess]):
 
 
 def test_build_plist_is_parseable_and_runs_the_menubar_worker(tmp_path):
-    # Plain `cswap menubar` asks launchd to run the service; --foreground is the
+    # Plain `qswap menubar` asks launchd to run the service; --foreground is the
     # one invocation that draws the status item in place, so that is the job.
     parsed = plistlib.loads(launch_agent.build_plist(PROGRAM, home=tmp_path))
     assert parsed["Label"] == launch_agent.LABEL
@@ -111,7 +111,7 @@ def test_build_plist_path_env_leads_with_the_programs_own_directory(tmp_path):
     reason="asserts POSIX path shapes; the agent only ever runs on macOS",
 )
 def test_build_plist_path_env_includes_the_user_bin_dir(tmp_path):
-    # A uv tool install puts cswap's siblings in ~/.local/bin; launchd's own
+    # A uv tool install puts qswap's siblings in ~/.local/bin; launchd's own
     # default PATH does not include it.
     parsed = plistlib.loads(launch_agent.build_plist(PROGRAM, home=tmp_path))
     entries = parsed["EnvironmentVariables"]["PATH"].split(":")
@@ -168,25 +168,25 @@ def test_build_plist_env_without_allowlisted_keys_is_just_path(tmp_path):
 
 
 def test_resolve_program_prefers_the_console_script(tmp_path):
-    script = tmp_path / "cswap"
+    script = tmp_path / "qswap"
     script.write_text("#!/bin/sh\n")
     with patch.object(launch_agent.sys, "argv", [str(script)]):
         assert launch_agent.resolve_program() == [str(script)]
 
 
 def test_resolve_program_keeps_the_symlink_and_does_not_follow_it(tmp_path):
-    """`uv tool install` links ~/.local/bin/cswap into the tool's virtualenv.
+    """`uv tool install` links ~/.local/bin/qswap into the tool's virtualenv.
 
     Resolving that symlink would pin the virtualenv-internal path, which a
     reinstall recreates — exactly the path this module exists to avoid.
     """
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    real = venv_bin / "cswap"
+    real = venv_bin / "qswap"
     real.write_text("#!/bin/sh\n")
     link_dir = tmp_path / "local" / "bin"
     link_dir.mkdir(parents=True)
-    link = link_dir / "cswap"
+    link = link_dir / "qswap"
     link.symlink_to(real)
 
     with patch.object(launch_agent.sys, "argv", [str(link)]):
@@ -194,10 +194,10 @@ def test_resolve_program_keeps_the_symlink_and_does_not_follow_it(tmp_path):
 
 
 def test_resolve_program_makes_a_relative_argv0_absolute(tmp_path, monkeypatch):
-    script = tmp_path / "cswap"
+    script = tmp_path / "qswap"
     script.write_text("#!/bin/sh\n")
     monkeypatch.chdir(tmp_path)
-    with patch.object(launch_agent.sys, "argv", ["./cswap"]):
+    with patch.object(launch_agent.sys, "argv", ["./qswap"]):
         result = launch_agent.resolve_program()
     assert result == [str(script)]
     assert Path(result[0]).is_absolute()
@@ -206,15 +206,15 @@ def test_resolve_program_makes_a_relative_argv0_absolute(tmp_path, monkeypatch):
 def test_resolve_program_falls_back_to_the_interpreter_without_a_script(tmp_path):
     with patch.object(launch_agent.sys, "argv", [str(tmp_path / "gone")]):
         with patch.object(launch_agent.shutil, "which", return_value=None):
-            assert launch_agent.resolve_program() == [sys.executable, "-m", "claude_swap"]
+            assert launch_agent.resolve_program() == [sys.executable, "-m", "ai_quota_swap"]
 
 
-def test_resolve_program_ignores_an_argv0_that_is_not_cswap(tmp_path):
+def test_resolve_program_ignores_an_argv0_that_is_not_qswap(tmp_path):
     # Running through pytest, argv[0] is the test runner — not a thing launchd
     # should be pointed at.
     other = tmp_path / "pytest"
     other.write_text("#!/bin/sh\n")
-    found = tmp_path / "cswap"
+    found = tmp_path / "qswap"
     found.write_text("#!/bin/sh\n")
     with patch.object(launch_agent.sys, "argv", [str(other)]):
         with patch.object(launch_agent.shutil, "which", return_value=str(found)):
@@ -443,7 +443,7 @@ def test_status_reads_the_jobs_own_state_not_a_nested_blocks(tmp_path):
     reported the endpoint's state as the service's.
     """
     printed = (
-        "gui/501/com.cswap.menubar = {\n"
+        "gui/501/com.aiquotaswap.menubar = {\n"
         "\tactive count = 1\n"
         "\tstate = running\n"
         "\tpid = 25026\n"
@@ -476,7 +476,7 @@ def test_status_ignores_a_non_numeric_pid_line(tmp_path):
     assert result["pid"] is None
 
 
-# --- ensure: plain `cswap menubar` -----------------------------------------
+# --- ensure: plain `qswap menubar` -----------------------------------------
 
 
 class _FakeLaunchd:
@@ -540,7 +540,7 @@ def _btm_dump(disposition: str, label: str = launch_agent.LABEL) -> str:
         "                  URL: /Library/LaunchDaemons/com.docker.socket.plist\n"
         "\n"
         " #2:\n"
-        "                 Name: cswap\n"
+        "                 Name: qswap\n"
         "       Developer Name: (null)\n"
         "                 Type: legacy agent (0x10008)\n"
         f"          Disposition: [enabled, {disposition}, notified] (0x9)\n"
@@ -660,7 +660,7 @@ def test_ensure_repairs_a_plist_from_before_the_worker_flag_and_keeps_its_env(tm
     home, data = _homes(tmp_path)
     login = _login_plist(home, https_proxy="http://proxy:3128")
     old = plistlib.loads(login.read_bytes())
-    old["ProgramArguments"] = [*PROGRAM, "menubar"]  # written by a pre-1.0 cswap
+    old["ProgramArguments"] = [*PROGRAM, "menubar"]  # written by a pre-1.0 qswap
     old["EnvironmentVariables"]["PATH"] = "/stale"
     login.write_bytes(plistlib.dumps(old))
     fake = _FakeLaunchd(loaded=True, pid=4242)
@@ -682,7 +682,7 @@ def test_ensure_repairs_a_plist_from_before_the_worker_flag_and_keeps_its_env(tm
 
 def test_ensure_repairs_a_plist_pinning_a_moved_console_script(tmp_path):
     home, data = _homes(tmp_path)
-    login = _login_plist(home, program=["/old/venv/bin/cswap"])
+    login = _login_plist(home, program=["/old/venv/bin/qswap"])
     fake = _FakeLaunchd(loaded=True, pid=None)
 
     result = _ensure(fake, home, data)
@@ -977,7 +977,7 @@ def _stamp(data, pid, version="0.0.0", source=None):
 
 
 def test_write_worker_stamp_records_this_process_and_build(tmp_path):
-    from claude_swap.update_check import install_identity
+    from ai_quota_swap.update_check import install_identity
 
     _home, data = _homes(tmp_path)
     launch_agent.write_worker_stamp(data)
@@ -991,7 +991,7 @@ def test_worker_build_is_stale_for_the_running_pids_own_older_stamp(tmp_path, mo
     _home, data = _homes(tmp_path)
     _stamp(data, pid=4242, version="0.0.0")
     monkeypatch.setattr(
-        "claude_swap.update_check.install_identity",
+        "ai_quota_swap.update_check.install_identity",
         lambda: {"version": "1.0.0", "source": None},
     )
     with patch.object(launch_agent.subprocess, "run", side_effect=_FakeLaunchd()):
@@ -1002,7 +1002,7 @@ def test_an_unstamped_worker_is_restarted_once_it_is_past_the_grace_period(tmp_p
     """Workers from before stamps existed (0.30, 1.0.0b1) never write one.
 
     Without this rule an external upgrade would leave them running the old
-    build for ever: plain `cswap menubar` would read "no stamp" as "current".
+    build for ever: plain `qswap menubar` would read "no stamp" as "current".
     """
     _home, data = _homes(tmp_path)
     old = _FakeLaunchd(etime="05:00")
@@ -1032,7 +1032,7 @@ def test_an_unstamped_worker_is_left_alone_when_ps_cannot_date_it(tmp_path):
     sys.platform == "win32" or os.geteuid() == 0, reason="needs a read-only directory"
 )
 def test_an_unstamped_worker_is_not_restarted_when_no_stamp_could_be_written(tmp_path):
-    # Otherwise every `cswap menubar` would restart it: the successor could
+    # Otherwise every `qswap menubar` would restart it: the successor could
     # not write a stamp either.
     _home, data = _homes(tmp_path)
     data.chmod(0o500)
@@ -1082,19 +1082,19 @@ def test_worker_build_compares_the_commit_too(tmp_path, monkeypatch):
     _home, data = _homes(tmp_path)
     _stamp(data, pid=4242, version="1.0.0b1", source="aaaaaaa")
     monkeypatch.setattr(
-        "claude_swap.update_check.install_identity",
+        "ai_quota_swap.update_check.install_identity",
         lambda: {"version": "1.0.0b1", "source": "bbbbbbb"},
     )
     assert launch_agent.worker_build_is_stale(4242, data) is True
 
 
 def test_ensure_restarts_a_running_worker_of_an_older_build(tmp_path, monkeypatch):
-    """`uv tool upgrade` by hand leaves the old build running; `cswap menubar` fixes that."""
+    """`uv tool upgrade` by hand leaves the old build running; `qswap menubar` fixes that."""
     home, data = _homes(tmp_path)
     _login_plist(home)
     _stamp(data, pid=4242, version="0.0.0")
     monkeypatch.setattr(
-        "claude_swap.update_check.install_identity",
+        "ai_quota_swap.update_check.install_identity",
         lambda: {"version": "1.0.0", "source": None},
     )
     fake = _FakeLaunchd(loaded=True, pid=4242)
@@ -1111,7 +1111,7 @@ def test_ensure_leaves_a_current_build_alone(tmp_path, monkeypatch):
     _login_plist(home)
     _stamp(data, pid=4242, version="1.0.0")
     monkeypatch.setattr(
-        "claude_swap.update_check.install_identity",
+        "ai_quota_swap.update_check.install_identity",
         lambda: {"version": "1.0.0", "source": None},
     )
     result = _ensure(_FakeLaunchd(loaded=True, pid=4242), home, data)
@@ -1124,7 +1124,7 @@ def test_status_reports_the_running_build_and_whether_it_is_stale(tmp_path, monk
     _login_plist(home)
     _stamp(data, pid=4242, version="0.9.0", source="abcdef0123")
     monkeypatch.setattr(
-        "claude_swap.update_check.install_identity",
+        "ai_quota_swap.update_check.install_identity",
         lambda: {"version": "1.0.0", "source": None},
     )
     fake = _FakeLaunchd(loaded=True, pid=4242)

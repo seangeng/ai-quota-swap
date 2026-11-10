@@ -7,7 +7,7 @@ and the verb that wrote it. Anyone who ran the earlier build still carries
 does now: nothing. The ranking ignores it, the policy reader ignores it, an
 unrelated write preserves it (the store is hand-editable JSON and tolerates
 unknown keys, exactly as `_disabled_from_data` does), `--list --json` does not
-surface it, and `cswap standby` is no longer a command.
+surface it, and `qswap standby` is no longer a command.
 
 This is the only test file that names the key, because it has to inject it.
 
@@ -24,10 +24,10 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_swap import cli
-from claude_swap.autoswitch import TickOutcome
-from claude_swap.models import AccountPolicy
-from claude_swap.switcher import ClaudeAccountSwitcher
+from ai_quota_swap import cli
+from ai_quota_swap.autoswitch import TickOutcome
+from ai_quota_swap.models import AccountPolicy
+from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
 from tests.test_account_policy_store import PolicyStoreBase
 from tests.test_autoswitch import EngineHarness, _usage
@@ -101,16 +101,16 @@ class TestTheJsonRowDoesNotSurfaceTheStrayKey(PolicyStoreBase):
 
 
 class TestTheVerbIsGone(PolicyStoreBase):
-    """`cswap standby 1` is not a command and writes nothing."""
+    """`qswap standby 1` is not a command and writes nothing."""
 
     def test_the_verb_is_not_in_the_subcommand_map(self):
         assert "standby" not in cli._SUBCOMMAND_FLAGS
 
     def test_driving_it_through_main_fails_and_writes_nothing(self, temp_home: Path):
         self._fleet(temp_home)
-        with patch.object(sys, "argv", ["claude-swap", "standby", "1"]), \
+        with patch.object(sys, "argv", ["ai-quota-swap", "standby", "1"]), \
              patch("os.geteuid", return_value=1000, create=True), \
-             patch("claude_swap.update_check.check_for_update", return_value=None), \
+             patch("ai_quota_swap.update_check.check_for_update", return_value=None), \
              pytest.raises(SystemExit) as exc:
             cli.main()
         assert exc.value.code not in (0, None)

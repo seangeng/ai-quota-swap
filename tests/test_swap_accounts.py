@@ -1,4 +1,4 @@
-"""Tests for `cswap swap` (ClaudeAccountSwitcher.swap_accounts)."""
+"""Tests for `qswap swap` (ClaudeAccountSwitcher.swap_accounts)."""
 
 import errno
 import json
@@ -8,18 +8,18 @@ from pathlib import Path
 
 import pytest
 
-from claude_swap import macos_keychain
-from claude_swap.credentials import CredentialStore
-from claude_swap.exceptions import (
+from ai_quota_swap import macos_keychain
+from ai_quota_swap.credentials import CredentialStore
+from ai_quota_swap.exceptions import (
     AccountNotFoundError,
     ConfigError,
     CredentialError,
     SessionError,
     ValidationError,
 )
-from claude_swap.models import Platform
-from claude_swap.session import keychain_service_name
-from claude_swap.switcher import ClaudeAccountSwitcher
+from ai_quota_swap.models import Platform
+from ai_quota_swap.session import keychain_service_name
+from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
 
 class TestSwapAccounts:
@@ -58,7 +58,7 @@ class TestSwapAccounts:
         self, temp_home: Path, sample_sequence_data: dict
     ):
         """Sequence stays sorted, so rotation and list order follow the new
-        numbers — the accounts genuinely trade places in `cswap list`."""
+        numbers — the accounts genuinely trade places in `qswap list`."""
         switcher = ClaudeAccountSwitcher()
         self._write(switcher, sample_sequence_data)
 
@@ -290,7 +290,7 @@ class TestSwapAccounts:
 
         # Scoped context: see H-1 comment above.
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("claude_swap.fsutil.os.fchmod", failing_fchmod)
+            mp.setattr("ai_quota_swap.fsutil.os.fchmod", failing_fchmod)
             with pytest.raises(OSError):
                 switcher._write_json(switcher.sequence_file, {"x": 1})
 
@@ -310,7 +310,7 @@ class TestSwapAccounts:
             raise FileExistsError(f"cannot rename onto existing {dst}")
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("claude_swap.switcher.os.rename", windows_rename)
+            mp.setattr("ai_quota_swap.switcher.os.rename", windows_rename)
             switcher._write_json(switcher.sequence_file, {"x": 1})
 
         assert json.loads(switcher.sequence_file.read_text(encoding="utf-8")) == {"x": 1}
@@ -333,7 +333,7 @@ class TestSwapAccounts:
         old_umask = os.umask(0o022)
         try:
             with pytest.MonkeyPatch.context() as mp:
-                mp.setattr("claude_swap.fsutil.os.fchmod", lambda *a, **k: None)
+                mp.setattr("ai_quota_swap.fsutil.os.fchmod", lambda *a, **k: None)
                 switcher._write_json(target, {"primaryApiKey": "sk-test"})
         finally:
             os.umask(old_umask)
@@ -376,7 +376,7 @@ class TestSwapAccounts:
         def refuse(src, dst, **kwargs):
             raise OSError(errno.EBUSY, "Device or resource busy")
 
-        monkeypatch.setattr("claude_swap.fsutil.replace_with_retry", refuse)
+        monkeypatch.setattr("ai_quota_swap.fsutil.replace_with_retry", refuse)
         with pytest.raises(OSError):
             switcher._write_json(switcher.sequence_file, {"x": 1})
 
@@ -527,7 +527,7 @@ class TestSwapAccounts:
             def __exit__(self, *exc):
                 return False
 
-        monkeypatch.setattr("claude_swap.switcher.FileLock", SpyLock)
+        monkeypatch.setattr("ai_quota_swap.switcher.FileLock", SpyLock)
         switcher.swap_accounts("1", "2")
 
         assert entered == [switcher.lock_file]
@@ -676,8 +676,8 @@ def test_staging_interrupted_mid_write_leaves_no_files(
         closed.append(fd)
         real_close(fd)
 
-    monkeypatch.setattr("claude_swap.switcher.os.fdopen", fdopen_then_interrupt)
-    monkeypatch.setattr("claude_swap.switcher.os.close", spying_close)
+    monkeypatch.setattr("ai_quota_swap.switcher.os.fdopen", fdopen_then_interrupt)
+    monkeypatch.setattr("ai_quota_swap.switcher.os.close", spying_close)
     with pytest.raises(KeyboardInterrupt):
         switcher._stage_overlap_material(
             {"1": ("creds-one", "config-one"), "2": ("creds-two", "")}
@@ -718,7 +718,7 @@ def test_staging_interrupted_after_fdopen_leaves_no_files(
         owned.append(fh)
         return InterruptingWriter(fh) if len(owned) == 2 else fh
 
-    monkeypatch.setattr("claude_swap.switcher.os.fdopen", fdopen_interrupting_the_second)
+    monkeypatch.setattr("ai_quota_swap.switcher.os.fdopen", fdopen_interrupting_the_second)
     with pytest.raises(KeyboardInterrupt):
         switcher._stage_overlap_material(
             {"1": ("creds-one", "config-one"), "2": ("creds-two", "")}
@@ -733,7 +733,7 @@ class TestSwapSessionProfileKeychain:
     On macOS the profile's credential lives in a keychain item whose service
     name is the hash of the profile DIR PATH
     (``session.keychain_service_name``), so ``os.replace`` on the dir leaves
-    the item behind at the old name. Nothing in cswap ever names that service
+    the item behind at the old name. Nothing in qswap ever names that service
     again -- ``purge`` enumerates the profile dirs that still exist -- so an
     entry missed here is permanent.
     """

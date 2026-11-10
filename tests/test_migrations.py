@@ -1,8 +1,8 @@
-"""Tests for one-time data migrations (claude_swap.migrations).
+"""Tests for one-time data migrations (ai_quota_swap.migrations).
 
 The remaining migration relocates macOS backup credentials from the service the
 third-party ``keyring`` library used (``claude-code``) into the ``security``-managed
-service (``claude-swap``). Both are reached through the ``security`` CLI wrapper,
+service (``ai-quota-swap``). Both are reached through the ``security`` CLI wrapper,
 which the autouse ``block_real_keychain`` guard replaces with an in-memory store,
 so the tests seed the legacy items there.
 """
@@ -15,12 +15,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from claude_swap import migrations
-from claude_swap.exceptions import MigrationIncomplete
-from claude_swap.macos_keychain import KeychainError
-from claude_swap.migrations import run_migrations
-from claude_swap.models import Platform
-from claude_swap.switcher import KEYRING_SERVICE, ClaudeAccountSwitcher
+from ai_quota_swap import migrations
+from ai_quota_swap.exceptions import MigrationIncomplete
+from ai_quota_swap.macos_keychain import KeychainError
+from ai_quota_swap.migrations import run_migrations
+from ai_quota_swap.models import Platform
+from ai_quota_swap.switcher import KEYRING_SERVICE, ClaudeAccountSwitcher
 
 EMAIL = "a@example.com"
 LEGACY_USER = f"account-1-{EMAIL}"
@@ -138,7 +138,7 @@ class TestPurgeWindows:
 class TestMacosKeyringToSecurity:
     """``migrate_macos_keyring_to_security``: relocate per-account backup creds
     from the legacy keyring service (``claude-code``) to the ``security``-managed
-    service (``claude-swap``). Both live in the same Keychain, here the in-memory
+    service (``ai-quota-swap``). Both live in the same Keychain, here the in-memory
     store the autouse guard installs."""
 
     def test_non_macos_skips(self, temp_home):

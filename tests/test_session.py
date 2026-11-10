@@ -1,4 +1,4 @@
-"""Tests for session mode (claude_swap.session + the switcher guards)."""
+"""Tests for session mode (ai_quota_swap.session + the switcher guards)."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from claude_swap import fsutil
-from claude_swap import macos_keychain
-from claude_swap import oauth
-from claude_swap import session as session_mod
-from claude_swap.credentials import CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE
-from claude_swap.exceptions import (
+from ai_quota_swap import fsutil
+from ai_quota_swap import macos_keychain
+from ai_quota_swap import oauth
+from ai_quota_swap import session as session_mod
+from ai_quota_swap.credentials import CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE
+from ai_quota_swap.exceptions import (
     AccountNotFoundError,
     CredentialReadError,
     LockError,
@@ -29,17 +29,17 @@ from claude_swap.exceptions import (
     SwitchError,
     ValidationError,
 )
-from claude_swap.fsutil import (
+from ai_quota_swap.fsutil import (
     is_link,
     link_points_at,
     make_dir_link,
     replace_with_retry,
 )
-from claude_swap.locking import FileLock
-from claude_swap.models import Platform
-from claude_swap.paths import get_backup_root, get_global_config_path
-from claude_swap.process_detection import ClaudeSession
-from claude_swap.session import (
+from ai_quota_swap.locking import FileLock
+from ai_quota_swap.models import Platform
+from ai_quota_swap.paths import get_backup_root, get_global_config_path
+from ai_quota_swap.process_detection import ClaudeSession
+from ai_quota_swap.session import (
     MCP_DISPLACED_STASH,
     MCP_MIRROR_MARKER,
     SHARE_MANIFEST,
@@ -54,8 +54,8 @@ from claude_swap.session import (
     slugify_email,
     stale_marker_for,
 )
-from claude_swap.settings import set_setting
-from claude_swap.switcher import ClaudeAccountSwitcher
+from ai_quota_swap.settings import set_setting
+from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
 ACCOUNT_EMAIL = "account2@example.com"
 ACCOUNT_NUM = "2"
@@ -94,7 +94,7 @@ CONFIG = json.dumps(
 def _host_can_symlink(where: Path) -> bool:
     """Whether the machine running the tests can create a symlink: always off
     Windows; on Windows with Developer Mode on or an elevated token."""
-    probe = where / ".cswap-test-symlink-probe"
+    probe = where / ".qswap-test-symlink-probe"
     try:
         probe.symlink_to(where / "nonexistent")
     except OSError:
@@ -210,12 +210,12 @@ def refresh_rotates(monkeypatch):
     calls: list[str] = []
 
     def fake_gate(self, account_num: str, email: str, snapshot: str):
-        from claude_swap import oauth as oauth_mod
+        from ai_quota_swap import oauth as oauth_mod
         calls.append(snapshot)
         self._write_account_credentials(account_num, email, ROTATED_CREDS)
         return oauth_mod.RefreshOutcome(ROTATED_CREDS, None)
 
-    from claude_swap.switcher import ClaudeAccountSwitcher
+    from ai_quota_swap.switcher import ClaudeAccountSwitcher
     monkeypatch.setattr(
         ClaudeAccountSwitcher, "consume_backup_grant", fake_gate
     )
@@ -347,7 +347,7 @@ class TestSessionIdentity:
         assert session_identity_drifted(tmp_path, "a@x.com", "org-A")
 
     def test_same_email_different_org_is_drift(self, tmp_path):
-        # The j@ck.gg case: one email, two orgs — two distinct subscriptions.
+        # The a@x.com case: one email, two orgs — two distinct subscriptions.
         self._write_identity(tmp_path, "a@x.com", "org-B")
         assert session_identity_drifted(tmp_path, "a@x.com", "org-A")
 
@@ -545,7 +545,7 @@ class TestBootstrap:
 
         `legacy_location=True` is the upgrade path: the marker moved to a
         SIBLING of the profile dir (a child could not be written by the fault
-        that motivates it), and a profile marked by an older cswap on this
+        that motivates it), and a profile marked by an older qswap on this
         machine has a pending re-bootstrap that the move must not drop.
         """
         session_dir, _, _ = manager.setup_session("2", share=False)
@@ -589,7 +589,7 @@ class TestBootstrap:
         self, manager, seeded_switcher, auth_status_tracks_seed, refresh_rotates,
         legacy_location: bool,
     ):
-        """A second `cswap run` joining a live session must not invalidate
+        """A second `qswap run` joining a live session must not invalidate
         under the running claude; the marker survives for later."""
         session_dir, _, _ = manager.setup_session("2", share=False)
         (session_dir / ".credentials.json").write_text("live lineage")
@@ -907,7 +907,7 @@ class TestSharingPosix:
         assert not (session_dir / SHARE_MANIFEST).exists()
 
     def test_repoints_a_managed_link_gone_stale(self, share_setup, temp_home):
-        """Recorded in the manifest, so cswap's own: a ~/.claude that moved,
+        """Recorded in the manifest, so qswap's own: a ~/.claude that moved,
         say. Pointed back at the source."""
         source, session_dir, mgr = share_setup
         elsewhere = temp_home / "elsewhere.json"
@@ -1070,7 +1070,7 @@ class TestSharingWindowsMode:
         self, windows_mgr, tmp_path, capsys
     ):
         """Not in the manifest and leading somewhere else: the user's own
-        redirect (#292 names people who junctioned by hand before cswap
+        redirect (#292 names people who junctioned by hand before qswap
         could). Kept, like a directory of their own."""
         source, session_dir, mgr = windows_mgr
         elsewhere = tmp_path / "elsewhere"
@@ -1454,7 +1454,7 @@ class TestMcpMirror:
         assert elsewhere.read_bytes() == before
 
     def test_held_lock_fails_open(self, mcp_setup, monkeypatch):
-        from claude_swap import claude_locks
+        from ai_quota_swap import claude_locks
 
         monkeypatch.setattr(claude_locks, "DEFAULT_TIMEOUT_S", 0.3)
         default_config, session_dir, mgr = mcp_setup
@@ -1643,7 +1643,7 @@ class TestRun:
             manager.run("2", [])
 
         # Warned, and the overrides are scrubbed from the launched env —
-        # `cswap run 2` means account 2, not whatever the API key resolves to.
+        # `qswap run 2` means account 2, not whatever the API key resolves to.
         out = capsys.readouterr().out
         assert "Ignoring ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN" in out
         assert "ANTHROPIC_API_KEY" not in exc.value.env
@@ -1893,7 +1893,7 @@ class TestGuards:
     ):
         """Re-login + --add-account (or any backup cred write) must force the
         non-live session profile to re-bootstrap — otherwise the documented
-        recovery path leaves `cswap run` on stale credentials that still pass
+        recovery path leaves `qswap run` on stale credentials that still pass
         the local reuse check."""
         session_dir = session_dir_for(
             seeded_switcher.backup_dir, ACCOUNT_NUM, ACCOUNT_EMAIL
@@ -1998,7 +1998,7 @@ class TestGuards:
             denied_dir.chmod(0o500)
         import logging
 
-        with caplog.at_level(logging.DEBUG, logger="claude-swap"):
+        with caplog.at_level(logging.DEBUG, logger="ai-quota-swap"):
             try:
                 seeded_switcher._delete_session_profile(ACCOUNT_NUM, ACCOUNT_EMAIL)
             finally:
@@ -2048,7 +2048,7 @@ class TestGuards:
         if not marker_lands:
             session_dir.parent.chmod(0o500)
         try:
-            with caplog.at_level(logging.WARNING, logger="claude-swap"):
+            with caplog.at_level(logging.WARNING, logger="ai-quota-swap"):
                 seeded_switcher._write_account_credentials(
                     ACCOUNT_NUM, ACCOUNT_EMAIL, ROTATED_CREDS
                 )
@@ -2078,7 +2078,7 @@ class TestGuards:
     def test_list_skips_refresh_for_live_session_accounts(
         self, seeded_switcher, monkeypatch
     ):
-        """cswap --list must not proactively refresh an account that is live in
+        """qswap --list must not proactively refresh an account that is live in
         a session — rotating the backup copy's token could invalidate the
         session's copy."""
         session_dir = session_dir_for(
@@ -2097,7 +2097,7 @@ class TestGuards:
             return oauth.UsageOutcome(None)
 
         monkeypatch.setattr(
-            "claude_swap.oauth.try_fetch_usage_for_account", fake_fetch
+            "ai_quota_swap.oauth.try_fetch_usage_for_account", fake_fetch
         )
         seeded_switcher.list_accounts()
 
@@ -2294,7 +2294,7 @@ class TestShareHistoryPosix:
         assert "63802" in out
         assert "soribashi" in out
         # Sharing is the default, so the command to repeat is the plain one.
-        assert "then relaunch:  cswap run 2\n" in out
+        assert "then relaunch:  qswap run 2\n" in out
         # Pin the epoch-ms -> local-time conversion itself, not just the
         # surrounding text — a timezone bug (UTC mislabeled as local) or an
         # off-by-1000 that still lands in a plausible-looking date would slip
@@ -2408,7 +2408,7 @@ class TestShareHistoryPosix:
         monkeypatch.setattr(session_mod, "_MIGRATION_LOCK_TIMEOUT", 0.2)
 
         # Hold the migration lock open, simulating a peer already merging
-        # some profile — any profile, from any cswap store — into the same
+        # some profile — any profile, from any qswap store — into the same
         # shared tree. The lock is a file in that tree.
         with FileLock(source / session_mod.MIGRATION_LOCK):
             mgr._sync_sharing(session_dir, share=True, share_history=True)
@@ -2419,7 +2419,7 @@ class TestShareHistoryPosix:
         # And the reason given is the peer, not a session in this profile.
         out = capsys.readouterr().out
         assert "merging history into" in out
-        assert "relaunch:  cswap run 2\n" in out
+        assert "relaunch:  qswap run 2\n" in out
 
     def _lock_that_lets_a_peer_finish_first(self, monkeypatch, on_acquire):
         """Stand in for the migration lock a peer is already holding.
@@ -2874,7 +2874,7 @@ class TestHistoryMergeSharesTheDestination:
     def test_two_stores_merging_into_one_home_share_the_lock(
         self, history_setup, monkeypatch
     ):
-        """On Linux the backup root follows ``XDG_DATA_HOME``, so two cswap
+        """On Linux the backup root follows ``XDG_DATA_HOME``, so two qswap
         stores can serve one ``~/.claude``. A lock inside either store is
         invisible to the other; only one in the destination holds both."""
         source, _, _ = history_setup
@@ -2893,7 +2893,7 @@ class TestHistoryMergeSharesTheDestination:
                 SimpleNamespace(
                     backup_dir=backup,
                     platform=Platform.LINUX,
-                    _logger=logging.getLogger("claude-swap-test"),
+                    _logger=logging.getLogger("ai-quota-swap-test"),
                     lock_file=backup / ".lock",
                 )
             )
@@ -2916,7 +2916,7 @@ class TestHistoryMergeSharesTheDestination:
     def test_a_lock_that_cannot_be_opened_skips_the_merge_not_the_launch(
         self, history_setup, monkeypatch, capsys
     ):
-        """The lock is a file in ``~/.claude``, which cswap does not own. A
+        """The lock is a file in ``~/.claude``, which qswap does not own. A
         read-only one must cost this launch its history sharing, not the
         launch."""
         _, session_dir, mgr = history_setup
@@ -3412,7 +3412,7 @@ class TestShareHistoryWindows:
 
     @pytest.fixture
     def launch(self, win_history, capture_exec, auth_status_tracks_seed, refresh_rotates):
-        """``cswap run 2`` up to the exec, through bootstrap and the sync."""
+        """``qswap run 2`` up to the exec, through bootstrap and the sync."""
         source, session_dir, mgr = win_history
         # The seed went in under the macOS backend the fixtures pin; the
         # bootstrap reads through the Windows one, so persist it there too.
@@ -3584,7 +3584,7 @@ class TestShareHistoryWindows:
         own = session_dir / "projects" / "-home-user-app"
         own.mkdir(parents=True)
         (own / "bbb.jsonl").write_text("profile-b\n")
-        make_dir_link(source, session_dir / "projects.cswap-link-staging")
+        make_dir_link(source, session_dir / "projects.qswap-link-staging")
 
         mgr._sync_sharing(session_dir, share=True, share_history=True)
 
@@ -3599,7 +3599,7 @@ class TestShareHistoryWindows:
         rename: the next launch links ``projects`` afresh — and must not walk
         past the leftover forever."""
         source, session_dir, mgr = win_history
-        make_dir_link(source / "projects", session_dir / "projects.cswap-link-staging")
+        make_dir_link(source / "projects", session_dir / "projects.qswap-link-staging")
 
         mgr._sync_sharing(session_dir, share=True, share_history=True)
 
@@ -3610,7 +3610,7 @@ class TestShareHistoryWindows:
         self, win_history
     ):
         source, session_dir, mgr = win_history
-        make_dir_link(source / "projects", session_dir / "projects.cswap-link-staging")
+        make_dir_link(source / "projects", session_dir / "projects.qswap-link-staging")
 
         mgr._sync_sharing(session_dir, share=True, share_history=False)
 
@@ -3619,7 +3619,7 @@ class TestShareHistoryWindows:
 
     def test_only_a_link_is_cleared_from_the_staging_name(self, win_history):
         source, session_dir, mgr = win_history
-        odd = session_dir / "projects.cswap-link-staging"
+        odd = session_dir / "projects.qswap-link-staging"
         odd.mkdir()
         (odd / "keep.jsonl").write_text("not a link\n")
 
@@ -3634,7 +3634,7 @@ class TestShareHistoryWindows:
         """A busy migration lock means the link may be a peer's live staging
         link, not a leftover: left for the next launch, and the launch goes on."""
         source, session_dir, mgr = win_history
-        make_dir_link(source / "projects", session_dir / "projects.cswap-link-staging")
+        make_dir_link(source / "projects", session_dir / "projects.qswap-link-staging")
 
         class Busy:
             def __init__(self, path, timeout=None):
@@ -3649,7 +3649,7 @@ class TestShareHistoryWindows:
         monkeypatch.setattr(session_mod, "FileLock", Busy)
         mgr._sync_sharing(session_dir, share=True, share_history=True)
 
-        assert is_link(session_dir / "projects.cswap-link-staging")
+        assert is_link(session_dir / "projects.qswap-link-staging")
         assert is_link(session_dir / "projects")
 
     def test_a_failed_rename_is_retried_as_a_direct_link(
@@ -3885,7 +3885,7 @@ class TestHistoryMergeNeverLooksThroughLinks:
 
 
 def _turn_sharing(mgr: SessionManager, value: str) -> None:
-    """Write ``run.shareHistory`` the way ``cswap config set`` does."""
+    """Write ``run.shareHistory`` the way ``qswap config set`` does."""
     set_setting(mgr.switcher.backup_dir, "run.shareHistory", value)
 
 
@@ -3896,7 +3896,7 @@ def _active_default_login(monkeypatch, mgr: SessionManager) -> None:
     )
 
 
-OPT_OUT = "cswap config set run.shareHistory false"
+OPT_OUT = "qswap config set run.shareHistory false"
 
 
 class TestShareHistoryDecision:
@@ -3965,7 +3965,7 @@ class TestShareHistoryDecision:
         assert manager._share_history_asked is False
 
     def test_plain_claude_launch_never_asks(self, manager, capture_exec, capsys):
-        """A bare unmapped ``cswap run`` is plain claude: no profile, so no
+        """A bare unmapped ``qswap run`` is plain claude: no profile, so no
         history question, and nothing to warn a Windows user about."""
         manager.switcher.platform = Platform.WINDOWS
         _turn_sharing(manager, "true")
@@ -4070,7 +4070,7 @@ class TestShareHistoryIsTheDefault:
 
     @pytest.fixture
     def launch(self, manager, capture_exec, auth_status_tracks_seed, refresh_rotates):
-        """``cswap run 2`` up to the exec; returns the profile it launched into."""
+        """``qswap run 2`` up to the exec; returns the profile it launched into."""
 
         def run(**kwargs) -> Path:
             with pytest.raises(_ExecCalled) as exc:
@@ -4163,7 +4163,7 @@ class TestShareHistoryIsTheDefault:
         self, launch, manager, monkeypatch, temp_home, capsys
     ):
         """The account's sessions wrote into its profile; then it became the
-        default login, and ``cswap run`` for it is plain claude on
+        default login, and ``qswap run`` for it is plain claude on
         ``~/.claude``. Without a merge on that path the old conversations
         stay out of ``--resume`` for as long as the account stays the
         default, however often it is run."""
@@ -4215,7 +4215,7 @@ class TestShareHistoryIsTheDefault:
     def test_links_made_on_the_fast_path_are_undone_by_a_later_opt_out(
         self, launch, manager, monkeypatch, temp_home
     ):
-        """They are recorded like any other link cswap makes. Unrecorded,
+        """They are recorded like any other link qswap makes. Unrecorded,
         ``--no-share-history`` would leave the profile on the shared history."""
         session_dir = launch(share_history=False)
         self._give_own_history(session_dir)
@@ -4251,7 +4251,7 @@ class TestShareHistoryIsTheDefault:
         assert "CLAUDE_CONFIG_DIR" not in exc.value.env
         out = capsys.readouterr().out
         assert out.count("keeps its own") == 1
-        assert "then relaunch:  cswap run 2\n" in out
+        assert "then relaunch:  qswap run 2\n" in out
         assert (
             session_dir / "projects" / "-home-user-app" / "bbb.jsonl"
         ).read_text() == "profile-b\n"
@@ -4360,7 +4360,7 @@ class TestShareHistoryIsTheDefault:
         self, history_setup, monkeypatch, capsys
     ):
         """The command to repeat has to share history when it is repeated.
-        With ``run.shareHistory false`` a plain ``cswap run 2`` would not."""
+        With ``run.shareHistory false`` a plain ``qswap run 2`` would not."""
         _, session_dir, mgr = history_setup
         _turn_sharing(mgr, "false")
         self._give_own_history(session_dir)
@@ -4379,7 +4379,7 @@ class TestShareHistoryIsTheDefault:
         mgr._sync_sharing(session_dir, share=True, share_history=True)
 
         assert (
-            "then relaunch:  cswap run 2 --share-history\n"
+            "then relaunch:  qswap run 2 --share-history\n"
             in capsys.readouterr().out
         )
 
@@ -4787,7 +4787,7 @@ class TestCaptureCredentials:
 
         def locked(service: str, account: str) -> str | None:
             if not service.startswith("Claude Code-credentials-"):
-                return fake_store_read(service, account)  # cswap's own backup store
+                return fake_store_read(service, account)  # qswap's own backup store
             calls.append(service)
             raise error
 
@@ -4810,7 +4810,7 @@ class TestCaptureCredentials:
 
         def flaky(service: str, account: str) -> str | None:
             if not service.startswith("Claude Code-credentials-"):
-                return fake_store_read(service, account)  # cswap's own backup store
+                return fake_store_read(service, account)  # qswap's own backup store
             outcome = next(outcomes)
             if outcome == "busy":
                 raise macos_keychain.KeychainError("busy")
@@ -4961,8 +4961,8 @@ class TestBootstrapRefreshRoutesThroughGate:
     the switcher's consume gate, not a direct POST of its own read."""
 
     def test_bootstrap_uses_gate(self, temp_home, monkeypatch):
-        from claude_swap import oauth as oauth_mod
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap import oauth as oauth_mod
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
         s = ClaudeAccountSwitcher()
         s._setup_directories()
         s._init_sequence_file()
@@ -5003,12 +5003,12 @@ class TestBootstrapRefreshRoutesThroughGate:
         # The bypass seam: session.py no longer imports any direct refresh
         # helper, so a regression would have to call oauth's POST directly.
         monkeypatch.setattr(
-            "claude_swap.oauth.try_refresh_oauth_credentials", direct_post
+            "ai_quota_swap.oauth.try_refresh_oauth_credentials", direct_post
         )
         monkeypatch.setattr(
-            "claude_swap.oauth.refresh_oauth_credentials", direct_post
+            "ai_quota_swap.oauth.refresh_oauth_credentials", direct_post
         )
-        from claude_swap.session import SessionManager
+        from ai_quota_swap.session import SessionManager
         mgr = SessionManager(s)
         # setup_session is the seam: it must call the gate BEFORE the
         # bootstrap lock (the gate takes the same non-reentrant FileLock).
@@ -5026,7 +5026,7 @@ class TestAConsumedGrantIsNotSpentOnAProfileThatWonBootstrap:
     """A one-time grant consumed for THIS pass must reach the profile it was for.
 
     The consume runs before the bootstrap lock (it POSTs, and must never hold
-    one). The under-lock re-check then returns early when another `cswap run`
+    one). The under-lock re-check then returns early when another `qswap run`
     bootstrapped while we waited — at which point this pass has already burned
     a one-time refresh token whose successor nobody uses for the session it was
     fetched for. The successor is persisted to the BACKUP, so nothing is lost;
@@ -5279,7 +5279,7 @@ def test_manifest_interrupted_mid_write_leaves_no_temp(tmp_path: Path, monkeypat
     Ctrl-C must still propagate and must not strand the temp."""
     from types import SimpleNamespace
 
-    from claude_swap.session import SessionManager
+    from ai_quota_swap.session import SessionManager
 
     mgr = SessionManager.__new__(SessionManager)
     mgr.switcher = SimpleNamespace(platform=object())  # anything but WINDOWS
@@ -5287,9 +5287,9 @@ def test_manifest_interrupted_mid_write_leaves_no_temp(tmp_path: Path, monkeypat
     def interrupt(fd):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("claude_swap.fsutil.os.fsync", interrupt)
+    monkeypatch.setattr("ai_quota_swap.fsutil.os.fsync", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        mgr._write_manifest(tmp_path / ".cswap-shared.json", ["a"])
+        mgr._write_manifest(tmp_path / ".qswap-shared.json", ["a"])
     assert not list(tmp_path.glob("*.tmp"))
 
 

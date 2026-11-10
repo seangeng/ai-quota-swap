@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "exportedAt": "2026-11-10T14:44:54Z",
+  "exportedFrom": "linux",
+  "swapVersion": "1.1.0b1+resets",
+  "encrypted": false,
+  "activeAccountNumber": 2,
+  "accounts": [
+    {
+      "number": 1,
+      "email": "a@example.com",
+      "uuid": "00000000-0000-4000-8000-000000000101",
+      "organizationUuid": "00000000-0000-4000-8000-00000000000a",
+      "organizationName": "Example Org",
+      "added": "2026-11-01T09:00:00Z",
+      "credentials": {
+        "claudeAiOauth": {
+          "accessToken": "sk-ant-oat01-FAKE-access-a",
+          "refreshToken": "sk-ant-ort01-FAKE-refresh-a",
+          "expiresAt": 1893456000000,
+          "scopes": [
+            "user:inference",
+            "user:profile"
+          ],
+          "subscriptionType": "max"
+        }
+      },
+      "config": {
+        "oauthAccount": {
+          "emailAddress": "a@example.com",
+          "accountUuid": "00000000-0000-4000-8000-000000000101",
+          "organizationUuid": "00000000-0000-4000-8000-00000000000a",
+          "organizationName": "Example Org"
+        }
+      },
+      "alias": "work"
+    },
+    {
+      "number": 2,
+      "email": "b@example.com",
+      "uuid": "00000000-0000-4000-8000-000000000102",
+      "organizationUuid": "",
+      "organizationName": "",
+      "added": "2026-11-02T09:00:00Z",
+      "credentials": {
+        "claudeAiOauth": {
+          "accessToken": "sk-ant-oat01-FAKE-access-b",
+          "refreshToken": "sk-ant-ort01-FAKE-refresh-b",
+          "expiresAt": 1893456000000,
+          "scopes": [
+            "user:inference",
+            "user:profile"
+          ],
+          "subscriptionType": "max"
+        }
+      },
+      "config": {
+        "oauthAccount": {
+          "emailAddress": "b@example.com",
+          "accountUuid": "00000000-0000-4000-8000-000000000102",
+          "organizationUuid": "",
+          "organizationName": ""
+        }
+      }
+    },
+    {
+      "number": 3,
+      "email": "api-key-3@token.local",
+      "uuid": "",
+      "organizationUuid": "",
+      "organizationName": "",
+      "added": "2026-11-10T14:44:54Z",
+      "credentials": "sk-ant-api03-FAKEFAKE00FAKEFAKE00FAKEFAKE00FAKEFAKE00",
+      "config": {
+        "oauthAccount": {
+          "emailAddress": "api-key-3@token.local",
+          "accountUuid": "",
+          "organizationUuid": null,
+          "organizationName": null
+        }
+      },
+      "kind": "api_key"
+    }
+  ]
+}

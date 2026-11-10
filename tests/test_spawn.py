@@ -1,4 +1,4 @@
-"""``claude_swap.spawn``: the no-fork spawn path on macOS (issue #517)."""
+"""``ai_quota_swap.spawn``: the no-fork spawn path on macOS (issue #517)."""
 
 import os
 import shutil
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_swap import macos_keychain, process_detection, spawn
+from ai_quota_swap import macos_keychain, process_detection, spawn
 
 ARGV = ["ps", "-o", "pid=", "-p", "1234"]
 DARWIN = sys.platform == "darwin"
@@ -269,7 +269,7 @@ class TestOnMacOS:
         with pytest.raises(FileNotFoundError):
             spawn.run(["/no/such/dir/tool"], capture_output=True)
         with pytest.raises(FileNotFoundError):
-            spawn.run(["no-such-program-cswap-517"], capture_output=True)
+            spawn.run(["no-such-program-qswap-517"], capture_output=True)
 
     def test_armed_fork_hook_stays_silent(self):
         """The #517 line itself: arm libmalloc's fork hook the way a critical
@@ -285,7 +285,7 @@ try:
 except (OSError, AttributeError):
     sys.exit(3)
 handler(ctypes.c_ulong(0x4))  # DISPATCH_MEMORYPRESSURE_CRITICAL
-from claude_swap import spawn
+from ai_quota_swap import spawn
 argv = ["ps", "-o", "pid=", "-p", str(os.getpid())]
 subprocess.run(argv, capture_output=True)
 print("CONTROL-DONE", file=sys.stderr, flush=True)

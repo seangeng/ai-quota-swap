@@ -1,8 +1,8 @@
-"""Tests for claude_swap.paths resolver helpers.
+"""Tests for ai_quota_swap.paths resolver helpers.
 
-These tests verify that cswap resolves Claude Code config/credential paths the
+These tests verify that qswap resolves Claude Code config/credential paths the
 same way claude-code itself does. If these drift from claude-code's behavior,
-cswap will read the wrong files and misattribute accounts (see issue #16).
+qswap will read the wrong files and misattribute accounts (see issue #16).
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_swap.exceptions import MigrationError
-from claude_swap.models import Platform
-from claude_swap.paths import (
+from ai_quota_swap.exceptions import MigrationError
+from ai_quota_swap.models import Platform
+from ai_quota_swap.paths import (
     LEGACY_BACKUP_DIRNAME,
     get_backup_root,
     get_claude_config_home,
@@ -126,14 +126,14 @@ class TestGetCredentialsPath:
 
 
 class TestGetBackupRoot:
-    """Linux/WSL: XDG-aware path. Other platforms: legacy ~/.claude-swap-backup."""
+    """Linux/WSL: XDG-aware path. Other platforms: legacy ~/.ai-quota-swap."""
 
     def test_linux_default_is_xdg_data_home(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         monkeypatch.setattr(Platform, "detect", staticmethod(lambda: Platform.LINUX))
-        assert get_backup_root() == isolated_home / ".local" / "share" / "claude-swap"
+        assert get_backup_root() == isolated_home / ".local" / "share" / "ai-quota-swap"
 
     def test_linux_respects_xdg_data_home(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -141,14 +141,14 @@ class TestGetBackupRoot:
         custom = tmp_path / "xdg"
         monkeypatch.setenv("XDG_DATA_HOME", str(custom))
         monkeypatch.setattr(Platform, "detect", staticmethod(lambda: Platform.LINUX))
-        assert get_backup_root() == custom / "claude-swap"
+        assert get_backup_root() == custom / "ai-quota-swap"
 
     def test_linux_ignores_empty_xdg_data_home(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setenv("XDG_DATA_HOME", "")
         monkeypatch.setattr(Platform, "detect", staticmethod(lambda: Platform.LINUX))
-        assert get_backup_root() == isolated_home / ".local" / "share" / "claude-swap"
+        assert get_backup_root() == isolated_home / ".local" / "share" / "ai-quota-swap"
 
     def test_linux_ignores_relative_xdg_data_home(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
@@ -156,7 +156,7 @@ class TestGetBackupRoot:
         # Per the XDG spec, relative paths must be ignored.
         monkeypatch.setenv("XDG_DATA_HOME", "relative/path")
         monkeypatch.setattr(Platform, "detect", staticmethod(lambda: Platform.LINUX))
-        assert get_backup_root() == isolated_home / ".local" / "share" / "claude-swap"
+        assert get_backup_root() == isolated_home / ".local" / "share" / "ai-quota-swap"
 
     def test_linux_expands_tilde_in_xdg_data_home(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
@@ -165,14 +165,14 @@ class TestGetBackupRoot:
         # expansion, so a literal ``~/foo`` must still resolve correctly.
         monkeypatch.setenv("XDG_DATA_HOME", "~/custom-data")
         monkeypatch.setattr(Platform, "detect", staticmethod(lambda: Platform.LINUX))
-        assert get_backup_root() == isolated_home / "custom-data" / "claude-swap"
+        assert get_backup_root() == isolated_home / "custom-data" / "ai-quota-swap"
 
     def test_wsl_uses_xdg_layout(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         monkeypatch.setattr(Platform, "detect", staticmethod(lambda: Platform.WSL))
-        assert get_backup_root() == isolated_home / ".local" / "share" / "claude-swap"
+        assert get_backup_root() == isolated_home / ".local" / "share" / "ai-quota-swap"
 
     def test_macos_uses_legacy_layout(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
@@ -186,7 +186,7 @@ class TestGetBackupRoot:
         monkeypatch.setattr(Platform, "detect", staticmethod(lambda: Platform.WINDOWS))
         assert get_backup_root() == isolated_home / LEGACY_BACKUP_DIRNAME
 
-    def test_legacy_helper_returns_home_dot_claude_swap_backup(
+    def test_legacy_helper_returns_home_dot_ai_quota_swap(
         self, isolated_home: Path
     ):
         assert get_legacy_backup_root() == isolated_home / LEGACY_BACKUP_DIRNAME
@@ -194,7 +194,7 @@ class TestGetBackupRoot:
 
 class TestMigrateLegacyBackupDir:
     def test_no_legacy_is_noop(self, isolated_home: Path):
-        target = isolated_home / ".local" / "share" / "claude-swap"
+        target = isolated_home / ".local" / "share" / "ai-quota-swap"
         assert migrate_legacy_backup_dir(target) is False
         assert not target.exists()
 
@@ -214,7 +214,7 @@ class TestMigrateLegacyBackupDir:
         nested.mkdir()
         (nested / "x.json").write_text("{}")
 
-        target = isolated_home / ".local" / "share" / "claude-swap"
+        target = isolated_home / ".local" / "share" / "ai-quota-swap"
         assert migrate_legacy_backup_dir(target) is True
         assert not legacy.exists()
         assert (target / "sequence.json").read_text() == '{"k": 1}'
@@ -226,7 +226,7 @@ class TestMigrateLegacyBackupDir:
         legacy.mkdir()
         (legacy / "sequence.json").write_text('{"src": "legacy"}')
 
-        target = isolated_home / ".local" / "share" / "claude-swap"
+        target = isolated_home / ".local" / "share" / "ai-quota-swap"
         target.mkdir(parents=True)
         (target / "sequence.json").write_text('{"src": "target"}')
 
@@ -240,25 +240,25 @@ class TestMigrateLegacyBackupDir:
         """Run-1 created cache/log in target; legacy appears later → migrate anyway.
 
         Regression: pre-fix this raised "Both legacy and new exist" because
-        any prior cswap invocation laid down cache/ + claude-swap.log in the
+        any prior qswap invocation laid down cache/ + ai-quota-swap.log in the
         XDG path even when no real data was present.
         """
         legacy = isolated_home / LEGACY_BACKUP_DIRNAME
         legacy.mkdir()
         (legacy / "sequence.json").write_text('{"src": "legacy"}')
 
-        target = isolated_home / ".local" / "share" / "claude-swap"
+        target = isolated_home / ".local" / "share" / "ai-quota-swap"
         (target / "cache").mkdir(parents=True)
         (target / "cache" / "update_check.json").write_text("{}")
-        (target / "claude-swap.log").write_text("noise")
-        (target / "claude-swap.log.1").write_text("rotated")
+        (target / "ai-quota-swap.log").write_text("noise")
+        (target / "ai-quota-swap.log.1").write_text("rotated")
 
         assert migrate_legacy_backup_dir(target) is True
         assert not legacy.exists()
         assert (target / "sequence.json").read_text() == '{"src": "legacy"}'
         # Throwaway artifacts were replaced by legacy contents.
         assert not (target / "cache").exists()
-        assert not (target / "claude-swap.log").exists()
+        assert not (target / "ai-quota-swap.log").exists()
 
     def test_target_with_real_data_alongside_artifacts_still_collides(
         self, isolated_home: Path
@@ -268,9 +268,9 @@ class TestMigrateLegacyBackupDir:
         legacy.mkdir()
         (legacy / "sequence.json").write_text('{"src": "legacy"}')
 
-        target = isolated_home / ".local" / "share" / "claude-swap"
+        target = isolated_home / ".local" / "share" / "ai-quota-swap"
         (target / "cache").mkdir(parents=True)
-        (target / "claude-swap.log").write_text("noise")
+        (target / "ai-quota-swap.log").write_text("noise")
         (target / "sequence.json").write_text('{"src": "target"}')
 
         with pytest.raises(MigrationError, match="Refusing to merge"):
@@ -287,7 +287,7 @@ class TestMigrateLegacyBackupDir:
         legacy.mkdir()
         (legacy / "sequence.json").write_text('{"src": "legacy"}')
 
-        target = isolated_home / ".local" / "share" / "claude-swap"
+        target = isolated_home / ".local" / "share" / "ai-quota-swap"
         target.mkdir(parents=True)
         (target / "stale-partial.json").write_text("garbage")
         flag = target.parent / f".{target.name}.migrating"
@@ -304,7 +304,7 @@ class TestMigrateLegacyBackupDir:
 
         Just clean the flag; do NOT touch the (complete) target.
         """
-        target = isolated_home / ".local" / "share" / "claude-swap"
+        target = isolated_home / ".local" / "share" / "ai-quota-swap"
         target.mkdir(parents=True)
         (target / "sequence.json").write_text('{"complete": true}')
         flag = target.parent / f".{target.name}.migrating"
@@ -320,12 +320,12 @@ class TestMigrateLegacyBackupDir:
         legacy = isolated_home / LEGACY_BACKUP_DIRNAME
         legacy.mkdir()
         (legacy / "sequence.json").write_text("{}")
-        target = isolated_home / ".local" / "share" / "claude-swap"
+        target = isolated_home / ".local" / "share" / "ai-quota-swap"
 
         def exploding_move(*args, **kwargs):
             raise PermissionError("simulated EACCES")
 
-        monkeypatch.setattr("claude_swap.paths.shutil.move", exploding_move)
+        monkeypatch.setattr("ai_quota_swap.paths.shutil.move", exploding_move)
 
         with pytest.raises(MigrationError, match="failed"):
             migrate_legacy_backup_dir(target)
@@ -342,7 +342,7 @@ class TestMigrateLegacyBackupDir:
         cred.write_text("data")
         os.chmod(cred, 0o600)
 
-        target = isolated_home / ".local" / "share" / "claude-swap"
+        target = isolated_home / ".local" / "share" / "ai-quota-swap"
         assert migrate_legacy_backup_dir(target) is True
         moved = target / "credentials" / ".creds-1-user@example.com.enc"
         assert moved.stat().st_mode & 0o777 == 0o600

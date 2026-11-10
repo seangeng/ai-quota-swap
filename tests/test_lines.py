@@ -6,8 +6,8 @@ import random
 
 import pytest
 
-from claude_swap import oauth
-from claude_swap.lines import BindingWindow, binding_window, line_headroom, window_line
+from ai_quota_swap import oauth
+from ai_quota_swap.lines import BindingWindow, binding_window, line_headroom, window_line
 
 
 def _usage7(pct5: float, pct7: float) -> dict:

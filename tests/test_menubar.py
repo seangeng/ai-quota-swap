@@ -2,7 +2,7 @@
 
 These tests never import or run rumps/AppKit. They exercise the pure helpers
 (settings store, title/label formatting, usage/snapshot adapters, log parsing)
-only — the auto-switch engine itself lives in ``claude_swap.autoswitch`` and is
+only — the auto-switch engine itself lives in ``ai_quota_swap.autoswitch`` and is
 tested there.
 """
 
@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 
-from claude_swap import menubar, oauth
-from claude_swap.autoswitch import ErrorEvent
-from claude_swap.exceptions import ClaudeSwitchError
-from claude_swap.menubar import ENGINE_ERROR_REPEAT_S, should_surface_engine_error
-from claude_swap.switcher import USAGE_API_KEY, USAGE_RELOGIN_REQUIRED
+from ai_quota_swap import menubar, oauth
+from ai_quota_swap.autoswitch import ErrorEvent
+from ai_quota_swap.exceptions import ClaudeSwitchError
+from ai_quota_swap.menubar import ENGINE_ERROR_REPEAT_S, should_surface_engine_error
+from ai_quota_swap.switcher import USAGE_API_KEY, USAGE_RELOGIN_REQUIRED
 
 
 # --- notification identity -----------------------------------------------------
@@ -35,8 +35,8 @@ def test_notification_identity_creates_and_preserves_info_plist(tmp_path: Path):
 
     assert result == info
     data = plistlib.loads(info.read_bytes())
-    assert data["CFBundleIdentifier"] == "com.claude-swap.menubar"
-    assert data["CFBundleName"] == "claude-swap"
+    assert data["CFBundleIdentifier"] == "com.ai-quota-swap.menubar"
+    assert data["CFBundleName"] == "AI Quota Swap"
     assert data["ExistingKey"] == "kept"
 
 
@@ -54,8 +54,8 @@ def test_notification_identity_heals_corrupt_info_plist(tmp_path: Path):
 
     assert result == info
     data = plistlib.loads(info.read_bytes())
-    assert data["CFBundleIdentifier"] == "com.claude-swap.menubar"
-    assert data["CFBundleName"] == "claude-swap"
+    assert data["CFBundleIdentifier"] == "com.ai-quota-swap.menubar"
+    assert data["CFBundleName"] == "AI Quota Swap"
     assert not (executable.parent / "Info.plist.tmp").exists()
 
 
@@ -253,65 +253,65 @@ def test_usage_summary_scoped_no_pace_marker_on_window_rolled_to_zero():
 
 
 def test_format_account_label():
-    label = menubar.format_account_label(2, "loc@papaya.asia", _USAGE)
-    assert label == "2  loc@papaya.asia  5h 42% · 7d 18% · $ 30%"
+    label = menubar.format_account_label(2, "loc@example.com", _USAGE)
+    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30%"
 
 
 def test_format_account_label_with_alias():
-    label = menubar.format_account_label(2, "loc@papaya.asia", _USAGE, alias="dev")
-    assert label == "2  dev  (loc@papaya.asia)  5h 42% · 7d 18% · $ 30%"
+    label = menubar.format_account_label(2, "loc@example.com", _USAGE, alias="dev")
+    assert label == "2  dev  (loc@example.com)  5h 42% · 7d 18% · $ 30%"
 
 
 def test_format_account_label_disabled_marker():
-    label = menubar.format_account_label(2, "loc@papaya.asia", _USAGE, disabled=True)
-    assert label == "2  loc@papaya.asia  (disabled)  5h 42% · 7d 18% · $ 30%"
+    label = menubar.format_account_label(2, "loc@example.com", _USAGE, disabled=True)
+    assert label == "2  loc@example.com  (disabled)  5h 42% · 7d 18% · $ 30%"
 
 
 def test_format_account_label_login_due():
     now = 1_000_000.0
     label = menubar.format_account_label(
-        2, "loc@papaya.asia", _USAGE, now=now, login_expires_at=now + 5 * 86400 + 12 * 3600
+        2, "loc@example.com", _USAGE, now=now, login_expires_at=now + 5 * 86400 + 12 * 3600
     )
-    assert label == "2  loc@papaya.asia  5h 42% · 7d 18% · $ 30% · re-login in 5d 12h"
+    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30% · re-login in 5d 12h"
 
 
 def test_format_account_label_login_not_due_yet_says_nothing():
     now = 1_000_000.0
     label = menubar.format_account_label(
-        2, "loc@papaya.asia", _USAGE, now=now, login_expires_at=now + 23 * 86400
+        2, "loc@example.com", _USAGE, now=now, login_expires_at=now + 23 * 86400
     )
-    assert label == "2  loc@papaya.asia  5h 42% · 7d 18% · $ 30%"
+    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30%"
 
 
 def test_format_account_label_login_unknown_says_nothing():
-    label = menubar.format_account_label(2, "loc@papaya.asia", _USAGE, login_expires_at=None)
-    assert label == "2  loc@papaya.asia  5h 42% · 7d 18% · $ 30%"
+    label = menubar.format_account_label(2, "loc@example.com", _USAGE, login_expires_at=None)
+    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30%"
 
 
 def test_format_account_label_login_past():
     now = 1_000_000.0
     label = menubar.format_account_label(
-        2, "loc@papaya.asia", _USAGE, now=now, login_expires_at=now - 60
+        2, "loc@example.com", _USAGE, now=now, login_expires_at=now - 60
     )
-    assert label == "2  loc@papaya.asia  5h 42% · 7d 18% · $ 30% · re-login needed"
+    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30% · re-login needed"
 
 
 def test_format_account_label_quarantined_row_already_says_it():
     # The sentinel text is the row's usage summary; no second "re-login".
     now = 1_000_000.0
     label = menubar.format_account_label(
-        2, "loc@papaya.asia", menubar.SENTINEL_NOTES[USAGE_RELOGIN_REQUIRED],
+        2, "loc@example.com", menubar.SENTINEL_NOTES[USAGE_RELOGIN_REQUIRED],
         now=now, login_expires_at=now - 60, quarantined=True,
     )
-    assert label == "2  loc@papaya.asia  re-login needed"
+    assert label == "2  loc@example.com  re-login needed"
 
 
 def test_format_account_label_usage_unavailable_still_carries_the_note():
     now = 1_000_000.0
     label = menubar.format_account_label(
-        2, "loc@papaya.asia", None, now=now, login_expires_at=now + 5 * 3600 + 7 * 60
+        2, "loc@example.com", None, now=now, login_expires_at=now + 5 * 3600 + 7 * 60
     )
-    assert label == "2  loc@papaya.asia  usage unavailable · re-login in 5h 7m"
+    assert label == "2  loc@example.com  usage unavailable · re-login in 5h 7m"
 
 
 # --- usage logging -------------------------------------------------------------
@@ -356,54 +356,54 @@ def test_usage_log_key_ignores_clock_tracks_pct():
 def test_format_title_flags_a_rejected_active_account():
     s = menubar.MenuBarSettings(show_account_name=True, title_pct="5h")
     usage = {**_USAGE, "rejected": {"retry_after_s": None, "resets_at": None}}
-    assert menubar.format_title("loc@papaya.asia", usage, s) == "⇄ loc · rejected (!) · 42%"
+    assert menubar.format_title("loc@example.com", usage, s) == "⇄ loc · rejected (!) · 42%"
 
 
 def test_format_title_name_and_5h():
     s = menubar.MenuBarSettings(show_account_name=True, title_pct="5h")
-    assert menubar.format_title("loc@papaya.asia", _USAGE, s) == "⇄ loc · 42%"
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ loc · 42%"
 
 
 def test_format_title_prefers_alias_over_local_part():
     s = menubar.MenuBarSettings(show_account_name=True, title_pct="off")
-    assert menubar.format_title("loc@papaya.asia", _USAGE, s, alias="dev") == "⇄ dev"
+    assert menubar.format_title("loc@example.com", _USAGE, s, alias="dev") == "⇄ dev"
 
 
 def test_format_title_name_only_when_pct_off():
     s = menubar.MenuBarSettings(show_account_name=True, title_pct="off")
-    assert menubar.format_title("loc@papaya.asia", _USAGE, s) == "⇄ loc"
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ loc"
 
 
 def test_format_title_5h_only():
     s = menubar.MenuBarSettings(show_account_name=False, title_pct="5h")
-    assert menubar.format_title("loc@papaya.asia", _USAGE, s) == "⇄ 42%"
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ 42%"
 
 
 def test_format_title_7d_only():
     s = menubar.MenuBarSettings(show_account_name=False, title_pct="7d")
-    assert menubar.format_title("loc@papaya.asia", _USAGE, s) == "⇄ 18%"
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ 18%"
 
 
 def test_format_title_both_windows():
     s = menubar.MenuBarSettings(show_account_name=False, title_pct="both")
-    assert menubar.format_title("loc@papaya.asia", _USAGE, s) == "⇄ 42% · 18%"
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ 42% · 18%"
 
 
 def test_format_title_both_windows_with_name():
     s = menubar.MenuBarSettings(show_account_name=True, title_pct="both")
-    assert menubar.format_title("loc@papaya.asia", _USAGE, s) == "⇄ loc · 42% · 18%"
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ loc · 42% · 18%"
 
 
 def test_format_title_icon_only_when_off():
     s = menubar.MenuBarSettings(show_account_name=False, title_pct="off")
-    assert menubar.format_title("loc@papaya.asia", _USAGE, s) == "⇄"
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄"
 
 
 def test_format_title_scoped_appends_model_limits():
     # title_pct="off" + title_scoped gives a title tracking only the scoped model
     s = menubar.MenuBarSettings(show_account_name=True, title_pct="off", title_scoped=True)
     usage = {**_USAGE, "scoped": [{"name": "Fable", "pct": 55.0}]}
-    assert menubar.format_title("loc@papaya.asia", usage, s) == "⇄ loc · Fable 55%"
+    assert menubar.format_title("loc@example.com", usage, s) == "⇄ loc · Fable 55%"
 
 
 def test_format_title_scoped_after_windows_multiple_models():
@@ -412,7 +412,7 @@ def test_format_title_scoped_after_windows_multiple_models():
         **_USAGE,
         "scoped": [{"name": "Fable", "pct": 55.0}, {"name": "Opus", "pct": 7.0}],
     }
-    assert menubar.format_title("loc@papaya.asia", usage, s) == "⇄ 42% · 18% · Fable 55% · Opus 7%"
+    assert menubar.format_title("loc@example.com", usage, s) == "⇄ 42% · 18% · Fable 55% · Opus 7%"
 
 
 def test_format_title_scoped_off_by_default():
@@ -420,7 +420,7 @@ def test_format_title_scoped_off_by_default():
     s = menubar.MenuBarSettings(show_account_name=False, title_pct="off")
     usage = {**_USAGE, "scoped": [{"name": "Fable", "pct": 55.0}]}
     assert not s.title_scoped
-    assert menubar.format_title("loc@papaya.asia", usage, s) == "⇄"
+    assert menubar.format_title("loc@example.com", usage, s) == "⇄"
 
 
 def test_format_title_icon_only_when_no_active_account():
@@ -678,13 +678,13 @@ def test_run_without_rumps_raises_clean_error(monkeypatch):
     """A missing menubar extra surfaces as ClaudeSwitchError, not a traceback.
 
     The module is import-safe without rumps, so the CLI's ImportError guard
-    around ``from claude_swap.menubar import run`` can never fire — the import
+    around ``from ai_quota_swap.menubar import run`` can never fire — the import
     failure happens inside ``run()``. Blocking the import (a ``None`` entry in
     ``sys.modules`` makes ``import rumps`` raise) checks that ``run()`` turns
     it into the error type the CLI renders with the install hint.
     """
     monkeypatch.setitem(sys.modules, "rumps", None)
-    with pytest.raises(ClaudeSwitchError, match=r"claude-swap\[menubar\]"):
+    with pytest.raises(ClaudeSwitchError, match=r"ai-quota-swap\[menubar\]"):
         menubar.run(switcher=None)
 
 
@@ -810,10 +810,10 @@ def test_engine_error_table_is_pruned():
 
 
 def test_menu_note_keeps_the_state_and_drops_the_remedy():
-    from claude_swap.switcher import USAGE_RELOGIN_REQUIRED
+    from ai_quota_swap.switcher import USAGE_RELOGIN_REQUIRED
 
     note = menubar.SENTINEL_NOTES[USAGE_RELOGIN_REQUIRED]
-    assert "cswap add" in note, "premise: the note carries a remedy"
+    assert "qswap add" in note, "premise: the note carries a remedy"
     assert menubar.menu_note(note) == "re-login needed"
 
 
@@ -838,13 +838,13 @@ def test_menu_note_leaves_a_short_note_alone():
 
 
 def test_account_row_shows_the_sentinel_state_not_the_remedy():
-    from claude_swap.switcher import USAGE_RELOGIN_REQUIRED
+    from ai_quota_swap.switcher import USAGE_RELOGIN_REQUIRED
 
     label = menubar.format_account_label(
         2, "b@x.com", menubar.SENTINEL_NOTES[USAGE_RELOGIN_REQUIRED]
     )
     assert label.endswith("re-login needed")
-    assert "cswap add" not in label
+    assert "qswap add" not in label
 
 
 def test_set_tooltip_reaches_the_native_item_and_tolerates_its_absence():
@@ -965,5 +965,5 @@ def test_engine_stopped_event_names_the_error_or_the_plain_end():
 def test_format_title_attention_prefix():
     settings = menubar.MenuBarSettings()
     assert menubar.format_title(None, None, settings, attention=True) == "⚠ ⇄"
-    assert menubar.format_title("loc@papaya.asia", _USAGE, settings, attention=True).startswith("⚠ ⇄ ")
-    assert not menubar.format_title("loc@papaya.asia", _USAGE, settings).startswith("⚠")
+    assert menubar.format_title("loc@example.com", _USAGE, settings, attention=True).startswith("⚠ ⇄ ")
+    assert not menubar.format_title("loc@example.com", _USAGE, settings).startswith("⚠")

@@ -15,15 +15,15 @@ from pathlib import Path
 
 import pytest
 
-from claude_swap.models import (
+from ai_quota_swap.models import (
     ACCOUNT_THRESHOLD_MAX,
     ACCOUNT_THRESHOLD_MIN,
     AccountPolicy,
     AccountSnapshot,
     normalize_account_threshold,
 )
-from claude_swap.settings import SETTING_SPECS
-from claude_swap.usage_store import UsageEntry
+from ai_quota_swap.settings import SETTING_SPECS
+from ai_quota_swap.usage_store import UsageEntry
 
 
 def _snapshot(**overrides) -> AccountSnapshot:
@@ -99,7 +99,7 @@ class TestNormalizeAccountThreshold:
     def test_error_message_names_the_valid_range(self, raw):
         """The message must name the range — a bare 'invalid value' is not enough.
 
-        This is what `cswap threshold 2 20` prints to the user.
+        This is what `qswap threshold 2 20` prints to the user.
         """
         with pytest.raises(ValueError) as excinfo:
             normalize_account_threshold(raw)
@@ -236,7 +236,7 @@ class TestModelsRemainsALeaf:
     """
 
     def test_no_settings_import_in_source(self):
-        source = Path("src/claude_swap/models.py").read_text(encoding="utf-8")
+        source = Path("src/ai_quota_swap/models.py").read_text(encoding="utf-8")
         offenders = [
             line.strip()
             for line in source.splitlines()
@@ -249,7 +249,7 @@ class TestModelsRemainsALeaf:
 
     def test_models_module_has_no_settings_attribute(self):
         """The source scan above misses `importlib`-style indirection."""
-        import claude_swap.models as models_module
+        import ai_quota_swap.models as models_module
 
         assert not hasattr(models_module, "settings")
         assert not hasattr(models_module, "SETTING_SPECS")

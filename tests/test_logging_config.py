@@ -1,17 +1,17 @@
-"""Tests for claude_swap.logging_config."""
+"""Tests for ai_quota_swap.logging_config."""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 
-from claude_swap.logging_config import setup_logging
+from ai_quota_swap.logging_config import setup_logging
 
 
 def test_setup_does_not_create_dir(tmp_path: Path):
     """Calling setup_logging must not materialize the log directory.
 
-    The log dir lives under the cswap backup root; pre-creating it laid down
+    The log dir lives under the qswap backup root; pre-creating it laid down
     cache/log artifacts that later tripped the legacy → XDG migration
     collision check (see paths.migrate_legacy_backup_dir).
     """
@@ -36,7 +36,7 @@ def test_dir_is_created_on_first_log(tmp_path: Path):
         for handler in logger.handlers:
             handler.flush()
         assert log_dir.is_dir()
-        assert (log_dir / "claude-swap.log").exists()
+        assert (log_dir / "ai-quota-swap.log").exists()
     finally:
         for handler in logger.handlers[:]:
             handler.close()

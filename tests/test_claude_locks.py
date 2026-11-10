@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from claude_swap import claude_locks
-from claude_swap.claude_locks import (
+from ai_quota_swap import claude_locks
+from ai_quota_swap.claude_locks import (
     claude_config_lock,
     claude_credentials_lock,
     config_lock_dir,
     credentials_lock_dir,
     proper_lockfile,
 )
-from claude_swap.exceptions import ClaudeCodeLockTimeout
+from ai_quota_swap.exceptions import ClaudeCodeLockTimeout
 
 
 @pytest.fixture
@@ -217,7 +217,7 @@ class TestLockPaths:
 class TestCcRefreshLockProtocol:
     """Claude Code 2.1.218 guards its OAuth refresh with TWO locks —
     ``<config-home>/.oauth_refresh.lock`` (primary) then the legacy
-    ``<config-home>.lock`` — both at a 60s staleness. cswap must follow the
+    ``<config-home>.lock`` — both at a 60s staleness. qswap must follow the
     same protocol or mutual exclusion silently fails (extracted from the
     2.1.218 bundle: ``uKi``/``CKi``, ``stale: 60000, update: 5000``)."""
 

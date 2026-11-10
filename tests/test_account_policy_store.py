@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_swap.exceptions import AccountNotFoundError, ConfigError
-from claude_swap.models import AccountPolicy, Platform
-from claude_swap.switcher import ClaudeAccountSwitcher
+from ai_quota_swap.exceptions import AccountNotFoundError, ConfigError
+from ai_quota_swap.models import AccountPolicy, Platform
+from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
 
 class PolicyStoreBase:
@@ -296,13 +296,13 @@ class TestSnapshotCarriesPolicy(PolicyStoreBase):
         Existing consumers keying on the base schema must be unaffected, so an
         untouched account's row is byte-identical to today's.
         """
-        from claude_swap.json_output import account_row
+        from ai_quota_swap.json_output import account_row
 
         row = account_row(1, "a@example.test", "", "", True, None)
         assert "threshold" not in row
 
     def test_json_row_emits_policy_when_set(self, temp_home: Path):
-        from claude_swap.json_output import account_row
+        from ai_quota_swap.json_output import account_row
 
         row = account_row(
             1, "a@example.test", "", "", True, None,
@@ -321,12 +321,12 @@ class TestExportImportIgnorePolicy(PolicyStoreBase):
     """
 
     def test_export_omits_policy_keys(self, temp_home: Path):
-        from claude_swap.transfer import export_accounts
+        from ai_quota_swap.transfer import export_accounts
 
         s = self._fleet(temp_home)
         s.set_account_threshold("1", 85.0)
 
-        out_file = temp_home / "backup.cswap"
+        out_file = temp_home / "backup.qswap"
         export_accounts(s, str(out_file))
         envelope = json.loads(out_file.read_text(encoding="utf-8"))
 
@@ -343,10 +343,10 @@ class TestExportImportIgnorePolicy(PolicyStoreBase):
         import os
         from unittest.mock import patch as _patch
 
-        from claude_swap.transfer import export_accounts, import_accounts
+        from ai_quota_swap.transfer import export_accounts, import_accounts
 
         s = self._fleet(temp_home, count=2)
-        out_file = temp_home / "backup.cswap"
+        out_file = temp_home / "backup.qswap"
         export_accounts(s, str(out_file))
 
         envelope = json.loads(out_file.read_text(encoding="utf-8"))

@@ -1,10 +1,10 @@
 # Automatic switching: the exact rules
 
-Reference for `cswap auto`, and for the menu bar's auto-switch, which runs the same engine. Everyday use is in the [README](../README.md#automatic-switching).
+Reference for `qswap auto`, and for the menu bar's auto-switch, which runs the same engine. Everyday use is in the [README](../README.md#automatic-switching).
 
 ## Strategies
 
-Set with `--strategy`, or `cswap config set autoswitch.strategy`.
+Set with `--strategy`, or `qswap config set autoswitch.strategy`.
 
 - `best` (default) stays put until the active account nears its limit, then moves to the account with the most quota left.
 - `weekly-first` switches at the same lines as `best`, with the same landing rules and hysteresis margin, but among the accounts that qualify it lands on the one whose **weekly window resets soonest** (most quota left breaks ties), so weekly quota that would otherwise expire unused gets spent first. Its at-limit and failover escapes, and the all-over-the-lines case, rank by quota left exactly as `best` does.
@@ -17,31 +17,31 @@ A cooldown (default 5 min) and a hysteresis margin stop it flip-flopping near th
 
 ## A separate line for the weekly windows
 
-Set with `--weekly-threshold 97`, or `cswap config set autoswitch.weeklyThreshold 97`.
+Set with `--weekly-threshold 97`, or `qswap config set autoswitch.weeklyThreshold 97`.
 
 One threshold compared against the busiest window forces the same number on windows that want different ones — the 5-hour window recycles in hours (an overshoot costs one interrupted turn), while the weekly window is the budget (quota unspent before its reset is gone). With a weekly line, the 7-day window and any per-model window (`--model`) are judged against it and the threshold keeps governing the 5-hour window; every window is compared against its own line, so 7d 93% under a 97 line holds while 5h 95% under an 85 line switches, and the log names the window it measured (`7d 93% < 97%`). Points on different windows are not the same amount of work — the lines are comparable, the clocks are not.
 
 ## Per-account threshold
 
-`cswap threshold <num|email> <pct>` gives one account its own switch-away line (50–99.9) in place of the global one: auto-switch leaves that account when *its* line is reached and prefers candidates still under *theirs*, with ranking and the hysteresis margin counting room under each account's own line rather than raw headroom. Like the global threshold it is a switch-away line, not a hard cap — with nothing under its line, or the active account at its limit, it still lands somewhere rather than stall (`priority-consume-first` is the exception: it holds, see below). With a weekly line set, the override applies to the 5-hour window only. Accounts without one keep the global threshold. `cswap threshold` alone lists the default and every override, `--unset` clears one, and the [TUI](../README.md#interactive-dashboard-tui) shows a `th 85%` badge.
+`qswap threshold <num|email> <pct>` gives one account its own switch-away line (50–99.9) in place of the global one: auto-switch leaves that account when *its* line is reached and prefers candidates still under *theirs*, with ranking and the hysteresis margin counting room under each account's own line rather than raw headroom. Like the global threshold it is a switch-away line, not a hard cap — with nothing under its line, or the active account at its limit, it still lands somewhere rather than stall (`priority-consume-first` is the exception: it holds, see below). With a weekly line set, the override applies to the 5-hour window only. Accounts without one keep the global threshold. `qswap threshold` alone lists the default and every override, `--unset` clears one, and the [TUI](../README.md#interactive-dashboard-tui) shows a `th 85%` badge.
 
 ## Account priority tiers
 
-`cswap priority <num|email> <tier>` ranks an account for the `priority-consume-first` strategy: higher tiers are used first, accounts without one are tier 0 (valid tiers are 0–1000), and within a tier the account whose weekly window resets soonest goes first. It moves back to a higher tier as soon as that account is usable again (after the cooldown), and it never lands on an account at or over its switch lines — when nothing qualifies, even at the limit, it holds and keeps polling instead of relaxing them. Tiers alone change nothing; `best`, `weekly-first`, `consume-first`, and manual switching ignore them. It uses neither the hysteresis margin nor the exhausted slow cadence described above: equal tiers and reset times keep the active account, and a blocked state keeps polling at the normal interval. `cswap priority` lists every account's tier and `--unset` clears one.
+`qswap priority <num|email> <tier>` ranks an account for the `priority-consume-first` strategy: higher tiers are used first, accounts without one are tier 0 (valid tiers are 0–1000), and within a tier the account whose weekly window resets soonest goes first. It moves back to a higher tier as soon as that account is usable again (after the cooldown), and it never lands on an account at or over its switch lines — when nothing qualifies, even at the limit, it holds and keeps polling instead of relaxing them. Tiers alone change nothing; `best`, `weekly-first`, `consume-first`, and manual switching ignore them. It uses neither the hysteresis margin nor the exhausted slow cadence described above: equal tiers and reset times keep the active account, and a blocked state keeps polling at the normal interval. `qswap priority` lists every account's tier and `--unset` clears one.
 
 ## Holding an account out of rotation
 
-To hold an account out of rotation yourself — a work account you don't want touched, one you're resting — run `cswap disable <num|email>`; `cswap enable <num|email>` puts it back. Disabled accounts are skipped by auto-switch, bare `cswap switch`, and the `best` / `next-available` strategies, but stay fully managed and remain a valid explicit `cswap switch <num|email>` target. They show a `(disabled)` marker in `cswap list`, in the [TUI](../README.md#interactive-dashboard-tui), and in the [menu bar](../README.md#menu-bar-macos) — both of which also let you toggle the state in place (TUI: menu → *Disable / enable account…*; menu bar: *Disable / enable account*).
+To hold an account out of rotation yourself — a work account you don't want touched, one you're resting — run `qswap disable <num|email>`; `qswap enable <num|email>` puts it back. Disabled accounts are skipped by auto-switch, bare `qswap switch`, and the `best` / `next-available` strategies, but stay fully managed and remain a valid explicit `qswap switch <num|email>` target. They show a `(disabled)` marker in `qswap list`, in the [TUI](../README.md#interactive-dashboard-tui), and in the [menu bar](../README.md#menu-bar-macos) — both of which also let you toggle the state in place (TUI: menu → *Disable / enable account…*; menu bar: *Disable / enable account*).
 
 ## Per-model limits
 
-By default only the account-wide 5h/7d windows drive switching. If you work on one model and hit its **weekly per-model limit** first (e.g. Fable), add `--model Fable` (or `cswap config set autoswitch.model Fable`) to fold that model's window into the decision, so it switches off an account whose model quota is spent even while its 5h/7d windows still have room.
+By default only the account-wide 5h/7d windows drive switching. If you work on one model and hit its **weekly per-model limit** first (e.g. Fable), add `--model Fable` (or `qswap config set autoswitch.model Fable`) to fold that model's window into the decision, so it switches off an account whose model quota is spent even while its 5h/7d windows still have room.
 
-**Model names** are Anthropic's own per-model `display_name`s, matched case-insensitively. The exact strings for your accounts are the per-model rows in `cswap list` (e.g. a line reading `Fable: 100%`).
+**Model names** are Anthropic's own per-model `display_name`s, matched case-insensitively. The exact strings for your accounts are the per-model rows in `qswap list` (e.g. a line reading `Fable: 100%`).
 
 ## Accounts with no 5-hour window
 
-When the usage API reports no `five_hour` window for an account (verified Ultra accounts have no 5-hour limit), cswap judges it on its 7-day window and any `--model` window alone and shows no 5h row. A setup-token read through the rate-limit headers (`usage.headerProbe`) is judged the same way when its response carries no 5-hour headers at all; a 5-hour header without a usable utilization fails the reading instead.
+When the usage API reports no `five_hour` window for an account (verified Ultra accounts have no 5-hour limit), qswap judges it on its 7-day window and any `--model` window alone and shows no 5h row. A setup-token read through the rate-limit headers (`usage.headerProbe`) is judged the same way when its response carries no 5-hour headers at all; a 5-hour header without a usable utilization fails the reading instead.
 
 ## Usage polling
 
@@ -51,7 +51,7 @@ Usage polling is adaptive — a couple of accounts per check, busy alternates wa
 
 It fails safe: if a usage check errors it keeps trusting the last-known numbers, for a bounded time, while retries back off, and an expired token on an idle machine makes it hold rather than fail over (Claude Code refreshes the token on your next message).
 
-An account whose refresh token has died is quarantined and reported until you either log in with it and re-run `cswap add --slot N`, or replace its stored credentials from a known-good export — a plain `cswap import backup.cswap` replaces dead-token slots on its own (`--force` is still required to replace other existing accounts; note a stale export can carry an already-superseded token). API-key accounts are never rotated onto unless you pass `--include-api-key-accounts`.
+An account whose refresh token has died is quarantined and reported until you either log in with it and re-run `qswap add --slot N`, or replace its stored credentials from a known-good export — a plain `qswap import backup.qswap` replaces dead-token slots on its own (`--force` is still required to replace other existing accounts; note a stale export can carry an already-superseded token). API-key accounts are never rotated onto unless you pass `--include-api-key-accounts`.
 
 ## Running alongside Claude Code
 
@@ -62,9 +62,9 @@ Runs safely alongside Claude Code: switches take the same credential locks Claud
 For cron/systemd timers, `--once` reports the outcome in its exit code (`0` switched, `1` error, `2` nothing to do, `3` blocked — no viable target), and `--json` emits one JSON event per line:
 
 ```bash
-*/5 * * * * cswap auto --once --json >> ~/.cswap-auto.log 2>&1
+*/5 * * * * qswap auto --once --json >> ~/.qswap-auto.log 2>&1
 ```
 
 ## Defaults
 
-Defaults like the threshold and cooldown are configurable with `cswap config set autoswitch.threshold 80` — flags override them (see [Configuration](../README.md#configuration)).
+Defaults like the threshold and cooldown are configurable with `qswap config set autoswitch.threshold 80` — flags override them (see [Configuration](../README.md#configuration)).

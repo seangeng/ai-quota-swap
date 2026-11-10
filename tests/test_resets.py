@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_swap import oauth, resets
-from claude_swap.autoswitch import (
+from ai_quota_swap import oauth, resets
+from ai_quota_swap.autoswitch import (
     MAX_AUTO_RESETS_PER_DAY,
     ResetEvent,
     SwitchEvent,
@@ -21,9 +21,9 @@ from claude_swap.autoswitch import (
     reset_claim_settled,
     reset_request_id,
 )
-from claude_swap.resets import AccountView, ClaimResult, plan_reset
-from claude_swap.settings import ResetSettings, load_reset_settings, set_setting
-from claude_swap.usage_store import UsageEntry
+from ai_quota_swap.resets import AccountView, ClaimResult, plan_reset
+from ai_quota_swap.settings import ResetSettings, load_reset_settings, set_setting
+from ai_quota_swap.usage_store import UsageEntry
 
 from tests.test_autoswitch import EngineHarness, _iso_at
 
@@ -271,11 +271,11 @@ class TestUsageRequest:
     def test_plain_request_unchanged(self):
         seen = self._capture()
         assert seen["url"] == "https://api.anthropic.com/api/oauth/usage"
-        assert seen["agent"] == "claude-swap/1.0"
+        assert seen["agent"] == "ai-quota-swap/1.0"
 
     def test_resets_read_uses_cli_surface(self, monkeypatch):
         monkeypatch.setattr(resets, "_cli_version_cache", None)
-        monkeypatch.setenv("CSWAP_CLAUDE_CLI_VERSION", "2.1.400")
+        monkeypatch.setenv("QSWAP_CLAUDE_CLI_VERSION", "2.1.400")
         seen = self._capture(resets=True)
         assert seen["url"] == "https://api.anthropic.com/api/oauth/usage?cedar_ember=1"
         assert seen["agent"] == "claude-cli/2.1.400 (external, cli)"
@@ -284,7 +284,7 @@ class TestUsageRequest:
 class TestCliVersion:
     def test_native_install_binary_name(self, monkeypatch, tmp_path):
         monkeypatch.setattr(resets, "_cli_version_cache", None)
-        monkeypatch.delenv("CSWAP_CLAUDE_CLI_VERSION", raising=False)
+        monkeypatch.delenv("QSWAP_CLAUDE_CLI_VERSION", raising=False)
         versions = tmp_path / "versions"
         versions.mkdir()
         binary = versions / "2.1.500"
@@ -296,7 +296,7 @@ class TestCliVersion:
 
     def test_fallback(self, monkeypatch, tmp_path):
         monkeypatch.setattr(resets, "_cli_version_cache", None)
-        monkeypatch.delenv("CSWAP_CLAUDE_CLI_VERSION", raising=False)
+        monkeypatch.delenv("QSWAP_CLAUDE_CLI_VERSION", raising=False)
         monkeypatch.setattr(resets.shutil, "which", lambda _name: None)
         monkeypatch.setattr(resets.Path, "home", lambda: tmp_path)
         assert resets.detect_cli_version() == resets.FALLBACK_CLI_VERSION
@@ -886,7 +886,7 @@ class TestListRow:
     def test_resets_row_under_usage(self):
         import time
 
-        from claude_swap.switcher import _usage_entry_lines
+        from ai_quota_swap.switcher import _usage_entry_lines
 
         # The row reads the real clock: grants must outlive it.
         far = time.time() + 120 * DAY
@@ -899,7 +899,7 @@ class TestListRow:
     def test_tui_badge(self):
         import time
 
-        from claude_swap.tui.widgets import _resets_badge
+        from ai_quota_swap.tui.widgets import _resets_badge
 
         far = time.time() + 120 * DAY
         assert _resets_badge(_usage(grants=[_grant("a", ends=far)]), time.time()) == "1 reset"
@@ -909,7 +909,7 @@ class TestListRow:
         assert _resets_badge(None, time.time()) == ""
 
     def test_no_row_without_resets(self):
-        from claude_swap.switcher import _usage_entry_lines
+        from ai_quota_swap.switcher import _usage_entry_lines
 
         usage = _usage(fable=6)
         lines = _usage_entry_lines(UsageEntry(last_good=usage, fetched_at=None, age_s=0.0))
@@ -995,7 +995,7 @@ class TestReviewRegressions:
         assert resets.summary(status, NOW) is not None
 
     def test_brake_counts_unknown_outcomes(self):
-        from claude_swap.autoswitch import reset_claims_today
+        from ai_quota_swap.autoswitch import reset_claims_today
 
         state = {
             "resetLog": [

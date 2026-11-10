@@ -13,10 +13,10 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from claude_swap import macos_keychain
-from claude_swap import oauth
-from claude_swap.json_output import USAGE_FOREIGN_CREDENTIAL, USAGE_TOKEN_EXPIRED
-from claude_swap.exceptions import (
+from ai_quota_swap import macos_keychain
+from ai_quota_swap import oauth
+from ai_quota_swap.json_output import USAGE_FOREIGN_CREDENTIAL, USAGE_TOKEN_EXPIRED
+from ai_quota_swap.exceptions import (
     AccountNotFoundError,
     ConfigError,
     CredentialReadError,
@@ -25,14 +25,14 @@ from claude_swap.exceptions import (
     SwitchError,
     ValidationError,
 )
-from claude_swap.usage_store import FetchRecord, UsageEntry, UsageStore
-from claude_swap.macos_keychain import KeychainError
-from claude_swap.models import Platform, normalize_alias
-from claude_swap.paths import get_backup_root, get_credentials_path
-from claude_swap.session import mark_session_stale
-from claude_swap.settings import set_setting, settings_path
-from claude_swap.credentials import ActiveCredentials
-from claude_swap.switcher import (
+from ai_quota_swap.usage_store import FetchRecord, UsageEntry, UsageStore
+from ai_quota_swap.macos_keychain import KeychainError
+from ai_quota_swap.models import Platform, normalize_alias
+from ai_quota_swap.paths import get_backup_root, get_credentials_path
+from ai_quota_swap.session import mark_session_stale
+from ai_quota_swap.settings import set_setting, settings_path
+from ai_quota_swap.credentials import ActiveCredentials
+from ai_quota_swap.switcher import (
     CLAUDE_CODE_KEYCHAIN_SERVICE,
     ClaudeAccountSwitcher,
     SECURITY_SERVICE,
@@ -433,7 +433,7 @@ class TestAliasCommand:
     def test_rename_via_existing_alias_identifier(
         self, temp_home: Path, sample_sequence_data: dict
     ):
-        """cswap alias <old> <new> — identifier can itself be an alias."""
+        """qswap alias <old> <new> — identifier can itself be an alias."""
         switcher = ClaudeAccountSwitcher()
         self._write(switcher, sample_sequence_data)
         switcher.set_alias("1", "dev")
@@ -660,7 +660,7 @@ class TestStatusCache:
 
         with patch.object(switcher, "_read_active_credentials",
                           return_value=ActiveCredentials(active_creds, False)), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             switcher.status()
 
         mock_fetch.assert_not_called()
@@ -686,7 +686,7 @@ class TestStatusCache:
 
         with patch.object(switcher, "_read_active_credentials",
                           return_value=ActiveCredentials(active_creds, False)), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(usage_result)) as mock_fetch:
             switcher.status()
 
@@ -723,7 +723,7 @@ class TestStatusCache:
 
         with patch.object(switcher, "_read_active_credentials",
                           return_value=ActiveCredentials(active_creds, False)), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(usage_result)):
             switcher.status()
 
@@ -762,9 +762,9 @@ class TestFetchAccountUsageSessionProfile:
         session = _oauth_creds("sk-session", 7200)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -784,9 +784,9 @@ class TestFetchAccountUsageSessionProfile:
         session = _oauth_creds("sk-session", -60)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
         assert record.sentinel == USAGE_TOKEN_EXPIRED
@@ -805,9 +805,9 @@ class TestFetchAccountUsageSessionProfile:
         switcher._write_account_credentials("2", "test@example.com", backup)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(None, error="http-401")):
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -825,9 +825,9 @@ class TestFetchAccountUsageSessionProfile:
         stamp = oauth.access_token_fingerprint(session)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup), stamp)
 
         assert record.sentinel == USAGE_TOKEN_EXPIRED
@@ -840,9 +840,9 @@ class TestFetchAccountUsageSessionProfile:
         stamp = oauth.access_token_fingerprint(_oauth_creds("sk-session", 7200))
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 3}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup), stamp)
 
@@ -858,9 +858,9 @@ class TestFetchAccountUsageSessionProfile:
         backup = _oauth_creds("sk-backup", 7200)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=None), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 7}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -878,9 +878,9 @@ class TestFetchAccountUsageSessionProfile:
         backup = _oauth_creds("sk-backup", -60)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=None), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
         assert record.sentinel == USAGE_TOKEN_EXPIRED
@@ -891,9 +891,9 @@ class TestFetchAccountUsageSessionProfile:
         backup = _oauth_creds("sk-backup", 7200)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=None), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(None, error="http-401")):
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -908,9 +908,9 @@ class TestFetchAccountUsageSessionProfile:
         backup = _oauth_creds("sk-backup", 7200)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=None), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             record = switcher._fetch_account_usage(
                 self._info(backup), oauth.access_token_fingerprint(backup)
             )
@@ -928,9 +928,9 @@ class TestFetchAccountUsageSessionProfile:
         info = self._info(backup)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(None, error="http-401")) as mock_fetch:
             first = switcher._collect_usage_entries([info])["2"]
             second = switcher._collect_usage_entries([info])["2"]
@@ -946,9 +946,9 @@ class TestFetchAccountUsageSessionProfile:
         backup = _oauth_creds("sk-backup", 7200)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=None), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(
                        None, error="http-429", retry_after_s=3600.0
                    )):
@@ -971,9 +971,9 @@ class TestFetchAccountUsageSessionProfile:
         switcher._write_account_credentials("2", "test@example.com", backup)
 
         with patch.object(switcher, "_live_session_pids", return_value=[]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 9}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -997,9 +997,9 @@ class TestFetchAccountUsageSessionProfile:
         self._write_profile_identity(switcher, "test@example.com", "org-uuid")
 
         with patch.object(switcher, "_live_session_pids", return_value=[]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 9}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -1019,9 +1019,9 @@ class TestFetchAccountUsageSessionProfile:
         switcher._write_account_credentials("2", "test@example.com", backup)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})) as mock_fetch:
             switcher._fetch_account_usage(self._info(backup))
 
@@ -1056,7 +1056,7 @@ class TestFetchAccountUsageSessionProfile:
         (session_dir / "sessions").mkdir()
         (session_dir / "sessions" / "9999.json").write_text("not json{{{")
 
-        with patch("claude_swap.oauth.try_fetch_usage_for_account",
+        with patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -1068,7 +1068,7 @@ class TestFetchAccountUsageSessionProfile:
         assert switcher.read_account_credentials("2", "test@example.com") == backup
 
     def test_lock_contention_keeps_the_profile_read_only(self, temp_home: Path):
-        """cswap's lock held elsewhere: adoption cannot be decided this pass,
+        """qswap's lock held elsewhere: adoption cannot be decided this pass,
         and the fetch reads the profile's credential read-only instead of
         refreshing the backup underneath whatever holds the lock."""
         switcher = ClaudeAccountSwitcher()
@@ -1078,8 +1078,8 @@ class TestFetchAccountUsageSessionProfile:
         switcher._write_account_credentials("2", "test@example.com", backup)
         self._seed_exited_profile(switcher, session)
 
-        with patch("claude_swap.switcher.FileLock", side_effect=LockError("busy")), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+        with patch("ai_quota_swap.switcher.FileLock", side_effect=LockError("busy")), \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -1104,7 +1104,7 @@ class TestFetchAccountUsageSessionProfile:
 
         with patch.object(switcher._store, "_write_account_credentials",
                           side_effect=OSError("disk full")) as mock_write, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -1121,9 +1121,9 @@ class TestFetchAccountUsageSessionProfile:
         backup = _oauth_creds("sk-backup", 7200)
 
         with patch.object(switcher, "_live_session_pids", return_value=[]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=None), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 9}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -1134,15 +1134,15 @@ class TestFetchAccountUsageSessionProfile:
         assert kwargs.get("refresh_via") is not None  # consume gate replaces persist
 
     def test_exited_session_rejected_backup_still_refreshes(self, temp_home: Path):
-        """With nobody live the backup is cswap's to refresh: a 401 stays an
+        """With nobody live the backup is qswap's to refresh: a 401 stays an
         error for the store's own retry-and-strike accounting."""
         switcher = ClaudeAccountSwitcher()
         backup = _oauth_creds("sk-backup", 7200)
 
         with patch.object(switcher, "_live_session_pids", return_value=[]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=None), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(None, error="http-401")) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -1170,9 +1170,9 @@ class TestFetchAccountUsageSessionProfile:
         self._write_profile_identity(switcher, "other@example.com", "org-other")
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 9}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -1183,7 +1183,7 @@ class TestFetchAccountUsageSessionProfile:
         assert kwargs.get("refresh_via") is not None  # consume gate replaces persist
 
     def test_drifted_profile_org_same_email_falls_back(self, temp_home: Path):
-        """Same email, different org (the j@ck.gg merge-artifact shape) is a
+        """Same email, different org (the a@x.com merge-artifact shape) is a
         different subscription — still drift."""
         switcher = ClaudeAccountSwitcher()
         backup = _oauth_creds("sk-backup", 7200)
@@ -1191,9 +1191,9 @@ class TestFetchAccountUsageSessionProfile:
         self._write_profile_identity(switcher, "test@example.com", "org-uuid-other")
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 9}})) as mock_fetch:
             switcher._fetch_account_usage(self._info(backup))
 
@@ -1209,9 +1209,9 @@ class TestFetchAccountUsageSessionProfile:
         self._write_profile_identity(switcher, "test@example.com", "org-uuid")
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -1231,9 +1231,9 @@ class TestFetchAccountUsageSessionProfile:
         switcher._session_dir("2", "test@example.com").mkdir(parents=True)
 
         with patch.object(switcher, "_live_session_pids", return_value=[123]), \
-             patch("claude_swap.session.read_session_credentials",
+             patch("ai_quota_swap.session.read_session_credentials",
                    return_value=session), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})) as mock_fetch:
             record = switcher._fetch_account_usage(self._info(backup))
 
@@ -1258,7 +1258,7 @@ class TestSetupTokenHeaderProbeWiring:
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
         with patch.object(switcher, "_live_session_pids", return_value=[]), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(None, error="http-429")) as mock_fetch:
             switcher._fetch_account_usage(self._info())
             # Opt-in: each probe is a real request on the subscription.
@@ -1298,7 +1298,7 @@ class TestSetupTokenHeaderProbeWiring:
             raise endpoint
 
         with patch.object(switcher, "_live_session_pids", return_value=[]), \
-             patch("claude_swap.oauth.urllib.request.urlopen", side_effect=fake_urlopen):
+             patch("ai_quota_swap.oauth.urllib.request.urlopen", side_effect=fake_urlopen):
             first = switcher._collect_usage_entries([self._info()])["3"]
             second = switcher._collect_usage_entries([self._info()])["3"]
 
@@ -1343,7 +1343,7 @@ class TestSetupTokenHeaderProbeWiring:
             self._probe_429({"Retry-After": "30"})
         )
         with patch.object(switcher, "_live_session_pids", return_value=[]), \
-             patch("claude_swap.oauth.urllib.request.urlopen", side_effect=fake):
+             patch("ai_quota_swap.oauth.urllib.request.urlopen", side_effect=fake):
             entry = switcher._collect_usage_entries([self._info()])["3"]
         assert urls == [oauth.USAGE_PROBE_URL]
         assert entry.last_good is None
@@ -1370,7 +1370,7 @@ class TestSetupTokenHeaderProbeWiring:
         switcher, clock, urls, fake = self._probe_switcher(rejected)
         start = clock["now"]
         with patch.object(switcher, "_live_session_pids", return_value=[]), \
-             patch("claude_swap.oauth.urllib.request.urlopen", side_effect=fake):
+             patch("ai_quota_swap.oauth.urllib.request.urlopen", side_effect=fake):
             first = switcher._collect_usage_entries([self._info()], fetch)["3"]
             assert urls == [oauth.USAGE_PROBE_URL]
             assert first.last_good["rejected"]["retry_after_s"] == 3600.0
@@ -1387,7 +1387,7 @@ class TestSetupTokenHeaderProbeWiring:
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
         with patch.object(switcher, "_live_session_pids", return_value=[]), \
-             patch("claude_swap.oauth.urllib.request.urlopen") as urlopen:
+             patch("ai_quota_swap.oauth.urllib.request.urlopen") as urlopen:
             entry = switcher._collect_usage_entries([self._info()])["3"]
         urlopen.assert_not_called()
         assert entry.last_good is None
@@ -1456,7 +1456,7 @@ class TestAdoptSessionCredential:
         assert switcher.read_account_credentials("2", self.EMAIL) == backup
 
     def test_stale_marked_profile_is_not_adopted(self, temp_home: Path):
-        """The backup moved under this profile while it was live; cswap has
+        """The backup moved under this profile while it was live; qswap has
         already decided the profile re-bootstraps, and the marker stays."""
         backup = _oauth_creds("sk-backup", -3600)
         profile = _oauth_creds("sk-session", 7200)
@@ -1609,7 +1609,7 @@ class TestListAccountsUsage:
 
         with patch.object(switcher, "_read_credentials", return_value=active_creds), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.urllib.request.urlopen", return_value=mock_response):
+             patch("ai_quota_swap.oauth.urllib.request.urlopen", return_value=mock_response):
             switcher.list_accounts()
 
         output = capsys.readouterr().out
@@ -1637,7 +1637,7 @@ class TestListAccountsUsage:
 
         with patch.object(switcher, "_read_credentials", return_value=active_creds), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)):
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)):
             switcher.list_accounts()
 
         output = capsys.readouterr().out
@@ -1669,7 +1669,7 @@ class TestListAccountsUsage:
 
         with patch.object(switcher, "_read_credentials", return_value=active_creds), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.urllib.request.urlopen", return_value=mock_response):
+             patch("ai_quota_swap.oauth.urllib.request.urlopen", return_value=mock_response):
             switcher.list_accounts()
 
         output = capsys.readouterr().out
@@ -1699,7 +1699,7 @@ class TestListAccountsUsage:
         """While Claude Code owns the active account, list never writes live creds.
 
         Refreshing the live credential in parallel would race with Claude Code's own
-        refresh (which coordinates via a ~/.claude/ lockfile cswap doesn't honor) and
+        refresh (which coordinates via a ~/.claude/ lockfile qswap doesn't honor) and
         could trip refresh-token reuse detection. The active row stays hands-off
         (is_active=True) whenever an owner is detected; only inactive backups refresh.
         """
@@ -1735,7 +1735,7 @@ class TestListAccountsUsage:
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
              patch.object(switcher, "consume_backup_grant", side_effect=mock_gate), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account", side_effect=mock_fetch):
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account", side_effect=mock_fetch):
             switcher.list_accounts()
 
         # Live creds must never be written while Claude Code is running.
@@ -1756,9 +1756,9 @@ class TestListAccountsUsage:
 
         with patch.object(switcher, "_read_credentials", return_value=active_creds), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)), \
-             patch("claude_swap.session.read_session_credentials", return_value=None), \
-             patch("claude_swap.oauth.build_token_status", return_value="oauth: fresh, refresh token yes"):
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)), \
+             patch("ai_quota_swap.session.read_session_credentials", return_value=None), \
+             patch("ai_quota_swap.oauth.build_token_status", return_value="oauth: fresh, refresh token yes"):
             switcher.list_accounts(show_token_status=True)
 
         output = capsys.readouterr().out
@@ -1768,7 +1768,7 @@ class TestListAccountsUsage:
     def test_token_status_lines_for_active_account_use_active_profile(self, temp_home: Path):
         switcher = ClaudeAccountSwitcher()
 
-        with patch("claude_swap.oauth.build_token_status", return_value="oauth: fresh, refresh token yes") as build:
+        with patch("ai_quota_swap.oauth.build_token_status", return_value="oauth: fresh, refresh token yes") as build:
             lines = switcher._token_status_lines(
                 (1, "active@example.com", "", "", True, "active-creds", "")
             )
@@ -1779,8 +1779,8 @@ class TestListAccountsUsage:
     def test_token_status_lines_preserve_api_key_silence(self, temp_home: Path):
         switcher = ClaudeAccountSwitcher()
 
-        with patch("claude_swap.session.read_session_credentials") as read_session, \
-             patch("claude_swap.oauth.build_token_status") as build:
+        with patch("ai_quota_swap.session.read_session_credentials") as read_session, \
+             patch("ai_quota_swap.oauth.build_token_status") as build:
             lines = switcher._token_status_lines(
                 (2, "key@example.com", "", "", False, "sk-ant-api03-test", "")
             )
@@ -1798,9 +1798,9 @@ class TestListAccountsUsage:
                 "backup-creds": "oauth: expired, refresh token yes",
             }.get(credentials)
 
-        with patch("claude_swap.session.read_session_credentials", return_value="session-creds") as read_session, \
-             patch("claude_swap.session.session_identity_drifted", return_value=False) as drifted, \
-             patch("claude_swap.oauth.build_token_status", side_effect=build_status) as build:
+        with patch("ai_quota_swap.session.read_session_credentials", return_value="session-creds") as read_session, \
+             patch("ai_quota_swap.session.session_identity_drifted", return_value=False) as drifted, \
+             patch("ai_quota_swap.oauth.build_token_status", side_effect=build_status) as build:
             lines = switcher._token_status_lines(
                 (2, "inactive@example.com", "", "org-2", False, "backup-creds", "")
             )
@@ -1816,10 +1816,10 @@ class TestListAccountsUsage:
     def test_token_status_lines_ignore_drifted_session_profile(self, temp_home: Path):
         switcher = ClaudeAccountSwitcher()
 
-        with patch("claude_swap.session.read_session_credentials", return_value="session-creds") as read_session, \
-             patch("claude_swap.session.session_identity_drifted", return_value=True) as drifted, \
+        with patch("ai_quota_swap.session.read_session_credentials", return_value="session-creds") as read_session, \
+             patch("ai_quota_swap.session.session_identity_drifted", return_value=True) as drifted, \
              patch(
-                 "claude_swap.oauth.build_token_status",
+                 "ai_quota_swap.oauth.build_token_status",
                  return_value="oauth: expired, refresh token yes",
              ) as build:
             lines = switcher._token_status_lines(
@@ -1837,10 +1837,10 @@ class TestListAccountsUsage:
     def test_token_status_lines_without_session_show_only_backup(self, temp_home: Path):
         switcher = ClaudeAccountSwitcher()
 
-        with patch("claude_swap.session.read_session_credentials", return_value=None) as read_session, \
-             patch("claude_swap.session.session_identity_drifted") as drifted, \
+        with patch("ai_quota_swap.session.read_session_credentials", return_value=None) as read_session, \
+             patch("ai_quota_swap.session.session_identity_drifted") as drifted, \
              patch(
-                 "claude_swap.oauth.build_token_status",
+                 "ai_quota_swap.oauth.build_token_status",
                  return_value="oauth: fresh, refresh token yes",
              ) as build:
             lines = switcher._token_status_lines(
@@ -1855,14 +1855,14 @@ class TestListAccountsUsage:
     def test_token_status_lines_are_read_only(self, temp_home: Path):
         switcher = ClaudeAccountSwitcher()
 
-        with patch("claude_swap.session.read_session_credentials", return_value="session-creds"), \
-             patch("claude_swap.session.session_identity_drifted", return_value=False), \
+        with patch("ai_quota_swap.session.read_session_credentials", return_value="session-creds"), \
+             patch("ai_quota_swap.session.session_identity_drifted", return_value=False), \
              patch(
-                 "claude_swap.oauth.build_token_status",
+                 "ai_quota_swap.oauth.build_token_status",
                  side_effect=["oauth: fresh, refresh token yes", "oauth: expired, refresh token yes"],
              ), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as fetch, \
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as fetch, \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials") as write_backup:
             switcher._token_status_lines(
@@ -1904,7 +1904,7 @@ class TestListAccountsUsage:
         with patch.object(switcher, "_read_active_credentials",
                           return_value=ActiveCredentials(active_creds, False)), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             switcher.list_accounts()
 
         # API should NOT have been called — data came from the store
@@ -1945,7 +1945,7 @@ class TestListAccountsUsage:
         with patch.object(switcher, "_read_active_credentials",
                           return_value=ActiveCredentials(active_creds, False)), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(usage_result)) as mock_fetch:
             switcher.list_accounts()
 
@@ -1975,7 +1975,7 @@ class TestListAccountsUsage:
         with patch.object(switcher, "_read_active_credentials",
                           return_value=ActiveCredentials(active_creds, False)), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(usage_result)):
             switcher.list_accounts()
         capsys.readouterr()
@@ -2020,7 +2020,7 @@ class TestListAccountsUsage:
         with patch.object(switcher, "_read_active_credentials",
                           return_value=ActiveCredentials(active_creds, False)), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(usage_result)) as mock_fetch:
             switcher.list_accounts()
 
@@ -2067,7 +2067,7 @@ class TestListAccountsUsage:
         ), patch.object(
             switcher, "_read_account_credentials", return_value=backup_creds
         ), patch(
-            "claude_swap.oauth.try_fetch_usage_for_account",
+            "ai_quota_swap.oauth.try_fetch_usage_for_account",
             return_value=oauth.UsageOutcome(refreshed),
         ) as mock_fetch:
             switcher.list_accounts()
@@ -2086,7 +2086,7 @@ class TestListAccountsUsage:
         must not gate it once it becomes active."""
         import time as time_mod
 
-        from claude_swap import poll_policy
+        from ai_quota_swap import poll_policy
 
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
@@ -2139,7 +2139,7 @@ class TestListAccountsUsage:
         )
         with patch.object(
             switcher._usage_store, "set_poll_plan", side_effect=OSError("disk full")
-        ), caplog.at_level(logging.WARNING, logger="claude-swap"):
+        ), caplog.at_level(logging.WARNING, logger="ai-quota-swap"):
             switcher._replan_new_active("1", "a@x.com", "")
         assert any(
             "switch itself succeeded" in r.getMessage() for r in caplog.records
@@ -2167,7 +2167,7 @@ class TestListAccountsUsage:
         with patch.object(switcher, "_read_active_credentials",
                           return_value=ActiveCredentials(active_creds, False)), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(usage_result)) as mock_fetch:
             switcher.list_accounts(fetch=set())
         # Both accounts are stale (nothing stored) yet nobody may be fetched.
@@ -2176,7 +2176,7 @@ class TestListAccountsUsage:
         with patch.object(switcher, "_read_active_credentials",
                           return_value=ActiveCredentials(active_creds, False)), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(usage_result)) as mock_fetch:
             switcher.list_accounts(fetch={"2"})
         # Only the allowed slot is fetched.
@@ -2249,7 +2249,7 @@ class TestActiveAccountRefresh:
         Default to "probe failed" (resync skipped); tests exercising the
         oracle install their own patch inside this one's scope."""
         with patch(
-            "claude_swap.oauth.fetch_oauth_profile", return_value=None
+            "ai_quota_swap.oauth.fetch_oauth_profile", return_value=None
         ):
             yield
 
@@ -2258,14 +2258,14 @@ class TestActiveAccountRefresh:
     ):
         """Expired + attributable → refresh under CC's locks, persist to live
         + backup, then fetch usage with the rotated token."""
-        from claude_swap.claude_locks import credentials_lock_dir, oauth_refresh_lock_dir
+        from ai_quota_swap.claude_locks import credentials_lock_dir, oauth_refresh_lock_dir
 
         switcher = self._switcher(sample_sequence_data)
         usage_result = {"five_hour": {"pct": 10}}
         locks_held_during_post = {}
 
         def mock_refresh(credentials, **kw):
-            from claude_swap.claude_locks import config_lock_dir
+            from ai_quota_swap.claude_locks import config_lock_dir
             locks_held_during_post["primary"] = oauth_refresh_lock_dir().is_dir()
             locks_held_during_post["legacy"] = credentials_lock_dir().is_dir()
             # CC holds only the CREDENTIAL locks across its POST; the config
@@ -2276,7 +2276,7 @@ class TestActiveAccountRefresh:
             return oauth.RefreshOutcome(self._REFRESHED, None)
 
         def mock_fetch(account_num, email, credentials, is_active, **_kw):
-            from claude_swap.claude_locks import config_lock_dir
+            from ai_quota_swap.claude_locks import config_lock_dir
             assert is_active is True
             assert credentials == self._REFRESHED  # rotated token used for usage
             # All locks must be RELEASED before the usage fetch — only the
@@ -2292,9 +2292,9 @@ class TestActiveAccountRefresh:
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    side_effect=mock_fetch):
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
@@ -2322,9 +2322,9 @@ class TestActiveAccountRefresh:
              patch.object(switcher, "_live_session_pids", return_value=[4242]), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials"), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._refresh_ok), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})):
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
@@ -2354,8 +2354,8 @@ class TestActiveAccountRefresh:
                  switcher, "_read_account_credentials", return_value=self._EXPIRED
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    side_effect=mock_fetch):
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
@@ -2385,8 +2385,8 @@ class TestActiveAccountRefresh:
                  switcher, "_read_account_credentials", return_value=self._EXPIRED
              ), \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert result.sentinel == USAGE_TOKEN_EXPIRED
@@ -2415,8 +2415,8 @@ class TestActiveAccountRefresh:
                  return_value=("console-api@token.local", ""),
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert result.sentinel == USAGE_TOKEN_EXPIRED
@@ -2438,9 +2438,9 @@ class TestActiveAccountRefresh:
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials"), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._refresh_ok), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})):
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
@@ -2460,7 +2460,7 @@ class TestActiveAccountRefresh:
         one of the two POSTs wins, the loser gets invalid_grant, and the
         strike lands on a live account.
         """
-        from claude_swap.locking import FileLock
+        from ai_quota_swap.locking import FileLock
 
         switcher = self._switcher(sample_sequence_data)
         holder = FileLock(switcher.credentials_dir / ".consume-1.lock")
@@ -2472,11 +2472,11 @@ class TestActiveAccountRefresh:
             ), patch.object(
                 switcher, "_read_account_credentials", return_value=self._EXPIRED
             ), patch(
-                "claude_swap.oauth.try_refresh_oauth_credentials"
+                "ai_quota_swap.oauth.try_refresh_oauth_credentials"
             ) as mock_refresh, patch(
-                "claude_swap.oauth.try_fetch_usage_for_account"
+                "ai_quota_swap.oauth.try_fetch_usage_for_account"
             ), patch(
-                "claude_swap.switcher.FileLock",
+                "ai_quota_swap.switcher.FileLock",
                 lambda path: FileLock(path, timeout=0.2),
             ):
                 result = switcher._fetch_active_usage(
@@ -2496,10 +2496,10 @@ class TestActiveAccountRefresh:
     def test_filelock_contention_defers_instead_of_raising(
         self, temp_home: Path, mock_claude_config: Path, sample_sequence_data: dict
     ):
-        """cswap's own account FileLock contending (another cswap operation in
+        """qswap's own account FileLock contending (another qswap operation in
         flight) must defer like a CC lock timeout — _fetch_account_usage's
         never-raises contract is what keeps the collect pass alive."""
-        from claude_swap.exceptions import LockError
+        from ai_quota_swap.exceptions import LockError
 
         switcher = self._switcher(sample_sequence_data)
 
@@ -2507,10 +2507,10 @@ class TestActiveAccountRefresh:
              patch.object(
                  switcher, "_read_account_credentials", return_value=self._EXPIRED
              ), \
-             patch("claude_swap.switcher.FileLock",
+             patch("ai_quota_swap.switcher.FileLock",
                    side_effect=LockError("held elsewhere")), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert result.sentinel == USAGE_TOKEN_EXPIRED
@@ -2544,9 +2544,9 @@ class TestActiveAccountRefresh:
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials"), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})):
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
@@ -2574,8 +2574,8 @@ class TestActiveAccountRefresh:
              patch.object(
                  switcher, "_read_account_credentials", return_value=dead_backup
              ), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", foreign_live)
 
         assert result.sentinel == USAGE_TOKEN_EXPIRED
@@ -2594,8 +2594,8 @@ class TestActiveAccountRefresh:
              patch.object(
                  switcher, "_read_account_credentials", return_value=self._EXPIRED
              ), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert result.sentinel == USAGE_TOKEN_EXPIRED
@@ -2624,8 +2624,8 @@ class TestActiveAccountRefresh:
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})) as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
@@ -2657,8 +2657,8 @@ class TestActiveAccountRefresh:
                  return_value=("test@example.com", "org-OTHER"),
              ), \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", self._EXPIRED, org_uuid=""
             )
@@ -2698,9 +2698,9 @@ class TestActiveAccountRefresh:
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials"), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._refresh_ok), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    side_effect=mock_fetch):
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", valid_but_revoked
@@ -2736,8 +2736,8 @@ class TestActiveAccountRefresh:
              patch.object(
                  switcher, "_read_account_credentials", return_value=dead_backup
              ), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome(None, error="http-401")):
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", valid_but_revoked
@@ -2753,7 +2753,7 @@ class TestActiveAccountRefresh:
         """Every pre-consumption defer (lock contention here) of a 401'd but
         locally-valid token must surface the 401 record, not the 'token
         expired' sentinel — same contract as the no-recovery bail-out."""
-        from claude_swap.claude_locks import oauth_refresh_lock_dir
+        from ai_quota_swap.claude_locks import oauth_refresh_lock_dir
 
         switcher = self._switcher(sample_sequence_data)
         valid_but_revoked = json.dumps({
@@ -2773,9 +2773,9 @@ class TestActiveAccountRefresh:
                      switcher, "_read_account_credentials",
                      return_value=valid_but_revoked,
                  ), \
-                 patch("claude_swap.claude_locks.DEFAULT_TIMEOUT_S", 0.3), \
-                 patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-                 patch("claude_swap.oauth.try_fetch_usage_for_account",
+                 patch("ai_quota_swap.claude_locks.DEFAULT_TIMEOUT_S", 0.3), \
+                 patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+                 patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                        return_value=oauth.UsageOutcome(None, error="http-401")):
                 result = switcher._fetch_active_usage(
                     "1", "test@example.com", valid_but_revoked
@@ -2802,7 +2802,7 @@ class TestActiveAccountRefresh:
              patch.object(
                  switcher, "_read_account_credentials", return_value=no_rt
              ), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", no_rt)
 
         assert result.error == "no_refresh_token"
@@ -2822,7 +2822,7 @@ class TestActiveAccountRefresh:
              patch.object(
                  switcher, "_read_account_credentials", return_value=self._EXPIRED
              ), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert result.sentinel == USAGE_TOKEN_EXPIRED
@@ -2840,9 +2840,9 @@ class TestActiveAccountRefresh:
                  switcher, "_read_account_credentials", return_value=self._EXPIRED
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(None, "transient")), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert result.error == "refresh-failed"
@@ -2855,7 +2855,7 @@ class TestActiveAccountRefresh:
     ):
         """A held CC lock (live refresh in flight) → clean sentinel, no POST,
         no takeover; the holder's rotation lands on its own."""
-        from claude_swap.claude_locks import oauth_refresh_lock_dir
+        from ai_quota_swap.claude_locks import oauth_refresh_lock_dir
 
         switcher = self._switcher(sample_sequence_data)
         lock = oauth_refresh_lock_dir()
@@ -2865,9 +2865,9 @@ class TestActiveAccountRefresh:
                  patch.object(
                      switcher, "_read_account_credentials", return_value=self._EXPIRED
                  ), \
-                 patch("claude_swap.claude_locks.DEFAULT_TIMEOUT_S", 0.3), \
-                 patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-                 patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+                 patch("ai_quota_swap.claude_locks.DEFAULT_TIMEOUT_S", 0.3), \
+                 patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+                 patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
                 result = switcher._fetch_active_usage(
                     "1", "test@example.com", self._EXPIRED
                 )
@@ -2894,9 +2894,9 @@ class TestActiveAccountRefresh:
              patch.object(switcher, "_write_credentials",
                           side_effect=OSError("disk full")), \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._refresh_ok), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         write_backup.assert_called_once_with(
@@ -2920,8 +2920,8 @@ class TestActiveAccountRefresh:
             }
         })
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 3}})) as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", fresh)
 
@@ -2950,10 +2950,10 @@ class TestActiveAccountRefresh:
                  return_value=self._EXPIRED,   # stale lineage A
              ), \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.fetch_oauth_profile",
+             patch("ai_quota_swap.oauth.fetch_oauth_profile",
                    return_value=self._PROFILE_SELF) as mock_probe, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 3}})):
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", self._REFRESHED
@@ -2985,7 +2985,7 @@ class TestActiveAccountRefresh:
              ), \
              patch.object(switcher, "_read_credentials") as read_live, \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 3}})):
             switcher._fetch_active_usage(
                 "1", "test@example.com", self._REFRESHED
@@ -3009,8 +3009,8 @@ class TestActiveAccountRefresh:
                  return_value=self._EXPIRED,
              ), \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.fetch_oauth_profile", **kwargs) as mock_probe, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.fetch_oauth_profile", **kwargs) as mock_probe, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 3}})):
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", self._REFRESHED
@@ -3035,7 +3035,7 @@ class TestActiveAccountRefresh:
             "organizationUuid": None,
         }
 
-        with caplog.at_level(logging.WARNING, logger="claude-swap"):
+        with caplog.at_level(logging.WARNING, logger="ai-quota-swap"):
             first, write_backup, mock_probe = self._fresh_drift_pass(
                 switcher, foreign
             )
@@ -3229,8 +3229,8 @@ class TestActiveAccountRefresh:
                  switcher, "_read_account_credentials", return_value=backup_a
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", live_b
             )
@@ -3268,8 +3268,8 @@ class TestActiveAccountRefresh:
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", live_b
             )
@@ -3312,9 +3312,9 @@ class TestActiveAccountRefresh:
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._refresh_ok) as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})) as mock_fetch:
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", live_b
@@ -3366,11 +3366,11 @@ class TestActiveAccountRefresh:
              patch.object(switcher, "_write_credentials"), \
              patch.object(switcher, "_write_account_credentials",
                           side_effect=Exception("disk full")), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=refresh_results) as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})), \
-             patch("claude_swap.oauth.fetch_oauth_profile") as mock_probe:
+             patch("ai_quota_swap.oauth.fetch_oauth_profile") as mock_probe:
             first = switcher._fetch_active_usage(
                 "1", "test@example.com", self._EXPIRED
             )
@@ -3405,8 +3405,8 @@ class TestActiveAccountRefresh:
                  switcher, "_read_account_credentials", return_value=successor
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})):
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", self._EXPIRED
@@ -3438,8 +3438,8 @@ class TestActiveAccountRefresh:
                  switcher, "_read_account_credentials", return_value=successor
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})):
             result = switcher._fetch_active_usage("1", "test@example.com", live)
 
@@ -3453,10 +3453,10 @@ class TestActiveAccountRefresh:
         self, temp_home: Path, mock_claude_config: Path, sample_sequence_data: dict
     ):
         """Missing access token short-circuits before any fetch."""
-        from claude_swap.json_output import USAGE_NO_CREDENTIALS
+        from ai_quota_swap.json_output import USAGE_NO_CREDENTIALS
 
         switcher = self._switcher(sample_sequence_data)
-        with patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+        with patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", "")
         assert result.sentinel == USAGE_NO_CREDENTIALS
         mock_fetch.assert_not_called()
@@ -3466,7 +3466,7 @@ class TestActiveAccountRefresh:
     ):
         """End-to-end: --list shows the intentional line when the refresh was
         deferred (CC holds the lock) — the case the sentinel still covers."""
-        from claude_swap.claude_locks import oauth_refresh_lock_dir
+        from ai_quota_swap.claude_locks import oauth_refresh_lock_dir
 
         switcher = self._switcher(sample_sequence_data)
         lock = oauth_refresh_lock_dir()
@@ -3478,8 +3478,8 @@ class TestActiveAccountRefresh:
                               return_value=self._EXPIRED), \
                  patch.object(switcher, "_read_credentials",
                               return_value=self._EXPIRED), \
-                 patch("claude_swap.claude_locks.DEFAULT_TIMEOUT_S", 0.3), \
-                 patch("claude_swap.oauth.try_fetch_usage_for_account",
+                 patch("ai_quota_swap.claude_locks.DEFAULT_TIMEOUT_S", 0.3), \
+                 patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                        return_value=oauth.UsageOutcome(None)):
                 switcher.list_accounts()
         finally:
@@ -3503,9 +3503,9 @@ class TestActiveAccountRefresh:
              patch.object(switcher, "_live_session_pids", return_value=[]), \
              patch.object(switcher, "_write_credentials"), \
              patch.object(switcher, "_write_account_credentials"), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._refresh_ok), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 25.0}})):
             entry = switcher._collect_usage_entries([info])["1"]
 
@@ -3515,7 +3515,7 @@ class TestActiveAccountRefresh:
     def test_foreign_live_credential_under_the_lock_is_never_consumed(
         self, temp_home: Path, mock_claude_config: Path, sample_sequence_data: dict
     ):
-        """TOCTOU guard: a `cswap switch` completing between the pre-lock
+        """TOCTOU guard: a `qswap switch` completing between the pre-lock
         provenance check and lock acquisition replaces the live credential
         with another slot's. The under-lock re-read must re-verify lineage —
         POSTing the foreign grant would rotate the other slot's lineage and
@@ -3535,8 +3535,8 @@ class TestActiveAccountRefresh:
              ), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert result.sentinel == USAGE_TOKEN_EXPIRED
@@ -3560,9 +3560,9 @@ class TestActiveAccountRefresh:
              patch.object(switcher, "_write_account_credentials",
                           side_effect=OSError("disk full")), \
              patch.object(switcher, "_write_credentials") as write_live, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._refresh_ok), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 4}})):
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
@@ -3581,9 +3581,9 @@ class TestActiveAccountRefresh:
              patch.object(
                  switcher, "_read_account_credentials", return_value=self._EXPIRED
              ), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(None, "invalid_grant")), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert result.error == "invalid_grant"
@@ -3610,8 +3610,8 @@ class TestActiveAccountRefresh:
                           return_value=("test@example.com", "")), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 7}})) as mock_fetch:
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", self._EXPIRED
@@ -3854,10 +3854,10 @@ class TestPerformSwitchPostDisplay:
                 # Patch the classifying base (refresh_oauth_credentials delegates
                 # to it), so both the proactive and 401-retry paths see the
                 # rotation regardless of which wrapper they call.
-                "claude_swap.oauth.try_refresh_oauth_credentials",
+                "ai_quota_swap.oauth.try_refresh_oauth_credentials",
                 return_value=oauth.RefreshOutcome(rotated_creds, None),
             ), patch(
-                "claude_swap.oauth.request_usage_data",
+                "ai_quota_swap.oauth.request_usage_data",
                 return_value={
                     "five_hour": {"utilization": 12.0, "resets_at": None},
                     "seven_day": {"utilization": 34.0, "resets_at": None},
@@ -3867,7 +3867,7 @@ class TestPerformSwitchPostDisplay:
                 # (issue #117) resolves the live credential's owner before
                 # backing it into slot 1 — answer with slot 1's identity so
                 # the capture proceeds as a legitimate own-credential backup.
-                "claude_swap.oauth.fetch_oauth_profile",
+                "ai_quota_swap.oauth.fetch_oauth_profile",
                 return_value={
                     "uuid": "uuid-1",
                     "email": "test@example.com",
@@ -4073,7 +4073,7 @@ class TestPerformSwitchPostDisplay:
         config_path = temp_home / ".claude.json"
         config_path.write_text(json.dumps({
             "oauthAccount": {
-                "emailAddress": "realiti44@gmail.com",
+                "emailAddress": "deltaxxxx@x.example",
                 "accountUuid": "",
                 "organizationUuid": None,
                 "organizationName": None,
@@ -4087,14 +4087,14 @@ class TestPerformSwitchPostDisplay:
             "sequence": [3, 4],
             "accounts": {
                 "3": {
-                    "email": "onurcetinkol@gmail.com",
+                    "email": "carolxxxxxxx@x.example",
                     "uuid": "",
                     "organizationUuid": "",
                     "organizationName": "",
                     "added": "2024-01-01T00:00:00Z",
                 },
                 "4": {
-                    "email": "realiti44@gmail.com",
+                    "email": "deltaxxxx@x.example",
                     "uuid": "",
                     "organizationUuid": "",
                     "organizationName": "",
@@ -4115,19 +4115,19 @@ class TestPerformSwitchPostDisplay:
             }
         })
         creds_store = {
-            ("3", "onurcetinkol@gmail.com"): target_creds,
-            ("4", "realiti44@gmail.com"): "old-realiti-backup",
+            ("3", "carolxxxxxxx@x.example"): target_creds,
+            ("4", "deltaxxxx@x.example"): "old-realiti-backup",
         }
         configs_store = {
-            ("3", "onurcetinkol@gmail.com"): json.dumps({
+            ("3", "carolxxxxxxx@x.example"): json.dumps({
                 "oauthAccount": {
-                    "emailAddress": "onurcetinkol@gmail.com",
+                    "emailAddress": "carolxxxxxxx@x.example",
                     "accountUuid": "",
                     "organizationUuid": None,
                     "organizationName": None,
                 }
             }),
-            ("4", "realiti44@gmail.com"): "old-realiti-config",
+            ("4", "deltaxxxx@x.example"): "old-realiti-config",
         }
         live_state = {"creds": live_creds}
         patches = self._install_store_patches(
@@ -4140,10 +4140,10 @@ class TestPerformSwitchPostDisplay:
                 # provenance guard resolves the live credential's owner —
                 # answer with slot 4's identity so the backup is written as a
                 # legitimate rotation of the live-identity slot.
-                "claude_swap.oauth.fetch_oauth_profile",
+                "ai_quota_swap.oauth.fetch_oauth_profile",
                 return_value={
                     "uuid": "",
-                    "email": "realiti44@gmail.com",
+                    "email": "deltaxxxx@x.example",
                     "organizationUuid": "",
                 },
             ):
@@ -4152,8 +4152,8 @@ class TestPerformSwitchPostDisplay:
             for p in patches:
                 p.stop()
 
-        assert creds_store[("4", "realiti44@gmail.com")] == live_creds
-        assert ("3", "realiti44@gmail.com") not in creds_store
+        assert creds_store[("4", "deltaxxxx@x.example")] == live_creds
+        assert ("3", "deltaxxxx@x.example") not in creds_store
         assert json.loads(live_state["creds"])["claudeAiOauth"]["accessToken"] == (
             "target-token"
         )
@@ -4351,7 +4351,7 @@ class TestPerformSwitchPostDisplay:
         config_path, _ = self._direct_activation_with_failing_sequence_write(
             temp_home,
             lambda: monkeypatch.setattr(
-                "claude_swap.fsutil.replace_with_retry", refuse
+                "ai_quota_swap.fsutil.replace_with_retry", refuse
             ),
         )
         written = json.loads(config_path.read_text())
@@ -4509,7 +4509,7 @@ class TestSwitchToSelfSlotAndForce:
         assert live["creds"] == self.LIVE_1
         out = capsys.readouterr().out
         assert "Already on" in out and "Account-1" in out
-        assert "cswap --switch-to 1 --force" in out
+        assert "qswap --switch-to 1 --force" in out
 
     def test_force_self_activation_restores_imported_creds(
         self,
@@ -4566,7 +4566,7 @@ class TestSwitchToSelfSlotAndForce:
 class TestAccountInfoOrgFields:
     def test_account_info_includes_org_fields(self):
         """AccountInfo should store organization UUID and name."""
-        from claude_swap.models import AccountInfo
+        from ai_quota_swap.models import AccountInfo
         info = AccountInfo(
             email="user@example.com",
             uuid="user-uuid",
@@ -4580,7 +4580,7 @@ class TestAccountInfoOrgFields:
 
     def test_account_info_personal_account_has_empty_org(self):
         """Personal accounts should have empty string for organization fields."""
-        from claude_swap.models import AccountInfo
+        from ai_quota_swap.models import AccountInfo
         info = AccountInfo.from_dict(1, {
             "email": "user@example.com",
             "uuid": "user-uuid",
@@ -4591,7 +4591,7 @@ class TestAccountInfoOrgFields:
 
     def test_account_info_to_dict_includes_org_fields(self):
         """to_dict() should include organization fields."""
-        from claude_swap.models import AccountInfo
+        from ai_quota_swap.models import AccountInfo
         info = AccountInfo(
             email="user@example.com",
             uuid="user-uuid",
@@ -4606,7 +4606,7 @@ class TestAccountInfoOrgFields:
 
     def test_account_info_is_organization_property(self):
         """is_organization should be determined by organizationUuid presence."""
-        from claude_swap.models import AccountInfo
+        from ai_quota_swap.models import AccountInfo
         org = AccountInfo.from_dict(1, {"email": "u@e.com", "uuid": "u", "added": "", "organizationUuid": "o"})
         personal = AccountInfo.from_dict(2, {"email": "u@e.com", "uuid": "u", "added": ""})
         assert org.is_organization is True
@@ -4614,7 +4614,7 @@ class TestAccountInfoOrgFields:
 
     def test_account_info_display_label(self):
         """display_label should include org name or personal tag."""
-        from claude_swap.models import AccountInfo
+        from ai_quota_swap.models import AccountInfo
         org = AccountInfo(email="u@e.com", uuid="u", organization_uuid="o",
                           organization_name="Acme", added="", number=1)
         personal = AccountInfo(email="u@e.com", uuid="u", organization_uuid="",
@@ -4628,7 +4628,7 @@ class TestAccountInfoOrgFields:
 class TestAccountExistsCompositeKey:
     def test_distinguishes_org_and_personal(self, temp_home, mock_credentials_file):
         """Accounts with same email but different organizationUuid should be treated as distinct."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
         backup_dir = get_backup_root()
         backup_dir.mkdir(parents=True, exist_ok=True)
         (backup_dir / "sequence.json").write_text(json.dumps({
@@ -4656,21 +4656,21 @@ class TestAccountExistsCompositeKey:
 class TestGetCurrentAccountOrgSupport:
     def test_returns_org_info(self, temp_home, mock_org_claude_config):
         """_get_current_account should return (email, organization_uuid) tuple."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
         switcher = ClaudeAccountSwitcher()
         result = switcher._get_current_account()
         assert result == ("user@example.com", "org-uuid-5678")
 
     def test_returns_empty_org_for_personal(self, temp_home, mock_personal_claude_config):
         """Personal account should return tuple with empty string for organization_uuid."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
         switcher = ClaudeAccountSwitcher()
         result = switcher._get_current_account()
         assert result == ("user@example.com", "")
 
     def test_returns_none_when_no_config(self, temp_home):
         """Should return None when config file does not exist."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
         switcher = ClaudeAccountSwitcher()
         result = switcher._get_current_account()
         assert result is None
@@ -4688,17 +4688,17 @@ class TestDeadTokenQuarantine:
 
     def _make_dead(self, switcher, num="2", identity=("test@example.com", "")):
         store = switcher._usage_store
-        from claude_swap.usage_store import FetchRecord
+        from ai_quota_swap.usage_store import FetchRecord
         store.record({num: FetchRecord(error="invalid_grant")}, {num: identity})
 
     def test_collector_surfaces_relogin_sentinel_and_skips_fetch(self, temp_home):
-        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+        from ai_quota_swap.json_output import USAGE_RELOGIN_REQUIRED
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
         self._make_dead(switcher)
         info = [(2, "test@example.com", "Org", "", False, self._dead_creds(), "")]
 
-        with patch("claude_swap.oauth.try_fetch_usage_for_account") as fetch:
+        with patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as fetch:
             entries = switcher._collect_usage_entries(info)
 
         assert entries["2"].sentinel == USAGE_RELOGIN_REQUIRED
@@ -4708,8 +4708,8 @@ class TestDeadTokenQuarantine:
         # A fetch that returns invalid_grant crosses the dead threshold this pass;
         # the pre-fetch quarantine scan couldn't see it, so the collector must
         # still render "re-login needed" now, not only on the next refresh.
-        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
-        from claude_swap.usage_store import FetchRecord
+        from ai_quota_swap.json_output import USAGE_RELOGIN_REQUIRED
+        from ai_quota_swap.usage_store import FetchRecord
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
         info = [(2, "test@example.com", "Org", "", False, self._dead_creds(), "")]
@@ -4746,7 +4746,7 @@ class TestDeadTokenQuarantine:
         """
         from datetime import datetime, timezone
 
-        from claude_swap.usage_store import SERVE_TTL_S, FetchRecord
+        from ai_quota_swap.usage_store import SERVE_TTL_S, FetchRecord
 
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
@@ -4870,7 +4870,7 @@ class TestDeadTokenQuarantine:
 class TestAddAccountOrgFields:
     def test_allows_same_email_different_org(self, temp_home):
         """Should allow adding same-email account if organizationUuid differs."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
         fake_creds = json.dumps({"claudeAiOauth": {"accessToken": "test-token"}})
         config_path = temp_home / ".claude.json"
@@ -4905,7 +4905,7 @@ class TestAddAccountOrgFields:
 
     def test_blocks_true_duplicate(self, temp_home):
         """Should block adding an account with identical (email, organizationUuid) combination."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
         fake_creds = json.dumps({"claudeAiOauth": {"accessToken": "test-token"}})
         config_path = temp_home / ".claude.json"
@@ -4938,7 +4938,7 @@ class TestAddAccountOrgFields:
 
     def test_stores_org_name_in_sequence(self, temp_home):
         """add_account should store organizationName in sequence.json."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
         fake_creds = json.dumps({"claudeAiOauth": {"accessToken": "test-token"}})
         config_path = temp_home / ".claude.json"
@@ -4965,7 +4965,7 @@ class TestAddAccountOrgFields:
 class TestResolveIdentifierAmbiguity:
     def test_by_number_always_works(self, temp_home, sample_sequence_data_with_org):
         """Account number identifier should always resolve correctly."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
         backup_dir = get_backup_root()
         backup_dir.mkdir(parents=True, exist_ok=True)
         (backup_dir / "sequence.json").write_text(json.dumps(sample_sequence_data_with_org))
@@ -4975,8 +4975,8 @@ class TestResolveIdentifierAmbiguity:
 
     def test_raises_on_ambiguous_email(self, temp_home, sample_sequence_data_with_org):
         """Should raise ConfigError when email matches multiple accounts."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
-        from claude_swap.exceptions import ConfigError
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.exceptions import ConfigError
         backup_dir = get_backup_root()
         backup_dir.mkdir(parents=True, exist_ok=True)
         (backup_dir / "sequence.json").write_text(json.dumps(sample_sequence_data_with_org))
@@ -4986,7 +4986,7 @@ class TestResolveIdentifierAmbiguity:
 
     def test_unique_email_still_works(self, temp_home, sample_sequence_data):
         """Unique email should still resolve to the correct account number."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
         backup_dir = get_backup_root()
         backup_dir.mkdir(parents=True, exist_ok=True)
         (backup_dir / "sequence.json").write_text(json.dumps(sample_sequence_data))
@@ -5000,7 +5000,7 @@ class TestListAccountsOrgDisplay:
     def test_shows_org_name_and_personal(self, temp_home, mock_credentials_file,
                                          sample_sequence_data_with_org, capsys):
         """list_accounts should display org name and personal tag."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
         from unittest.mock import patch
 
         backup_dir = get_backup_root()
@@ -5018,7 +5018,7 @@ class TestListAccountsOrgDisplay:
         }))
 
         switcher = ClaudeAccountSwitcher()
-        with patch("claude_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)):
+        with patch("ai_quota_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)):
             switcher.list_accounts()
 
         out = capsys.readouterr().out
@@ -5029,7 +5029,7 @@ class TestListAccountsOrgDisplay:
     def test_active_account_detected_by_org_uuid(self, temp_home, mock_credentials_file,
                                                    sample_sequence_data_with_org, capsys):
         """Only the account matching current org_uuid should be marked (active)."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
         from unittest.mock import patch
 
         backup_dir = get_backup_root()
@@ -5045,7 +5045,7 @@ class TestListAccountsOrgDisplay:
         }))
 
         switcher = ClaudeAccountSwitcher()
-        with patch("claude_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)):
+        with patch("ai_quota_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)):
             switcher.list_accounts()
 
         out = capsys.readouterr().out
@@ -5059,7 +5059,7 @@ class TestListAccountsOrgDisplay:
 class TestBackwardCompatibility:
     def test_old_sequence_json_without_org_fields(self, temp_home, sample_sequence_data, capsys):
         """Old sequence.json without organizationUuid should work correctly."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
         from unittest.mock import patch
 
         backup_dir = get_backup_root()
@@ -5076,7 +5076,7 @@ class TestBackwardCompatibility:
         (temp_home / ".claude" / ".credentials.json").write_text('{"accessToken": "tok"}')
 
         switcher = ClaudeAccountSwitcher()
-        with patch("claude_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)):
+        with patch("ai_quota_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)):
             switcher.list_accounts()
 
         out = capsys.readouterr().out
@@ -5085,7 +5085,7 @@ class TestBackwardCompatibility:
 
     def test_status_with_old_sequence_json(self, temp_home, sample_sequence_data, capsys):
         """status should display personal for old sequence.json entries."""
-        from claude_swap.switcher import ClaudeAccountSwitcher
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
         backup_dir = get_backup_root()
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -5156,7 +5156,7 @@ class TestUpgradeMigration:
         )
 
         switcher = ClaudeAccountSwitcher()
-        with patch("claude_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)):
+        with patch("ai_quota_swap.oauth.try_fetch_usage_for_account", return_value=oauth.UsageOutcome(None)):
             switcher.list_accounts()
 
         out = capsys.readouterr().out
@@ -5484,7 +5484,7 @@ class TestPurgeLegacyCleanup:
         reappeared — e.g. a user manually backing up to the old path, or a
         third-party tool restoring a snapshot.
         """
-        from claude_swap.paths import get_backup_root, get_legacy_backup_root
+        from ai_quota_swap.paths import get_backup_root, get_legacy_backup_root
 
         self._ensure_linux_layout(monkeypatch)
         backup_dir = get_backup_root()
@@ -5525,7 +5525,7 @@ class TestPurgeLegacyCleanup:
     def test_purge_prompt_omits_legacy_when_absent(
         self, temp_home: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ):
-        from claude_swap.paths import get_backup_root, get_legacy_backup_root
+        from ai_quota_swap.paths import get_backup_root, get_legacy_backup_root
 
         self._ensure_linux_layout(monkeypatch)
         backup_dir = get_backup_root()
@@ -5607,11 +5607,11 @@ class TestPurgeQuarantineWarning:
         assert not run_dir.exists()
 
     def test_purge_leaves_the_shared_history_lock(self, temp_home: Path):
-        """The lock in ``~/.claude`` is shared with every cswap store using
+        """The lock in ``~/.claude`` is shared with every qswap store using
         this home. Unlinking it under a launch that holds it lets the next
         one take a fresh copy at the same time, so purge must not tidy it
         away with the rest."""
-        from claude_swap.session import MIGRATION_LOCK
+        from ai_quota_swap.session import MIGRATION_LOCK
 
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
@@ -5801,7 +5801,7 @@ class TestAddAccountFromToken:
         """Refreshing a token in place must lift the dead-token quarantine, so a
         stale strike doesn't leave the account stuck at 're-login needed' and
         never fetching the new token (mirrors add_account)."""
-        from claude_swap.usage_store import FetchRecord
+        from ai_quota_swap.usage_store import FetchRecord
         switcher = self._make_switcher(temp_home)
         with patch.object(switcher, "_write_account_credentials"), \
              patch.object(switcher, "_write_account_config"):
@@ -5822,7 +5822,7 @@ class TestAddAccountFromToken:
     def test_new_write_clears_stale_quarantine(self, temp_home):
         """Writing a fresh credential into a slot whose lingering usage row still
         carries a dead-token strike (same identity) must start it clean."""
-        from claude_swap.usage_store import FetchRecord
+        from ai_quota_swap.usage_store import FetchRecord
         switcher = self._make_switcher(temp_home)
         identity = ("user@example.com", "")
         switcher._usage_store.record(
@@ -5984,15 +5984,15 @@ class TestPurge:
         })
 
         with patch("builtins.input", return_value="y"), \
-             patch("claude_swap.switcher.macos_keychain") as mock_kc:
+             patch("ai_quota_swap.switcher.macos_keychain") as mock_kc:
             switcher.purge()
 
         # New security service: account + legacy account-None both cleaned, then
         # the old claude-code service swept the same way (item_exists is truthy
         # on the mock, so every legacy item counts as present).
         mock_kc.delete_password.assert_has_calls([
-            call("claude-swap", "account-1-user@example.com"),
-            call("claude-swap", "account-None-user@example.com"),
+            call("ai-quota-swap", "account-1-user@example.com"),
+            call("ai-quota-swap", "account-None-user@example.com"),
             call("claude-code", "account-1-user@example.com"),
             call("claude-code", "account-None-user@example.com"),
         ])
@@ -6143,7 +6143,7 @@ class TestSwitchSkipsBrokenSlots:
 
     def test_switch_to_missing_credentials_actionable_error(self, temp_home: Path):
         """switch_to a broken target raises with the new credentials message."""
-        from claude_swap.exceptions import SwitchError
+        from ai_quota_swap.exceptions import SwitchError
 
         s = self._setup(temp_home)
         self._seed(s, 1, "a@example.com")
@@ -6168,7 +6168,7 @@ class TestSwitchSkipsBrokenSlots:
 
     def test_switch_to_missing_config_actionable_error(self, temp_home: Path):
         """switch_to a target with creds but no config raises a distinct error."""
-        from claude_swap.exceptions import SwitchError
+        from ai_quota_swap.exceptions import SwitchError
 
         s = self._setup(temp_home)
         self._seed(s, 1, "a@example.com")
@@ -6687,8 +6687,8 @@ class TestClaudeCodeLockCooperation:
     def test_preheld_cc_lock_fails_cleanly_without_mutation(
         self, temp_home: Path, monkeypatch
     ):
-        from claude_swap import claude_locks
-        from claude_swap.exceptions import ClaudeCodeLockTimeout
+        from ai_quota_swap import claude_locks
+        from ai_quota_swap.exceptions import ClaudeCodeLockTimeout
 
         s = self._setup(temp_home)
         self._seed(s, 1, "a@example.com")
@@ -6906,7 +6906,7 @@ class TestMacosKeychainFallback:
         s = self._macos_switcher()
         acct = macos_keychain.keychain_account_name()
         block_real_keychain.data[(CLAUDE_CODE_KEYCHAIN_SERVICE, acct)] = "FROM-KC"
-        monkeypatch.setattr("claude_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
+        monkeypatch.setattr("ai_quota_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
 
         calls = {"n": 0}
         real_get = macos_keychain.get_password
@@ -6931,7 +6931,7 @@ class TestMacosKeychainFallback:
         # fallback → report keychain_unavailable, distinct from an empty slot.
         s = self._macos_switcher()
         monkeypatch.setattr(macos_keychain, "get_password", _raise_locked)
-        monkeypatch.setattr("claude_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
+        monkeypatch.setattr("ai_quota_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
         assert not get_credentials_path().exists()
 
         result = s._read_active_credentials()
@@ -6950,7 +6950,7 @@ class TestMacosKeychainFallback:
         cred.parent.mkdir(parents=True, exist_ok=True)
         cred.write_text("FROM-FILE")
         monkeypatch.setattr(macos_keychain, "get_password", _raise_locked)
-        monkeypatch.setattr("claude_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
+        monkeypatch.setattr("ai_quota_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
 
         result = s._read_active_credentials()
         assert result.value == "FROM-FILE"
@@ -6980,7 +6980,7 @@ class TestMacosKeychainFallback:
         s = self._macos_switcher()
         s._write_json(s.sequence_file, sample_sequence_data)
         monkeypatch.setattr(macos_keychain, "get_password", _raise_locked)
-        monkeypatch.setattr("claude_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
+        monkeypatch.setattr("ai_quota_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
         assert not get_credentials_path().exists()
 
         s.list_accounts()
@@ -7438,7 +7438,7 @@ class TestProvenanceGuard:
 
     def _run_switch(self, switcher, resolver=None, quiet=True):
         with patch.object(switcher, "list_accounts"), patch(
-            "claude_swap.oauth.fetch_oauth_profile",
+            "ai_quota_swap.oauth.fetch_oauth_profile",
             side_effect=(lambda token: resolver) if resolver is not None
             else (lambda token: None),
         ):
@@ -7449,7 +7449,7 @@ class TestProvenanceGuard:
     def test_byte_identical_live_skips_credential_backup(
         self, temp_home, mock_claude_config, sample_sequence_data,
     ):
-        """Nothing rotated since cswap's own write → nothing to capture."""
+        """Nothing rotated since qswap's own write → nothing to capture."""
         switcher, creds_store, configs_store = self._setup_two_accounts(
             temp_home, sample_sequence_data,
         )
@@ -7490,7 +7490,7 @@ class TestProvenanceGuard:
         )
         try:
             with patch(
-                "claude_swap.oauth.fetch_oauth_profile",
+                "ai_quota_swap.oauth.fetch_oauth_profile",
             ) as profile:
                 with patch.object(switcher, "list_accounts"):
                     op = switcher._perform_switch("2")
@@ -7632,7 +7632,7 @@ class TestProvenanceGuard:
         self, temp_home, mock_claude_config, sample_sequence_data,
     ):
         """Resolved to no managed slot: preserve, warn, proceed — the message
-        can't name a slot, so it recommends a plain `cswap add`."""
+        can't name a slot, so it recommends a plain `qswap add`."""
         switcher, creds_store, configs_store = self._setup_two_accounts(
             temp_home, sample_sequence_data,
         )
@@ -7898,7 +7898,7 @@ class TestProvenanceGuard:
         )
         try:
             with patch.object(switcher, "list_accounts"), patch(
-                "claude_swap.oauth.fetch_oauth_profile",
+                "ai_quota_swap.oauth.fetch_oauth_profile",
                 side_effect=OSError("network down"),
             ):
                 op = switcher._perform_switch("2", emit_output=False)
@@ -8097,7 +8097,7 @@ class TestSelfSwitchProvenance:
             switcher, creds_store, configs_store, live_state,
         )
         try:
-            with patch("claude_swap.oauth.fetch_oauth_profile", return_value=None):
+            with patch("ai_quota_swap.oauth.fetch_oauth_profile", return_value=None):
                 result = switcher.switch_to("1", json_output=True)
         finally:
             for p in patches:
@@ -8131,7 +8131,7 @@ class TestSelfSwitchProvenance:
         )
         try:
             with patch(
-                "claude_swap.oauth.fetch_oauth_profile",
+                "ai_quota_swap.oauth.fetch_oauth_profile",
                 return_value={"uuid": "uuid-1", "email": "test@example.com",
                               "organizationUuid": ""},
             ), patch.object(switcher, "list_accounts"):
@@ -8425,7 +8425,7 @@ class TestStashAndRetentionStore:
         caplog.clear()
         enc.chmod(0o000)
         try:
-            with caplog.at_level(logging.INFO, logger="claude-swap"):
+            with caplog.at_level(logging.INFO, logger="ai-quota-swap"):
                 store._retain_previous_backup("1", "a@b.c", "gen-2")
         finally:
             enc.chmod(0o600)
@@ -8460,7 +8460,7 @@ class TestStashAndRetentionStore:
         fd, a filesystem quirk) but leaves an unreadable ``.enc`` behind
         must abort the commit, not report success.
         """
-        from claude_swap.exceptions import CredentialError
+        from ai_quota_swap.exceptions import CredentialError
 
         switcher = self._switcher(temp_home)
         store = switcher._store
@@ -8521,9 +8521,9 @@ class TestActiveRefreshProvenance:
              patch.object(switcher, "_live_session_pids", return_value=[]), \
              patch.object(switcher, "_write_credentials"), \
              patch.object(switcher, "_write_account_credentials"), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account",
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 1}})):
             switcher._fetch_active_usage("1", "test@example.com", self._LIVE)
 
@@ -8553,9 +8553,9 @@ class TestActiveRefreshProvenance:
              patch.object(switcher, "_read_account_credentials", return_value=backup), \
              patch.object(switcher, "_write_credentials") as write_live, \
              patch.object(switcher, "_write_account_credentials") as write_backup, \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(refreshed, None)), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account", side_effect=mock_fetch):
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account", side_effect=mock_fetch):
             result = switcher._fetch_active_usage("1", "test@example.com", self._LIVE)
 
         assert result.usage == {"five_hour": {"pct": 10}}
@@ -8742,7 +8742,7 @@ class TestSharedOAuthCredentialPreservation:
     def test_account_bound_and_unknown_siblings_stay_target_owned(
         self, temp_home
     ):
-        # trustedDeviceToken is enrolled per-account, and a field cswap does
+        # trustedDeviceToken is enrolled per-account, and a field qswap does
         # not recognize could be too — neither may cross an account switch.
         # Only the SHARED_CREDENTIAL_KEYS allowlist is taken from live.
         switcher = ClaudeAccountSwitcher()
@@ -8988,7 +8988,7 @@ class TestUuidConflictClassification:
             with patch.object(switcher, "list_accounts"), patch(
                 # Same email/org as slot 1 — but a different, non-empty uuid
                 # (slot 1 stores uuid-1). Must NOT classify as own-rotated.
-                "claude_swap.oauth.fetch_oauth_profile",
+                "ai_quota_swap.oauth.fetch_oauth_profile",
                 return_value={
                     "uuid": "uuid-recycled-email",
                     "email": "test@example.com",
@@ -9166,7 +9166,7 @@ class TestRemoveAccountPrunesMappings:
     """Removing an account drops any directory mappings pointing at it."""
 
     def test_remove_account_prunes_mappings(self, temp_home, monkeypatch):
-        from claude_swap.mappings import MappingStore
+        from ai_quota_swap.mappings import MappingStore
 
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
@@ -9209,7 +9209,7 @@ class TestRemoveAccountPrunesMappings:
 
     def test_slot_overwrite_prunes_displaced_mappings(self, temp_home):
         """Overwriting a slot with a different account drops the old one's mappings."""
-        from claude_swap.mappings import MappingStore
+        from ai_quota_swap.mappings import MappingStore
 
         fake_creds = json.dumps({"claudeAiOauth": {"accessToken": "tok"}})
 
@@ -9233,7 +9233,7 @@ class TestRemoveAccountPrunesMappings:
 
     def test_slot_migration_keeps_mappings(self, temp_home):
         """Moving an account to another slot keeps its identity-keyed mappings."""
-        from claude_swap.mappings import MappingStore
+        from ai_quota_swap.mappings import MappingStore
 
         fake_creds = json.dumps({"claudeAiOauth": {"accessToken": "tok"}})
 
@@ -9346,7 +9346,7 @@ class TestAddAccountAlias:
         assert data["accounts"]["1"]["alias"] == "dev"
 
     def test_readd_without_alias_preserves_existing(self, temp_home: Path):
-        """Re-running `cswap add` (refresh-in-place) without --alias must not
+        """Re-running `qswap add` (refresh-in-place) without --alias must not
         wipe a previously set alias."""
         fake_creds = json.dumps({"claudeAiOauth": {"accessToken": "tok"}})
         switcher = self._config_switcher(temp_home, "a@x.com")
@@ -9410,7 +9410,7 @@ class TestAddAccountAlias:
 
 
 class TestDisableEnableAccount:
-    """`cswap disable`/`cswap enable`: park a managed account out of automatic
+    """`qswap disable`/`qswap enable`: park a managed account out of automatic
     rotation without removing it. Disabled slots are skipped by the auto-switch
     engine, bare `switch` rotation, and the usage-aware strategies, but stay
     valid explicit `switch <num|email>` targets."""
@@ -9610,10 +9610,10 @@ class TestDisableEnableAccount:
         assert s.is_account_disabled("2") is False
 
     def test_slot_refresh_keeps_account_parked(self, temp_home):
-        """`cswap add --slot N` on the account already in slot N is the
+        """`qswap add --slot N` on the account already in slot N is the
         documented way to recover a dead login; it refreshes the credential
         rather than re-registering the account, so the park must survive it.
-        Bare `cswap add` (refresh in place) already keeps the flag."""
+        Bare `qswap add` (refresh in place) already keeps the flag."""
         s = self._setup(temp_home)
         self._seed(s, 1, "a@example.com")
         self._seed(s, 2, "b@example.com")
@@ -9736,7 +9736,7 @@ class TestDegradedReadProvenance:
         Fixed by the same provenance split as the degraded flag; pinned
         separately because it is a different consumer and a different remedy.
         """
-        from claude_swap.credentials import Platform
+        from ai_quota_swap.credentials import Platform
 
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
@@ -9768,7 +9768,7 @@ class TestDegradedReadProvenance:
         account), the conflation disables active-token refresh for the whole
         process: one file-mode write and every later collect pass defers.
         """
-        from claude_swap.credentials import Platform
+        from ai_quota_swap.credentials import Platform
 
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
@@ -9786,7 +9786,7 @@ class TestDegradedReadProvenance:
         store._pin_file_mode(residual_cleared=True)
         assert store._read_active_credentials().degraded is False, (
             "a self-pinned file mode reads as a degraded keychain read, so "
-            "cswap stops refreshing the active token for this process"
+            "qswap stops refreshing the active token for this process"
         )
 
     def _macos_switcher(self) -> ClaudeAccountSwitcher:
@@ -9803,7 +9803,7 @@ class TestDegradedReadProvenance:
         cred.parent.mkdir(parents=True, exist_ok=True)
         cred.write_text("FROM-FILE")
         monkeypatch.setattr(macos_keychain, "get_password", _raise_locked)
-        monkeypatch.setattr("claude_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
+        monkeypatch.setattr("ai_quota_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
         result = s._read_active_credentials()
         assert result.value == "FROM-FILE"
         assert result.keychain_unavailable is False  # display contract intact
@@ -9835,8 +9835,8 @@ class TestDegradedReadProvenance:
         """The field incident: keychain unreadable, stale file+backup agree,
         token expired → the fetch path must NOT POST the (possibly superseded)
         rt. It defers with the keychain-unavailable sentinel; no strike."""
-        from claude_swap.credentials import ActiveCredentials
-        from claude_swap.json_output import USAGE_KEYCHAIN_UNAVAILABLE
+        from ai_quota_swap.credentials import ActiveCredentials
+        from ai_quota_swap.json_output import USAGE_KEYCHAIN_UNAVAILABLE
 
         sample_sequence_data["accounts"]["1"]["email"] = "test@example.com"
         switcher = ClaudeAccountSwitcher()
@@ -9857,8 +9857,8 @@ class TestDegradedReadProvenance:
         with patch.object(
                  switcher, "_read_account_credentials", return_value=stale
              ), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
-             patch("claude_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_refresh, \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account") as mock_fetch:
             result = switcher._fetch_active_usage(
                 "1", "test@example.com", stale
             )
@@ -9872,7 +9872,7 @@ class TestDegradedReadProvenance:
         self, temp_home: Path, mock_claude_config: Path,
         sample_sequence_data: dict, monkeypatch,
     ):
-        """`cswap --status` must arm the same guard the collect pass does.
+        """`qswap --status` must arm the same guard the collect pass does.
 
         _build_accounts_info copies BOTH active.keychain_unavailable and
         active.degraded onto the switcher; _active_account_usage copies only
@@ -9882,7 +9882,7 @@ class TestDegradedReadProvenance:
         read-only command. Every test above sets the flag by hand ("as
         _build_accounts_info would"), so none of them notices it is not set.
         """
-        from claude_swap.credentials import ActiveCredentials
+        from ai_quota_swap.credentials import ActiveCredentials
 
         sample_sequence_data["accounts"]["1"]["email"] = "test@example.com"
         s = ClaudeAccountSwitcher()
@@ -9901,7 +9901,7 @@ class TestDegradedReadProvenance:
         assert s._active_read_degraded is False              # default
 
         with patch.object(s, "_read_account_credentials", return_value=stale), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account"):
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account"):
             s._active_account_usage("1", "test@example.com", "")
 
         assert s._active_read_degraded is True, (
@@ -10114,7 +10114,7 @@ class TestBackupUnreadableDisplay:
         self, temp_home: Path, monkeypatch, block_real_keychain,
         sample_sequence_data: dict,
     ):
-        from claude_swap.json_output import (
+        from ai_quota_swap.json_output import (
             USAGE_KEYCHAIN_UNAVAILABLE, USAGE_NO_CREDENTIALS,
         )
         s = ClaudeAccountSwitcher()
@@ -10132,7 +10132,7 @@ class TestBackupUnreadableDisplay:
     def test_idle_slot_absent_backup_still_no_credentials(
         self, temp_home: Path, block_real_keychain,
     ):
-        from claude_swap.json_output import USAGE_NO_CREDENTIALS
+        from ai_quota_swap.json_output import USAGE_NO_CREDENTIALS
         s = ClaudeAccountSwitcher()
         s.platform = Platform.MACOS
         s._setup_directories()
@@ -10155,7 +10155,7 @@ class TestBackupUnreadableDisplay:
         Platform-independent reproduction: the read error comes from the
         plaintext file, not the Keychain.
         """
-        from claude_swap.json_output import USAGE_KEYCHAIN_UNAVAILABLE
+        from ai_quota_swap.json_output import USAGE_KEYCHAIN_UNAVAILABLE
 
         s = ClaudeAccountSwitcher()
         s.platform = Platform.LINUX
@@ -10227,7 +10227,7 @@ class TestSwitchUnreadableBackup:
         self, temp_home: Path, sample_sequence_data: dict, monkeypatch,
         block_real_keychain,
     ):
-        """The SAME promise on the ordinary `cswap switch`.
+        """The SAME promise on the ordinary `qswap switch`.
 
         _perform_switch has two target-read sites. The M1 test above lands on
         the DIRECT-ACTIVATION branch, because its fixture's live identity
@@ -10317,7 +10317,7 @@ class TestConsumeGate:
             posted["creds"] = credentials
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh):
             # caller holds a STALE snapshot (_OLD); gate must ignore it
             result = s.consume_backup_grant("1", "test@example.com", self._OLD)
@@ -10348,7 +10348,7 @@ class TestConsumeGate:
             )
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh):
             result = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -10365,7 +10365,7 @@ class TestConsumeGate:
         (claude rotated inside the profile — #96's shape) means the backup rt
         is the consumed predecessor: the gate must resync profile→backup and
         POST the profile's rt, never the backup's."""
-        from claude_swap.session import session_dir_for
+        from ai_quota_swap.session import session_dir_for
         s = self._switcher(sample_sequence_data)
         s._write_account_credentials("1", "test@example.com", self._OLD)
         profile_newer = json.dumps({
@@ -10383,7 +10383,7 @@ class TestConsumeGate:
             posted["creds"] = credentials
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh), \
              patch.object(s, "_live_session_pids", return_value=[]):
             s.consume_backup_grant("1", "test@example.com", self._OLD)
@@ -10396,7 +10396,7 @@ class TestConsumeGate:
         s = self._switcher(sample_sequence_data)
         s._write_account_credentials("1", "test@example.com", self._OLD)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(None, "invalid_grant")):
             result = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -10450,7 +10450,7 @@ class TestConsumeGate:
             posted.append(credentials)
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh):
             result = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -10513,7 +10513,7 @@ class TestConsumeGate:
         """A remedy named in an error message has to be a remedy.
 
         Failing closed on corrupt+orphans is only defensible because the
-        operator has a way out, and the message names one: `cswap unclaimed`
+        operator has a way out, and the message names one: `qswap unclaimed`
         to see them, `--purge` to drop one. Both run against a CORRUPT
         manifest, so the mutator must NOT refuse there — which is why its
         refusal is scoped to `unreadable`. Walk the whole exit rather than
@@ -10526,7 +10526,7 @@ class TestConsumeGate:
 
         # 1. the operator can SEE the orphan, by glob, with no readable rows
         listed = s.list_unclaimed_credentials()
-        assert listed, "corrupt manifest hid the orphan from `cswap unclaimed`"
+        assert listed, "corrupt manifest hid the orphan from `qswap unclaimed`"
 
         # 2. and can DROP it — the mutator does not refuse on corrupt
         for entry_id in list(listed):
@@ -10540,7 +10540,7 @@ class TestConsumeGate:
             posted.append(credentials)
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh):
             result = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -10623,7 +10623,7 @@ class TestConsumeGate:
         does not "self-heal at the cost of one POST" — it returns
         invalid_grant, and the gate returns before any manifest write, so
         nothing is ever set aside. The exit is the operator's
-        (`cswap unclaimed --purge`, which still lists orphans by glob), not a
+        (`qswap unclaimed --purge`, which still lists orphans by glob), not a
         POST that strikes a live account.
         """
         s = self._switcher(sample_sequence_data)
@@ -10636,7 +10636,7 @@ class TestConsumeGate:
             posted.append(credentials)
             return oauth.RefreshOutcome(None, "invalid_grant")
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh):
             result = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -10669,7 +10669,7 @@ class TestConsumeGate:
             posted.append(credentials)
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh):
             result = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -10709,7 +10709,7 @@ class TestConsumeGate:
             posted.append(credentials)
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh):
             result = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -10733,14 +10733,14 @@ class TestConsumeGate:
         store, so an absent re-read really does mean removed.
         """
         s = self._switcher(sample_sequence_data)
-        # No stored credential for slot 1: `cswap remove` landed first.
+        # No stored credential for slot 1: `qswap remove` landed first.
         posted = []
 
         def mock_refresh(credentials, **kw):
             posted.append(credentials)
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh):
             result = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -10767,7 +10767,7 @@ class TestConsumeGate:
         Pinned because it is defined behaviour on a path no test covered
         before, which is exactly the kind that gets "fixed" back.
         """
-        from claude_swap.session import session_dir_for
+        from ai_quota_swap.session import session_dir_for
         s = self._switcher(sample_sequence_data)
         # No stored credential for slot 1 — but a profile that outlived it.
         profile_newer = json.dumps({
@@ -10785,7 +10785,7 @@ class TestConsumeGate:
             posted.append(credentials)
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh), \
              patch.object(s, "_live_session_pids", return_value=[]):
             result = s.consume_backup_grant("1", "test@example.com", self._OLD)
@@ -10838,10 +10838,10 @@ class TestInactiveRefreshRoutesThroughGate:
             direct["called"] = True
             return oauth.RefreshOutcome(None, "transient")
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=direct_post), \
              patch.object(s, "_live_session_pids", return_value=[]), \
-             patch("claude_swap.oauth.request_usage_data",
+             patch("ai_quota_swap.oauth.request_usage_data",
                    return_value={"five_hour": {"utilization": 5}}):
             info = (2, "b@example.com", "", "", False, expired, "")
             record = s._fetch_account_usage(info)
@@ -10860,8 +10860,8 @@ class TestStrikeUnbindsInCollector:
         self, temp_home: Path, mock_claude_config: Path,
         sample_sequence_data: dict, monkeypatch
     ):
-        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
-        from claude_swap.usage_store import FetchRecord as StoreRecord
+        from ai_quota_swap.json_output import USAGE_RELOGIN_REQUIRED
+        from ai_quota_swap.usage_store import FetchRecord as StoreRecord
         sample_sequence_data["accounts"]["2"] = {
             "email": "b@example.com", "uuid": "u2",
             "organizationUuid": "", "organizationName": "",
@@ -10896,7 +10896,7 @@ class TestStrikeUnbindsInCollector:
 
 
 class TestStoreResolutionParity:
-    """M4: when CC resolves its credential store somewhere cswap does not
+    """M4: when CC resolves its credential store somewhere qswap does not
     mirror, consuming/mutating operations refuse instead of operating on a
     store CC no longer uses."""
 
@@ -10911,7 +10911,7 @@ class TestStoreResolutionParity:
             "claudeAiOauth": {"accessToken": "a", "refreshToken": "rt",
                               "expiresAt": 1000}})
         s._write_account_credentials("1", "test@example.com", creds)
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials") as mock_post:
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as mock_post:
             result = s.consume_backup_grant("1", "test@example.com", creds)
         mock_post.assert_not_called()
         assert result.error == "store-unmirrored"
@@ -10944,7 +10944,7 @@ class TestStoreResolutionParity:
         fresh = json.dumps({
             "claudeAiOauth": {"accessToken": "b", "refreshToken": "rt2",
                               "expiresAt": 9999999999000}})
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(fresh, None)):
             result = s.consume_backup_grant("1", "test@example.com", creds)
         assert result.credentials == fresh
@@ -11001,7 +11001,7 @@ class TestStoreResolutionParity:
         cred = get_credentials_path()
         cred.parent.mkdir(parents=True, exist_ok=True)
         cred.write_text("STALE-FALLBACK-PLAINTEXT")
-        monkeypatch.setattr("claude_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
+        monkeypatch.setattr("ai_quota_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         monkeypatch.delenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", raising=False)
 
@@ -11044,7 +11044,7 @@ class TestStoreResolutionParity:
         cred = get_credentials_path()
         cred.parent.mkdir(parents=True, exist_ok=True)
         cred.write_text("STALE-FALLBACK-PLAINTEXT")
-        monkeypatch.setattr("claude_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
+        monkeypatch.setattr("ai_quota_swap.credentials._ACTIVE_READ_RETRY_DELAY", 0)
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         monkeypatch.delenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", raising=False)
         monkeypatch.setattr(macos_keychain, "get_password", _raise_locked)
@@ -11075,11 +11075,11 @@ class TestConsumeGateLockFailures:
     def test_lock_failure_before_post_is_transient(
         self, temp_home: Path, sample_sequence_data: dict, monkeypatch
     ):
-        from claude_swap.exceptions import LockError as LE
+        from ai_quota_swap.exceptions import LockError as LE
         s = self._switcher(sample_sequence_data)
         s._write_account_credentials("1", "test@example.com", self._OLD)
 
-        from claude_swap.locking import FileLock as real_lock
+        from ai_quota_swap.locking import FileLock as real_lock
 
         class FailingLock:
             def __init__(self, *a, **k): pass
@@ -11090,8 +11090,8 @@ class TestConsumeGateLockFailures:
             def __enter__(self): raise LE("held elsewhere")
             def __exit__(self, *a): return False
 
-        monkeypatch.setattr("claude_swap.switcher.FileLock", FailingLock)
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials") as post:
+        monkeypatch.setattr("ai_quota_swap.switcher.FileLock", FailingLock)
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as post:
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
         post.assert_not_called()          # nothing consumed
         assert out.error == "transient"   # clean defer, no raise
@@ -11099,10 +11099,10 @@ class TestConsumeGateLockFailures:
     def test_lock_failure_after_post_stashes_successor(
         self, temp_home: Path, sample_sequence_data: dict, monkeypatch
     ):
-        from claude_swap.exceptions import LockError as LE
+        from ai_quota_swap.exceptions import LockError as LE
         s = self._switcher(sample_sequence_data)
         s._write_account_credentials("1", "test@example.com", self._OLD)
-        from claude_swap.locking import FileLock as real_lock
+        from ai_quota_swap.locking import FileLock as real_lock
         calls = {"n": 0}
 
         class SecondLockFails:
@@ -11122,8 +11122,8 @@ class TestConsumeGateLockFailures:
             def __exit__(self, *a):
                 return self._inner.__exit__(*a)
 
-        monkeypatch.setattr("claude_swap.switcher.FileLock", SecondLockFails)
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        monkeypatch.setattr("ai_quota_swap.switcher.FileLock", SecondLockFails)
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(self._NEW, None)):
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
         # successor survives: returned to the caller AND stashed
@@ -11144,8 +11144,8 @@ class TestConsumeGateLockFailures:
         LockError here, which aborted the tick — safe by accident. Stashing is
         the better behaviour; reporting it as success is not.
         """
-        from claude_swap.exceptions import LockError as LE
-        from claude_swap.locking import FileLock as real_lock
+        from ai_quota_swap.exceptions import LockError as LE
+        from ai_quota_swap.locking import FileLock as real_lock
 
         s = self._switcher(sample_sequence_data)
         s._write_account_credentials("1", "test@example.com", self._OLD)
@@ -11166,8 +11166,8 @@ class TestConsumeGateLockFailures:
             def __exit__(self, *a):
                 return self._inner.__exit__(*a)
 
-        monkeypatch.setattr("claude_swap.switcher.FileLock", SecondLockFails)
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        monkeypatch.setattr("ai_quota_swap.switcher.FileLock", SecondLockFails)
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(self._NEW, None)):
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -11229,7 +11229,7 @@ class TestPermanentlyUnreadableStashRow:
         entry_path = s._store._stash_entry_path(entry_id)
         entry_path.chmod(0o000)
         try:
-            with patch("claude_swap.oauth.try_refresh_oauth_credentials") as post:
+            with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as post:
                 errors = {
                     s.consume_backup_grant(
                         "1", "test@example.com", self._OLD
@@ -11261,10 +11261,10 @@ class TestPermanentlyUnreadableStashRow:
         known to be expired. (The third seam, the tick's own message, has a
         behavioural test in ``tests/test_autoswitch.py``.)
         """
-        from claude_swap.oauth import _DETERMINISTIC_REFRESH_ERRORS
-        from claude_swap.switcher import ERROR_NOTES
+        from ai_quota_swap.oauth import _DETERMINISTIC_REFRESH_ERRORS
+        from ai_quota_swap.switcher import ERROR_NOTES
 
-        assert "cswap unclaimed" in ERROR_NOTES["stash-unreadable"]
+        assert "qswap unclaimed" in ERROR_NOTES["stash-unreadable"]
         assert "stash-unreadable" in _DETERMINISTIC_REFRESH_ERRORS
 
 
@@ -11277,7 +11277,7 @@ class TestHealedStrikeUnblocksFetching:
         self, temp_home: Path, mock_claude_config: Path,
         sample_sequence_data: dict,
     ):
-        from claude_swap.usage_store import FetchRecord as StoreRecord
+        from ai_quota_swap.usage_store import FetchRecord as StoreRecord
         sample_sequence_data["accounts"]["2"] = {
             "email": "b@example.com", "uuid": "u2",
             "organizationUuid": "", "organizationName": "",
@@ -11349,7 +11349,7 @@ class TestGateUltraReviewFixes:
             s._store._write_account_credentials("1", "test@example.com", racer)
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=refresh_then_lose_the_race):
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -11397,7 +11397,7 @@ class TestGateUltraReviewFixes:
         with patch.object(s, "_read_account_credentials", return_value=THIRD), \
              patch.object(s, "_read_account_credentials_ex",
                           side_effect=read_ex), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(self._NEW, None)):
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -11441,7 +11441,7 @@ class TestGateUltraReviewFixes:
             order.append("read")
             return real_lock(*a, **k)
 
-        from claude_swap.locking import FileLock as real_filelock
+        from ai_quota_swap.locking import FileLock as real_filelock
 
         class WatchedLock:
             def __init__(self, path, *a, **k):
@@ -11458,9 +11458,9 @@ class TestGateUltraReviewFixes:
             def __exit__(self, *a):
                 return self._inner.__exit__(*a)
 
-        monkeypatch.setattr("claude_swap.switcher.FileLock", WatchedLock)
+        monkeypatch.setattr("ai_quota_swap.switcher.FileLock", WatchedLock)
         with patch.object(s, "_read_account_credentials", side_effect=watched_read), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(self._NEW, None)):
             s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -11478,13 +11478,13 @@ class TestGateUltraReviewFixes:
         The loser used to return "transient", which autoswitch renders as
         "could not freshen any candidate (network?)" — sending the user to
         check a connection that is fine, for a condition no network change can
-        affect. On a machine where the collector and a manual `cswap switch`
+        affect. On a machine where the collector and a manual `qswap switch`
         overlap this is routine, not an edge.
         """
         s = self._switcher(sample_sequence_data)
         s._write_account_credentials("1", "test@example.com", self._OLD)
 
-        from claude_swap.locking import FileLock as real_filelock
+        from ai_quota_swap.locking import FileLock as real_filelock
 
         class ConsumeLockBusy:
             def __init__(self, path, *a, **k):
@@ -11500,7 +11500,7 @@ class TestGateUltraReviewFixes:
             def __exit__(self, *a):
                 return self._inner.__exit__(*a)
 
-        monkeypatch.setattr("claude_swap.switcher.FileLock", ConsumeLockBusy)
+        monkeypatch.setattr("ai_quota_swap.switcher.FileLock", ConsumeLockBusy)
         out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
         assert out.error == "consume-busy", (
@@ -11533,7 +11533,7 @@ class TestGateUltraReviewFixes:
         monkeypatch.setattr(
             ClaudeAccountSwitcher, "_write_account_credentials", failing_write
         )
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh):
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -11581,7 +11581,7 @@ class TestGateUltraReviewFixes:
         monkeypatch.setattr(
             s._store, "_write_unclaimed_credential", failing_stash
         )
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh):
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
         assert out.error == "transient", (
@@ -11603,7 +11603,7 @@ class TestGateUltraReviewFixes:
                               "expiresAt": 2000}})
         s._write_account_credentials("1", "test@example.com", fresher)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(None, "invalid_grant")):
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -11641,7 +11641,7 @@ class TestGateUltraReviewFixes:
                 "1", "test@example.com", self._OLD
             )
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=slow_refresh):
             t1 = threading.Thread(target=gate, args=("a",))
             t1.start()
@@ -11678,7 +11678,7 @@ class TestGateUltraReviewFixes:
              "fingerprint": oauth.credential_fingerprint(self._NEW)},
         )
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials") as post:
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as post:
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
         post.assert_not_called()               # no second grant consumed
@@ -11703,7 +11703,7 @@ class TestGateUltraReviewFixes:
             s._store._delete_account_credentials("1", "test@example.com")
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=refresh_and_remove):
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -11721,7 +11721,7 @@ class TestGateUltraReviewFixes:
         """A profile marked stale (backup changed under a live session —
         e.g. a deliberate re-add) must not clobber the backup even when its
         expiresAt is newer."""
-        from claude_swap.session import STALE_MARKER, session_dir_for
+        from ai_quota_swap.session import STALE_MARKER, session_dir_for
         s = self._switcher(sample_sequence_data)
         reimported = json.dumps({
             "claudeAiOauth": {"accessToken": "sk-readd",
@@ -11742,7 +11742,7 @@ class TestGateUltraReviewFixes:
             posted["creds"] = credentials
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh), \
              patch.object(s, "_live_session_pids", return_value=[]):
             s.consume_backup_grant("1", "test@example.com", reimported)
@@ -11769,12 +11769,12 @@ class TestGateUltraReviewFixes:
         """
         s = self._switcher(sample_sequence_data)
         s._write_account_credentials("1", "test@example.com", self._OLD)
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError):
                 s.consume_backup_grant("1", "test@example.com", self._OLD)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(self._NEW, None)):
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
         assert out.error != "consume-busy"
@@ -11797,7 +11797,7 @@ class TestGateUltraReviewFixes:
             POSTed rt       = rt-foreign   (baseline: rt-bk)
             backup rt after = rt-n         (the foreign lineage's successor)
         """
-        from claude_swap.session import session_dir_for
+        from ai_quota_swap.session import session_dir_for
         s = self._switcher(sample_sequence_data)
         backup = json.dumps({"claudeAiOauth": {
             "accessToken": "sk-bk", "refreshToken": "rt-bk",
@@ -11821,7 +11821,7 @@ class TestGateUltraReviewFixes:
             posted["creds"] = credentials
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh), \
              patch.object(s, "_live_session_pids", return_value=[]):
             s.consume_backup_grant("1", "test@example.com", backup)
@@ -11845,7 +11845,7 @@ class TestGateUltraReviewFixes:
         Measured with `prof_exp > cur_exp` off:
             POSTed rt = rt-pf-SPENT   (baseline: rt-bk)
         """
-        from claude_swap.session import session_dir_for
+        from ai_quota_swap.session import session_dir_for
         s = self._switcher(sample_sequence_data)
         backup = json.dumps({"claudeAiOauth": {
             "accessToken": "sk-bk", "refreshToken": "rt-bk",
@@ -11863,7 +11863,7 @@ class TestGateUltraReviewFixes:
             posted["creds"] = credentials
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=mock_refresh), \
              patch.object(s, "_live_session_pids", return_value=[]):
             s.consume_backup_grant("1", "test@example.com", backup)
@@ -11885,7 +11885,7 @@ class TestGateUltraReviewFixes:
             ClaudeAccountSwitcher, "_read_account_credentials_ex",
             lambda self_s, num, email: ("", True),
         )
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials") as post:
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as post:
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
         post.assert_not_called()
         assert out.error == "transient"
@@ -11899,7 +11899,7 @@ class TestGateUltraReviewFixes:
         gate rotated it): adopt it instead of consuming another grant."""
         s = self._switcher(sample_sequence_data)
         s._write_account_credentials("1", "test@example.com", self._NEW)
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials") as post:
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as post:
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
         post.assert_not_called()
         assert out.error is None
@@ -12173,7 +12173,7 @@ class TestGateUltraReviewFixes:
         """
         import logging
 
-        from claude_swap.session import is_session_stale
+        from ai_quota_swap.session import is_session_stale
 
         s = self._switcher(sample_sequence_data)
         sess = s._session_dir("1", "test@example.com")
@@ -12189,7 +12189,7 @@ class TestGateUltraReviewFixes:
         try:
             for d in chmodded:
                 d.chmod(0o500)
-            with caplog.at_level(logging.WARNING, logger="claude-swap"):
+            with caplog.at_level(logging.WARNING, logger="ai-quota-swap"):
                 s._write_account_credentials("1", "test@example.com", self._NEW)
         finally:
             for d in reversed(chmodded):
@@ -12216,7 +12216,7 @@ class TestGateUltraReviewFixes:
                 "DEFECT: the invalidation was denied and NO stale marker "
                 "landed — the marker's own write target was the directory "
                 "that denied it. The profile's token is unexpired, so the "
-                "local reuse check passes and `cswap run` launches claude on "
+                "local reuse check passes and `qswap run` launches claude on "
                 "the spent generation, silently"
             )
         else:
@@ -12338,7 +12338,7 @@ class TestActiveSlotStrikeParity:
         """A strike bound to the backup lineage must quarantine even though
         the LIVE credential's fingerprint differs (the strike/heal/re-POST
         loop the review demonstrated)."""
-        from claude_swap.usage_store import FetchRecord as FR
+        from ai_quota_swap.usage_store import FetchRecord as FR
         sample_sequence_data["accounts"]["2"]["email"] = "b@example.com"
         s = ClaudeAccountSwitcher()
         s._setup_directories()
@@ -12370,7 +12370,7 @@ class TestActiveSlotStrikeParity:
     ):
         """Idle slots (info[5] = backup) keep the original heal rule: a
         replaced stored credential heals the strike."""
-        from claude_swap.usage_store import FetchRecord as FR
+        from ai_quota_swap.usage_store import FetchRecord as FR
         sample_sequence_data["accounts"]["2"]["email"] = "b@example.com"
         s = ClaudeAccountSwitcher()
         s._setup_directories()
@@ -12404,7 +12404,7 @@ class TestActiveSlotStrikeParity:
                               "refreshToken": "rt-exp", "expiresAt": 1000}})
         s._write_account_credentials("2", "b@example.com", expired)
         monkeypatch.setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "/tmp/redir")
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials") as post:
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as post:
             rec = s._fetch_active_usage("2", "b@example.com", expired)
         post.assert_not_called()
         assert rec.error == "store-unmirrored"
@@ -12416,7 +12416,7 @@ class TestActiveSlotStrikeParity:
         """M1 extension: a degraded active read (keychain fallback) must not
         drive _resync_rotated_backup's write — the plaintext bytes may be
         the consumed predecessor."""
-        from claude_swap.oauth import UsageOutcome
+        from ai_quota_swap.oauth import UsageOutcome
         sample_sequence_data["accounts"]["2"]["email"] = "b@example.com"
         s = ClaudeAccountSwitcher()
         s._setup_directories()
@@ -12428,7 +12428,7 @@ class TestActiveSlotStrikeParity:
         resync = MagicMock()
         monkeypatch.setattr(s, "_resync_rotated_backup", resync)
         with patch(
-            "claude_swap.oauth.try_fetch_usage_for_account",
+            "ai_quota_swap.oauth.try_fetch_usage_for_account",
             return_value=UsageOutcome({"five_hour": {"utilization": 10}}),
         ):
             s._fetch_active_usage("2", "b@example.com", fresh)
@@ -12477,9 +12477,9 @@ class TestUltraReviewCoverageGaps:
                           return_value=self._EXPIRED), \
              patch.object(s, "_read_account_credentials",
                           side_effect=read_backup), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(None, "invalid_grant")), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account"):
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account"):
             rec = s._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert rec.error == "refresh-failed"     # demoted, no strike
@@ -12505,9 +12505,9 @@ class TestUltraReviewCoverageGaps:
                           return_value=self._EXPIRED), \
              patch.object(s, "_read_account_credentials",
                           side_effect=read_backup), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(None, "invalid_grant")), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account"):
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account"):
             rec = s._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert rec.error == "invalid_grant"
@@ -12523,9 +12523,9 @@ class TestUltraReviewCoverageGaps:
                           return_value=self._EXPIRED), \
              patch.object(s, "_read_account_credentials",
                           return_value=self._EXPIRED), \
-             patch("claude_swap.oauth.try_refresh_oauth_credentials",
+             patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(None, "invalid_grant")), \
-             patch("claude_swap.oauth.try_fetch_usage_for_account"):
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account"):
             rec = s._fetch_active_usage("1", "test@example.com", self._EXPIRED)
 
         assert rec.error == "invalid_grant"
@@ -12540,17 +12540,17 @@ class TestUltraReviewCoverageGaps:
         """Locally-valid token, server 401s, degraded read: no consume, and
         the 401 ERROR record (not the keychain sentinel) reaches the store
         so backoff paces retries."""
-        from claude_swap.oauth import UsageOutcome
+        from ai_quota_swap.oauth import UsageOutcome
         s = self._switcher(sample_sequence_data)
         fresh = json.dumps({
             "claudeAiOauth": {"accessToken": "sk-f", "refreshToken": "rt-f",
                               "expiresAt": 9999999999000}})
         s._record_active_verdict(ActiveCredentials("", False, True))
         with patch(
-            "claude_swap.oauth.try_fetch_usage_for_account",
+            "ai_quota_swap.oauth.try_fetch_usage_for_account",
             return_value=UsageOutcome(None, error="http-401"),
         ), patch(
-            "claude_swap.oauth.try_refresh_oauth_credentials"
+            "ai_quota_swap.oauth.try_refresh_oauth_credentials"
         ) as post:
             rec = s._fetch_active_usage("1", "test@example.com", fresh)
         post.assert_not_called()
@@ -12596,7 +12596,7 @@ class TestUltraReviewCoverageGaps:
             "claudeAiOauth": {"accessToken": "b", "refreshToken": "rt2",
                               "expiresAt": 9999999999000}})
         s._write_account_credentials("1", "test@example.com", old)
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    return_value=oauth.RefreshOutcome(new, None)), \
              patch.object(s, "_write_credentials") as write_live:
             out = s.consume_backup_grant("1", "test@example.com", old)
@@ -12658,7 +12658,7 @@ class TestUnreadableBackupIsNotAbsent:
             monkeypatch.setattr(macos_keychain, "get_password", _raise_locked)
             return oauth.RefreshOutcome(self._NEW, None)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=refresh_then_lock):
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -12770,7 +12770,7 @@ class TestUnreadableBackupIsNotAbsent:
         self, temp_home: Path, sample_sequence_data: dict, monkeypatch,
         block_real_keychain,
     ):
-        """``cswap import`` must not overwrite a healthy slot it cannot read.
+        """``qswap import`` must not overwrite a healthy slot it cannot read.
 
         ``_slot_token_dead``'s ``stored`` read is plain. Unreadable → ``""``
         → ``credential_fingerprint("")`` is None → ``token_dead`` skips the
@@ -12973,7 +12973,7 @@ class TestStashReaderUnreadableVsAbsent:
         entry_path = s._store._stash_entry_path(self._stash_successor(s))
         entry_path.chmod(0o000)
         try:
-            with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+            with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                        side_effect=self._post_rejects_spent) as post:
                 out = s.consume_backup_grant("1", "test@example.com", self._OLD)
         finally:
@@ -13002,7 +13002,7 @@ class TestStashReaderUnreadableVsAbsent:
         s._write_account_credentials("1", "test@example.com", self._OLD)
         self._stash_successor(s)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials") as post:
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as post:
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
         assert not post.called, "adopted successor must short-circuit the POST"
@@ -13019,7 +13019,7 @@ class TestStashReaderUnreadableVsAbsent:
         s = self._switcher(sample_sequence_data)
         s._write_account_credentials("1", "test@example.com", self._OLD)
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._post_rejects_spent) as post:
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -13042,7 +13042,7 @@ class TestStashReaderUnreadableVsAbsent:
         entry_path = s._store._stash_entry_path(self._stash_successor(s))
         entry_path.write_text("not-valid-base64!!!", encoding="utf-8")
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._post_rejects_spent) as post:
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -13070,7 +13070,7 @@ class TestStashReaderUnreadableVsAbsent:
         entry_path = s._store._stash_entry_path(self._stash_successor(s))
         entry_path.write_bytes(b"\xff\xfegarbled")
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._post_rejects_spent) as post:
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -13091,7 +13091,7 @@ class TestStashReaderUnreadableVsAbsent:
         s._write_account_credentials("1", "test@example.com", self._OLD)
         s._store._stash_entry_path(self._stash_successor(s)).unlink()
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._post_rejects_spent) as post:
             out = s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -13114,7 +13114,7 @@ class TestStashReaderUnreadableVsAbsent:
         s._write_account_credentials("1", "test@example.com", self._OLD)
         s._store._stash_entry_path(self._stash_successor(s)).unlink()
 
-        with patch("claude_swap.oauth.try_refresh_oauth_credentials",
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
                    side_effect=self._post_rejects_spent):
             s.consume_backup_grant("1", "test@example.com", self._OLD)
 
@@ -13151,7 +13151,7 @@ class TestStashReaderUnreadableVsAbsent:
                  "consumedFp": oauth.credential_fingerprint(self._OLD),
                  "fingerprint": oauth.credential_fingerprint(self._NEW)},
             )
-            with patch("claude_swap.oauth.try_refresh_oauth_credentials") as post:
+            with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials") as post:
                 out = s.consume_backup_grant("1", "test@example.com", self._OLD)
         finally:
             entry_path.chmod(0o600)
@@ -13258,7 +13258,7 @@ class TestPollPolicyInputsCarryTheWeeklyLine:
     ):
         import os
 
-        from claude_swap.settings import set_setting, settings_path
+        from ai_quota_swap.settings import set_setting, settings_path
 
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
@@ -13281,8 +13281,8 @@ class TestPollPolicyInputsCarryTheWeeklyLine:
         assert switcher._poll_policy_inputs() == (85.0, 99.0, ("Fable",))
 
     def test_plans_after_fetch_hands_the_planner_both_lines(self, temp_home):
-        from claude_swap import poll_policy
-        from claude_swap.usage_store import FetchRecord
+        from ai_quota_swap import poll_policy
+        from ai_quota_swap.usage_store import FetchRecord
 
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
@@ -13306,7 +13306,7 @@ class TestSwitchTransactionRollback:
     never by truncating the live file in place (#419)."""
 
     def _transaction(self, tmp_path: Path, original: str):
-        from claude_swap.models import SwitchTransaction
+        from ai_quota_swap.models import SwitchTransaction
 
         config_path = tmp_path / ".claude.json"
         config_path.write_text(original)
@@ -13346,7 +13346,7 @@ class TestSwitchTransactionRollback:
         def refuse(src, dst, **kwargs):
             raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr("claude_swap.fsutil.replace_with_retry", refuse)
+        monkeypatch.setattr("ai_quota_swap.fsutil.replace_with_retry", refuse)
         assert tx.rollback(MagicMock()) is False
         assert config_path.read_text() == '{"half": "written"}'
         assert list(tmp_path.iterdir()) == [config_path]
@@ -13364,7 +13364,7 @@ class TestSalvageCopyMode:
         config_path = temp_home / ".claude.json"
         config_path.write_text('{"primaryApiKey": "sk-test", "torn":')
         switcher = ClaudeAccountSwitcher()
-        monkeypatch.setattr("claude_swap.fsutil.os.fchmod", lambda *a, **k: None)
+        monkeypatch.setattr("ai_quota_swap.fsutil.os.fchmod", lambda *a, **k: None)
         old_umask = os.umask(0o022)
         try:
             salvage = switcher._salvage_unreadable(config_path, False, [])

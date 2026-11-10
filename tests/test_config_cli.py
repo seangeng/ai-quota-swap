@@ -1,4 +1,4 @@
-"""Tests for the `cswap config` subcommand (get/set/unset/list/path)."""
+"""Tests for the `qswap config` subcommand (get/set/unset/list/path)."""
 
 from __future__ import annotations
 
@@ -9,17 +9,17 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_swap import cli
+from ai_quota_swap import cli
 
 
 def _run(argv: list[str], capsys) -> tuple[int, str, str]:
-    """Run `cswap config <argv>`; returns (exit_code, stdout, stderr).
+    """Run `qswap config <argv>`; returns (exit_code, stdout, stderr).
 
     Success returns normally from main() (no sys.exit), errors raise
     SystemExit — normalize both to an exit code.
     """
     with patch("os.geteuid", return_value=1000, create=True), \
-         patch.object(sys, "argv", ["claude-swap", "config", *argv]):
+         patch.object(sys, "argv", ["ai-quota-swap", "config", *argv]):
         code = 0
         try:
             cli.main()
@@ -249,14 +249,14 @@ class TestConfigMisc:
         assert "unset" in out
 
     def test_main_help_mentions_config(self, temp_home, capsys):
-        with patch.object(sys, "argv", ["claude-swap", "--help"]):
+        with patch.object(sys, "argv", ["ai-quota-swap", "--help"]):
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
         assert excinfo.value.code == 0
         assert "config" in capsys.readouterr().out
 
     def test_auto_picks_up_configured_threshold(self, temp_home, capsys):
-        """End-to-end: a value set via config drives `cswap auto`."""
+        """End-to-end: a value set via config drives `qswap auto`."""
         _run(["set", "autoswitch.threshold", "77"], capsys)
 
         captured = {}
@@ -267,13 +267,13 @@ class TestConfigMisc:
                 captured["settings"] = settings
 
             def tick(self):
-                from claude_swap.autoswitch import TickOutcome
+                from ai_quota_swap.autoswitch import TickOutcome
 
                 return TickOutcome.NO_ACTION
 
-        with patch("claude_swap.autoswitch.AutoSwitchEngine", FakeEngine), \
+        with patch("ai_quota_swap.autoswitch.AutoSwitchEngine", FakeEngine), \
              patch("os.geteuid", return_value=1000, create=True), \
-             patch.object(sys, "argv", ["claude-swap", "auto", "--once"]):
+             patch.object(sys, "argv", ["ai-quota-swap", "auto", "--once"]):
             with pytest.raises(SystemExit):
                 cli.main()
         assert captured["settings"].threshold == 77.0
@@ -291,7 +291,7 @@ class TestWeeklyThresholdConfig:
         assert code == 1
         assert "expects a number" in err
         # No number spells "unset"; the error names the command that does.
-        assert "cswap config unset autoswitch.weeklyThreshold" in err
+        assert "qswap config unset autoswitch.weeklyThreshold" in err
         assert not _settings_file(capsys).exists()
 
     def test_set_get_unset_round_trip(self, temp_home, capsys):
@@ -321,13 +321,13 @@ class TestWeeklyThresholdConfig:
                 captured["settings"] = settings
 
             def tick(self):
-                from claude_swap.autoswitch import TickOutcome
+                from ai_quota_swap.autoswitch import TickOutcome
 
                 return TickOutcome.NO_ACTION
 
-        with patch("claude_swap.autoswitch.AutoSwitchEngine", FakeEngine), \
+        with patch("ai_quota_swap.autoswitch.AutoSwitchEngine", FakeEngine), \
              patch("os.geteuid", return_value=1000, create=True), \
-             patch.object(sys, "argv", ["claude-swap", "auto", "--once"]):
+             patch.object(sys, "argv", ["ai-quota-swap", "auto", "--once"]):
             with pytest.raises(SystemExit):
                 cli.main()
         assert captured["settings"].threshold == 85.0

@@ -1,6 +1,6 @@
 """TUI policy display.
 
-The per-account policy set through ``cswap threshold`` has
+The per-account policy set through ``qswap threshold`` has
 to be visible where the operator already looks, on both account render paths:
 
 * ``account_card_text`` — the expanded card for the selected account.
@@ -22,8 +22,8 @@ import json
 
 import pytest
 
-from claude_swap.models import AccountPolicy
-from claude_swap.tui.widgets import account_card_text, mini_account_text
+from ai_quota_swap.models import AccountPolicy
+from ai_quota_swap.tui.widgets import account_card_text, mini_account_text
 
 from tests.test_tui import (
     FakeSwitcher,

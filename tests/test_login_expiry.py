@@ -14,12 +14,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.cells import cell_len
 
-from claude_swap import oauth
-from claude_swap.json_output import USAGE_API_KEY, USAGE_NO_CREDENTIALS, USAGE_RELOGIN_REQUIRED
-from claude_swap.models import AccountSnapshot
-from claude_swap.switcher import ClaudeAccountSwitcher, _usage_entry_lines
-from claude_swap.tui import widgets
-from claude_swap.usage_store import UsageEntry
+from ai_quota_swap import oauth
+from ai_quota_swap.json_output import USAGE_API_KEY, USAGE_NO_CREDENTIALS, USAGE_RELOGIN_REQUIRED
+from ai_quota_swap.models import AccountSnapshot
+from ai_quota_swap.switcher import ClaudeAccountSwitcher, _usage_entry_lines
+from ai_quota_swap.tui import widgets
+from ai_quota_swap.usage_store import UsageEntry
 
 from tests.test_tui import FakeSwitcher, fake_engine, make_account, make_app, make_entry
 
@@ -155,7 +155,7 @@ class TestCliList:
         switcher._write_json(switcher.sequence_file, sample_sequence_data)
         with patch.object(switcher, "_read_credentials", return_value=active_creds), \
              patch.object(switcher, "_read_account_credentials", return_value=backup_creds), \
-             patch("claude_swap.oauth.urllib.request.urlopen", return_value=mock_response):
+             patch("ai_quota_swap.oauth.urllib.request.urlopen", return_value=mock_response):
             switcher.list_accounts()
 
         lines = capsys.readouterr().out.splitlines()
@@ -272,7 +272,7 @@ async def _dashboard(tmp_path, accounts, size):
     """(panel lines, panel content size, fully visible menu items) at ``size``."""
     from textual.widgets import ListView
 
-    from claude_swap.tui.widgets import AccountsPanel, MenuItem
+    from ai_quota_swap.tui.widgets import AccountsPanel, MenuItem
 
     app = make_app(FakeSwitcher(accounts, tmp_path))
     async with app.run_test(size=size) as pilot:
@@ -332,7 +332,7 @@ class TestDashboardFit:
 async def _candidates(tmp_path, accounts, size):
     from textual.widgets import Static
 
-    from claude_swap.tui.autoview import AutoScreen
+    from ai_quota_swap.tui.autoview import AutoScreen
 
     app = make_app(FakeSwitcher(accounts, tmp_path))
     async with app.run_test(size=size) as pilot:
@@ -378,8 +378,8 @@ class TestNextBest:
 
 @pytest.mark.asyncio
 async def test_switch_screen_card_header_keeps_the_note_within_the_width(tmp_path):
-    from claude_swap.tui.dashboard import SwitchScreen
-    from claude_swap.tui.widgets import AccountCard
+    from ai_quota_swap.tui.dashboard import SwitchScreen
+    from ai_quota_swap.tui.widgets import AccountCard
 
     acc = _replace_login(
         make_account(1, active=True, email="dev-account-1@a.io", alias="work"), time.time() + DUE

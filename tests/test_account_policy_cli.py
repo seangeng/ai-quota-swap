@@ -1,7 +1,7 @@
 """Per-account policy CLI verbs (cli.py): setting, clearing and listing a
 per-account threshold, and refusing a bad value.
 
-`cswap threshold` mirrors `_alias_command` (pre-dispatched before the main
+`qswap threshold` mirrors `_alias_command` (pre-dispatched before the main
 parser, because the main parser's required mutually-exclusive group cannot hold
 a positional subcommand).
 
@@ -23,8 +23,8 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_swap import cli
-from claude_swap.switcher import ClaudeAccountSwitcher
+from ai_quota_swap import cli
+from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
 from tests.test_account_policy_store import PolicyStoreBase
 
@@ -39,16 +39,16 @@ class PolicyCliBase(PolicyStoreBase):
 
     @staticmethod
     def _threshold(argv: list[str]) -> None:
-        """Drive `cswap threshold ...` at its pre-dispatch entry point."""
+        """Drive `qswap threshold ...` at its pre-dispatch entry point."""
         with patch("os.geteuid", return_value=1000, create=True):
             cli._threshold_command(argv)
 
     @staticmethod
     def _main(argv: list[str]) -> None:
-        """Drive a full `cswap ...` argv through `main()`'s dispatch."""
-        with patch.object(sys, "argv", ["claude-swap", *argv]), \
+        """Drive a full `qswap ...` argv through `main()`'s dispatch."""
+        with patch.object(sys, "argv", ["ai-quota-swap", *argv]), \
              patch("os.geteuid", return_value=1000, create=True), \
-             patch("claude_swap.update_check.check_for_update", return_value=None):
+             patch("ai_quota_swap.update_check.check_for_update", return_value=None):
             cli.main()
 
     @staticmethod
@@ -59,7 +59,7 @@ class PolicyCliBase(PolicyStoreBase):
 
 
 class TestThresholdSet(PolicyCliBase):
-    """`cswap threshold 2 85` writes the override and confirms it."""
+    """`qswap threshold 2 85` writes the override and confirms it."""
 
     def test_it_writes_the_override_and_prints_a_confirmation(
         self, temp_home: Path, capsys
@@ -92,7 +92,7 @@ class TestThresholdSet(PolicyCliBase):
         assert self._bytes(s) == before
 
     def test_the_verb_is_reachable_through_main_dispatch(self, temp_home: Path, capsys):
-        """`cswap threshold ...` must be pre-dispatched like `alias`, not fall
+        """`qswap threshold ...` must be pre-dispatched like `alias`, not fall
         through to the main parser (which would reject the positional)."""
         self._fleet(temp_home)
         self._main(["threshold", "2", "85"])
@@ -138,7 +138,7 @@ class TestThresholdUnset(PolicyCliBase):
 
 
 class TestThresholdListing(PolicyCliBase):
-    """Bare `cswap threshold` lists the global default and every override."""
+    """Bare `qswap threshold` lists the global default and every override."""
 
     def test_it_names_the_global_default(self, temp_home: Path, capsys):
         self._fleet(temp_home)
@@ -173,7 +173,7 @@ class TestThresholdListing(PolicyCliBase):
 
 
 class TestIdentifierResolution(PolicyCliBase):
-    """`cswap threshold` accepts a number, an email, or an alias."""
+    """`qswap threshold` accepts a number, an email, or an alias."""
 
     def test_threshold_accepts_an_email(self, temp_home: Path, capsys):
         self._fleet(temp_home)

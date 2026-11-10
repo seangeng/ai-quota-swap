@@ -21,13 +21,13 @@ from pathlib import Path
 
 import pytest
 
-from claude_swap.credentials import (
+from ai_quota_swap.credentials import (
     CLAUDE_CODE_KEYCHAIN_SERVICE,
     CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE,
     CredentialStore,
 )
-from claude_swap.models import Platform
-from claude_swap.session import keychain_service_name
+from ai_quota_swap.models import Platform
+from ai_quota_swap.session import keychain_service_name
 
 
 class _Host:
@@ -93,7 +93,7 @@ class TestActiveReadStaysOnOneProfile:
 
         seen: list[str] = []
         monkeypatch.setattr(
-            "claude_swap.macos_keychain.get_password",
+            "ai_quota_swap.macos_keychain.get_password",
             _keychain(
                 {
                     CLAUDE_CODE_KEYCHAIN_SERVICE: DEFAULT_PROFILE_CREDS,
@@ -130,7 +130,7 @@ class TestActiveReadStaysOnOneProfile:
 
         seen: list[str] = []
         monkeypatch.setattr(
-            "claude_swap.macos_keychain.get_password",
+            "ai_quota_swap.macos_keychain.get_password",
             _keychain(
                 {
                     keychain_service_name(str(custom)): CUSTOM_PROFILE_CREDS,
@@ -160,7 +160,7 @@ class TestActiveReadStaysOnOneProfile:
 
         seen: list[str] = []
         monkeypatch.setattr(
-            "claude_swap.macos_keychain.get_password",
+            "ai_quota_swap.macos_keychain.get_password",
             _keychain({CLAUDE_CODE_KEYCHAIN_SERVICE: DEFAULT_PROFILE_CREDS}, seen),
         )
 
@@ -179,7 +179,7 @@ class TestActiveReadStaysOnOneProfile:
 
         seen: list[str] = []
         monkeypatch.setattr(
-            "claude_swap.macos_keychain.get_password",
+            "ai_quota_swap.macos_keychain.get_password",
             _keychain({CLAUDE_CODE_KEYCHAIN_SERVICE: DEFAULT_PROFILE_CREDS}, seen),
         )
 
@@ -202,7 +202,7 @@ class TestActiveReadStaysOnOneProfile:
 
         seen: list[str] = []
         monkeypatch.setattr(
-            "claude_swap.macos_keychain.get_password",
+            "ai_quota_swap.macos_keychain.get_password",
             _keychain({CLAUDE_CODE_KEYCHAIN_SERVICE: DEFAULT_PROFILE_CREDS}, seen),
         )
 
@@ -237,7 +237,7 @@ class TestSecureStorageOverride:
 
         seen: list[str] = []
         monkeypatch.setattr(
-            "claude_swap.macos_keychain.get_password",
+            "ai_quota_swap.macos_keychain.get_password",
             _keychain({CLAUDE_CODE_KEYCHAIN_SERVICE: DEFAULT_PROFILE_CREDS}, seen),
         )
 
@@ -258,7 +258,7 @@ class TestSecureStorageOverride:
 
         seen: list[str] = []
         monkeypatch.setattr(
-            "claude_swap.macos_keychain.get_password",
+            "ai_quota_swap.macos_keychain.get_password",
             _keychain(
                 {
                     keychain_service_name(str(secure)): SECURE_PROFILE_CREDS,

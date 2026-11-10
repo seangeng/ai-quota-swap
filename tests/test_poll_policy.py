@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from claude_swap import poll_policy
+from ai_quota_swap import poll_policy
 
 NOW = 1_000_000.0
 HALF = lambda: 0.5  # noqa: E731 — rng midpoint: jitter factor exactly 1.0
@@ -274,7 +274,7 @@ class TestResetCapping:
 
 class TestJitter:
     def test_jitter_bounds(self, monkeypatch):
-        monkeypatch.setattr("claude_swap.poll_policy.JITTER_FRAC", 0.1)
+        monkeypatch.setattr("ai_quota_swap.poll_policy.JITTER_FRAC", 0.1)
         early, _ = _plan(rng=lambda: 0.0)
         late, _ = _plan(rng=lambda: 1.0)
         interval = poll_policy.CANDIDATE_DEFAULT_INTERVAL_S

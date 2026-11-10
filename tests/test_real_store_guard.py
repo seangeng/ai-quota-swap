@@ -4,7 +4,7 @@ store — not merely warned not to, because a guard that unwinds (any
 that outlived its own test's teardown gets around to writing.
 
 Measured incident: ``sequence.json``/``credentials/*.enc`` under the real
-``~/.local/share/claude-swap`` were overwritten at 03:26 with the exact
+``~/.local/share/ai-quota-swap`` were overwritten at 03:26 with the exact
 ``a@example.com``/``b@example.com`` pair ``EngineHarness.seed`` (this repo,
 ``tests/test_autoswitch.py``) writes. ``tests/conftest.py``'s ``temp_home``
 and ``_isolate_real_home`` fixtures use ``patch.dict``/``monkeypatch`` as
@@ -18,7 +18,7 @@ The fix under test: ``conftest.py`` installs a process-global
 unwound the way a fixture patch can) that refuses any WRITE-mode ``open``/
 ``os.rename``/``os.mkdir``/``os.remove``/``os.rmdir`` whose target resolves,
 AT THE MOMENT OF THE CALL, under the REAL (currently-computed, not cached)
-``claude_swap.paths`` roots — regardless of which thread performs it.
+``ai_quota_swap.paths`` roots — regardless of which thread performs it.
 """
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_swap import paths, session
-from claude_swap.models import Platform
+from ai_quota_swap import paths, session
+from ai_quota_swap.models import Platform
 from tests import conftest
 
 
@@ -64,7 +64,7 @@ def _remove_our_marker(marker: Path) -> None:
 def test_control_b_and_c_real_store_write_is_refused(monkeypatch):
     """CONTROL B (main thread) and CONTROL C (a thread that outlives its
     own test's isolation, the case that actually matters) both attempt a
-    write under the REAL ``claude_swap.paths.get_backup_root()`` and must
+    write under the REAL ``ai_quota_swap.paths.get_backup_root()`` and must
     both be refused — never silently succeed, never silently no-op.
 
     ``monkeypatch.undo()`` reverses the autouse ``_isolate_real_home``
@@ -74,9 +74,9 @@ def test_control_b_and_c_real_store_write_is_refused(monkeypatch):
     unpatched ``$HOME``/``Path.home()`` for the rest of this test body —
     exactly the state a thread sees after its own test's teardown has run.
     """
-    from claude_swap.exceptions import ClaudeSwitchError  # noqa: F401  (sanity import only)
+    from ai_quota_swap.exceptions import ClaudeSwitchError  # noqa: F401  (sanity import only)
 
-    marker_name = ".cswap-test-real-store-guard-probe-DELETE-ME"
+    marker_name = ".qswap-test-real-store-guard-probe-DELETE-ME"
 
     monkeypatch.undo()  # expose the REAL, unpatched HOME from here on
 
@@ -152,7 +152,7 @@ def test_rmtree_of_a_protected_root_is_refused_before_any_child_is_removed(
     (never the real store) so this test is safe against the developer's
     actual account data regardless of isolation state.
     """
-    stand_in_root = tmp_path / "claude-swap"
+    stand_in_root = tmp_path / "ai-quota-swap"
     stand_in_root.mkdir()
     (stand_in_root / "configs").mkdir()
     (stand_in_root / "configs" / ".claude-config-1-a@example.com.json").write_text("{}")
@@ -197,7 +197,7 @@ def test_os_mkdir_and_os_remove_into_protected_root_are_refused(
     """M7: narrowing ``_WRITE_EVENTS`` to ``{"open"}`` survived because
     nothing exercised ``os.mkdir``/``os.remove`` directly (only through
     ``pathlib``'s own ``open``-backed ``write_text``/``unlink``)."""
-    stand_in_root = tmp_path / "claude-swap"
+    stand_in_root = tmp_path / "ai-quota-swap"
     stand_in_root.mkdir()
     target = stand_in_root / "sequence.json"
     target.write_text("{}")  # seeded before the guard is armed on this root
@@ -221,7 +221,7 @@ def test_os_open_flags_only_write_into_protected_root_is_refused(
     ``mode`` string — only ``flags`` says WRITE) returning ``False``
     survived because every write in the suite goes through ``pathlib``,
     which always supplies a ``mode`` string."""
-    stand_in_root = tmp_path / "claude-swap"
+    stand_in_root = tmp_path / "ai-quota-swap"
     stand_in_root.mkdir()
     monkeypatch.setattr(conftest, "_REAL_STORE_SPECS", ((stand_in_root, True),))
 
@@ -324,9 +324,9 @@ def test_frozen_specs_cover_the_migration_flag_and_the_transcript_tree(
     counts the roots cannot see either.
 
     Parametrized over the two store layouts, because they put the flag in
-    different places: XDG at ``~/.local/share/.claude-swap.migrating``,
+    different places: XDG at ``~/.local/share/.ai-quota-swap.migrating``,
     whose parent is no root at all, and legacy (macOS, and Windows through
-    the same branch) at ``~/..claude-swap-backup.migrating``, a direct child
+    the same branch) at ``~/..ai-quota-swap.migrating``, a direct child
     of the ``$HOME`` root. Only the XDG layout leaves it uncovered without
     this entry, so a premise phrased for that one alone is false on the
     other two platforms.
@@ -342,8 +342,8 @@ def test_frozen_specs_cover_the_migration_flag_and_the_transcript_tree(
     # arms resolve the same store, and the legacy coverage this test exists
     # for disappears with nothing failing.
     assert paths.get_backup_root() == (
-        home / ".claude-swap-backup" if platform is Platform.MACOS
-        else home / ".local" / "share" / "claude-swap"
+        home / ".ai-quota-swap" if platform is Platform.MACOS
+        else home / ".local" / "share" / "ai-quota-swap"
     )
 
     specs = conftest._freeze_real_store_specs()
@@ -431,7 +431,7 @@ def test_frozen_specs_include_the_ambient_xdg_override_backup_root(
     a machine where it's exported OUTSIDE $HOME, the real account store lives
     at the override path and this snapshot never included it — the defaults
     snapshot alone is not enough. The frozen set must ALSO contain the root
-    `claude_swap.paths` resolves to under the environment as it actually is."""
+    `ai_quota_swap.paths` resolves to under the environment as it actually is."""
     home = tmp_path / "home"
     home.mkdir()
     xdg = tmp_path / "xdg-outside-home"  # deliberately NOT under `home`
@@ -444,11 +444,11 @@ def test_frozen_specs_include_the_ambient_xdg_override_backup_root(
     specs = conftest._freeze_real_store_specs()
     recursive_roots = {root for root, recursive in specs if recursive}
 
-    assert xdg / "claude-swap" in recursive_roots, (
+    assert xdg / "ai-quota-swap" in recursive_roots, (
         "the XDG-override backup root must be protected, not only the "
-        "cleared-env default ~/.local/share/claude-swap"
+        "cleared-env default ~/.local/share/ai-quota-swap"
     )
-    assert home / ".local" / "share" / "claude-swap" in recursive_roots, (
+    assert home / ".local" / "share" / "ai-quota-swap" in recursive_roots, (
         "the genuinely-default root must still be protected too"
     )
 
@@ -478,7 +478,7 @@ def test_layout_a_runtime_real_store_is_refused_and_unrelated_tmp_still_writes(
     monkeypatch.setattr(conftest, "_REAL_STORE_SPECS", conftest._freeze_real_store_specs())
 
     runtime_real_store = paths.get_backup_root()
-    assert runtime_real_store == xdg / "claude-swap"  # sanity: the hole's target
+    assert runtime_real_store == xdg / "ai-quota-swap"  # sanity: the hole's target
 
     # YES-arm: the runtime real store must be refused.
     yes_target = runtime_real_store / "sequence.json"
@@ -525,7 +525,7 @@ def test_arbitrary_claude_config_dir_is_not_dropped_by_the_hint_prefilter(
     monkeypatch,
 ):
     """C2: the audit hook's cheap substring pre-filter used to be a fixed
-    guess (``(".claude", "claude-swap")``) — correct for the two DEFAULT
+    guess (``(".claude", "ai-quota-swap")``) — correct for the two DEFAULT
     roots, but a real store reached via
     ``CLAUDE_CONFIG_DIR=$HOME/work-profile`` resolves to
     ``~/work-profile/.credentials.json``, which contains neither substring.
@@ -533,7 +533,7 @@ def test_arbitrary_claude_config_dir_is_not_dropped_by_the_hint_prefilter(
     ran, so the write went through even though the root IS in
     ``_REAL_STORE_SPECS``.
     """
-    root_dir = Path(tempfile.mkdtemp(prefix="cswap-c2-noclaude-"))
+    root_dir = Path(tempfile.mkdtemp(prefix="qswap-c2-noclaude-"))
     try:
         home = root_dir / "home"
         home.mkdir()
@@ -558,7 +558,7 @@ def test_arbitrary_claude_config_dir_is_not_dropped_by_the_hint_prefilter(
 
         target = work_profile / ".credentials.json"
         assert not any(
-            hint in str(target) for hint in (".claude", "claude-swap")
+            hint in str(target) for hint in (".claude", "ai-quota-swap")
         ), "premise: the target must miss BOTH of the old hardcoded hints"
 
         with pytest.raises(conftest.RealStoreWriteBlocked):
@@ -592,7 +592,7 @@ def test_i1_os_rename_source_out_of_protected_root_is_refused(
     OUT to an unprotected location must be refused too, or the store simply
     vanishes from where every reader expects it (the same "make it
     disappear" shape the ``shutil.rmtree`` branch above exists for)."""
-    stand_in_root = tmp_path / "claude-swap"
+    stand_in_root = tmp_path / "ai-quota-swap"
     stand_in_root.mkdir()
     (stand_in_root / "sequence.json").write_text("{}")  # seeded before arming
 
@@ -610,9 +610,9 @@ def test_i2_os_symlink_into_protected_root_is_refused(
 ):
     """I-2: ``os.symlink`` was not even in ``_WRITE_EVENTS``, so a symlink
     planted inside a protected root — aliasing an arbitrary target onto a
-    path a reader (Claude Code, cswap itself) would trust as real store
+    path a reader (Claude Code, qswap itself) would trust as real store
     content — went through untouched."""
-    stand_in_root = tmp_path / "claude-swap"
+    stand_in_root = tmp_path / "ai-quota-swap"
     stand_in_root.mkdir()
 
     monkeypatch.setattr(conftest, "_REAL_STORE_SPECS", ((stand_in_root, True),))
@@ -633,7 +633,7 @@ def test_i3_relative_path_with_cwd_inside_protected_root_is_refused(
     guard's ``if not target.is_absolute(): continue`` let ``open("x", "w")``
     through untouched whenever the process cwd happened to be inside a
     protected root."""
-    stand_in_root = tmp_path / "claude-swap"
+    stand_in_root = tmp_path / "ai-quota-swap"
     stand_in_root.mkdir()
 
     monkeypatch.setattr(conftest, "_REAL_STORE_SPECS", ((stand_in_root, True),))
@@ -656,7 +656,7 @@ def test_i4_os_truncate_on_protected_root_file_is_refused(
     ``open``, so it reached none of the write-mode checks — a bare
     ``os.truncate(path, 0)`` on a protected-root file went through
     untouched."""
-    stand_in_root = tmp_path / "claude-swap"
+    stand_in_root = tmp_path / "ai-quota-swap"
     stand_in_root.mkdir()
     target = stand_in_root / "sequence.json"
     target.write_text('{"accounts": {"1": "a"}}')  # seeded before arming
@@ -675,7 +675,7 @@ def test_i5_bytes_path_into_protected_root_is_refused(
     substring pre-filter as ``hint in candidate`` where ``candidate`` was
     ``bytes`` and every hint is ``str`` — never equal, so the check silently
     always missed rather than raising, and the write went through."""
-    stand_in_root = tmp_path / "claude-swap"
+    stand_in_root = tmp_path / "ai-quota-swap"
     stand_in_root.mkdir()
     target = stand_in_root / "sequence.json"
     target.write_text('{"accounts": {"1": "a"}}')  # seeded before arming
@@ -704,7 +704,7 @@ def test_derived_hints_exclude_the_bare_home_root_basename():
     """
     home = Path("/home/some-real-looking-username")
     specs = (
-        (home / ".local" / "share" / "claude-swap", True),
+        (home / ".local" / "share" / "ai-quota-swap", True),
         (home / ".claude", False),
         (home, False),  # the bare-home root itself
     )
@@ -736,7 +736,7 @@ def test_mkdir_exist_ok_true_does_not_swallow_the_refusal(
        refused, proving the guard itself is armed on this root (this is
        "the hook fired and the caller ate it", not "the hook is off").
     """
-    stand_in_root = tmp_path / "claude-swap"
+    stand_in_root = tmp_path / "ai-quota-swap"
     monkeypatch.setattr(conftest, "_REAL_STORE_SPECS", ((stand_in_root, True),))
 
     # A: absent dir -- mkdir(exist_ok=True) must refuse and raise.
@@ -746,7 +746,7 @@ def test_mkdir_exist_ok_true_does_not_swallow_the_refusal(
 
     # Seed the dir OUTSIDE the guard's view (os.mkdir is unguarded here only
     # via direct filesystem bootstrap, matching how the real backup root
-    # exists on every developer machine before cswap ever runs in-process).
+    # exists on every developer machine before qswap ever runs in-process).
     monkeypatch.setattr(conftest, "_REAL_STORE_SPECS", ())
     stand_in_root.mkdir(parents=True)
     monkeypatch.setattr(conftest, "_REAL_STORE_SPECS", ((stand_in_root, True),))
@@ -772,7 +772,7 @@ def test_a_relative_candidate_that_already_carries_a_hint_is_still_joined(
     gating the join on `not hinted` let precisely the store-shaped relative
     writes through while refusing the bare-filename ones.
     """
-    stand_in_root = tmp_path / "claude-swap"
+    stand_in_root = tmp_path / "ai-quota-swap"
     (stand_in_root / "configs").mkdir(parents=True)
     monkeypatch.setattr(conftest, "_REAL_STORE_SPECS", ((stand_in_root, True),))
     monkeypatch.chdir(stand_in_root)
@@ -795,7 +795,7 @@ def test_a_relative_candidate_that_already_carries_a_hint_is_still_joined(
 
 
 def test_the_legacy_backup_root_is_protected_recursively():
-    """`~/.claude-swap-backup` is a SEPARATE live path on Linux -- `switcher`
+    """`~/.ai-quota-swap` is a SEPARATE live path on Linux -- `switcher`
     migrates data out of it and purges it -- and nothing was asserting it.
 
     RECURSIVELY, because the flag is what the hook branches on: a
@@ -848,7 +848,7 @@ def test_c0_a_scratch_home_still_protects_the_os_account_home_store(monkeypatch,
     # fallback the third snapshot depends on. Restore the real
     # `Path.home` for this test -- $HOME stays scratch, which is the
     # condition under test.
-    from claude_swap import macos_keychain
+    from ai_quota_swap import macos_keychain
 
     monkeypatch.setattr(Path, "home", _REAL_PATH_HOME)
     assert (
@@ -865,7 +865,7 @@ def test_c0_a_scratch_home_still_protects_the_os_account_home_store(monkeypatch,
     # cannot supply the scratch root, so the assert below rests on the pass
     # this case names, and dropping `default_specs` fails it. On macOS and
     # Windows `get_backup_root()` ignores `XDG_DATA_HOME` entirely and
-    # answers `~/.claude-swap-backup`, so both passes resolve to the same
+    # answers `~/.ai-quota-swap`, so both passes resolve to the same
     # directory and this case cannot tell them apart -- the mutation it
     # claims to kill SURVIVES on those jobs. Measured on both.
     #
@@ -880,7 +880,7 @@ def test_c0_a_scratch_home_still_protects_the_os_account_home_store(monkeypatch,
     # THE LAYOUT IS PER-PLATFORM, so both expectations are DERIVED under the
     # HOME each snapshot resolves against, never spelled out. Written as the
     # XDG path they named a directory macOS does not use: the backup root
-    # there is `~/.claude-swap-backup`, so this case failed on the one
+    # there is `~/.ai-quota-swap`, so this case failed on the one
     # platform whose store lives somewhere else.
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.setenv("HOME", str(pwd_home))

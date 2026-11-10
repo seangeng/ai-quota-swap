@@ -22,8 +22,8 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_swap import oauth
-from claude_swap.autoswitch import (
+from ai_quota_swap import oauth
+from ai_quota_swap.autoswitch import (
     HORIZON_HEADROOM_RATIO,
     SPENT_HEADROOM_PCT,
     ErrorEvent,
@@ -37,7 +37,7 @@ from claude_swap.autoswitch import (
     _parse_reset_ts,
     pct_label,
 )
-from claude_swap.settings import AutoSwitchSettings
+from ai_quota_swap.settings import AutoSwitchSettings
 
 from tests.test_autoswitch import (
     _R_LATEST,
@@ -843,7 +843,7 @@ class TestDefaultIdentity:
     """
 
     def test_no_policy_keys_exist_on_a_fresh_fleet(self, temp_home):
-        from claude_swap.models import AccountPolicy
+        from ai_quota_swap.models import AccountPolicy
 
         h = _fleet(temp_home)
         policies = h.switcher.account_policies()
@@ -891,8 +891,8 @@ class TestDefaultIdentity:
 class TestPollCadenceFollowsALivePolicyChange:
     """The pinned minimum is refreshed every tick, not only at birth.
 
-    `cswap threshold 1 50` is written by a **different process** while
-    `cswap auto` is already running - that is the ordinary way a threshold
+    `qswap threshold 1 50` is written by a **different process** while
+    `qswap auto` is already running - that is the ordinary way a threshold
     gets changed. `_resolve_thresholds()` re-reads the store every tick, so
     the switch DECISION picks the new line up immediately. But
     `set_poll_policy_inputs` was called in exactly two places, `__init__` and
@@ -1310,7 +1310,7 @@ class TestADepartureOnTheAccountsOwnLineKeepsTheTargetLoopExits:
         h.switcher.set_account_threshold("1", 50.0)
         h.engine = h._make_engine()
         with patch(
-            "claude_swap.autoswitch.oauth.try_refresh_oauth_credentials",
+            "ai_quota_swap.autoswitch.oauth.try_refresh_oauth_credentials",
             return_value=oauth.RefreshOutcome(None, "transient"),
         ):
             outcome, _ = _tick(h, [self._snapshot(active=60.0)])

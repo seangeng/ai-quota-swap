@@ -5,16 +5,16 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_swap.autoswitch import (
+from ai_quota_swap.autoswitch import (
     NoSwitchEvent,
     SwitchEvent,
     TickOutcome,
     _headroom_by_account,
 )
-from claude_swap.models import AccountPolicy, normalize_account_priority
-from claude_swap.settings import load_settings, set_setting
-from claude_swap.switcher import ClaudeAccountSwitcher
-from claude_swap.usage_store import UsageEntry
+from ai_quota_swap.models import AccountPolicy, normalize_account_priority
+from ai_quota_swap.settings import load_settings, set_setting
+from ai_quota_swap.switcher import ClaudeAccountSwitcher
+from ai_quota_swap.usage_store import UsageEntry
 from tests.test_account_policy_cli import PolicyCliBase
 from tests.test_autoswitch import EngineHarness, _entry_for, _iso_at, _usage7
 

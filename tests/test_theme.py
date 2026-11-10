@@ -1,8 +1,8 @@
 """Tests for the Palette value object and the light/dark themes."""
 from __future__ import annotations
 
-from claude_swap.tui import theme
-from claude_swap.tui.theme import CSWAP_DARK, CSWAP_LIGHT, Palette
+from ai_quota_swap.tui import theme
+from ai_quota_swap.tui.theme import QSWAP_DARK, QSWAP_LIGHT, Palette
 
 
 def test_dark_palette_matches_constants():
@@ -19,7 +19,7 @@ def test_dark_palette_matches_constants():
 
 
 def test_from_theme_reads_theme_object_including_track():
-    p = Palette.from_theme(CSWAP_LIGHT)
+    p = Palette.from_theme(QSWAP_LIGHT)
     assert p.accent == theme.ACCENT_LIGHT
     assert p.sev_crit == theme.SEV_CRIT_LIGHT
     assert p.track == theme.TRACK_LIGHT  # from Theme.variables["track"], not app cache
@@ -34,9 +34,9 @@ def test_severity_ramp_and_none():
 
 
 def test_both_themes_expose_track_variable():
-    assert CSWAP_DARK.variables["track"] == theme.TRACK
-    assert CSWAP_LIGHT.variables["track"] == theme.TRACK_LIGHT
-    assert CSWAP_LIGHT.dark is False
+    assert QSWAP_DARK.variables["track"] == theme.TRACK
+    assert QSWAP_LIGHT.variables["track"] == theme.TRACK_LIGHT
+    assert QSWAP_LIGHT.dark is False
 
 
 def _contrast(hex_a: str, hex_b: str) -> float:
@@ -52,7 +52,7 @@ def test_light_text_meets_AA_on_all_backgrounds():
     # Accent and severity colors render as PERCENTAGE TEXT on highlighted
     # ($surface) and flash ($panel) rows, not just the base background — so
     # every text color must clear the 4.5:1 text bar against all three.
-    from claude_swap.tui import theme
+    from ai_quota_swap.tui import theme
     text_colors = (
         theme.FOREGROUND_LIGHT,
         theme.MUTED_LIGHT,

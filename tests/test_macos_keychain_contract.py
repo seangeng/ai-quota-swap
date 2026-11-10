@@ -4,7 +4,7 @@ Two layers of coverage:
 
 1. **Mocked tests** (run on every PR, every platform): assert that the macOS
    backup-credentials path passes the correct `(service, account)` tuple to the
-   `macos_keychain` security wrapper, under the new `claude-swap` service. This
+   `macos_keychain` security wrapper, under the new `ai-quota-swap` service. This
    guards the multi-account backup namespace on every CI run.
 
 2. **Real-keychain integration tests** (GHA macOS only): exercise
@@ -26,16 +26,16 @@ from unittest.mock import call, patch
 
 import pytest
 
-from claude_swap import macos_keychain
-from claude_swap.exceptions import SwitchError
-from claude_swap.models import Platform
-from claude_swap.json_output import (
+from ai_quota_swap import macos_keychain
+from ai_quota_swap.exceptions import SwitchError
+from ai_quota_swap.models import Platform
+from ai_quota_swap.json_output import (
     USAGE_KEYCHAIN_UNAVAILABLE,
     USAGE_NO_CREDENTIALS,
 )
-from claude_swap.credentials import ActiveCredentials
-from claude_swap.usage_store import FetchRecord
-from claude_swap.switcher import ClaudeAccountSwitcher
+from ai_quota_swap.credentials import ActiveCredentials
+from ai_quota_swap.usage_store import FetchRecord
+from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
 
 # ---------------------------------------------------------------------------
@@ -57,27 +57,27 @@ class TestBackupCredentialsSecurity:
 
     The autouse ``block_real_keychain`` guard already prevents any real Keychain
     access; here we install a MagicMock to assert the exact call shape. The
-    per-account backup service is the new ``claude-swap`` (not the old keyring
+    per-account backup service is the new ``ai-quota-swap`` (not the old keyring
     ``claude-code``).
     """
 
     def test_read_account_credentials_uses_security_service(
         self, macos_switcher: ClaudeAccountSwitcher
     ):
-        with patch("claude_swap.credentials.macos_keychain") as mock_kc:
+        with patch("ai_quota_swap.credentials.macos_keychain") as mock_kc:
             mock_kc.get_password.return_value = "fake-token"
 
             result = macos_switcher._read_account_credentials("1", "user@example.com")
 
             mock_kc.get_password.assert_called_once_with(
-                "claude-swap", "account-1-user@example.com"
+                "ai-quota-swap", "account-1-user@example.com"
             )
             assert result == "fake-token"
 
     def test_write_account_credentials_uses_security_service(
         self, macos_switcher: ClaudeAccountSwitcher
     ):
-        with patch("claude_swap.credentials.macos_keychain") as mock_kc:
+        with patch("ai_quota_swap.credentials.macos_keychain") as mock_kc:
             # No existing backup → the .prev retention step has nothing to
             # keep and the write stays a single Keychain call.
             mock_kc.get_password.return_value = None
@@ -86,7 +86,7 @@ class TestBackupCredentialsSecurity:
             )
 
             mock_kc.set_password.assert_called_once_with(
-                "claude-swap", "account-2-alice@example.com", "secret-token"
+                "ai-quota-swap", "account-2-alice@example.com", "secret-token"
             )
 
     def test_write_retains_prev_generation_in_keychain_not_a_file(
@@ -94,16 +94,16 @@ class TestBackupCredentialsSecurity:
     ):
         """Retention must not weaken storage posture: on a Keychain-backed
         Mac the previous generation goes to the Keychain, never a file."""
-        with patch("claude_swap.credentials.macos_keychain") as mock_kc:
+        with patch("ai_quota_swap.credentials.macos_keychain") as mock_kc:
             mock_kc.get_password.return_value = "old-generation"
             macos_switcher._write_account_credentials(
                 "2", "alice@example.com", "secret-token"
             )
 
             mock_kc.set_password.assert_has_calls([
-                call("claude-swap", "account-2-alice@example.com.prev",
+                call("ai-quota-swap", "account-2-alice@example.com.prev",
                      "old-generation"),
-                call("claude-swap", "account-2-alice@example.com",
+                call("ai-quota-swap", "account-2-alice@example.com",
                      "secret-token"),
             ])
         prev_file = macos_switcher._store._prev_backup_path(
@@ -114,14 +114,14 @@ class TestBackupCredentialsSecurity:
     def test_delete_account_credentials_uses_security_service(
         self, macos_switcher: ClaudeAccountSwitcher
     ):
-        with patch("claude_swap.credentials.macos_keychain") as mock_kc:
+        with patch("ai_quota_swap.credentials.macos_keychain") as mock_kc:
             macos_switcher._delete_account_credentials("3", "bob@example.com")
 
             mock_kc.delete_password.assert_has_calls([
-                call("claude-swap", "account-3-bob@example.com"),
-                call("claude-swap", "account-3-bob@example.com.prev"),
-                call("claude-swap", "account-None-bob@example.com"),
-                call("claude-swap", "account-None-bob@example.com.prev"),
+                call("ai-quota-swap", "account-3-bob@example.com"),
+                call("ai-quota-swap", "account-3-bob@example.com.prev"),
+                call("ai-quota-swap", "account-None-bob@example.com"),
+                call("ai-quota-swap", "account-None-bob@example.com.prev"),
             ])
 
 
@@ -284,10 +284,10 @@ def test_wrapper_roundtrip_real_keychain(tmp_keychain: str):
     back via the keychain *search list* (no explicit keychain argument), then
     deleted, with the rc-44 "not found" contract checked at the end.
     """
-    macos_keychain.set_password("claude-swap-test", "acct-1", "round-trip-token")
-    assert macos_keychain.get_password("claude-swap-test", "acct-1") == "round-trip-token"
-    macos_keychain.delete_password("claude-swap-test", "acct-1")
-    assert macos_keychain.get_password("claude-swap-test", "acct-1") is None
+    macos_keychain.set_password("ai-quota-swap-test", "acct-1", "round-trip-token")
+    assert macos_keychain.get_password("ai-quota-swap-test", "acct-1") == "round-trip-token"
+    macos_keychain.delete_password("ai-quota-swap-test", "acct-1")
+    assert macos_keychain.get_password("ai-quota-swap-test", "acct-1") is None
 
 
 class TestOurOwnFileModeIsNotAKeychainFailure:
@@ -339,7 +339,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         ``invalid_grant``, and quarantines a slot whose live refresh token is
         sitting unread in the Keychain.
         """
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         store._keychain_usable_cache = True
@@ -379,13 +379,13 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
             state B   degraded=False  sentinel='no credentials'
 
         `degraded=False` disarms `_refuse_degraded_capture`, and the sentinel
-        sends the user to `cswap --add-account`, the one remedy that cannot
+        sends the user to `qswap --add-account`, the one remedy that cannot
         work while the real credential sits unread in the Keychain. The pin's
         best-effort `_delete_active_keychain_entry()` also failed, so a
         residual survives and Claude Code reads Keychain-first — our file is
         the superseded generation, POSTed with the guard disarmed.
         """
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         store._keychain_usable_cache = True
@@ -430,9 +430,9 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         """
         import json
 
-        from claude_swap import macos_keychain as _kc
-        from claude_swap.exceptions import CredentialReadError
-        from claude_swap.paths import get_credentials_path
+        from ai_quota_swap import macos_keychain as _kc
+        from ai_quota_swap.exceptions import CredentialReadError
+        from ai_quota_swap.paths import get_credentials_path
 
         store = macos_switcher._store
         store._keychain_usable_cache = True
@@ -469,7 +469,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         The read is now the witness, so the failure has to be real for the
         verdict to be real — which is the guarantee the name claims.
         """
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
 
@@ -511,14 +511,14 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         reaches the line that sets the flag — so whatever the last real read
         left behind would be reported as if it were this read's answer.
         """
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         real_get = _kc.get_password
         # Backup reads honour the failure cooldown (#496). This test is about
         # the per-read verdict, not the backoff: let the deadline lapse at once.
         monkeypatch.setattr(
-            "claude_swap.credentials.KEYCHAIN_RECHECK_COOLDOWN_S", 0.0
+            "ai_quota_swap.credentials.KEYCHAIN_RECHECK_COOLDOWN_S", 0.0
         )
 
         def locked(*_a, **_kw):
@@ -548,7 +548,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         no residual and the file genuinely is the authority (t2). From t2 on,
         forever: `degraded=True`, `_fetch_active_usage` reports
         "keychain unavailable" every pass, `_refuse_degraded_capture` blocks
-        `cswap add`, `_resync_rotated_backup` never runs.
+        `qswap add`, `_resync_rotated_backup` never runs.
 
         That violates the same self-heal this predicate's own docstring
         promises: one transient failure must not be permanent for the process.
@@ -556,7 +556,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         """
         import time
 
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         store._keychain_usable_cache = True
@@ -609,13 +609,13 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
               with the clear    -> False
               without it        -> True   (degraded forever)
 
-        A latch means `_refuse_degraded_capture` blocks `cswap add`,
+        A latch means `_refuse_degraded_capture` blocks `qswap add`,
         `_fetch_active_usage` returns USAGE_KEYCHAIN_UNAVAILABLE every pass,
         and `_resync_rotated_backup` never runs.
         """
         import time
 
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         store._keychain_usable_cache = True
@@ -670,7 +670,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         wrong about WHAT it observes. "The Keychain answers" and "this active
         read succeeded" are different facts, and `degraded` needs the second.
         """
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         store._keychain_usable_cache = True
@@ -718,7 +718,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         """
         import time
 
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         healthy = _kc.get_password
@@ -878,7 +878,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         import threading
         import time
 
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         store._keychain_usable_cache = True
@@ -886,7 +886,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         # first denied read would stop every later read from spawning at all
         # and the race under test would never run.
         monkeypatch.setattr(
-            "claude_swap.credentials.KEYCHAIN_RECHECK_COOLDOWN_S", 0.0
+            "ai_quota_swap.credentials.KEYCHAIN_RECHECK_COOLDOWN_S", 0.0
         )
 
         def get_password(service, account):
@@ -949,12 +949,12 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         `_pin_file_mode` zeroes the re-probe deadline, so `_use_keychain()` is
         False for the life of the process and the branch that would record a
         fresh verdict is unreachable. Harm: `_refuse_degraded_capture` refuses
-        `cswap add` forever, and `_fetch_active_usage` returns the
+        `qswap add` forever, and `_fetch_active_usage` returns the
         keychain-unavailable sentinel on every pass, so the active token is
         never refreshed and `_resync_rotated_backup` never runs — the exact
         list `5928119` was written to prevent, one flag over.
         """
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         store._keychain_usable_cache = True
@@ -1009,7 +1009,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         """
         import time
 
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         store._keychain_usable_cache = True
@@ -1055,7 +1055,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         unrelated slot happened to be read first. The pin records the delete's
         own outcome, which no other item's success can speak for.
         """
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         store._keychain_usable_cache = True
@@ -1110,7 +1110,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         `_read_account_credentials_ex` already returns the per-read verdict;
         the sentinel just was not asking it.
         """
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         s = macos_switcher
         store = s._store
@@ -1143,7 +1143,7 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         deferring long after the Keychain answered again.
         """
         import time
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         with pytest.raises(_kc.KeychainError):
@@ -1231,13 +1231,13 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
         auto-switch         failover fires, switch raises "Current account
                             credential is empty", every tick, for two days
         menu "Switch to"    same refusal
-        a fresh `cswap`     works at once (new process, no pin)
+        a fresh `qswap`     works at once (new process, no pin)
 
     The active account went from 50% to 100% of its weekly limit unobserved.
     """
 
     def _pin_through_a_failed_write(self, store, monkeypatch, *, delete_ok: bool):
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         def timed_out(*_a, **_kw):
             raise _kc.KeychainError("security add-generic-password timed out")
@@ -1254,8 +1254,8 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
     def test_the_keychain_is_read_again_once_our_file_is_gone(
         self, macos_switcher, monkeypatch, delete_ok
     ):
-        from claude_swap import macos_keychain as _kc
-        from claude_swap.paths import get_credentials_path
+        from ai_quota_swap import macos_keychain as _kc
+        from ai_quota_swap.paths import get_credentials_path
 
         store = macos_switcher._store
         self._pin_through_a_failed_write(store, monkeypatch, delete_ok=delete_ok)
@@ -1279,7 +1279,7 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
         self, macos_switcher, monkeypatch, delete_ok
     ):
         """The reason for the pin is untouched: a residual must not shadow."""
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         self._pin_through_a_failed_write(store, monkeypatch, delete_ok=delete_ok)
@@ -1292,8 +1292,8 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
         self, macos_switcher, monkeypatch
     ):
         """Lifting the pin re-asks the Keychain; it does not assume an answer."""
-        from claude_swap import macos_keychain as _kc
-        from claude_swap.paths import get_credentials_path
+        from ai_quota_swap import macos_keychain as _kc
+        from ai_quota_swap.paths import get_credentials_path
 
         store = macos_switcher._store
         self._pin_through_a_failed_write(store, monkeypatch, delete_ok=False)
@@ -1303,7 +1303,7 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
             raise _kc.KeychainError("locked")
 
         monkeypatch.setattr(_kc, "get_password", locked)
-        monkeypatch.setattr("claude_swap.credentials.time.sleep", lambda *_a: None)
+        monkeypatch.setattr("ai_quota_swap.credentials.time.sleep", lambda *_a: None)
 
         active = store._read_active_credentials()
         assert active.value == ""
@@ -1312,8 +1312,8 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
     def test_an_empty_file_lifts_the_pin_like_a_missing_one(
         self, macos_switcher, monkeypatch
     ):
-        from claude_swap import macos_keychain as _kc
-        from claude_swap.paths import get_credentials_path
+        from ai_quota_swap import macos_keychain as _kc
+        from ai_quota_swap.paths import get_credentials_path
 
         store = macos_switcher._store
         self._pin_through_a_failed_write(store, monkeypatch, delete_ok=True)
@@ -1323,7 +1323,7 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
         assert store._read_active_credentials().value == "rotated-by-claude"
 
     def test_an_unstattable_file_keeps_the_pin(self, macos_switcher, monkeypatch):
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         self._pin_through_a_failed_write(store, monkeypatch, delete_ok=True)
@@ -1331,7 +1331,7 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
         def cannot_tell():
             raise OSError("stale NFS handle")
 
-        monkeypatch.setattr("claude_swap.credentials.get_credentials_path", cannot_tell)
+        monkeypatch.setattr("ai_quota_swap.credentials.get_credentials_path", cannot_tell)
         monkeypatch.setattr(_kc, "get_password", lambda *_a, **_kw: "residual")
         store._lift_pin_if_oauth_file_gone()
         assert store._use_keychain() is False
@@ -1346,8 +1346,8 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
         about ``primaryApiKey``; the missing OAuth file must not lift it, or
         the stale managed key in the Keychain is read over the fresh one.
         """
-        from claude_swap import macos_keychain as _kc
-        from claude_swap.paths import get_credentials_path
+        from ai_quota_swap import macos_keychain as _kc
+        from ai_quota_swap.paths import get_credentials_path
 
         store = macos_switcher._store
         self._pin_through_a_failed_write(store, monkeypatch, delete_ok=True)
@@ -1366,7 +1366,7 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
         self, macos_switcher, monkeypatch
     ):
         """WE removed the file, so nothing says Claude Code moved anything."""
-        from claude_swap import macos_keychain as _kc
+        from ai_quota_swap import macos_keychain as _kc
 
         store = macos_switcher._store
         self._pin_through_a_failed_write(store, monkeypatch, delete_ok=False)
@@ -1382,8 +1382,8 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
         Drives `_pin_file_mode` directly after an OAuth pin, with nothing else
         clearing the flag, so this fails if `_pin_file_mode` stops resetting it.
         """
-        from claude_swap import macos_keychain as _kc
-        from claude_swap.paths import get_credentials_path
+        from ai_quota_swap import macos_keychain as _kc
+        from ai_quota_swap.paths import get_credentials_path
 
         store = macos_switcher._store
         self._pin_through_a_failed_write(store, monkeypatch, delete_ok=True)

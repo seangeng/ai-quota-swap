@@ -30,17 +30,20 @@ reservation).
 
 ## Milestones
 
-### M0. New identity
+### M0. New identity (done)
 
-- New package, import, and command name. The old `cswap` command is not shipped, so this tool
-  and claude-swap can be installed side by side.
-- Its own data directory and keychain service names. First run imports an existing claude-swap
-  store (copy, never share: two tools rotating the same tokens would log accounts out).
-- `LICENSE` keeps the original MIT copyright line and adds ours. The README ends with a one-line
-  credit to claude-swap.
-- Version restarts at `0.1.0`.
+- [x] New package, import, and command name: `ai-quota-swap`, `ai_quota_swap`, `qswap`. The old
+  `cswap` command is not shipped, so this tool and claude-swap can be installed side by side.
+- [x] Its own data directory and keychain service names. An existing claude-swap store moves over
+  by export and import: `cswap export FILE` with claude-swap, then `qswap import FILE`. There is
+  no direct reader of the old store. The two tools must not run against the same accounts: each
+  would rotate the other's saved tokens and log accounts out.
+- [x] `LICENSE` keeps the original MIT copyright line and adds ours. The README ends with a
+  one-line credit to claude-swap.
+- [x] Version restarts at `0.1.0`.
 
-Done when: the full test suite passes under the new name and an existing store imports cleanly.
+Done when: the full test suite passes under the new name and an export written by claude-swap
+1.1.0b1 imports cleanly (`tests/test_transfer.py::TestImportClaudeSwapArchive`).
 
 ### M1. Provider seam
 
@@ -55,7 +58,7 @@ Today every module assumes Claude Code (`switcher.py` alone is 8,300 lines). Int
 One registry, each account tagged with a provider. Numbers stay global; "active" is per
 provider. The auto-switch engine runs once per provider on shared code.
 
-Done when: the existing 3,655 tests pass unchanged and a stub second provider shows up in
+Done when: the existing 3,660 tests pass unchanged and a stub second provider shows up in
 `list`, `--json`, the TUI, and the menu bar.
 
 ### M2. Codex

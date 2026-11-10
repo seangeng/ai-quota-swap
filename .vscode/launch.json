@@ -2,10 +2,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "cswap --list",
+            "name": "qswap --list",
             "type": "debugpy",
             "request": "launch",
-            "module": "claude_swap.cli",
+            "module": "ai_quota_swap.cli",
             "args": ["--list"],
             "cwd": "${workspaceFolder}",
             "env": {
@@ -14,10 +14,10 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "cswap --switch",
+            "name": "qswap --switch",
             "type": "debugpy",
             "request": "launch",
-            "module": "claude_swap.cli",
+            "module": "ai_quota_swap.cli",
             "args": ["--switch"],
             "cwd": "${workspaceFolder}",
             "env": {
@@ -26,10 +26,10 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "cswap --purge",
+            "name": "qswap --purge",
             "type": "debugpy",
             "request": "launch",
-            "module": "claude_swap.cli",
+            "module": "ai_quota_swap.cli",
             "args": ["--purge"],
             "cwd": "${workspaceFolder}",
             "env": {
@@ -38,10 +38,10 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "cswap (custom args)",
+            "name": "qswap (custom args)",
             "type": "debugpy",
             "request": "launch",
-            "module": "claude_swap.cli",
+            "module": "ai_quota_swap.cli",
             "args": ["${input:cliArgs}"],
             "cwd": "${workspaceFolder}",
             "env": {

@@ -18,13 +18,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from claude_swap import oauth
-from claude_swap.autoswitch import TickOutcome
-from claude_swap.json_output import usage_to_json
-from claude_swap.menubar import usage_summary
-from claude_swap.switcher import _format_usage_lines
-from claude_swap.tui.widgets import usage_rows
-from claude_swap.usage_store import FetchRecord, UsageStore
+from ai_quota_swap import oauth
+from ai_quota_swap.autoswitch import TickOutcome
+from ai_quota_swap.json_output import usage_to_json
+from ai_quota_swap.menubar import usage_summary
+from ai_quota_swap.switcher import _format_usage_lines
+from ai_quota_swap.tui.widgets import usage_rows
+from ai_quota_swap.usage_store import FetchRecord, UsageStore
 from tests.test_autoswitch import EngineHarness, _usage
 
 _OMITTED = object()
