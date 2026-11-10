@@ -48,3 +48,21 @@ The two projections stay `--json`-only, since a linear projection is too rough t
 ## `qswap auto --json`
 
 `qswap auto --json` emits an event stream instead: one JSON object per line (`{"schemaVersion":1,"event":"switch","ts":…, …}`) with kinds like `poll`, `switch`, `no-switch`, `account-quarantined`, `all-exhausted`, `error`. The contract is additive: new kinds and fields may appear, so scripts should ignore unknown ones.
+
+## `qswap usage --json`
+
+One object with `schemaVersion`, the request (`by`, `since`, `until` as local dates, `timezone` as a UTC offset such as `-0500`, `provider` or `null`), and:
+
+| Field | Meaning |
+|---|---|
+| `rows` | One per group, in the order the text view prints them. `key` is the date (`--by day`), model id, project path, provider (`claude`/`codex`), session id, or account key (`email\|org`, `null` for unattributed, `desktop` for the Claude desktop app). Account rows add `account: {number, email}`; session rows add `provider` and `project`. |
+| `total` | The same token fields over every row. |
+| token fields (rows and `total`) | `input` (not from the cache), `output` (thinking and reasoning included), `cacheRead`, `cacheWrite5m`, `cacheWrite1h`, `reasoning` (the part of `output` the CLI reported as thinking or reasoning), `requests` (responses), `totalTokens`, `costUsd` (estimate at API prices; `null` when every token in the row is from a model without a price), `unpricedTokens`. |
+| `unpricedModels` | `[{model, tokens}]` for models the price table does not cover. |
+| `unattributedTokens`, `unattributedShare` | Tokens used before qswap recorded which account was live. |
+| `attributionStarts` | Per provider, when its activation log begins (`null` if it has none). |
+| `pricing` | `fetched` (the date the table was copied from the vendors' pages), `sources`, `override` (the `pricing.json` path when it changed anything), `warnings`. |
+| `scan` | What this run read: `filesSeen`, `filesRead`, `bytesRead`, `newEvents`, `duplicates`, `missing`, `skippedCompressed`, `seconds`. Absent with `--no-scan`. |
+| `notes` | Present when files were skipped or unreadable. |
+
+`estimate` is always `true`: subscription usage is not billed per token. See [usage.md](usage.md).

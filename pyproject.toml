@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "textual>=8.2.8,<9",
     "truststore>=0.10.4",
+    # Codex compresses idle session files with zstd; the standard library reads
+    # it from Python 3.14 on.
+    "zstandard>=0.22; python_version < '3.14'",
 ]
 authors = [{name = "seangeng"}]
 license = {text = "MIT"}

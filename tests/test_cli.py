@@ -2639,7 +2639,7 @@ class TestCodexPrefix:
             "through cli._switcher, so the provider prefix would not reach it"
         )
         assert "ClaudeAccountSwitcher(" in inspect.getsource(cli._switcher)
-        assert source.count("switcher = _switcher(debug=args.debug)") == 13
+        assert source.count("switcher = _switcher(debug=args.debug)") == 14
 
     def test_a_command_handler_reports_a_provider_error(self, capsys):
         """Each handler catches the base, so a provider's error raised while

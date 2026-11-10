@@ -1,0 +1,898 @@
+"""The token ledger: readers, dedupe, incremental scan, attribution, pricing,
+and report grouping. All transcripts are synthetic (tests/ledger_fixtures.py)
+and live under the test's isolated home."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import date, datetime
+from pathlib import Path
+
+import pytest
+
+from ai_quota_swap import paths
+from ai_quota_swap.ledger import readers, scanner
+from ai_quota_swap.ledger.activations import ActivationLog, record_activation
+from ai_quota_swap.ledger.pricing import PriceTable, normalize_model
+from ai_quota_swap.ledger.report import build_report, render_text, report_to_json
+from ai_quota_swap.ledger.scanner import Scanner, default_config
+from ai_quota_swap.ledger.store import DB_FILENAME, LedgerStore
+from tests.ledger_fixtures import (
+    claude_line,
+    codex_count,
+    codex_meta,
+    codex_record,
+    codex_turn,
+    owner_line,
+    rollout_name,
+    user_line,
+    write_lines,
+)
+
+# 2026-11-09 12:00:00 UTC; every synthetic event sits on 2026-11-09/10 local.
+T0 = 1_794_225_600.0
+DAY = date.fromtimestamp(T0)
+THREAD_A = "00000000-0000-4000-8000-00000000000a"
+THREAD_B = "00000000-0000-4000-8000-00000000000b"
+THREAD_C = "00000000-0000-4000-8000-00000000000c"
+
+
+class Env:
+    def __init__(self) -> None:
+        self.home = Path.home()
+        self.data = paths.get_backup_root()
+        self.projects = paths.get_claude_config_home() / "projects"
+        self.codex = paths.get_codex_home()
+        self.registry: dict | None = None
+
+    def transcript(self, name: str = "sess-1.jsonl", slug: str = "-work-demo-app") -> Path:
+        return self.projects / slug / name
+
+    def rollout(self, thread: str, *, archived: bool = False, zst: bool = False) -> Path:
+        base = self.codex / ("archived_sessions" if archived else "sessions/2026/11/09")
+        name = rollout_name(thread) + (".zst" if zst else "")
+        return base / name
+
+    def store(self) -> LedgerStore:
+        return LedgerStore(self.data / DB_FILENAME)
+
+    def scan(self, providers=("claude", "codex"), **kw) -> scanner.ScanStats:
+        store = self.store()
+        try:
+            return Scanner(store, default_config(self.data, self.registry), **kw).run(providers)
+        finally:
+            store.close()
+
+    def sums(self, provider: str | None = None) -> dict:
+        store = self.store()
+        try:
+            sql = (
+                "SELECT coalesce(sum(input),0), coalesce(sum(output),0), "
+                "coalesce(sum(cache_read),0), coalesce(sum(cache_write_5m),0), "
+                "coalesce(sum(cache_write_1h),0), coalesce(sum(reasoning),0), "
+                "coalesce(sum(requests),0) FROM buckets"
+            )
+            args: tuple = ()
+            if provider:
+                sql += " WHERE provider = ?"
+                args = (provider,)
+            row = store.conn.execute(sql, args).fetchone()
+        finally:
+            store.close()
+        keys = ("input", "output", "cache_read", "w5", "w1", "reasoning", "requests")
+        return dict(zip(keys, row))
+
+    def accounts(self) -> dict[str, int]:
+        store = self.store()
+        try:
+            return dict(
+                store.conn.execute(
+                    "SELECT account, sum(requests) FROM buckets GROUP BY account"
+                ).fetchall()
+            )
+        finally:
+            store.close()
+
+    def report(self, by: str = "day", **kw):
+        store = self.store()
+        try:
+            return build_report(
+                store,
+                since=kw.pop("since", DAY),
+                until=kw.pop("until", date.fromtimestamp(T0 + 86400)),
+                by=by,
+                registries={"claude": self.registry},
+                logs={
+                    "claude": ActivationLog.load(self.data),
+                    "codex": ActivationLog.load(self.data / "codex"),
+                },
+                prices=PriceTable.load(self.data),
+                **kw,
+            )
+        finally:
+            store.close()
+
+
+@pytest.fixture
+def env() -> Env:
+    return Env()
+
+
+def _registry(*accounts: tuple[int, str, str]) -> dict:
+    return {
+        "accounts": {
+            str(n): {"email": email, "uuid": uuid, "organizationUuid": "", "organizationName": ""}
+            for n, email, uuid in accounts
+        },
+        "sequence": [n for n, _e, _u in accounts],
+    }
+
+
+# -- dedupe --------------------------------------------------------------------
+
+
+class TestClaudeDedupe:
+    def test_duplicate_lines_of_one_response_count_once_with_the_final_output(self, env):
+        # One response, three content blocks: the output count grows to its
+        # final value on the last line; input and cache counts repeat.
+        write_lines(env.transcript(), [
+            claude_line(mid="msg_1", ts=T0, out=3, stop=None),
+            user_line(T0 + 1),
+            claude_line(mid="msg_1", ts=T0 + 2, out=3, stop=None),
+            claude_line(mid="msg_1", ts=T0 + 3, out=40, stop="tool_use"),
+        ])
+        env.scan()
+        assert env.sums() == {
+            "input": 10, "output": 40, "cache_read": 100, "w5": 20, "w1": 0,
+            "reasoning": 0, "requests": 1,
+        }
+
+    def test_resumed_session_replay_in_a_second_file_is_not_counted_twice(self, env):
+        write_lines(env.transcript("sess-1.jsonl"), [
+            claude_line(mid="msg_1", ts=T0, session="sess-1"),
+            claude_line(mid="msg_2", ts=T0 + 60, session="sess-1"),
+        ])
+        # The resumed session copies both responses into its own file.
+        write_lines(env.transcript("sess-2.jsonl"), [
+            claude_line(mid="msg_1", ts=T0, session="sess-2"),
+            claude_line(mid="msg_2", ts=T0 + 60, session="sess-2"),
+            claude_line(mid="msg_3", ts=T0 + 3600, session="sess-2"),
+        ])
+        env.scan()
+        assert env.sums()["requests"] == 3
+        assert env.sums()["input"] == 30
+
+    def test_replay_scanned_in_a_later_scan_is_not_counted_twice(self, env):
+        write_lines(env.transcript("sess-1.jsonl"), [claude_line(mid="msg_1", ts=T0)])
+        env.scan()
+        write_lines(env.transcript("sess-2.jsonl"), [
+            claude_line(mid="msg_1", ts=T0, session="sess-2"),
+            claude_line(mid="msg_9", ts=T0 + 5, session="sess-2"),
+        ])
+        env.scan()
+        assert env.sums()["requests"] == 2
+
+    def test_final_output_written_after_a_scan_adds_only_the_difference(self, env):
+        path = write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0, out=3, stop=None)])
+        env.scan()
+        write_lines(path, [claude_line(mid="msg_1", ts=T0 + 4, out=90)], append=True)
+        env.scan()
+        s = env.sums()
+        assert (s["input"], s["output"], s["cache_read"], s["requests"]) == (10, 90, 100, 1)
+
+    def test_rescans_are_stable(self, env):
+        write_lines(env.transcript(), [
+            claude_line(mid=f"msg_{i}", ts=T0 + i) for i in range(30)
+        ])
+        env.scan()
+        first = env.sums()
+        env.scan()
+        env.scan()
+        assert env.sums() == first
+        store = env.store()
+        store.reset()
+        store.close()
+        env.scan()
+        assert env.sums() == first
+
+    def test_sidechain_transcripts_are_separate_requests(self, env):
+        write_lines(env.transcript(), [claude_line(mid="msg_main", ts=T0)])
+        write_lines(env.transcript("agent-x1.jsonl", slug="-work-demo-app/sess-1/subagents"), [
+            claude_line(mid="msg_sub", ts=T0 + 1, sidechain=True),
+        ])
+        env.scan()
+        assert env.sums()["requests"] == 2
+
+    def test_synthetic_error_placeholders_and_zero_usage_are_skipped(self, env):
+        write_lines(env.transcript(), [
+            claude_line(mid="msg_err", ts=T0, model="<synthetic>", inp=0, out=0, cr=0, w5=0),
+            claude_line(mid="msg_zero", ts=T0, inp=0, out=0, cr=0, w5=0),
+            "not json at all",
+            claude_line(mid="msg_ok", ts=T0),
+        ])
+        env.scan()
+        assert env.sums()["requests"] == 1
+
+    def test_missing_request_id_falls_back_to_the_message_id(self, env):
+        write_lines(env.transcript(), [
+            claude_line(mid="msg_1", ts=T0, rid="", out=1),
+            claude_line(mid="msg_1", ts=T0, rid="", out=7),
+        ])
+        env.scan()
+        assert (env.sums()["requests"], env.sums()["output"]) == (1, 7)
+
+    def test_one_hour_cache_writes_are_kept_apart(self, env):
+        write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0, w5=5, w1=7)])
+        env.scan()
+        assert (env.sums()["w5"], env.sums()["w1"]) == (5, 7)
+
+
+# -- incremental scan ---------------------------------------------------------
+
+
+class TestIncrementalScan:
+    def test_append_reads_only_the_new_lines(self, env):
+        path = write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0)])
+        env.scan()
+        write_lines(path, [claude_line(mid="msg_2", ts=T0 + 10)], append=True)
+        stats = env.scan()
+        assert stats.events == 1
+        assert stats.bytes_read == len(claude_line(mid="msg_2", ts=T0 + 10)) + 1
+        assert env.sums()["requests"] == 2
+
+    def test_unchanged_files_are_not_read_again(self, env):
+        write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0)])
+        env.scan()
+        stats = env.scan()
+        assert (stats.files_seen, stats.files_read, stats.bytes_read) == (1, 0, 0)
+
+    def test_a_line_still_being_written_waits_for_its_newline(self, env):
+        path = env.transcript()
+        path.parent.mkdir(parents=True)
+        full = claude_line(mid="msg_1", ts=T0)
+        path.write_text(full[:40])
+        env.scan()
+        assert env.sums()["requests"] == 0
+        path.write_text(full + "\n")
+        env.scan()
+        assert env.sums()["requests"] == 1
+
+    def test_truncated_file_is_read_again_from_the_start(self, env):
+        path = write_lines(env.transcript(), [
+            claude_line(mid="msg_1", ts=T0), claude_line(mid="msg_2", ts=T0 + 1),
+        ])
+        env.scan()
+        # Rewritten shorter, in place: an old response plus a new one.
+        with open(path, "w") as f:
+            f.write(claude_line(mid="msg_3", ts=T0 + 2) + "\n")
+        env.scan()
+        assert env.sums()["requests"] == 3
+
+    def test_rotated_file_with_a_new_inode_is_read_from_the_start(self, env):
+        path = write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0)])
+        env.scan()
+        tmp = path.with_suffix(".new")
+        write_lines(tmp, [
+            claude_line(mid="msg_1", ts=T0),
+            claude_line(mid="msg_2", ts=T0 + 1),
+            claude_line(mid="msg_3", ts=T0 + 2),
+        ])
+        os.replace(tmp, path)
+        env.scan()
+        assert env.sums()["requests"] == 3
+
+    def test_interrupted_scan_resumes_and_matches_an_uninterrupted_one(self, env, monkeypatch):
+        for n in range(3):
+            write_lines(env.transcript(f"sess-{n}.jsonl"), [
+                claude_line(mid=f"msg_{n}_{i}", ts=T0 + i, session=f"sess-{n}", out=i + 1)
+                for i in range(25)
+            ])
+        expected_requests = 75
+        real = readers.parse_claude_line
+        calls = {"n": 0}
+
+        def flaky(raw):
+            calls["n"] += 1
+            if calls["n"] == 40:
+                raise KeyboardInterrupt
+            return real(raw)
+
+        monkeypatch.setattr(scanner, "parse_claude_line", flaky)
+        with pytest.raises(KeyboardInterrupt):
+            env.scan(batch_events=7)
+        partial = env.sums()["requests"]
+        assert 0 < partial < expected_requests  # some batches were committed
+        monkeypatch.setattr(scanner, "parse_claude_line", real)
+        env.scan(batch_events=7)
+        resumed = env.sums()
+        store = env.store()
+        store.reset()
+        store.close()
+        env.scan()
+        assert resumed == env.sums()
+        assert resumed["requests"] == expected_requests
+
+    def test_scan_reads_only_under_the_isolated_roots(self, env, tmp_path):
+        """Every file the scanner opens or lists sits under this test's home."""
+        write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0)])
+        write_lines(env.rollout(THREAD_A), [
+            codex_meta(T0, THREAD_A), codex_turn(T0), codex_record(T0 + 1, THREAD_A, "resp-1"),
+        ])
+        prof = env.data / "sessions" / "2-b_example.com" / "projects" / "-work-x"
+        write_lines(prof / "sess-p.jsonl", [claude_line(mid="msg_p", ts=T0, session="sess-p")])
+        store = env.store()  # imports and schema setup happen before recording
+        cfg = default_config(env.data, _registry((2, "b@example.com", "uuid-b")))
+        seen: list[str] = []
+        recording = {"on": False}
+
+        def hook(event, args):
+            if not recording["on"]:
+                return
+            if event in ("open", "os.scandir", "os.listdir", "os.stat"):
+                target = args[0] if args else None
+                if isinstance(target, (str, bytes, os.PathLike)):
+                    seen.append(os.fsdecode(target))
+
+        sys.addaudithook(hook)
+        recording["on"] = True
+        try:
+            stats = Scanner(store, cfg).run()
+        finally:
+            recording["on"] = False
+            store.close()
+        assert stats.events == 3
+        assert seen, "the audit hook saw nothing; the check proves nothing"
+        # Two isolated roots: the test's home, and the per-test CODEX_HOME that
+        # the harness points Codex at (a sibling temp dir, not under the home).
+        roots = [os.path.realpath(env.home), os.path.realpath(paths.get_codex_home())]
+        outside = [
+            p for p in seen
+            if not any(
+                os.path.realpath(p) == r or os.path.realpath(p).startswith(r + os.sep)
+                for r in roots
+            )
+        ]
+        assert outside == []
+
+
+# -- Codex --------------------------------------------------------------------
+
+
+class TestCodex:
+    def test_records_are_counted_with_cached_input_split_out(self, env):
+        write_lines(env.rollout(THREAD_A), [
+            codex_meta(T0, THREAD_A),
+            codex_turn(T0, "gpt-6.1-sol"),
+            codex_record(T0 + 1, THREAD_A, "resp-1", inp=1000, cached=800, out=50, reasoning=20),
+            codex_count(T0 + 1, (1000, 800, 50), (1000, 800, 50)),
+            codex_record(T0 + 2, THREAD_A, "resp-2", inp=500, cached=0, out=10, reasoning=0),
+        ])
+        env.scan()
+        s = env.sums("codex")
+        # token_count lines are not added on top of the records.
+        assert (s["input"], s["cache_read"], s["output"], s["reasoning"], s["requests"]) == (
+            700, 800, 60, 20, 2,
+        )
+        store = env.store()
+        models = {r[0] for r in store.conn.execute("SELECT model FROM buckets")}
+        store.close()
+        assert models == {"gpt-6.1-sol"}
+
+    def test_a_thread_in_sessions_and_archived_sessions_counts_once(self, env):
+        lines = [codex_meta(T0, THREAD_A), codex_turn(T0),
+                 codex_record(T0 + 1, THREAD_A, "resp-1")]
+        write_lines(env.rollout(THREAD_A), lines)
+        write_lines(env.rollout(THREAD_A, archived=True), lines)
+        env.scan()
+        assert env.sums("codex")["requests"] == 1
+
+    def test_archiving_moves_the_cursor_with_the_thread(self, env):
+        live = write_lines(env.rollout(THREAD_A), [
+            codex_meta(T0, THREAD_A), codex_turn(T0), codex_record(T0 + 1, THREAD_A, "resp-1"),
+        ])
+        env.scan()
+        archived = env.rollout(THREAD_A, archived=True)
+        archived.parent.mkdir(parents=True)
+        os.replace(live, archived)
+        write_lines(archived, [codex_record(T0 + 9, THREAD_A, "resp-2")], append=True)
+        stats = env.scan()
+        assert env.sums("codex")["requests"] == 2
+        # Resumed at the old offset: only the appended line was read.
+        assert stats.bytes_read == len(codex_record(T0 + 9, THREAD_A, "resp-2")) + 1
+
+    @pytest.mark.skipif(not scanner.ZSTD_AVAILABLE, reason="needs zstd support")
+    def test_compressed_in_place_is_not_counted_again(self, env):
+        from compression import zstd  # noqa: PLC0415 - only on 3.14+
+
+        lines = [codex_meta(T0, THREAD_A), codex_turn(T0),
+                 codex_record(T0 + 1, THREAD_A, "resp-1")]
+        live = write_lines(env.rollout(THREAD_A), lines)
+        env.scan()
+        data = live.read_bytes()
+        env.rollout(THREAD_A, zst=True).write_bytes(zstd.compress(data))
+        live.unlink()
+        env.scan()
+        assert env.sums("codex")["requests"] == 1
+        # A compressed file read from scratch counts the same.
+        store = env.store()
+        store.reset()
+        store.close()
+        env.scan()
+        assert env.sums("codex")["requests"] == 1
+
+    def test_compressed_files_are_skipped_without_zstd(self, env, monkeypatch):
+        monkeypatch.setattr(scanner, "ZSTD_AVAILABLE", False)
+        env.rollout(THREAD_A, zst=True).parent.mkdir(parents=True)
+        env.rollout(THREAD_A, zst=True).write_bytes(b"\x28\xb5\x2f\xfd not really")
+        stats = env.scan()
+        assert stats.skipped_compressed == 1
+        assert env.sums("codex")["requests"] == 0
+
+    def test_broken_symlinks_are_tolerated(self, env):
+        target = env.home / "unmounted-volume" / rollout_name(THREAD_A)
+        link = env.rollout(THREAD_A)
+        link.parent.mkdir(parents=True)
+        link.symlink_to(target)
+        write_lines(env.rollout(THREAD_B), [
+            codex_meta(T0, THREAD_B), codex_turn(T0), codex_record(T0, THREAD_B, "resp-b"),
+        ])
+        stats = env.scan()
+        assert stats.missing == 1
+        assert env.sums("codex")["requests"] == 1
+
+    def test_symlinked_rollouts_are_read(self, env):
+        real = write_lines(env.home / "archive" / rollout_name(THREAD_A), [
+            codex_meta(T0, THREAD_A), codex_turn(T0), codex_record(T0, THREAD_A, "resp-1"),
+        ])
+        link = env.rollout(THREAD_A)
+        link.parent.mkdir(parents=True)
+        link.symlink_to(real)
+        env.scan()
+        assert env.sums("codex")["requests"] == 1
+
+    def test_token_count_fallback_counts_deltas_and_never_goes_negative(self, env):
+        # An old file: no token_usage_record lines at all.
+        write_lines(env.rollout(THREAD_A), [
+            codex_meta(T0, THREAD_A, version="0.40.0", ordinal=None),
+            codex_turn(T0, "gpt-5.4"),
+            codex_count(T0 + 1, (100, 0, 10), (100, 0, 10)),
+            codex_count(T0 + 2, (100, 0, 10), (100, 0, 10)),  # repeated totals
+            codex_count(T0 + 3, (250, 50, 30), (150, 50, 20)),
+            # The total goes down: a new context. Count that response's own
+            # usage, not a negative difference.
+            codex_count(T0 + 4, (40, 0, 5), (40, 0, 5)),
+        ])
+        env.scan()
+        s = env.sums("codex")
+        # fresh input: 100 + (150 - 50 cached) + 40 ; cached 50 ; output 10 + 20 + 5
+        assert (s["input"], s["cache_read"], s["output"], s["requests"]) == (240, 50, 35, 3)
+        env.scan()
+        assert env.sums("codex")["requests"] == 3
+
+    def test_fallback_skips_a_forks_inherited_prefix(self, env):
+        root = THREAD_A
+        parent = [
+            codex_meta(T0, root, version="0.40.0", ordinal=None),
+            codex_turn(T0, "gpt-5.4"),
+            codex_count(T0 + 1, (100, 0, 10), (100, 0, 10)),
+            codex_count(T0 + 2, (300, 0, 30), (200, 0, 20)),
+        ]
+        write_lines(env.rollout(root), parent)
+        # The child starts with its own session_meta, then replays the
+        # parent's (re-timestamped), then does its own work.
+        child = [
+            codex_meta(T0 + 50, THREAD_B, session=root, version="0.40.0", ordinal=None),
+            codex_meta(T0 + 50, root, version="0.40.0", ordinal=None),
+            codex_count(T0 + 51, (100, 0, 10), (100, 0, 10)),
+            codex_count(T0 + 52, (300, 0, 30), (200, 0, 20)),
+            codex_turn(T0 + 53, "gpt-5.4"),
+            codex_count(T0 + 54, (360, 0, 36), (60, 0, 6)),
+        ]
+        write_lines(env.rollout(THREAD_B), child)
+        env.scan()
+        s = env.sums("codex")
+        assert (s["input"], s["output"], s["requests"]) == (360, 36, 3)
+
+    def test_fallback_uses_ordinals_when_present(self, env):
+        write_lines(env.rollout(THREAD_B), [
+            codex_meta(T0, THREAD_B, session=THREAD_A, version="0.90.0", ordinal=0, start_ordinal=5),
+            codex_meta(T0, THREAD_A, version="0.90.0", ordinal=1),
+            codex_turn(T0, "gpt-5.4", ordinal=2),  # the parent's turn, inherited
+            codex_count(T0 + 1, (100, 0, 10), (100, 0, 10), ordinal=3),
+            codex_count(T0 + 2, (300, 0, 30), (200, 0, 20), ordinal=4),
+            codex_turn(T0 + 3, "gpt-5.4", ordinal=5),
+            codex_count(T0 + 4, (360, 0, 36), (60, 0, 6), ordinal=6),
+        ])
+        env.scan()
+        s = env.sums("codex")
+        assert (s["input"], s["output"], s["requests"]) == (60, 6, 1)
+
+    def test_a_record_writing_forks_inherited_token_counts_are_not_counted(self, env):
+        write_lines(env.rollout(THREAD_B), [
+            codex_meta(T0, THREAD_B, session=THREAD_A, ordinal=0, start_ordinal=4),
+            codex_meta(T0, THREAD_A, ordinal=1),
+            codex_count(T0 + 1, (100, 0, 10), (100, 0, 10), ordinal=2),
+            codex_count(T0 + 2, (300, 0, 30), (200, 0, 20), ordinal=3),
+            codex_turn(T0 + 3, ordinal=4),
+            codex_record(T0 + 4, THREAD_B, "resp-child", inp=60, cached=0, out=6, ordinal=5),
+            codex_count(T0 + 4, (360, 0, 36), (60, 0, 6), ordinal=6),
+        ])
+        env.scan()
+        s = env.sums("codex")
+        assert (s["input"], s["output"], s["requests"]) == (60, 6, 1)
+
+    def test_token_counts_after_the_first_record_are_never_counted(self, env):
+        path = write_lines(env.rollout(THREAD_A), [
+            codex_meta(T0, THREAD_A), codex_turn(T0),
+            codex_record(T0 + 1, THREAD_A, "resp-1", inp=100, cached=0, out=10),
+        ])
+        env.scan()
+        # A later scan sees only the token_count: the saved reader state
+        # remembers that this thread writes records.
+        write_lines(path, [codex_count(T0 + 1, (100, 0, 10), (100, 0, 10))], append=True)
+        env.scan()
+        assert env.sums("codex")["requests"] == 1
+
+
+# -- attribution --------------------------------------------------------------
+
+
+class TestAttribution:
+    def test_usage_before_the_first_activation_is_unattributed(self, env):
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0 + 100)
+        write_lines(env.transcript(), [
+            claude_line(mid="msg_early", ts=T0), claude_line(mid="msg_late", ts=T0 + 200),
+        ])
+        env.scan()
+        assert env.accounts() == {"": 1, "a@example.com|": 1}
+
+    def test_usage_follows_a_switch(self, env):
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0)
+        record_activation(env.data, number=2, email="b@example.com", org="org-b", now=T0 + 100)
+        write_lines(env.transcript(), [
+            claude_line(mid="msg_1", ts=T0 + 10),
+            claude_line(mid="msg_2", ts=T0 + 99),
+            claude_line(mid="msg_3", ts=T0 + 100),
+            claude_line(mid="msg_4", ts=T0 + 500),
+        ])
+        env.scan()
+        assert env.accounts() == {"a@example.com|": 2, "b@example.com|org-b": 2}
+
+    def test_codex_reads_its_own_activation_log(self, env):
+        record_activation(env.data / "codex", number=1, email="c@example.com", org="", now=T0)
+        write_lines(env.rollout(THREAD_A), [
+            codex_meta(T0, THREAD_A), codex_turn(T0), codex_record(T0 + 1, THREAD_A, "resp-1"),
+        ])
+        env.scan()
+        assert env.accounts() == {"c@example.com|": 1}
+
+    def test_desktop_app_sessions_are_kept_apart(self, env):
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0)
+        write_lines(env.transcript(), [
+            claude_line(mid="msg_1", ts=T0 + 5, entrypoint="claude-desktop"),
+        ])
+        env.scan()
+        assert env.accounts() == {"desktop": 1}
+
+    def test_run_profile_session_in_the_shared_tree_goes_to_its_owner(self, env):
+        env.registry = _registry((1, "a@example.com", "uuid-a"), (2, "b@example.com", "uuid-b"))
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0)
+        # The default login is account 1 throughout; this session was started
+        # from `qswap run 2`, so Claude Code stamped account 2 as its owner.
+        write_lines(env.transcript("sess-run.jsonl"), [
+            owner_line("sess-run", "uuid-b"),
+            claude_line(mid="msg_r1", ts=T0 + 10, session="sess-run"),
+            claude_line(mid="msg_r2", ts=T0 + 20, session="sess-run"),
+        ])
+        write_lines(env.transcript("agent-r.jsonl", slug="-work-demo-app/sess-run/subagents"), [
+            claude_line(mid="msg_r3", ts=T0 + 30, session="sess-run", sidechain=True),
+        ])
+        write_lines(env.transcript("sess-default.jsonl"), [
+            owner_line("sess-default", "uuid-a"),
+            claude_line(mid="msg_d1", ts=T0 + 15, session="sess-default"),
+        ])
+        env.scan()
+        rows = {r.label: r.totals.requests for r in env.report("account").rows}
+        assert rows == {"Account-2 (b@example.com)": 3, "Account-1 (a@example.com)": 1}
+
+    def test_default_session_spanning_a_switch_follows_the_switch(self, env):
+        env.registry = _registry((1, "a@example.com", "uuid-a"), (2, "b@example.com", "uuid-b"))
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0)
+        record_activation(env.data, number=2, email="b@example.com", org="", now=T0 + 100)
+        # Started on account 1 (its owner), continued after the switch to 2.
+        write_lines(env.transcript("sess-long.jsonl"), [
+            owner_line("sess-long", "uuid-a"),
+            claude_line(mid="msg_1", ts=T0 + 10, session="sess-long"),
+            claude_line(mid="msg_2", ts=T0 + 200, session="sess-long"),
+        ])
+        env.scan()
+        rows = {r.label: r.totals.requests for r in env.report("account").rows}
+        assert rows == {"Account-1 (a@example.com)": 1, "Account-2 (b@example.com)": 1}
+
+    def test_session_started_before_the_first_activation_stays_unattributed(self, env):
+        env.registry = _registry((2, "b@example.com", "uuid-b"))
+        record_activation(env.data, number=2, email="b@example.com", org="", now=T0 + 100)
+        write_lines(env.transcript("sess-old.jsonl"), [
+            owner_line("sess-old", "uuid-b"),
+            claude_line(mid="msg_1", ts=T0 + 10, session="sess-old"),
+        ])
+        env.scan()
+        rows = {r.label: r.totals.requests for r in env.report("account").rows}
+        assert rows == {"unattributed": 1}
+
+    def test_unshared_run_profile_history_is_attributed_by_its_directory(self, env):
+        env.registry = _registry((1, "a@example.com", "uuid-a"), (2, "b@example.com", "uuid-b"))
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0)
+        prof = env.data / "sessions" / "2-b_example.com" / "projects" / "-work-demo-app"
+        write_lines(prof / "sess-p.jsonl", [claude_line(mid="msg_p", ts=T0 + 5, session="sess-p")])
+        env.scan()
+        assert env.accounts() == {"b@example.com|": 1}
+
+    def test_an_account_qswap_does_not_manage_is_labelled_so(self, env):
+        env.registry = _registry((1, "a@example.com", "uuid-a"))
+        record_activation(env.data, number=None, email="x@example.com", org="", now=T0)
+        write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0 + 5)])
+        env.scan()
+        rep = env.report("account")
+        assert [r.label for r in rep.rows] == ["x@example.com (not managed by qswap)"]
+        assert rep.rows[0].extra["account"] == {"number": None, "email": "x@example.com"}
+
+    def test_linked_run_profile_history_is_not_scanned_twice(self, env):
+        write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0)])
+        prof = env.data / "sessions" / "2-b_example.com"
+        prof.mkdir(parents=True)
+        (prof / "projects").symlink_to(env.projects)
+        stats = env.scan()
+        assert stats.files_seen == 1
+        assert env.sums()["requests"] == 1
+
+
+# -- pricing --------------------------------------------------------------------
+
+
+class TestPricing:
+    @pytest.mark.parametrize(
+        "model, entry",
+        [
+            ("claude-opus-5-5", "claude-opus-5-5"),
+            ("claude-opus-4-20250514", "claude-opus-4"),
+            ("claude-sonnet-4-5-20250929", "claude-sonnet-4-5"),
+            ("claude-haiku-4-5@20251001", "claude-haiku-4-5"),
+            ("us.anthropic.claude-opus-4-5-20251101-v1:0", "claude-opus-4-5"),
+            ("claude-opus-5-5[1m]", "claude-opus-5-5"),
+            ("gpt-5-2025-08-07", "gpt-5"),
+            ("gpt-6.1-sol", "gpt-6.1-sol"),
+        ],
+    )
+    def test_prefix_match_takes_snapshots_and_the_longest_entry(self, model, entry):
+        found = PriceTable().lookup(model)
+        assert found is not None and found[0] == entry
+
+    @pytest.mark.parametrize(
+        "model", ["claude-opus-4-9", "gpt-5.3-codex-spark", "codex-auto-review", "unknown"]
+    )
+    def test_other_versions_and_variants_are_not_priced(self, model):
+        assert PriceTable().lookup(model) is None
+
+    def test_cost_uses_every_token_class(self):
+        _key, price = PriceTable().lookup("claude-opus-5-5")
+        # input $4, output $20, cache read $0.20, 5m write $5, 1h write $8.
+        assert price.cost(1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000) == pytest.approx(
+            4 + 20 + 0.20 + 5 + 8
+        )
+
+    def test_fast_mode_uses_the_fast_table(self):
+        key, price = PriceTable().lookup("claude-opus-5-5/fast")
+        assert price.input == 8 and price.output == 40
+        assert PriceTable().lookup("claude-sonnet-5-5/fast") is None
+
+    def test_override_file_adds_replaces_and_removes(self, env):
+        env.data.mkdir(parents=True, exist_ok=True)
+        (env.data / "pricing.json").write_text(json.dumps({
+            "$comment": "USD per million tokens",
+            "models": {
+                "gpt-5.3-codex-spark": {"input": 1, "output": 2},
+                "claude-opus-5-5": {"input": 3, "output": 4, "cache_read": 0.5},
+                "claude-sonnet-5-5": None,
+                "codex-*": {"input": 7, "output": 8},
+            },
+        }))
+        table = PriceTable.load(env.data)
+        assert table.lookup("gpt-5.3-codex-spark")[1].cache_read == 1  # defaults to input
+        assert table.lookup("claude-opus-5-5")[1].output == 4
+        assert table.lookup("claude-sonnet-5-5") is None
+        assert table.lookup("codex-auto-review")[0] == "codex-*"
+        assert table.warnings == []
+
+    def test_bad_override_file_warns_and_keeps_the_bundled_table(self, env):
+        env.data.mkdir(parents=True, exist_ok=True)
+        (env.data / "pricing.json").write_text("{not json")
+        table = PriceTable.load(env.data)
+        assert table.lookup("claude-opus-5-5") is not None
+        assert len(table.warnings) == 1
+        (env.data / "pricing.json").write_text(json.dumps({"x-model": {"input": "free"}}))
+        table = PriceTable.load(env.data)
+        assert table.lookup("x-model") is None
+        assert "ignored" in table.warnings[0]
+
+    def test_unknown_model_shows_tokens_and_na_and_is_named(self, env):
+        write_lines(env.transcript(), [
+            claude_line(mid="msg_1", ts=T0, model="claude-zeta-9"),
+            claude_line(mid="msg_2", ts=T0, model="claude-opus-5-5"),
+        ])
+        env.scan()
+        rep = env.report("model")
+        rows = {r.key: r for r in rep.rows}
+        assert rows["claude-zeta-9"].totals.cost_or_none() is None
+        assert rows["claude-zeta-9"].totals.tokens == 135
+        assert rows["claude-opus-5-5"].totals.cost > 0
+        assert list(rep.unpriced_models) == ["claude-zeta-9"]
+        text = render_text(rep)
+        assert "No price for: claude-zeta-9" in text
+        assert " n/a" in text
+        # A day mixing priced and unpriced models marks its partial cost.
+        day = env.report("day")
+        assert any("+" in line for line in render_text(day).splitlines() if "2026" in line)
+
+    def test_normalize_model(self):
+        assert normalize_model("  Claude-Opus-5-5[1M] ") == "claude-opus-5-5"
+
+
+# -- report grouping ---------------------------------------------------------------
+
+
+@pytest.fixture
+def mixed(env) -> Env:
+    env.registry = _registry((1, "a@example.com", "uuid-a"))
+    record_activation(env.data, number=1, email="a@example.com", org="", now=T0 + 3600)
+    write_lines(env.transcript("sess-1.jsonl"), [
+        claude_line(mid="msg_1", ts=T0, session="sess-1", cwd="/work/demo-app"),
+        claude_line(mid="msg_2", ts=T0 + 7200, session="sess-1", model="claude-sonnet-5-5"),
+    ])
+    write_lines(env.transcript("sess-2.jsonl", slug="-work-other"), [
+        claude_line(mid="msg_3", ts=T0 + 86400, session="sess-2", cwd="/work/other"),
+    ])
+    write_lines(env.rollout(THREAD_A), [
+        codex_meta(T0, THREAD_A, cwd="/work/demo-app"),
+        codex_turn(T0, "gpt-6.1-sol"),
+        codex_record(T0 + 60, THREAD_A, "resp-1"),
+    ])
+    env.scan()
+    return env
+
+
+class TestReportGrouping:
+    def test_by_day_lists_every_day_in_the_range(self, mixed):
+        rep = mixed.report("day", since=DAY, until=date.fromtimestamp(T0 + 3 * 86400))
+        assert [r.key for r in rep.rows] == [
+            date.fromtimestamp(T0 + d * 86400) for d in range(4)
+        ] or len(rep.rows) == 4
+        assert sum(r.totals.requests for r in rep.rows) == 4
+        assert rep.total.requests == 4
+
+    def test_by_model(self, mixed):
+        rows = {r.key: r.totals.requests for r in mixed.report("model").rows}
+        assert rows == {"claude-opus-5-5": 2, "claude-sonnet-5-5": 1, "gpt-6.1-sol": 1}
+
+    def test_by_account(self, mixed):
+        rep = mixed.report("account")
+        rows = {r.label: r.totals.requests for r in rep.rows}
+        assert rows == {"Account-1 (a@example.com)": 2, "unattributed": 2}
+        assert rep.unattributed_share == pytest.approx(
+            rep.unattributed_tokens / rep.total.tokens
+        )
+
+    def test_by_project(self, mixed):
+        rows = {r.key: r.totals.requests for r in mixed.report("project").rows}
+        assert rows == {"/work/demo-app": 3, "/work/other": 1}
+
+    def test_by_provider(self, mixed):
+        rows = {r.label: r.totals.requests for r in mixed.report("provider").rows}
+        assert rows == {"Claude Code": 3, "Codex": 1}
+
+    def test_by_session(self, mixed):
+        rows = {r.key: r.totals.requests for r in mixed.report("session").rows}
+        assert rows == {("claude", "sess-1"): 2, ("claude", "sess-2"): 1, ("codex", THREAD_A): 1}
+
+    def test_provider_filter(self, mixed):
+        rep = mixed.report("model", provider="codex")
+        assert [r.key for r in rep.rows] == ["gpt-6.1-sol"]
+
+    def test_range_excludes_other_days(self, mixed):
+        rep = mixed.report("day", since=DAY, until=DAY)
+        assert rep.total.requests == sum(
+            1 for ts in (T0, T0 + 7200, T0 + 60) if date.fromtimestamp(ts) == DAY
+        )
+
+    def test_json_shape(self, mixed):
+        doc = report_to_json(mixed.report("account"))
+        assert doc["schemaVersion"] == 1
+        assert doc["by"] == "account"
+        assert doc["estimate"] is True
+        keys = {r["key"] for r in doc["rows"]}
+        assert keys == {None, "a@example.com|"}
+        row = next(r for r in doc["rows"] if r["key"])
+        assert row["account"] == {"number": 1, "email": "a@example.com"}
+        for field in ("input", "output", "cacheRead", "cacheWrite5m", "cacheWrite1h",
+                      "reasoning", "requests", "totalTokens", "costUsd", "unpricedTokens"):
+            assert field in doc["total"]
+        assert doc["pricing"]["fetched"] == "2026-11-10"
+        assert 0 < doc["unattributedShare"] < 1
+
+    def test_text_rendering(self, mixed):
+        text = render_text(mixed.report("day"))
+        assert "Token usage" in text and "by day" in text
+        assert "Total" in text
+        assert "estimates at API list prices" in text
+        assert datetime.fromtimestamp(T0).strftime("%Y-%m-%d") in text
+
+
+def test_a_switch_during_a_long_scan_is_picked_up(env, monkeypatch):
+    """The activation log is re-read between batches."""
+    for i in range(4):
+        write_lines(env.transcript(f"sess-{i}.jsonl"), [
+            claude_line(mid=f"msg_{i}", ts=T0 + 100 * i, session=f"sess-{i}")
+        ])
+    record_activation(env.data, number=1, email="a@example.com", org="", now=T0)
+    real = readers.parse_claude_line
+    seen = {"n": 0}
+
+    def switch_midway(raw):
+        seen["n"] += 1
+        if seen["n"] == 1:  # after the scanner loaded the log
+            record_activation(env.data, number=2, email="b@example.com", org="", now=T0 + 150)
+        return real(raw)
+
+    monkeypatch.setattr(scanner, "parse_claude_line", switch_midway)
+    env.scan(batch_events=1)
+    assert env.accounts() == {"a@example.com|": 2, "b@example.com|": 2}
+
+
+def test_a_file_rewritten_in_place_to_a_longer_one_is_read_again(env):
+    path = write_lines(env.transcript(), [claude_line(mid="msg_1", ts=T0)])
+    env.scan()
+    # Same inode, longer content whose old offset falls mid-line.
+    with open(path, "w") as f:
+        f.write(claude_line(mid="msg_2", ts=T0 + 1, cwd="/work/a-much-longer-project-path") + "\n")
+        f.write(claude_line(mid="msg_3", ts=T0 + 2) + "\n")
+    env.scan()
+    assert env.sums()["requests"] == 3
+
+
+def test_interrupted_codex_scan_resumes_with_its_reader_state(env, monkeypatch):
+    """A cursor saved mid-file carries the model and project read before it."""
+    lines = [codex_meta(T0, THREAD_A, cwd="/work/demo-app"), codex_turn(T0, "gpt-5.4")]
+    lines += [codex_record(T0 + i, THREAD_A, f"resp-{i}", inp=10, cached=0, out=1) for i in range(12)]
+    write_lines(env.rollout(THREAD_A), lines)
+    real = readers.parse_codex_line
+    calls = {"n": 0}
+
+    def flaky(raw, state):
+        calls["n"] += 1
+        if calls["n"] == 9:
+            raise KeyboardInterrupt
+        return real(raw, state)
+
+    monkeypatch.setattr(scanner, "parse_codex_line", flaky)
+    with pytest.raises(KeyboardInterrupt):
+        env.scan(batch_events=2)
+    assert 0 < env.sums("codex")["requests"] < 12
+    monkeypatch.setattr(scanner, "parse_codex_line", real)
+    env.scan(batch_events=2)
+    store = env.store()
+    rows = store.conn.execute(
+        "SELECT model, project, sum(requests) FROM buckets GROUP BY 1, 2"
+    ).fetchall()
+    store.close()
+    assert rows == [("gpt-5.4", "/work/demo-app", 12)]
+
+
+def test_many_rollouts_are_statted_in_parallel(env):
+    threads = [f"00000000-0000-4000-8000-{i:012d}" for i in range(70)]
+    for t in threads:
+        write_lines(env.rollout(t), [codex_meta(T0, t), codex_turn(T0), codex_record(T0, t, "r")])
+    stats = env.scan()
+    assert (stats.files_seen, stats.events) == (70, 70)
+    assert env.scan().files_read == 0

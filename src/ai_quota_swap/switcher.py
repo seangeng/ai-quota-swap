@@ -2566,6 +2566,50 @@ class ClaudeAccountSwitcher:
         """Whether ``~/.claude.json`` carries any live account identity."""
         return self._get_current_account() is not None
 
+    def _record_activation(self, number: str, email: str, org_uuid: str) -> None:
+        """Append a ``switch`` line to the activation log (``qswap usage``
+        attributes tokens by it). Never raises; takes no lock."""
+        try:
+            from ai_quota_swap.ledger.activations import record_activation
+
+            record_activation(
+                self.backup_dir, number=number, email=email, org=org_uuid, source="switch"
+            )
+        except Exception:
+            pass
+
+    def _note_live_login(
+        self, number: str | None, identity: tuple[str, str] | None
+    ) -> None:
+        """Append an ``observed`` line when the live login differs from the
+        activation log's last line. Cheap when nothing changed (a stat).
+        Skipped inside a ``qswap run`` shell, whose "live" login is the
+        profile's, not the default one. Never raises; takes no lock."""
+        if identity is None:
+            return
+        try:
+            self._refuse_session_shell()
+            from ai_quota_swap.ledger.activations import observe_live_login
+
+            observe_live_login(
+                self.backup_dir, number=number, email=identity[0], org=identity[1]
+            )
+        except Exception:
+            pass
+
+    def observe_activation(self) -> None:
+        """Public form of :meth:`_note_live_login` for callers that have not
+        resolved the live login themselves (``qswap usage``)."""
+        try:
+            identity = self._get_current_account()
+            number = None
+            if identity is not None:
+                data = self._get_sequence_data() or {}
+                number = self._find_account_slot(data, identity[0], identity[1])
+            self._note_live_login(number, identity)
+        except Exception:
+            pass
+
     def live_session_pids_for(self, account_num: str, email: str) -> list[int]:
         """Public wrapper: PIDs of live ``qswap run`` sessions for a slot."""
         return self._live_session_pids(account_num, email)
@@ -4800,6 +4844,7 @@ class ClaudeAccountSwitcher:
         if current_identity is not None:
             current_email, current_org_uuid = current_identity
             active_num = self._find_account_slot(data, current_email, current_org_uuid)
+        self._note_live_login(active_num, current_identity)
 
         accounts_info: list[tuple[int, str, str, str, bool, str, str]] = []
         # Reset each build; set below only when the active slot's OAuth Keychain
@@ -7833,6 +7878,9 @@ class ClaudeAccountSwitcher:
                     self._logger.info(
                         f"Activated account {target_account} (no prior live account)"
                     )
+                self._record_activation(
+                    target_account, target_email, target_oauth.get("organizationUuid") or ""
+                )
                 if emit_output:
                     print(
                         f"{accent('Activated')} Account-{target_account} ({target_email})"
@@ -8092,6 +8140,9 @@ class ClaudeAccountSwitcher:
                         )
                 raise
 
+        self._record_activation(
+            target_account, target_email, oauth_section.get("organizationUuid") or ""
+        )
         # Lock released. Safe to do network I/O and let persist callbacks
         # re-acquire the lock from inside list_accounts(). All of this is display
         # only — suppressed in JSON mode (the nested list_accounts() would

@@ -1105,6 +1105,145 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
         print(dimmed(f"Auto resets in the last 24h: {used_today}/{MAX_AUTO_RESETS_PER_DAY}"))
 
 
+def _usage_date(value: str):
+    """argparse type for YYYY-MM-DD (a local date)."""
+    from datetime import date
+
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a date (YYYY-MM-DD): {value!r}")
+
+
+def _usage_command(argv: list[str]) -> None:
+    """Handle `qswap usage [--days N | --since DATE [--until DATE]] [--by ...]`.
+
+    Pre-dispatched before the main parser, like `reset`. Reads the session
+    files Claude Code and Codex write, brings the ledger up to date, and
+    reports tokens and an estimated API cost. No network calls.
+    """
+    from ai_quota_swap.ledger.report import GROUPINGS, PROVIDERS
+
+    parser = argparse.ArgumentParser(
+        prog=f"{_prog_name()} usage",
+        description=(
+            "Tokens used and what they would have cost at API prices, by day,\n"
+            "model, account, project, provider or session. Read from the session\n"
+            "files Claude Code and Codex write; nothing is sent anywhere. Costs\n"
+            "are estimates: subscription usage is not billed per token."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  qswap usage                        # the last 7 days, one row per day
+  qswap usage --days 30 --by model
+  qswap usage --since 2026-11-01 --until 2026-11-07 --by account
+  qswap usage --provider codex --by project
+  qswap usage --json
+
+The first run reads your whole history and can take a while; later runs
+read only what was added. See docs/usage.md for what the numbers mean.
+        """,
+    )
+    span = parser.add_mutually_exclusive_group()
+    span.add_argument(
+        "--days", type=int, metavar="N", help="The last N days, today included (default 7)"
+    )
+    span.add_argument(
+        "--since", type=_usage_date, metavar="DATE", help="First day (YYYY-MM-DD, local time)"
+    )
+    parser.add_argument(
+        "--until", type=_usage_date, metavar="DATE",
+        help="Last day, included (with --since; default today)",
+    )
+    parser.add_argument(
+        "--by", choices=GROUPINGS, default="day", help="How to group rows (default: day)"
+    )
+    parser.add_argument("--provider", choices=PROVIDERS, help="Only this CLI's usage")
+    parser.add_argument("--json", action="store_true", help="Machine-readable output")
+    scan = parser.add_mutually_exclusive_group()
+    scan.add_argument(
+        "--no-scan", action="store_true",
+        help="Report from the ledger as it is, without reading new session data",
+    )
+    scan.add_argument(
+        "--rescan", action="store_true",
+        help="Rebuild the ledger from the session files (slow on a large history)",
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    args = parser.parse_args(argv)
+
+    if args.until is not None and args.since is None:
+        parser.error("--until needs --since")
+    if args.days is not None and args.days < 1:
+        parser.error("--days must be at least 1")
+
+    import sqlite3
+
+    from ai_quota_swap.ledger.report import render_text, report_to_json
+    from ai_quota_swap.ledger.usage import resolve_range, run_usage
+
+    since, until = resolve_range(days=args.days, since=args.since, until=args.until)
+    if until < since:
+        parser.error("--until is before --since")
+
+    def fail(kind: str, message: str) -> None:
+        if args.json:
+            from ai_quota_swap.json_output import SCHEMA_VERSION
+
+            print(json.dumps(
+                {"schemaVersion": SCHEMA_VERSION, "error": {"type": kind, "message": message}},
+                indent=2,
+            ))
+        else:
+            error(f"Error: {message}")
+        sys.exit(1)
+
+    try:
+        switcher = _switcher(debug=args.debug)
+        _guard_root(switcher)
+        # Note the live login first, so usage from a login made outside
+        # qswap since its last run is attributed from now on.
+        switcher.observe_activation()
+        try:
+            registry = switcher._get_sequence_data()
+        except ProviderError:
+            registry = None  # labels fall back to emails; the report still runs
+        result = run_usage(
+            switcher.backup_dir,
+            since=since,
+            until=until,
+            by=args.by,
+            provider=args.provider,
+            scan=not args.no_scan,
+            rescan=args.rescan,
+            registry=registry,
+            progress=not args.json,
+        )
+    except ProviderError as e:
+        fail(type(e).__name__, str(e))
+        return
+    except (sqlite3.Error, OSError) as e:
+        fail(type(e).__name__, f"the usage ledger could not be read or written: {e}")
+        return
+    except KeyboardInterrupt:
+        print(
+            f"\n{dimmed('Scan interrupted. What was read so far is saved; run qswap usage again to continue.')}",
+            file=sys.stderr,
+        )
+        sys.exit(130)
+
+    if args.json:
+        payload = report_to_json(
+            result.report, scan=result.scan.to_json() if result.scan else None
+        )
+        if result.notes:
+            payload["notes"] = result.notes
+        print(json.dumps(payload, indent=2))
+        return
+    print(render_text(result.report, notes=result.notes))
+
+
 def _auto_command(argv: list[str]) -> None:
     """Handle `qswap auto [--once] [--json] [...]`.
 
@@ -1799,6 +1938,9 @@ def _dispatch(argv: list[str]) -> None:
     if argv and argv[0] in ("reset", "resets"):
         _reset_command(argv[1:])
         return
+    if argv and argv[0] == "usage":
+        _usage_command(argv[1:])
+        return
     if argv and argv[0] == "swap":
         _swap_command(argv[1:])
         return
@@ -1851,6 +1993,7 @@ Commands:
   %(prog)s auto                       auto-switch when nearing rate limits
   %(prog)s reset                      list usage resets (+ what auto would use)
   %(prog)s reset <num|email>          use one usage reset on that account
+  %(prog)s usage [--days N] [--by X]  tokens and estimated API cost (day/model/account/...)
   %(prog)s config [set KEY VALUE]     show or change settings (settings.json)
   %(prog)s unclaimed [--purge ID]     list or drop stashed credential entries
   %(prog)s export <path>              export accounts

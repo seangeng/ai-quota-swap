@@ -262,6 +262,8 @@ If the refresh token itself has died (auto-switch quarantines and reports such a
 qswap run 2                     # Run an account in this terminal only (session mode)
 qswap auto                      # Auto-switch when nearing rate limits (see above)
 qswap reset                     # List usage resets; `qswap reset 2` uses one (see above)
+qswap usage                     # Tokens and estimated API cost for the last 7 days (docs/usage.md)
+qswap usage --by account        # ... by account; also --by model|project|provider|session, --days N
 qswap config                    # Show or edit settings (see Configuration below)
 qswap list                      # Show all accounts with 5h/7d usage and reset times
 qswap list --token-status       # Add source-labelled OAuth token diagnostics
@@ -317,7 +319,7 @@ The original flag spellings (`qswap --switch`, `qswap --list`, ...) keep working
 | macOS | macOS Keychain | `~/.ai-quota-swap/` |
 | Linux / WSL | File-based (inside the backup directory, under `credentials/`) | `${XDG_DATA_HOME:-~/.local/share}/ai-quota-swap/` |
 
-Session-mode profiles (`qswap run`) live under the backup directory in `sessions/`. Tool preferences (`settings.json`) and auto-switch state (`autoswitch_state.json` — cooldown and quarantined accounts; delete it to reset) live in the backup directory root.
+Session-mode profiles (`qswap run`) live under the backup directory in `sessions/`. Tool preferences (`settings.json`) and auto-switch state (`autoswitch_state.json` — cooldown and quarantined accounts; delete it to reset) live in the backup directory root, as do the token ledger behind `qswap usage` (`ledger.db`, rebuilt from your session files if deleted), the record of which account was live when (`activations.jsonl`), and your own prices (`pricing.json`, optional).
 
 On Linux/WSL, set `XDG_DATA_HOME` to override the default location.
 
@@ -471,6 +473,7 @@ qswap add-token --email user@example.com     # optional label override
 
 - [docs/auto-switch.md](docs/auto-switch.md) — the exact auto-switch rules: hysteresis margins, landing rules, per-account thresholds and tiers, polling cadence. Read it to find out why it did or didn't switch.
 - [docs/json-output.md](docs/json-output.md) — every field in `--json` output, including the optional ones. Read it before writing a script against `qswap list --json` or `qswap auto --json`.
+- [docs/usage.md](docs/usage.md) — `qswap usage`: what it reads, what the token and cost columns mean, why the cost is an estimate, your own prices, and how usage is attributed to accounts. Read it before trusting the account split.
 - [docs/menubar.md](docs/menubar.md) — how the macOS menu bar runs under launchd: start at login, the wrapper app in `/Applications`, file locations, upgrades, the Login Items switch. Read it when the icon is missing or the service misbehaves.
 
 `qswap --help` and `qswap <command> --help` document every flag.

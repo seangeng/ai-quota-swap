@@ -97,6 +97,18 @@ def get_credentials_path() -> Path:
     return get_claude_config_home() / ".credentials.json"
 
 
+def get_codex_home() -> Path:
+    """Return the Codex home directory (``CODEX_HOME`` or ``~/.codex``).
+
+    Mirrors Codex's own rule: a non-empty ``CODEX_HOME`` wins, with a leading
+    ``~`` expanded; otherwise ``~/.codex``.
+    """
+    env = os.environ.get("CODEX_HOME")
+    if env:
+        return Path(os.path.expanduser(env))
+    return Path.home() / ".codex"
+
+
 def get_legacy_backup_root() -> Path:
     """Return the legacy (pre-XDG) backup root: ``~/.ai-quota-swap``."""
     return Path.home() / LEGACY_BACKUP_DIRNAME
