@@ -8194,7 +8194,12 @@ class ClaudeAccountSwitcher:
                             f"{self.label(target_account, target_email)} from its saved copy"
                         )
                     else:
-                        print(f"{accent('Switched to')} {self.label(target_account, target_email)}")
+                        source = (
+                            f"{self.label(from_ref.get('number'), long=False)} → "
+                            if from_ref and from_ref.get("number") is not None else ""
+                        )
+                        print(f"{accent('Switched')} {source}"
+                              f"{self.label(target_account, target_email)}")
                     self._print_switch_followup()
                 self._replan_new_active(
                     target_account,
@@ -8598,13 +8603,13 @@ class ClaudeAccountSwitcher:
         if not assume_yes and not prompts.interactive():
             raise prompts.needs_confirmation("qswap purge")
         warning("This will remove ALL ai-quota-swap data from your system:")
-        print(f"  - Backup directory: {self.backup_dir}")
+        print(f"  - The data directory: {self.backup_dir}")
         if legacy_distinct and legacy.exists():
-            print(f"  - Legacy backup directory: {legacy}")
+            print(f"  - An older data directory: {legacy}")
         if self.platform == Platform.MACOS:
-            print("  - All stored account credentials (macOS Keychain and/or files)")
+            print("  - Every saved login (in the Keychain and in files)")
         else:
-            print("  - All stored account credential files")
+            print("  - Every saved login")
         if session_dirs:
             print("  - All session profiles and their Keychain entries")
         # The quarantine tree sits inside the backup dir, so rmtree below takes
@@ -8617,22 +8622,13 @@ class ClaudeAccountSwitcher:
         quarantined = self._quarantined_history_files()
         if quarantined:
             warning(
-                f"  - {quarantined} quarantined conversation transcript(s) in "
-                f"{self.backup_dir / QUARANTINE_DIRNAME}"
+                f"  - {quarantined} parked conversation transcript"
+                f"{'' if quarantined == 1 else 's'} in {self.backup_dir / QUARANTINE_DIRNAME}"
             )
-            print(
-                dimmed(
-                    "    These are the ONLY remaining copy of the losing half "
-                    "of each collided"
-                )
-            )
-            print(
-                dimmed(
-                    "    session — history migration parked them here rather "
-                    "than deleting them."
-                )
-            )
-            print(dimmed("    Copy them somewhere else first if you want them."))
+            print(dimmed(
+                "    The only copy of each: merging session history kept them here\n"
+                "    instead of deleting them. Copy them elsewhere first to keep them."
+            ))
         print()
         print(dimmed("Note: This does NOT affect your current Claude Code login."))
         print()

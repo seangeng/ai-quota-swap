@@ -1532,8 +1532,10 @@ def _auto_command(argv: list[str]) -> None:
     )
     parser.add_argument(
         "--strategy", choices=AUTOSWITCH_STRATEGIES, default=None, metavar="NAME",
-        help="best (most quota left; default), weekly-first, consume-first, or "
-             "priority-consume-first (see qswap priority)",
+        help="best: the account with the most quota left (default); weekly-first: "
+             "at the line, the one whose weekly window resets soonest; "
+             "consume-first: use up the soonest-resetting account first; "
+             "priority-consume-first: qswap priority's order first",
     )
     parser.add_argument("--debug", action="store_true", help="log debug detail")
     args = parser.parse_args(argv)

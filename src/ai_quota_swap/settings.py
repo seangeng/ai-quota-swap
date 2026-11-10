@@ -271,7 +271,7 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         ),
         SettingSpec(
             "updates", "check", "check", "bool",
-            help="Check PyPI once a day and print a hint when a newer release exists",
+            help="Check once a day for a newer release and print a hint when there is one",
         ),
         SettingSpec(
             "usage", "headerProbe", "header_probe", "bool",
