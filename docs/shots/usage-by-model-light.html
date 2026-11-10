@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1200">
+<meta name="color-scheme" content="light">
+<title>qswap usage --by model</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { display: flex; justify-content: center; }
+  .window {
+    width: 1200px; box-sizing: border-box; overflow: hidden;
+    background: #fbfaf7; border: 1px solid #d9d7d1; border-radius: 12px;
+  }
+  .titlebar {
+    position: relative; height: 40px; display: flex; align-items: center;
+    background: #ecebe7; border-bottom: 1px solid #d9d7d1;
+  }
+  .dots { display: flex; gap: 8px; padding-left: 16px; }
+  .dots i { display: block; width: 12px; height: 12px; border-radius: 50%; }
+  .dots i:nth-child(1) { background: #ff5f57; }
+  .dots i:nth-child(2) { background: #febc2e; }
+  .dots i:nth-child(3) { background: #28c840; }
+  .title {
+    position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
+    font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: #6d6c68;
+  }
+  .screen {
+    margin: 0; padding: 20px 28px 24px; color: #242422;
+    font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
+      "DejaVu Sans Mono", "Liberation Mono", monospace;
+    font-size: 15px; line-height: 1.5; white-space: pre;
+    font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
+    tab-size: 8;
+  }
+  .prompt { color: #8a8984; }
+  .cmd { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="window" id="window">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="title">qswap usage --by model</div></div>
+<pre class="screen"><span class="prompt">$</span> <span class="cmd">qswap usage --by model</span>
+<span style="font-weight: bold">Token usage, 2026-11-04 to 2026-11-10, Claude Code and Codex, by model</span>
+
+<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">  Model                Input   Output  Cache read  Cache write   Est. cost</span>
+  claude-opus-5-5       1.1M     1.9M       89.8M         4.7M      $84.22
+  claude-sonnet-5-5     1.5M     2.4M        114M         5.8M      $52.94
+  claude-fable-5-2      282K     515K       24.0M         1.2M      $39.47
+  gpt-6.1-sol           594K    98.4K        1.7M            0       $2.34
+  gpt-6.1-terra         187K    33.1K        575K            0       $0.38
+  claude-haiku-5-5      147K     290K       12.4M         655K       $0.37
+<span style="font-weight: bold">  Total                 3.8M     5.3M        242M        12.3M     $179.72</span>
+
+<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Costs are estimates at API list prices (Anthropic and OpenAI pricing pages, 2026-11-10). Subscription usage is </span>
+<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">not billed this way.</span></pre>
+</div>
+</body>
+</html>
