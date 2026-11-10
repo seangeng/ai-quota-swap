@@ -1,7 +1,7 @@
 [project]
 name = "ai-quota-swap"
 version = "0.1.0"
-description = "Switch between multiple Claude Code accounts by live quota: auto-switch, parallel sessions, and automatic usage resets"
+description = "Keep several Claude Code and Codex accounts, see the quota each has left, and switch by hand or automatically; with usage resets, token costs, a terminal dashboard and a macOS menu bar"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -16,13 +16,18 @@ license = {text = "MIT"}
 keywords = [
     "claude",
     "claude-code",
+    "anthropic",
     "codex",
+    "openai-codex",
     "account-switcher",
     "multi-account",
     "rate-limit",
     "quota",
-    "usage",
+    "usage-tracking",
+    "token-usage",
     "cli",
+    "tui",
+    "menubar",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -44,7 +49,9 @@ menubar = ["rumps>=0.4.0"]
 
 [project.urls]
 Homepage = "https://github.com/seangeng/ai-quota-swap"
+Documentation = "https://github.com/seangeng/ai-quota-swap/tree/main/docs"
 Repository = "https://github.com/seangeng/ai-quota-swap"
+Changelog = "https://github.com/seangeng/ai-quota-swap/blob/main/CHANGELOG.md"
 Issues = "https://github.com/seangeng/ai-quota-swap/issues"
 
 [project.scripts]
@@ -57,6 +64,17 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ai_quota_swap"]
+
+# The sdist carries the source, the tests and what they need (the demo
+# harness's code, scripts/settings_doc.py, the Markdown docs), not the
+# screenshots, recordings and rendered pages the harness made, nor CI files.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/assets",
+    "/docs/shots",
+    "/.github",
+    "/.python-version",
+]
 
 [dependency-groups]
 dev = [

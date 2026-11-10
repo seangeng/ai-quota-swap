@@ -1,4 +1,4 @@
-"""Custom exceptions for Claude Switch."""
+"""Exceptions for ai-quota-swap."""
 
 
 class ProviderError(Exception):
@@ -53,7 +53,8 @@ class CodexLoginError(ProviderError):
 
 
 class ClaudeSwitchError(ProviderError):
-    """Base exception for Claude Switch errors."""
+    """Base for the errors of the Claude Code provider and of the shared code
+    (settings, locks, transfers). The name is older than Codex support."""
 
     pass
 

@@ -1,1 +1,1 @@
-"""Tests for Claude Switch."""
+"""Tests for ai-quota-swap."""

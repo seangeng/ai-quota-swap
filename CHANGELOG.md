@@ -4,7 +4,7 @@
 
 The first release under the name ai-quota-swap, version 0.1.0. The project started as a fork of [claude-swap](https://github.com/realiti4/claude-swap) 1.1.0b1, and everything that version did still works: switching Claude Code accounts by hand or automatically, parallel sessions with `run`, the dashboard, the macOS menu bar, JSON output, export and import.
 
-The package is `ai-quota-swap` and the command `qswap`. It keeps its own data directory, Keychain service, LaunchAgent and `QSWAP_*` environment variables, so it installs beside claude-swap. Accounts move across with `cswap export` and `qswap import`.
+The package is `ai-quota-swap` and the command `qswap`. It keeps its own data directory, Keychain service, LaunchAgent and environment variables (`AI_QUOTA_SWAP_NO_BUNDLE`), so it installs beside claude-swap. Accounts move across with `cswap export` and `qswap import`.
 
 ### Command line
 
@@ -16,7 +16,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `switch N` refuses an account that needs re-login unless `--anyway` (which only overrides that refusal; `--force` keeps its meaning), and warns before switching to one whose usage cannot be read or is old. A rotation (`switch` with no account, `--strategy best` or `next-available`, `qswap codex switch`) skips such accounts, one line each, as it skips disabled ones.
 - Read-only commands never ask; a question is only asked on a terminal, and without one the command stops with a line naming `--yes` (now on `remove`, `purge`, `add --slot`, `add-token --slot` and `qswap codex remove`). Cancelling `purge` changes nothing, the menu bar included.
 - Usage errors exit 64 (not 2, which `auto --once` uses for "nothing to do"); every `--json` failure is the error envelope, and every payload carries `schemaVersion`. `priority --json` is new.
-- Every message fits 80 columns, and names commands by verb, never by a legacy flag.
+- Messages fit 80 columns and name commands by verb, never by a legacy flag. `qswap budget` and `qswap api org` output are not yet wrapped or worded this way.
 
 ### Dashboard
 
@@ -26,7 +26,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - The auto view runs one engine per provider, hosted as the menu bar hosts them, each with its own badge (`OFF`, `DRY-RUN`, `LIVE`), line and toggle (Tab between them, or side by side from 140 columns); "Next best" lists only what the engine would consider.
 - A first run says how to log in or offers `Add <email>` first; the add menu lists what each provider can add, `qswap codex login` included. No menu offers an action that cannot work.
 - Nothing wraps at 80 columns: emails give way before aliases and plans before figures, and a crowded screen keeps every account on one line before it folds any.
-- Switching to an account that needs re-login is refused with the command line's message and a "Switch anyway" choice; removing asks what `qswap remove` asks. Errors read as on the command line, never as a traceback. `esc` goes back and `q` quits on every screen.
+- Switching to an account that needs re-login is refused with the command line's message and a "Switch anyway" choice; removing asks what `qswap remove` asks. Errors read as on the command line, never as a traceback. `esc` goes back on every screen, and `q` quits from every screen outside a dialog.
 
 ### Codex (experimental)
 
@@ -46,6 +46,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - Adding from a token is one dialog (token, optional email, setup-token or API key); removing asks what `qswap remove` asks; switching to an account that needs re-login asks first with `qswap switch`'s explanation.
 - `menubar_settings.json` gains `codex_auto_switch_enabled` and `title_follows`; an older file loads as before, and keys a build does not know are kept.
 - The menu is described by one pure function (`menubar.build_menu`) and drawn by a thin rumps layer; `scripts/demo/run.py SCENARIO --menubar` prints it.
+- This build of the menu bar is tested through `build_menu` and unit tests; it has not yet been run by hand on a Mac.
 
 ### Usage and cost
 
@@ -58,7 +59,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 
 - `qswap reset` lists every account's usage resets and spends one. `qswap list` and the dashboard say what an account holds ("Holds 1 Fable reset"), and the menu bar shows a notification.
 - A dry run that would spend a reset says so and stops there, rather than also reporting a switch.
-- The auto-switch engine spends resets under `resets.auto` (`last-resort` by default, or `active`, `on-limit`, `off`), only on a fresh reading, at most 3 a day, with a request id that makes a retry safe.
+- The auto-switch engine spends resets under `resets.auto` (`last-resort` by default, or `active`, `on-limit`, `off`), only on a fresh reading, at most 3 a day for each provider, with a request id that makes a retry safe.
 - Resets have kinds (Fable or another model, 5-hour, weekly, full), read from the windows they clear. The planner spends the narrowest one that helps, and spends a weekly or full reset on a per-model limit only when `resets.weeklyForModelLimit` allows it. JSON output gains `scope`.
 
 ### API accounts
@@ -67,6 +68,13 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `qswap api org add`, `list` and `remove` register an organization's Admin key. It is stored like a saved login, and qswap sends only GET requests with it.
 - `qswap budget` sets a monthly budget per API-key account. The engine warns at 80%, never switches to an account at its budget, and leaves an active one that reaches it.
 - `qswap usage --billed` shows an organization's usage and cost as Anthropic reports them.
+
+### Docs
+
+- The README is rewritten: what qswap is and how to start in one screen, then one short section per capability. Its images and links are absolute URLs, so they also render on PyPI.
+- Task-first pages under `docs/`: quickstart, auto-switch, resets, Codex, usage, API accounts, sessions, dashboard, menu bar, settings, JSON output, troubleshooting, and coming from claude-swap, indexed in `docs/README.md`.
+- `docs/settings.md` is generated from the settings in the code (`scripts/settings_doc.py`), and a test fails when a setting is missing from it, when it is stale, or when a link or anchor in any Markdown file does not resolve.
+- Every screenshot is regenerated from the current build, most from a new `showcase` scenario, and the auto-switch and reset recordings are re-made.
 
 ### Tooling
 

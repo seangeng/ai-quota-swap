@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=1200">
+<meta name="viewport" content="width=device-width">
 <meta name="color-scheme" content="light">
 <title>qswap usage</title>
 <style>
   html, body { margin: 0; padding: 0; background: transparent; }
   body { display: flex; justify-content: center; }
   .window {
-    width: 1200px; box-sizing: border-box; overflow: hidden;
+    width: fit-content; box-sizing: border-box; overflow: hidden;
     background: #fbfaf7; border: 1px solid #d9d7d1; border-radius: 12px;
   }
   .titlebar {
@@ -28,6 +28,7 @@
   }
   .screen {
     margin: 0; padding: 20px 28px 24px; color: #242422;
+    width: 80ch;
     font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
       "DejaVu Sans Mono", "Liberation Mono", monospace;
     font-size: 15px; line-height: 1.5; white-space: pre;
@@ -45,18 +46,18 @@
 <pre class="screen"><span class="prompt">$</span> <span class="cmd">qswap usage</span>
 <span style="font-weight: bold">Token usage, 2026-11-04 to 2026-11-10, Claude Code and Codex, by day</span>
 
-<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">  Day               Input   Output  Cache read  Cache write   Est. cost</span>
-  Wed 2026-11-04     827K     1.2M       53.7M         2.9M      $41.94
-  Thu 2026-11-05     679K     1.0M       48.5M         2.5M      $34.96
-  Fri 2026-11-06     524K     710K       33.6M         1.6M      $24.33
-  Sat 2026-11-07     354K     323K       14.5M         744K      $10.46
-  Sun 2026-11-08     236K     295K       12.8M         642K       $9.01
-  Mon 2026-11-09     786K     1.2M       55.2M         2.8M      $41.95
-  Tue 2026-11-10     414K     525K       24.0M         1.2M      $17.07
-<span style="font-weight: bold">  Total              3.8M     5.3M        242M        12.3M     $179.72</span>
+<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">  Day             Input  Output  Cache read  Cache write  Est. cost</span>
+  Wed 2026-11-04   506K    499K       20.6M         1.0M     $16.95
+  Thu 2026-11-05   390K    534K       24.2M         1.2M     $15.75
+  Fri 2026-11-06   433K    484K       21.9M         1.2M     $16.81
+  Sat 2026-11-07  36.6K   66.7K        3.6M         175K      $2.26
+  Sun 2026-11-08   119K    188K        8.7M         436K      $5.63
+  Mon 2026-11-09   349K    397K       17.4M         888K     $15.31
+  Tue 2026-11-10   313K    163K        6.5M         261K      $5.16
+<span style="font-weight: bold">  Total            2.1M    2.3M        103M         5.2M     $77.88</span>
 
-<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Costs are estimates at API list prices (Anthropic and OpenAI pricing pages, 2026-11-10). Subscription usage is </span>
-<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">not billed this way.</span></pre>
+<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Costs are estimates at API list prices (Anthropic and OpenAI pricing pages,</span>
+<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">2026-11-10). Subscription usage is not billed this way.</span></pre>
 </div>
 </body>
 </html>

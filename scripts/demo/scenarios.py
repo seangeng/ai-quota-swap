@@ -154,6 +154,8 @@ class ClaudeAccount:
     # An Anthropic API key (``qswap add-token sk-ant-...``) instead of a login:
     # no quota windows, never polled on the usage endpoint.
     api_key: bool = False
+    # A monthly budget in dollars (``qswap budget N AMOUNT``), API keys only.
+    budget: float | None = None
     # Access-token lifetime from the clock; negative means already expired.
     token_expires_in: timedelta = timedelta(hours=8)
     # The token endpoint answers ``invalid_grant`` for this login's refresh
@@ -303,6 +305,10 @@ class Ledger:
     # The same for Codex accounts (Codex's own activation log).
     codex_switches: tuple[tuple[int, int, int], ...] = ()
     daily_scale: float = 1.0
+    # Read the history into ``ledger.db`` while seeding, as an earlier
+    # ``qswap usage`` run would have: API-key spend on ``list`` rows and the
+    # menu bar's cost row read the ledger without scanning it.
+    prescan: bool = False
 
 
 @dataclass(frozen=True)
@@ -723,6 +729,14 @@ SESSION_RESET = Grant(
     type="session",
     ends_in=20 * D,
 )
+# A weekly reset: clears the all-models weekly window.
+WEEKLY_RESET = Grant(
+    id="tenure-12m-weekly",
+    label="One weekly reset at 12 months' tenure",
+    clears=("seven_day",),
+    type="weekly",
+    ends_in=20 * D,
+)
 
 
 def _fleet_accounts() -> tuple[ClaudeAccount, ...]:
@@ -843,7 +857,7 @@ FLEET = Scenario(
 def _autoswitch_accounts() -> tuple[ClaudeAccount, ...]:
     a1, a2, a3, _a4 = _fleet_accounts()
     return (
-        # 78% at the warm-up read, then 86%, 88.5%, 91%: rising inside 15
+        # 76% at the warm-up read, then 86%, 88.5%, 91%: rising inside 15
         # points of its line puts the poll planner on a one-minute cadence,
         # so each tick sees a fresh reading until the switch.
         replace(a1, five_hour=Window(Ramp(86.0, 2.5, cap=92.0), 1 * H + 50 * M)),
@@ -860,7 +874,10 @@ AUTOSWITCH = Scenario(
     active=1,
     settings={**_DARK, "autoswitch": {"threshold": 90, "intervalSeconds": 60, "cooldownSeconds": 60}},
     auto=AutoRun(ticks=3, compression=20.0),
-    warmup=3 * M,
+    # Four minutes, past the store's three-minute serve window, so the first
+    # check always reads afresh (86%). At exactly three minutes the seconds a
+    # run takes decided whether it saw the warm-up reading instead.
+    warmup=4 * M,
 )
 
 
@@ -872,7 +889,9 @@ def _reset_accounts() -> tuple[ClaudeAccount, ...]:
             five_hour=Window(31, 3 * H + 5 * M),
             seven_day=Window(74, 3 * D + 6 * H),
             models=(ModelWindow("Fable", 100, 3 * D + 6 * H, share_of_weekly=22),),
-            resets=Resets(grants=(FABLE_RESET, replace(SESSION_RESET, usable_now=True))),
+            # A Fable reset and a weekly reset: the planner spends the Fable
+            # one, the narrowest that clears the limit reached.
+            resets=Resets(grants=(FABLE_RESET, WEEKLY_RESET)),
         ),
         replace(a2, resets=Resets(eligible=False, ineligible_reason="plan")),
         replace(a3, resets=Resets(grants=())),
@@ -882,7 +901,7 @@ def _reset_accounts() -> tuple[ClaudeAccount, ...]:
 
 RESET = Scenario(
     name="reset",
-    title="A per-model window at 100% with a usage reset ready",
+    title="A per-model window at 100%, with a Fable reset and a weekly reset held",
     clock=CLOCK,
     accounts=_reset_accounts(),
     active=1,
@@ -938,6 +957,66 @@ USAGE = Scenario(
             for h, slot in ((9, 2), (17, 1))
         ),
         daily_scale=2.0,
+    ),
+)
+
+
+# -- the README's hero: every kind of account, with history ----------------------
+
+
+def _showcase_accounts() -> tuple[ClaudeAccount | CodexAccount, ...]:
+    a1, a2, a3, a4 = _fleet_accounts()
+    extra = _fleet_extra()
+    return (
+        a1,  # active, holds a Fable reset
+        a2,  # Team, extra-usage spend
+        a3,  # near its limit
+        a4,  # disabled
+        replace(extra[0], budget=40.0),  # API key with spend (from the ledger) and a budget
+        *extra[1:],  # Codex: the active account, and a saved one holding a reset credit
+    )
+
+
+def _showcase_switches() -> tuple[tuple[int, int, int], ...]:
+    """Which Claude account was active when: mornings on #1, middays on #2,
+    evenings on #1 (#3 every third day), and on weekdays the API key #5 for
+    CI runs at nine and mid-afternoon, today included."""
+    out = []
+    for d in range(15, -1, -1):
+        weekday = d % 7 not in (2, 3)  # the clock is a Tuesday: 2 and 3 days ago are the weekend
+        out.append((d, 8, 1))
+        if weekday:
+            out += [(d, 9, 5), (d, 10, 1)]
+        out.append((d, 12, 2))
+        if weekday:
+            out.append((d, 15, 5))
+        out.append((d, 17, 1 if d % 3 else 3))
+    return tuple(out)
+
+
+SHOWCASE = Scenario(
+    name="showcase",
+    title="Every kind of account, with two weeks of history: the README's hero",
+    clock=CLOCK,
+    accounts=_showcase_accounts(),
+    active=1,
+    codex_active=1,
+    codex_login=CODEX_NEW_LOGIN,
+    settings=_DARK,
+    warmup=2 * M,
+    ledger=Ledger(
+        days=14,
+        projects=USAGE.ledger.projects,
+        switches=_showcase_switches(),
+        codex_projects=USAGE.ledger.codex_projects,
+        codex_switches=USAGE.ledger.codex_switches,
+        daily_scale=1.0,
+        prescan=True,
+    ),
+    notes=(
+        "Claude: 1 active holding a Fable reset, 2 Team with extra usage, 3 near its "
+        "limit, 4 disabled, 5 an API key with spend and a $40 budget. Codex: 1 active, "
+        "2 holding a reset credit. Two weeks of sessions for the cost line and usage."
     ),
 )
 
@@ -1083,7 +1162,7 @@ TROUBLE = Scenario(
 
 SCENARIOS: dict[str, Scenario] = {
     s.name: s for s in (
-        FLEET, AUTOSWITCH, RESET, RESET_AFTER, USAGE,
+        FLEET, AUTOSWITCH, RESET, RESET_AFTER, USAGE, SHOWCASE,
         EMPTY, EMPTY_CLAUDE, EMPTY_CLAUDE_CODEX, TROUBLE,
     )
 }

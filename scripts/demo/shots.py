@@ -1,9 +1,10 @@
-"""The README shot list: which scenario, which command, what size.
+"""The README and docs shot list: which scenario, which command, what size.
 
 CLI shots render to HTML (``docs/shots/<name>.html`` and ``<name>-light.html``)
 and are screenshotted from there; TUI shots are screenshotted from the served
-dashboard. Width is the terminal's column count; every window is 1200 CSS px
-wide and captured at 2x, so text keeps one scale across the README.
+dashboard. ``columns`` is the terminal's column count: a CLI window is as wide
+as its columns at one font size, and a TUI shot is sized in cells (columns x
+rows), so text keeps one scale across the README. Everything is captured at 2x.
 """
 
 from __future__ import annotations
@@ -25,33 +26,49 @@ class CliShot:
 class TuiShot:
     name: str
     scenario: str
-    view: str  # "dashboard" | "watch"
     caption: str
-    font_size: int = 19
-    height: int = 600  # px of terminal area; rows = height / cell height
+    steps: tuple = ()  # ("key", "Enter") | ("type", "g") | ("wait", seconds), from the first frame
+    columns: int = 100
+    rows: int = 30
+    font_size: int = 18
+    settle: float = 4.0  # seconds after the first frame before the first key
     theme: str = "dark"
 
 
 CLI_SHOTS = (
-    CliShot("list", "fleet", ("list",), 100,
-            "qswap list: every account's 5-hour, weekly and per-model usage, plan and resets"),
-    CliShot("reset", "reset", ("reset", "++", "reset", "1", "--yes"), 112,
-            "qswap reset: the grants each account holds, then one spent on a window at 100%"),
-    CliShot("usage", "usage", ("usage",), 112,
+    CliShot("list", "showcase", ("list",), 80,
+            "qswap list: every account's 5-hour, weekly and per-model usage, plan, resets and spend"),
+    CliShot("status", "showcase", ("status",), 80,
+            "qswap status: the active account of each provider, and whether auto-switch runs"),
+    CliShot("reset", "reset", ("reset", "++", "reset", "1", "--yes"), 80,
+            "qswap reset: a Fable reset and a weekly reset held, then the Fable one spent"),
+    CliShot("usage", "showcase", ("usage",), 80,
             "qswap usage: tokens and estimated API cost per day, Claude Code and Codex"),
-    CliShot("usage-by-model", "usage", ("usage", "--by", "model"), 112,
+    CliShot("usage-by-model", "showcase", ("usage", "--by", "model"), 80,
             "qswap usage --by model"),
-    CliShot("auto", "autoswitch", ("auto",), 124,
-            "qswap auto: the engine watches the active account and switches at the line"),
+    CliShot("auto", "autoswitch", ("auto",), 80,
+            "qswap auto: one line per check, and a switch at the line"),
+    CliShot("doctor", "empty-claude-codex", ("doctor",), 80,
+            "qswap doctor on a first run: what is set up, what is not, and the command that fixes it"),
 )
 
 TUI_SHOTS = (
-    TuiShot("dashboard", "fleet", "dashboard",
-            "The dashboard (qswap): the active account in full, the rest at a glance",
-            height=600),
-    TuiShot("watch", "fleet", "watch",
-            "The watch page (qswap watch): every account's windows, live",
-            height=570),
+    TuiShot("dashboard", "showcase",
+            "The dashboard (qswap): both providers' accounts, the active ones in full, today's cost",
+            columns=100, rows=30),
+    TuiShot("watch", "showcase",
+            "The watch page (w, or qswap watch): every account's windows, live",
+            steps=(("type", "w"), ("wait", 1.5)), columns=100, rows=40),
+    TuiShot("dashboard-usage", "showcase",
+            "The usage screen (u), regrouped by account (Tab, Tab): both providers' accounts",
+            steps=(("type", "u"), ("wait", 2.5), ("key", "Tab"), ("key", "Tab"), ("wait", 2.0)),
+            columns=100, rows=22),
+    TuiShot("dashboard-auto", "showcase",
+            "The auto view (g): one engine per provider, side by side on a wide terminal",
+            steps=(("type", "g"), ("wait", 3.0)), columns=140, rows=26, font_size=16),
+    TuiShot("first-run", "empty-claude-codex",
+            "A first run: live Claude Code and Codex logins, nothing managed yet",
+            columns=80, rows=16),
 )
 
 
