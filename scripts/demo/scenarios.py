@@ -857,7 +857,7 @@ FLEET = Scenario(
 def _autoswitch_accounts() -> tuple[ClaudeAccount, ...]:
     a1, a2, a3, _a4 = _fleet_accounts()
     return (
-        # 78% at the warm-up read, then 86%, 88.5%, 91%: rising inside 15
+        # 76% at the warm-up read, then 86%, 88.5%, 91%: rising inside 15
         # points of its line puts the poll planner on a one-minute cadence,
         # so each tick sees a fresh reading until the switch.
         replace(a1, five_hour=Window(Ramp(86.0, 2.5, cap=92.0), 1 * H + 50 * M)),
@@ -874,7 +874,10 @@ AUTOSWITCH = Scenario(
     active=1,
     settings={**_DARK, "autoswitch": {"threshold": 90, "intervalSeconds": 60, "cooldownSeconds": 60}},
     auto=AutoRun(ticks=3, compression=20.0),
-    warmup=3 * M,
+    # Four minutes, past the store's three-minute serve window, so the first
+    # check always reads afresh (86%). At exactly three minutes the seconds a
+    # run takes decided whether it saw the warm-up reading instead.
+    warmup=4 * M,
 )
 
 

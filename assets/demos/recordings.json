@@ -3,18 +3,18 @@
     "name": "autoswitch",
     "scenario": "autoswitch",
     "mode": "littledemo",
-    "video": "assets/demos/autoswitch.mp4 (local only, not committed; hosted copy: upload.videoUrl)",
+    "video": "assets/demos/autoswitch.mp4",
     "gif": "assets/demos/autoswitch.gif",
-    "gifBytes": 1218059,
+    "gifBytes": 1117418,
     "upload": {
-      "id": "demo_hs6c3p76ofefqq6vhpm3",
+      "id": "demo_mke649fhtxo371dkgaf0",
       "status": "ready",
-      "jobId": "job_lrwmx5kef7vy12f5kfmi",
-      "shareUrl": "https://littledemo.com/d/demo_hs6c3p76ofefqq6vhpm3",
-      "embedUrl": "https://littledemo.com/embed/demo_hs6c3p76ofefqq6vhpm3",
-      "videoUrl": "https://littledemo.com/api/v1/demos/demo_hs6c3p76ofefqq6vhpm3/video",
-      "thumbUrl": "https://littledemo.com/thumb/demo_hs6c3p76ofefqq6vhpm3.png",
-      "gifUrl": "https://littledemo.com/gif/demo_hs6c3p76ofefqq6vhpm3.gif"
+      "jobId": "job_5ekooyamqzoi14xbd9qu",
+      "shareUrl": "https://littledemo.com/d/demo_mke649fhtxo371dkgaf0",
+      "embedUrl": "https://littledemo.com/embed/demo_mke649fhtxo371dkgaf0",
+      "videoUrl": "https://littledemo.com/api/v1/demos/demo_mke649fhtxo371dkgaf0/video",
+      "thumbUrl": "https://littledemo.com/thumb/demo_mke649fhtxo371dkgaf0.png",
+      "gifUrl": "https://littledemo.com/gif/demo_mke649fhtxo371dkgaf0.gif"
     },
     "recorder": "@littledemo/cli 0.3.2 record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg"
   },
@@ -22,18 +22,18 @@
     "name": "reset",
     "scenario": "reset",
     "mode": "littledemo",
-    "video": "assets/demos/reset.mp4 (local only, not committed; hosted copy: upload.videoUrl)",
+    "video": "assets/demos/reset.mp4",
     "gif": "assets/demos/reset.gif",
-    "gifBytes": 1313536,
+    "gifBytes": 1206941,
     "upload": {
-      "id": "demo_fd8cm9v28x6ia57gju2e",
+      "id": "demo_cd56uxcfkevqli7f36sa",
       "status": "ready",
-      "jobId": "job_hznbgc6c19jzz539im91",
-      "shareUrl": "https://littledemo.com/d/demo_fd8cm9v28x6ia57gju2e",
-      "embedUrl": "https://littledemo.com/embed/demo_fd8cm9v28x6ia57gju2e",
-      "videoUrl": "https://littledemo.com/api/v1/demos/demo_fd8cm9v28x6ia57gju2e/video",
-      "thumbUrl": "https://littledemo.com/thumb/demo_fd8cm9v28x6ia57gju2e.png",
-      "gifUrl": "https://littledemo.com/gif/demo_fd8cm9v28x6ia57gju2e.gif"
+      "jobId": "job_rd1rp6jnlyzoqxkje10p",
+      "shareUrl": "https://littledemo.com/d/demo_cd56uxcfkevqli7f36sa",
+      "embedUrl": "https://littledemo.com/embed/demo_cd56uxcfkevqli7f36sa",
+      "videoUrl": "https://littledemo.com/api/v1/demos/demo_cd56uxcfkevqli7f36sa/video",
+      "thumbUrl": "https://littledemo.com/thumb/demo_cd56uxcfkevqli7f36sa.png",
+      "gifUrl": "https://littledemo.com/gif/demo_cd56uxcfkevqli7f36sa.gif"
     },
     "recorder": "@littledemo/cli 0.3.2 record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg"
   }
