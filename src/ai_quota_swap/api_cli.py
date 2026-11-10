@@ -44,8 +44,8 @@ NOT_A_CAP = (
     "in the Console."
 )
 _STORAGE_WORDS = {
-    STORAGE_KEYCHAIN: "macOS Keychain",
-    STORAGE_FILE: "0600 file in the data directory",
+    STORAGE_KEYCHAIN: "the macOS Keychain",
+    STORAGE_FILE: "a 0600 file in the data directory",
     STORAGE_ENV: f"{ENV_VAR}, not stored",
 }
 
@@ -182,7 +182,7 @@ def _org_add(switcher, name: str | None) -> None:
     cache.forget(org.name)
     shown = f" ({org.organization_name})" if org.organization_name else ""
     print(f"{accent('Registered')} organization '{org.name}'{shown}.")
-    print(dimmed(f"  The Admin key is in the {_STORAGE_WORDS.get(org.storage, org.storage)}."))
+    print(dimmed(f"  The Admin key is stored in {_STORAGE_WORDS.get(org.storage, org.storage)}."))
     _print_links(switcher, registry, force=True)
 
 
