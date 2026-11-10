@@ -141,6 +141,13 @@ class ResetSettings:
 
     ``min_hours_left``: skip a reset when the window it would refill resets
     on its own within this many hours anyway.
+
+    ``weekly_for_model_limit``: resets are not interchangeable. A weekly (or
+    full) reset clears all weekly usage, so by default automatic modes spend
+    one only when an all-usage window (the all-models weekly or the 5-hour
+    window) is the reason, never when only a per-model limit such as Fable's
+    is reached. True lets them spend it on a per-model limit too.
+    ``qswap reset N`` is never restricted by this.
     """
 
     enabled: bool = True
@@ -149,6 +156,7 @@ class ResetSettings:
     min_hours_left: float = 24.0
     expiry_days: float = 7.0
     expiry_threshold: float = 50.0
+    weekly_for_model_limit: bool = False
 
 
 @dataclass(frozen=True)
@@ -292,6 +300,10 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "resets", "expiryThreshold", "expiry_threshold", "float", 0.0, 100.0,
             help="Inside that runway, use a reset once its window reaches this pct",
+        ),
+        SettingSpec(
+            "resets", "weeklyForModelLimit", "weekly_for_model_limit", "bool",
+            help="Let auto spend a weekly or full reset when only a per-model limit (e.g. Fable) is reached",
         ),
         SettingSpec(
             "codex", "restartDaemon", "restart_daemon", "bool",

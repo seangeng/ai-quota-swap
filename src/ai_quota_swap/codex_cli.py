@@ -524,7 +524,8 @@ def extend_unified_list(payload, *, json_output: bool):
 
 
 def describe_credit(
-    num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float
+    num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float,
+    *, threshold: float = 95.0,
 ) -> str:
     """What spending one Codex usage reset credit would do, before asking."""
     from ai_quota_swap import resets
@@ -532,6 +533,11 @@ def describe_credit(
     lines = [bolded(f"Account-{num} ({email}) · Codex usage reset credit · {grant['id']}")]
     if grant.get("label"):
         lines.append(dimmed(f"  {grant['label']}"))
+    name = resets.reset_name(grant)
+    lines.append(f"  {name[:1].upper()}{name[1:]}: {resets.clears_phrase(grant)}")
+    trade = resets.trade_note(grant, usage, threshold)
+    if trade:
+        lines.append(f"  {trade}")
     refills = []
     for key in grant.get("clears") or ():
         label = resets.WINDOW_LABELS.get(key) or key

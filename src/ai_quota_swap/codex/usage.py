@@ -400,13 +400,13 @@ def credits_status(listing: object, usage: dict) -> dict:
     also resets an additional limit is not known, so those are not listed),
     ``label`` the credit's title. A credit whose id cannot be an id
     (:func:`valid_credit_id`) is dropped with a log line.
+
+    Every credit is a full reset ("Full reset (Weekly + 5 hr)"), so ``type``
+    is ``full``. What it does on this account is what it ``clears``: on a
+    plan with only a weekly window it behaves as a weekly reset
+    (``resets.grant_scope`` reads the windows, not the type).
     """
     clears = [key for key in ("five_hour", "seven_day") if key in usage]
-    kind = {
-        ("five_hour", "seven_day"): "full",
-        ("seven_day",): "weekly",
-        ("five_hour",): "session",
-    }.get(tuple(clears))
     credits = listing.get("credits") if isinstance(listing, dict) else None
     grants: list[dict] = []
     for raw in credits if isinstance(credits, list) else ():
@@ -442,7 +442,7 @@ def credits_status(listing: object, usage: dict) -> dict:
             # when no window needs it, so no limit has to be hit first.
             "use_requires_limit": False,
             "gives_back_weekly": False,
-            "type": kind,
+            "type": "full",
             "unavailable_reason": reason,
             "percent_used": {},
         })

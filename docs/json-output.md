@@ -47,6 +47,12 @@ Weekly windows (`sevenDay` and per-model `scoped` entries, never `fiveHour`) add
 
 The two projections stay `--json`-only, since a linear projection is too rough to present as fact in the UI.
 
+## Usage resets
+
+`usage.resets` (in `list` rows) and each account's `resets` in `qswap reset --json` list the account's grants. Each grant has `kind` (`Fable` or another model's name, `session`, `weekly`, `full`, or `reset` for a shape qswap cannot name) and `scope`, the class the planner works with: `model` (per-model weekly windows only, such as a Fable reset), `session` (the 5-hour window), `weekly` (the all-models weekly window), `full` (both) or `unknown` (never spent automatically). `clears` lists the windows it resets by their server names; `clearsUnknown` lists any window names qswap does not know (such a grant is never spent automatically either).
+
+`qswap reset --json` reports `auto.weeklyForModelLimit`, and its `plan` (like the `plan` of a `limit-reset` event) carries `scope` next to `grantKind`. A `limit-reset` event also has `scope` at its top level.
+
 ## Codex
 
 `qswap codex list --json`, `status --json` and `switch --json` use the envelopes above. In a Codex row:
@@ -54,7 +60,7 @@ The two projections stay `--json`-only, since a linear projection is too rough t
 - `organizationUuid` is the ChatGPT account (or workspace) id and `organizationName` is empty. `isOrganization` is `true` only for a workspace plan (Team, Business, Enterprise, ...).
 - `usage` carries `fiveHour` and `sevenDay` when the account has those windows (a Pro account reports only `sevenDay`); any other window, and each model-specific limit, is a `scoped` entry with a `name`.
 - `plan` has `label` (`Plus`, `Pro`, `Team`, ...), `tier` (the raw `plan_type`), `planDisplayName`, `expired` (always `false`) and `fetchedAt`.
-- `usage.resets` lists the account's reset credits, one grant per credit (`resetsLeft` 1 while it is available, `endsAt` its expiry).
+- `usage.resets` lists the account's reset credits, one grant per credit (`resetsLeft` 1 while it is available, `endsAt` its expiry). Every credit is a full reset; its `scope` is `full` when the account has both windows and `weekly` on a weekly-only plan.
 - `usageStatus` can also be `unknown_until_used`: a saved login whose access token expired while unused (or was refused). Codex renews it the first time it runs on that account. `token_expired` is the live login's state: its token ran out while Codex was idle.
 
 `qswap codex reset --json` has the shape of `qswap reset --json`: bare, `{auto, plan, accounts}` with each account's `resets` in the shape above; with an account, `{account, grantId, result}`, where `grantId` is the credit id and `result.result` is `reset`, `already_used` (the credit was already spent with this request id; counts as done), `ineligible` (`reason: "nothing_to_reset"`), `unavailable` (`reason: "no_credit"`), `auth_error`, `rate_limited` or `error`. After a `reset`, `result.detail` says how many windows the server reset when it said so (`"2 windows reset"`), and `resetsLeft` is `null`: a credit is single-use, so the account's remaining credits are in its next reading.
