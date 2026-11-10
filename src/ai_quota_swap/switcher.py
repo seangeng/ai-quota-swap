@@ -38,6 +38,7 @@ from ai_quota_swap.json_output import (
     USAGE_TOKEN_EXPIRED,
     account_ref,
     account_row,
+    api_spend_to_json,
     last_good_usage_fields,
     usage_failure_fields,
     usage_fields,
@@ -356,6 +357,18 @@ def _usage_entry_lines(
     """
     login_row = _login_row(login_expires_at, entry.sentinel == USAGE_RELOGIN_REQUIRED)
     login_line = muted(_pad_row(*login_row, len(login_row[0]) + 1)) if login_row else None
+    if entry.sentinel == USAGE_API_KEY and isinstance(entry.api_spend, dict):
+        # An API-key account's spend (docs/api-accounts.md); without a
+        # reading it falls through to the plain "API key (no quota)" note.
+        from ai_quota_swap import api_spend
+
+        reading = entry.api_spend
+        paint = yellowed if api_spend.over_budget(reading) else dimmed
+        out = [paint(api_spend.spend_text(reading))]
+        detail = api_spend.detail_text(reading)
+        if detail:
+            out.append(f"{dimmed('└')} {muted(detail)}")
+        return out
     if entry.sentinel is not None:
         out = [dimmed(SENTINEL_NOTES.get(entry.sentinel, entry.sentinel))]
         last_seen = last_seen_note(entry)
@@ -404,6 +417,17 @@ def _label_token_status(source: str, credentials: str) -> str | None:
     if status.startswith(prefix):
         return f"{source}: {status.removeprefix(prefix)}"
     return f"{source}: {status}"
+
+
+def _record_budget(data: dict, account_num: str) -> float | None:
+    """A slot's monthly budget (``qswap budget``) from loaded registry data;
+    None when unset or unusable."""
+    record = (data.get("accounts") or {}).get(str(account_num))
+    if not isinstance(record, dict) or record.get("budget") is None:
+        return None
+    from ai_quota_swap.api_spend import budget_from_record
+
+    return budget_from_record(record)
 
 
 def _same_directory(left: Path, right: Path) -> bool:
@@ -2286,7 +2310,9 @@ class ClaudeAccountSwitcher:
     #: rewrites from the new credential. ``add_account`` and
     #: ``add_account_from_token`` rebuild a ``--slot`` record wholesale and
     #: carry exactly these across; a new per-account setting belongs here.
-    USER_ACCOUNT_SETTINGS: tuple[str, ...] = ("alias", "disabled", "threshold", "priority")
+    USER_ACCOUNT_SETTINGS: tuple[str, ...] = (
+        "alias", "disabled", "threshold", "priority", "budget",
+    )
 
     @classmethod
     def _carried_settings(cls, record: dict | None) -> dict:
@@ -5923,10 +5949,38 @@ class ClaudeAccountSwitcher:
                 ):
                     sentinels[num] = USAGE_RELOGIN_REQUIRED
 
-        return {
+        collected = {
             num: with_sentinel(entries[num], sentinels.get(num))
             for num in info_by_num
         }
+        # API-key accounts keep their sentinel (never ranked by windows, never
+        # polled above) and carry a spend reading beside it.
+        api_infos = {
+            num: info_by_num[num]
+            for num, sentinel in sentinels.items()
+            if sentinel == USAGE_API_KEY
+        }
+        if api_infos:
+            for num, reading in self._api_spend_readings(api_infos, fetch).items():
+                collected[num] = dataclasses.replace(collected[num], api_spend=reading)
+        return collected
+
+    def _api_spend_readings(
+        self, infos: dict[str, tuple], fetch: set[str] | None
+    ) -> dict[str, dict]:
+        """Spend readings for API-key accounts (``api_spend.readings``).
+        Never raises: a failure here leaves the rows as they were."""
+        try:
+            from ai_quota_swap import api_spend
+
+            return api_spend.readings(self, infos, fetch=fetch)
+        except Exception as e:
+            from ai_quota_swap.admin_api import redact
+
+            self._logger.debug(
+                "API-key spend reading failed: %s: %s", type(e).__name__, redact(e)
+            )
+            return {}
 
     def _slot_token_dead(self, num: str, email: str) -> bool:
         """Is this slot quarantined as refresh-token-dead, right now?
@@ -6365,6 +6419,8 @@ class ClaudeAccountSwitcher:
                     policy=self._policy_from_data(seq_data, str(num)),
                     login_expires_at=oauth.login_expires_at_iso(creds),
                     subscription_plan=(plans or {}).get(str(num)),
+                    api_spend=entry.api_spend,
+                    budget=_record_budget(seq_data, str(num)),
                 )
             )
         payload = {
@@ -6548,6 +6604,11 @@ class ClaudeAccountSwitcher:
         }
         if alias:
             active["alias"] = alias
+        budget = _record_budget(data, account_num)
+        if budget is not None:
+            active["budget"] = budget
+        if entry.api_spend is not None:
+            active["apiSpend"] = api_spend_to_json(entry.api_spend)
         if usage is not None:
             active.update(usage_freshness_fields(entry.fetched_at, entry.age_s))
         else:
@@ -8370,6 +8431,12 @@ class ClaudeAccountSwitcher:
             removed_items.append(
                 f"Session profiles: {', '.join(d.name for d in session_dirs)}"
             )
+
+        # Admin keys (`qswap api org add`): their Keychain items are named from
+        # the registry inside the backup dir, so they too go first.
+        from ai_quota_swap import admin_orgs
+
+        removed_items.extend(admin_orgs.purge_secrets(self.backup_dir, self.platform))
 
         # Remove backup directory
         if self.backup_dir.exists():

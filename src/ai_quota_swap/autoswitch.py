@@ -478,6 +478,41 @@ class ConfigWarningEvent(AutoSwitchEvent):
 
 
 @dataclass(frozen=True)
+class BudgetWarningEvent(AutoSwitchEvent):
+    """An API-key account reached ``api_spend.BUDGET_WARN_FRACTION`` of its
+    monthly budget. Emitted once per account per UTC month. Additive kind."""
+
+    kind: ClassVar[str] = "budget-warning"
+    account: dict  # account_ref shape
+    used: float
+    limit: float
+    month: str  # "YYYY-MM", UTC
+    source: str | None = None  # "admin-api" | "ledger"
+
+    @property
+    def pct(self) -> float:
+        return self.used / self.limit * 100.0 if self.limit else 0.0
+
+    def _fields(self) -> dict:
+        return {
+            "account": self.account,
+            "usedUsd": round(self.used, 2),
+            "budgetUsd": self.limit,
+            "pct": round(self.pct, 1),
+            "month": self.month,
+            "source": self.source,
+        }
+
+    def human(self) -> str:
+        who = f"Account-{self.account.get('number')} ({self.account.get('email')})"
+        estimate = " (estimate)" if self.source == "ledger" else ""
+        return (
+            f"{who} has spent ${self.used:,.2f} of its ${self.limit:,.2f} monthly "
+            f"budget ({self.pct:.0f}%){estimate}"
+        )
+
+
+@dataclass(frozen=True)
 class ResetEvent(AutoSwitchEvent):
     """A usage reset the engine spent (or, dry-run, would spend).
 
@@ -907,6 +942,26 @@ def _ref(number: str, email: str) -> dict:
     return {"number": int(number), "email": email}
 
 
+def _api_budget(entry: object) -> tuple[float, float, str, str | None] | None:
+    """``(used, limit, month, source)`` of an API-key account with a budget
+    and a spend figure (``UsageEntry.api_spend``), else None: an account with
+    no budget, or nothing to hold it against, is left exactly as before."""
+    from ai_quota_swap import api_spend
+
+    reading = getattr(entry, "api_spend", None)
+    state = api_spend.budget_state(reading)
+    if state is None:
+        return None
+    month = reading.get("month") if isinstance(reading.get("month"), str) else ""
+    source = reading.get("source") if isinstance(reading.get("source"), str) else None
+    return state[0], state[1], month, source
+
+
+def _over_budget(entry: object) -> bool:
+    budget = _api_budget(entry)
+    return budget is not None and budget[0] >= budget[1]
+
+
 def _headroom_by_account(
     usage: dict[str, dict | str | None], models: tuple[str, ...]
 ) -> dict[str, float | None]:
@@ -982,6 +1037,9 @@ class AutoSwitchEngine:
         # warned) on the first tick where every relevant account has readable
         # usage — adaptive polling legitimately leaves gaps before that.
         self._model_check_done = not self._models
+        # (account, month) budget warnings this engine has emitted; the state
+        # file carries them across processes, this covers dry-run too.
+        self._budget_warned: set[tuple[str, str]] = set()
 
     # -- state file ---------------------------------------------------------
 
@@ -1579,9 +1637,15 @@ class AutoSwitchEngine:
         if refilled is not None:
             entries, usage, headroom = refilled
 
+        # API-key budgets (docs/api-accounts.md): one warning per account per
+        # month, and an active account at its budget is at its limit.
+        self._warn_budgets(state, entries)
+        active_over_budget = _over_budget(entries.get(current))
+
         if (
             self.switcher.account_kind_for(current) == "api_key"
             and not settings.include_api_key_accounts
+            and not active_over_budget
         ):
             self._emit(
                 NoSwitchEvent(
@@ -1593,7 +1657,13 @@ class AutoSwitchEngine:
 
         active_headroom = headroom.get(current)
         active_binding: BindingWindow | None = None
-        if active_headroom is not None:
+        if active_over_budget:
+            # The budget is this account's limit: leave it like an exhausted
+            # one (at-limit skips the cooldown and the landing hysteresis).
+            self._unhealthy_ticks = 0
+            self._idle_hold_since = None
+            trigger = "at-limit"
+        elif active_headroom is not None:
             self._unhealthy_ticks = 0
             self._idle_hold_since = None
             # Each window against its OWN line, the closest one decides (see
@@ -1697,7 +1767,11 @@ class AutoSwitchEngine:
         # in this census of what exists. See `_no_return_account` for the
         # incident, the scoping, and the release.
         api_key_candidates = (
-            [n for n in candidates if self.switcher.account_kind_for(n) == "api_key"]
+            [
+                n for n in candidates
+                if self.switcher.account_kind_for(n) == "api_key"
+                and not _over_budget(entries.get(n))  # at its budget: not a target
+            ]
             if settings.include_api_key_accounts
             else []
         )
@@ -2999,6 +3073,52 @@ class AutoSwitchEngine:
         if not isinstance(last, (int, float)):
             return False
         return (self.clock() - last) < self.settings.cooldown_seconds
+
+    def _warn_budgets(self, state: dict, entries: Mapping[str, object]) -> None:
+        """One ``budget-warning`` per API-key account per UTC month, once its
+        spend reaches ``BUDGET_WARN_FRACTION`` of its budget. Remembered in
+        the state file (``budgetWarnings``: account number -> month) so a
+        cron ``--once`` tick does not repeat it; dry-run writes nothing and
+        remembers in memory only."""
+        from ai_quota_swap.api_spend import BUDGET_WARN_FRACTION
+
+        stored = state.get("budgetWarnings")
+        stored = stored if isinstance(stored, dict) else {}
+        due: list[tuple[str, float, float, str, str | None]] = []
+        for num, entry in entries.items():
+            budget = _api_budget(entry)
+            if budget is None:
+                continue
+            used, limit, month, source = budget
+            if not month or used < BUDGET_WARN_FRACTION * limit:
+                continue
+            if stored.get(num) == month or (num, month) in self._budget_warned:
+                continue
+            due.append((num, used, limit, month, source))
+        if not due:
+            return
+        for num, used, limit, month, source in due:
+            self._budget_warned.add((num, month))
+            self._emit(
+                BudgetWarningEvent(
+                    account=_ref(num, self.switcher.account_email(num)),
+                    used=used, limit=limit, month=month, source=source,
+                )
+            )
+        if self.dry_run:
+            return
+
+        def remember(s: dict) -> None:
+            warned = s.get("budgetWarnings")
+            if not isinstance(warned, dict):
+                warned = s["budgetWarnings"] = {}
+            for num, _used, _limit, month, _source in due:
+                warned[num] = month
+
+        try:
+            self._mutate_state(remember)
+        except Exception as e:  # a warning must never cost the tick
+            _logger.debug("Could not record a budget warning: %s", e)
 
     def _check_model_names(
         self, quarantined: set[str], usage: dict[str, dict | str | None]

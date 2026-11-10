@@ -1217,9 +1217,12 @@ Examples:
   qswap usage --provider codex --by project
   qswap usage --json
   qswap usage --all                  # read your whole history into the ledger
+  qswap usage --billed --by model    # add what Anthropic billed the organization
 
 A run reads only the session files its dates need, newest first, and only
 what was added since the last run. See docs/usage.md for what the numbers mean.
+--billed is the only part that uses the network (the Admin API, with a key
+registered by `qswap api org add`); it groups by day, model, key or workspace.
         """,
     )
     span = parser.add_mutually_exclusive_group()
@@ -1234,10 +1237,18 @@ what was added since the last run. See docs/usage.md for what the numbers mean.
         help="Last day, included (with --since; default today)",
     )
     parser.add_argument(
-        "--by", choices=GROUPINGS, default="day", help="How to group rows (default: day)"
+        "--by", choices=(*GROUPINGS, "key", "workspace"), default="day",
+        help="How to group rows (default: day; key and workspace need --billed)",
     )
     parser.add_argument("--provider", choices=PROVIDERS, help="Only this CLI's usage")
     parser.add_argument("--json", action="store_true", help="Machine-readable output")
+    parser.add_argument(
+        "--billed", action="store_true",
+        help=(
+            "Also show each registered organization's usage and billed cost as "
+            "Anthropic reports them (Admin API; UTC days)"
+        ),
+    )
     scan = parser.add_mutually_exclusive_group()
     scan.add_argument(
         "--no-scan", action="store_true",
@@ -1258,6 +1269,10 @@ what was added since the last run. See docs/usage.md for what the numbers mean.
         parser.error("--until needs --since")
     if args.days is not None and args.days < 1:
         parser.error("--days must be at least 1")
+    if args.by in ("key", "workspace") and not args.billed:
+        parser.error(f"--by {args.by} needs --billed (the local ledger has no {args.by}s)")
+    # The ledger's own grouping for the Admin API's key/workspace views.
+    ledger_by = {"key": "account", "workspace": "day"}.get(args.by, args.by)
 
     import sqlite3
 
@@ -1298,7 +1313,7 @@ what was added since the last run. See docs/usage.md for what the numbers mean.
             switcher.backup_dir,
             since=since,
             until=until,
-            by=args.by,
+            by=ledger_by,
             provider=args.provider,
             scan=not args.no_scan,
             rescan=args.rescan,
@@ -1319,15 +1334,30 @@ what was added since the last run. See docs/usage.md for what the numbers mean.
         )
         sys.exit(130)
 
+    billed = None
+    if args.billed:
+        from ai_quota_swap import api_cli
+
+        # Never raises for API trouble: each organization carries its error.
+        billed = api_cli.billed_report(
+            switcher.backup_dir, since=since, until=until, by=args.by,
+            platform=switcher.platform, registry_data=registry,
+        )
+
     if args.json:
         payload = report_to_json(
             result.report, scan=result.scan.to_json() if result.scan else None
         )
         if result.notes:
             payload["notes"] = result.notes
+        if billed is not None:
+            payload["billed"] = api_cli.billed_to_json(billed)
         print(json.dumps(payload, indent=2))
         return
     print(render_text(result.report, notes=result.notes, last_line=result.older_history))
+    if billed is not None:
+        print()
+        print(api_cli.render_billed(billed))
 
 
 _CODEX_AUTO_DESCRIPTION = (
@@ -2074,6 +2104,11 @@ def _dispatch(argv: list[str]) -> None:
     if argv and argv[0] == "priority":
         _priority_command(argv[1:])
         return
+    if argv and argv[0] in ("api", "budget"):
+        from ai_quota_swap import api_cli
+
+        (api_cli.api_command if argv[0] == "api" else api_cli.budget_command)(argv[1:])
+        return
     if argv and argv[0] in ("reset", "resets"):
         _reset_command(argv[1:])
         return
@@ -2119,6 +2154,10 @@ Commands:
   %(prog)s threshold                  list the global default and overrides
   %(prog)s priority <num|email> <tier>  set priority (higher first; default 0)
   %(prog)s priority                   list account priorities
+  %(prog)s budget <num|email> <amount|off>  monthly budget for an API-key account
+  %(prog)s budget                     list API-key accounts' budgets and spend
+  %(prog)s api org add [name]         register an organization's Admin key
+  %(prog)s api org list|remove <name> list or remove registered organizations
   %(prog)s run <num|email> [-- ...]   run as an account, this terminal only
   %(prog)s run                        run the current dir's mapped account
   %(prog)s map <num|email> [path]     map a directory to an account
@@ -2133,6 +2172,7 @@ Commands:
   %(prog)s reset                      list usage resets (+ what auto would use)
   %(prog)s reset <num|email>          use one usage reset on that account
   %(prog)s usage [--days N] [--by X]  tokens and estimated API cost (day/model/account/...)
+  %(prog)s usage --billed             add the organization's billed usage (Admin API)
   %(prog)s config [set KEY VALUE]     show or change settings (settings.json)
   %(prog)s unclaimed [--purge ID]     list or drop stashed credential entries
   %(prog)s export <path>              export accounts

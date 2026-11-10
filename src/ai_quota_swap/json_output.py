@@ -301,6 +301,35 @@ def usage_fields(
     return "unavailable", None
 
 
+def api_spend_to_json(reading: dict) -> dict:
+    """An API-key account's spend reading (``api_spend.readings``) as the
+    additive ``apiSpend`` row field. ``used``/``today`` are null when there
+    is no figure; ``limit``/``pct`` are null without a budget."""
+    spend = reading.get("spend") or {}
+    out: dict = {
+        "used": spend.get("used"),
+        "limit": spend.get("limit"),
+        "pct": spend.get("pct"),
+        "currency": spend.get("currency", "USD"),
+        "today": reading.get("today"),
+        "source": reading.get("source"),
+        "month": reading.get("month"),
+        "resetsAt": spend.get("resets_at"),
+    }
+    as_of = reading.get("as_of")
+    if isinstance(as_of, (int, float)) and not isinstance(as_of, bool):
+        out["asOf"] = _timestamp(as_of)
+    if reading.get("org"):
+        out["organization"] = reading["org"]
+    if reading.get("api_key_id"):
+        out["apiKeyId"] = reading["api_key_id"]
+    if reading.get("unpriced_tokens"):
+        out["unpricedTokens"] = reading["unpriced_tokens"]
+    if reading.get("note"):
+        out["note"] = reading["note"]
+    return out
+
+
 def account_ref(number: int | None, email: str) -> dict:
     """A minimal account reference, used for switch ``from``/``to``."""
     return {"number": number, "email": email}
@@ -403,6 +432,8 @@ def account_row(
     policy: AccountPolicy = AccountPolicy(),
     login_expires_at: str | None = None,
     subscription_plan: dict | None = None,
+    api_spend: dict | None = None,
+    budget: float | None = None,
 ) -> dict:
     """A full account row for ``--list``. ``backoff_until`` is the live
     backoff only; a lapsed one is the caller's to withhold."""
@@ -437,6 +468,13 @@ def account_row(
     # (see ``subscription``); a slot never fetched emits no key at all.
     if subscription_plan:
         row["plan"] = subscription_plan_fields(subscription_plan)
+    # Additive fields for API-key accounts: the monthly budget once set
+    # (``qswap budget``), and the spend reading. ``usageStatus`` stays
+    # ``api_key`` and ``usage`` stays null, so nothing existing changes.
+    if budget is not None:
+        row["budget"] = budget
+    if api_spend is not None:
+        row["apiSpend"] = api_spend_to_json(api_spend)
     if usage is not None:
         row.update(usage_freshness_fields(usage_fetched_at, usage_age_s))
     else:

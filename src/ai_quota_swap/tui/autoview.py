@@ -340,9 +340,14 @@ class AutoScreen(Screen):
             head.append(f"\n  {acc.number:>2}  ", style=palette.foreground)
             head.append(acc.email, style=palette.foreground)
             if acc.usage.sentinel is not None:
-                entry.append(
-                    f"  {data.sentinel_label(acc.usage.sentinel)}", style=palette.muted
-                )
+                reading = getattr(acc.usage, "api_spend", None)
+                if isinstance(reading, dict):
+                    from ai_quota_swap import api_spend
+
+                    label = api_spend.short_text(reading)
+                else:
+                    label = data.sentinel_label(acc.usage.sentinel)
+                entry.append(f"  {label}", style=palette.muted)
                 ranked.append((998.0, acc.number))
             elif binding is None:
                 entry.append("  usage unknown", style=palette.muted)

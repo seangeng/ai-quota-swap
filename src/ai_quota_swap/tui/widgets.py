@@ -299,6 +299,19 @@ def account_card_text(
     text.append(login_segment(acc, login, now, "   "), style=palette.muted)
 
     sentinel = acc.usage.sentinel
+    reading = getattr(acc.usage, "api_spend", None)
+    if sentinel == USAGE_API_KEY and isinstance(reading, dict):
+        # An API-key account's spend, the same words `qswap list` prints.
+        from ai_quota_swap import api_spend
+
+        text.append("\n    ")
+        style = palette.sev_warn if api_spend.over_budget(reading) else palette.muted
+        text.append(f"· {api_spend.spend_text(reading)}", style=style)
+        detail = api_spend.detail_text(reading, now)
+        if detail:
+            text.append("\n    ")
+            text.append(f"└ {detail}", style=palette.muted)
+        return text
     if sentinel is not None:
         text.append("\n    ")
         style = palette.muted if sentinel == USAGE_API_KEY else palette.sev_warn
@@ -405,6 +418,13 @@ def mini_account_text(
     text.append("   ")
 
     sentinel = acc.usage.sentinel
+    reading = getattr(acc.usage, "api_spend", None)
+    if sentinel == USAGE_API_KEY and isinstance(reading, dict):
+        from ai_quota_swap import api_spend
+
+        style = palette.sev_warn if api_spend.over_budget(reading) else palette.muted
+        text.append(api_spend.short_text(reading), style=style)
+        return _end_mini(text, acc, login, now, palette)
     if sentinel is not None:
         style = palette.muted if sentinel == USAGE_API_KEY else palette.sev_warn
         text.append(data.sentinel_label(sentinel), style=style)

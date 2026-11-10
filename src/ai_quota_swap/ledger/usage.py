@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -18,7 +19,7 @@ from ai_quota_swap.ledger.scanner import (
     default_config,
     tty_progress,
 )
-from ai_quota_swap.ledger.store import DB_FILENAME, LedgerStore
+from ai_quota_swap.ledger.store import DB_FILENAME, LAST_SCAN_META, LedgerStore
 
 
 @dataclass
@@ -106,6 +107,7 @@ def run_usage(
             finally:
                 if show is not None:
                     clear_progress()
+            store.set_meta(LAST_SCAN_META, f"{time.time():.3f}")
         logs = {
             "claude": ActivationLog.load(data_root),
             "codex": ActivationLog.load(data_root / "codex"),

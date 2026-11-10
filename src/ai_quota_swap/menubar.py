@@ -37,7 +37,7 @@ from ai_quota_swap.exceptions import (
 )
 from ai_quota_swap.fsutil import atomic_write_text
 from ai_quota_swap.printer import warning
-from ai_quota_swap.switcher import SENTINEL_NOTES, USAGE_RELOGIN_REQUIRED
+from ai_quota_swap.switcher import SENTINEL_NOTES, USAGE_API_KEY, USAGE_RELOGIN_REQUIRED
 
 ICON = "⇄"
 REFRESH_CHOICES: tuple[int, ...] = (30, 60, 300)
@@ -583,6 +583,11 @@ def _account_display_usage(entry) -> dict | str | None:
     keychain unavailable), otherwise the last-good measurement dict, otherwise
     ``None``.
     """
+    if entry.sentinel == USAGE_API_KEY and isinstance(getattr(entry, "api_spend", None), dict):
+        # An API-key account's spend, sized for the row (docs/api-accounts.md).
+        from ai_quota_swap import api_spend
+
+        return api_spend.menu_text(entry.api_spend)
     if entry.sentinel:
         return SENTINEL_NOTES.get(entry.sentinel, entry.sentinel)
     return entry.last_good
@@ -1011,6 +1016,10 @@ def run(switcher) -> int:
                     rumps.notification("AI Quota Swap", "Account quarantined", ev.human())
                 elif ev.kind == "all-exhausted":
                     rumps.notification("AI Quota Swap", "All accounts exhausted", ev.human())
+                elif ev.kind == "budget-warning":
+                    # Once per API-key account per month (the engine
+                    # remembers), so every one is worth showing.
+                    rumps.notification("AI Quota Swap", "API key budget", ev.human())
                 elif ev.kind == "config-warning":
                     # e.g. an autoswitch.model name no account reports — the
                     # engine emits it once per run; dropping it would leave a
