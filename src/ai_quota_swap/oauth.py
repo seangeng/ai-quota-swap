@@ -1260,7 +1260,7 @@ def _persist(
         _logger.warning(
             "Refreshed OAuth token for account %s (%s) but failed to persist it: %r. "
             "The refresh token on disk may now be stale; if the next refresh fails "
-            "with invalid_grant, re-run `qswap --add-account` after logging in.",
+            "with invalid_grant, run qswap add again after logging in.",
             account_num,
             email,
             e,
@@ -1269,6 +1269,6 @@ def _persist(
         # other ``--json`` commands, whose stdout is one machine-readable object.
         print_warning(
             f"Warning: failed to save refreshed token for account {account_num} ({email}). "
-            f"If the next refresh fails, re-run `qswap --add-account` after logging in.",
+            f"If the next refresh fails, run qswap add again after logging in.",
             file=sys.stderr,
         )

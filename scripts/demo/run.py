@@ -149,6 +149,7 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
     # the sandbox refuses that framework outright (it is also the Keychain
     # API), and a process with no network needs no TLS trust store.
     cli._use_native_tls = lambda: None
+    install_doctor_fakes()
     random.seed(scenario.name)  # the engine's poll jitter, run to run
 
     code = 0
@@ -238,6 +239,17 @@ def install_codex_process_fakes(scenario) -> None:
     processes.background_server_pid = lambda home: None
     processes.restart_background_server = no_restart
     processes.run_codex_login = fake_login
+
+
+def install_doctor_fakes() -> None:
+    """``qswap doctor`` asks ``claude --version`` and ``codex --version`` and
+    reads ``launchctl print``: process spawns the sandbox refuses. Like the
+    Codex fakes above, these answer from memory: a fixed version for any CLI
+    found on PATH, and a menu bar job launchd does not know."""
+    from ai_quota_swap import doctor
+
+    doctor._cli_version = lambda path: "2.1.0 (demo)"
+    doctor._launchctl_print = lambda: (113, "")
 
 
 def install_time_compression(auto, coordinates, *, stop_after: bool) -> None:

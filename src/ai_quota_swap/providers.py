@@ -20,7 +20,7 @@ them, so the Claude switcher defines none.
 - ``add_command: str``: the qswap command that captures the live login, quoted
   in ``no-switch`` details. Default ``qswap --add-account``.
 - ``recover_hint: str``: the sentence that tells a quarantined account's owner
-  how to recover it. Default: re-add it with ``qswap --add-account --slot N``.
+  how to recover it. Default: re-add it with ``qswap add --slot N``.
 """
 
 from __future__ import annotations

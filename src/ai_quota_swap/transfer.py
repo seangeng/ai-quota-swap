@@ -177,7 +177,7 @@ def export_accounts(
     """
     sequence_data = switcher._get_sequence_data_migrated()
     if not sequence_data or not sequence_data.get("accounts"):
-        raise TransferError("no accounts to export — run qswap --add-account first")
+        raise TransferError("no accounts to export — run qswap add first")
 
     accounts_map = sequence_data["accounts"]
 
@@ -232,9 +232,8 @@ def export_accounts(
                         f"no backup config found for account {num} ({email})"
                     )
                 _eprint(
-                    f"Skipping Account-{num} ({email}): no stored "
-                    f"credentials/config — re-add with: "
-                    f"qswap --add-account --slot {num}"
+                    f"Skipping #{num} {email}: it has no saved login; "
+                    f"re-add it with: qswap add --slot {num}"
                 )
                 continue
 
@@ -271,7 +270,7 @@ def export_accounts(
     if not accounts_payload:
         raise TransferError(
             "no exportable accounts — all managed slots are missing stored "
-            "credentials/config. Re-add with: qswap --add-account --slot <number>"
+            "credentials/config. Re-add with: qswap add --slot <number>"
         )
 
     # Only carry activeAccountNumber if that slot is actually present in the
@@ -334,7 +333,7 @@ def import_accounts(
             # piped straight back in without being decrypted first.
             raise TransferError(
                 "piped input is not UTF-8 text — decrypt an encrypted backup "
-                "first (e.g. gpg -d backup.gpg | qswap --import -)"
+                "first (e.g. gpg -d backup.gpg | qswap import -)"
             ) from e
     else:
         in_path = Path(source).expanduser()
@@ -353,7 +352,7 @@ def import_accounts(
         except UnicodeDecodeError as e:
             raise TransferError(
                 f"{in_path} is not UTF-8 text — if it is an encrypted backup, "
-                "decrypt it first (e.g. gpg -d backup.gpg | qswap --import -)"
+                "decrypt it first (e.g. gpg -d backup.gpg | qswap import -)"
             ) from e
         except OSError as e:
             raise TransferError(f"could not read {in_path}: {e}") from e
@@ -375,7 +374,7 @@ def import_accounts(
     if envelope.get("encrypted") is True:
         raise TransferError(
             "encrypted exports are not supported in this version — "
-            "decrypt before piping (e.g. gpg -d backup.gpg | qswap --import -)"
+            "decrypt before piping (e.g. gpg -d backup.gpg | qswap import -)"
         )
 
     accounts = envelope.get("accounts")
@@ -661,7 +660,7 @@ def import_accounts(
         if live_slot is not None and live_slot in written_slots:
             _eprint(
                 f"Note: {identity[0]} is your current live login — activate the "
-                f"imported credentials with: qswap --switch-to {live_slot} --force"
+                f"imported credentials with: qswap switch {live_slot} --force"
             )
 
 

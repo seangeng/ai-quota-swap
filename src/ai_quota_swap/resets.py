@@ -1188,7 +1188,7 @@ def kept_note(plan: ResetPlan) -> str:
     :func:`kept_by_scope`)."""
     noun = plan.noun
     return (
-        f"Auto keeps the {noun} on Account-{plan.account}: only {plan.window} is at its "
+        f"Auto keeps the {noun} on #{plan.account}: only {plan.window} is at its "
         f"limit ({plan.pct:.0f}%), and a {noun} {scope_phrase(plan.scope)} "
         "(resets.weeklyForModelLimit true would spend it)."
     )

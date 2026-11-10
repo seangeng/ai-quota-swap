@@ -1128,7 +1128,7 @@ class ClaudeAccountSwitcher:
         data = self._get_sequence_data() or {}
         record = data.get("accounts", {}).get(account_num)
         if not record:
-            raise AccountNotFoundError(f"Account-{account_num} does not exist")
+            raise AccountNotFoundError(f"#{account_num} does not exist; qswap list shows the accounts")
         return (
             account_num,
             record.get("email", ""),
@@ -1162,7 +1162,7 @@ class ClaudeAccountSwitcher:
         data = self._get_sequence_data() or {}
         record = data.get("accounts", {}).get(account_num)
         if not record:
-            raise AccountNotFoundError(f"Account-{account_num} does not exist")
+            raise AccountNotFoundError(f"#{account_num} does not exist; qswap list shows the accounts")
 
         conflict = self._alias_in_use(normalized, exclude_num=account_num)
         if conflict is not None:
@@ -1193,7 +1193,7 @@ class ClaudeAccountSwitcher:
         data = self._get_sequence_data() or {}
         record = data.get("accounts", {}).get(account_num)
         if not record:
-            raise AccountNotFoundError(f"Account-{account_num} does not exist")
+            raise AccountNotFoundError(f"#{account_num} does not exist; qswap list shows the accounts")
 
         if "alias" in record:
             del record["alias"]
@@ -1259,7 +1259,7 @@ class ClaudeAccountSwitcher:
         creds, unreadable = self._read_account_credentials_ex(account_num, email)
         if unreadable:
             raise ConfigError(
-                f"Account-{account_num}'s stored credential could not be "
+                f"{self.label(account_num, long=False)}'s stored credential could not be "
                 "read (keychain unavailable?); nothing was changed. Retry "
                 "once it is readable again."
             )
@@ -1288,9 +1288,9 @@ class ClaudeAccountSwitcher:
         record_a = data.get("accounts", {}).get(num_a)
         record_b = data.get("accounts", {}).get(num_b)
         if not record_a:
-            raise AccountNotFoundError(f"Account-{num_a} does not exist")
+            raise AccountNotFoundError(f"#{num_a} does not exist; qswap list shows the accounts")
         if not record_b:
-            raise AccountNotFoundError(f"Account-{num_b} does not exist")
+            raise AccountNotFoundError(f"#{num_b} does not exist; qswap list shows the accounts")
 
         email_a = record_a.get("email", "")
         email_b = record_b.get("email", "")
@@ -1298,8 +1298,8 @@ class ClaudeAccountSwitcher:
         # Backups and session profiles are keyed by (slot, email); relocating
         # them under a live session-mode claude would pull state out from
         # under a running process.
-        self._ensure_no_live_session(num_a, email_a, "--swap-accounts")
-        self._ensure_no_live_session(num_b, email_b, "--swap-accounts")
+        self._ensure_no_live_session(num_a, email_a, "qswap swap")
+        self._ensure_no_live_session(num_b, email_b, "qswap swap")
 
         # A profile that rotated past its backup advances the backup first:
         # the backup is what moves, and the profile's Keychain item is deleted
@@ -1706,7 +1706,7 @@ class ClaudeAccountSwitcher:
 
             data = self._get_sequence_data() or {}
             if not data.get("accounts", {}).get(num_src):
-                raise AccountNotFoundError(f"Account-{num_src} does not exist")
+                raise AccountNotFoundError(f"#{num_src} does not exist; qswap list shows the accounts")
 
             # `add` numbers new accounts from the highest slot, so a stray huge
             # target would inflate every future account number.
@@ -1749,7 +1749,7 @@ class ClaudeAccountSwitcher:
         data = self._get_sequence_data() or {}
         record = data.get("accounts", {}).get(num_src)
         if not record:
-            raise AccountNotFoundError(f"Account-{num_src} does not exist")
+            raise AccountNotFoundError(f"#{num_src} does not exist; qswap list shows the accounts")
         if data.get("accounts", {}).get(target):
             raise ValidationError(
                 f"Slot {target} is already occupied — retry the move"
@@ -1758,7 +1758,7 @@ class ClaudeAccountSwitcher:
 
         # Relocating backups/session under a live session-mode claude would
         # pull state out from under a running process.
-        self._ensure_no_live_session(num_src, email, "--move-account")
+        self._ensure_no_live_session(num_src, email, "qswap move")
 
         # Same as swap: the backup is what moves, and the profile's Keychain
         # item is deleted with the old slot key, so a profile that rotated
@@ -1878,24 +1878,20 @@ class ClaudeAccountSwitcher:
 
         mappings = MappingStore(self.backup_dir).all()
         if not mappings:
-            print(dimmed("No directory mappings yet."))
-            print(muted("Map one with: qswap map <NUM|EMAIL> [PATH]"))
+            print("No directory is mapped to an account.")
+            print(dimmed("Map one with: qswap map ACCOUNT [PATH]"))
             return
         seq = self._get_sequence_data_migrated() or {}
-        print(bolded("Directory mappings:"))
+        print(bolded("Directory mappings"))
         for path in sorted(mappings):
             entry = mappings[path]
             email = entry.get("email", "")
             org_uuid = entry.get("organizationUuid", "") or ""
             slot = self._find_account_slot(seq, email, org_uuid)
             if slot:
-                account = seq.get("accounts", {}).get(slot, {})
-                tag = self._get_display_tag(
-                    email, account.get("organizationName", ""), org_uuid
-                )
-                print(f"  {path} {dimmed('→')} {slot}: {email} {muted(f'[{tag}]')}")
+                print(f"  {path} {dimmed('→')} {self.label(slot, email)}")
             else:
-                print(f"  {path} {dimmed('→')} {email} {muted('(account removed)')}")
+                print(f"  {path} {dimmed('→')} {email} {muted('(no longer managed)')}")
 
     def read_account_credentials(self, account_num: str, email: str) -> str:
         """Public wrapper for session bootstrap. Empty string when missing."""
@@ -2436,7 +2432,7 @@ class ClaudeAccountSwitcher:
         data = self._get_sequence_data() or {}
         record = data.get("accounts", {}).get(account_num)
         if not record:
-            raise AccountNotFoundError(f"Account-{account_num} does not exist")
+            raise AccountNotFoundError(f"#{account_num} does not exist; qswap list shows the accounts")
         return account_num, email, data, record
 
     def set_account_threshold(self, identifier: str, threshold: object | None) -> None:
@@ -2474,13 +2470,13 @@ class ClaudeAccountSwitcher:
         current = record.get("threshold")
         if normalized is None and "threshold" not in record:
             print(dimmed(
-                f"Account-{account_num} ({email}) has no threshold override "
-                f"— already using the global default."
+                f"{self.label(account_num, email)} has no line of its own; "
+                "it already uses autoswitch.threshold"
             ))
             return
         if normalized is not None and current == normalized:
             print(dimmed(
-                f"Account-{account_num} ({email}) is already at {normalized:g}%."
+                f"{self.label(account_num, email)} already switches at {normalized:g}%"
             ))
             return
 
@@ -2493,14 +2489,14 @@ class ClaudeAccountSwitcher:
 
         if normalized is None:
             self._logger.info(f"Cleared threshold for account {account_num}: {email}")
-            print(f"{accent('Cleared')} threshold for Account-{account_num} ({email}) "
-                  f"— now using the global default.")
+            print(f"{accent('Cleared')} the switch line of {self.label(account_num, email)}; "
+                  "it uses autoswitch.threshold again")
         else:
             self._logger.info(
                 f"Set threshold {normalized:g} for account {account_num}: {email}"
             )
-            print(f"{accent('Set')} Account-{account_num} ({email}) "
-                  f"threshold to {normalized:g}%.")
+            print(f"{accent('Set')} the switch line of {self.label(account_num, email)} "
+                  f"to {normalized:g}%")
 
     def set_account_priority(self, identifier: str, priority: object | None) -> None:
         """Set a priority tier, or remove it with None/0. Validate before writing."""
@@ -2515,8 +2511,8 @@ class ClaudeAccountSwitcher:
         if changed:
             data["lastUpdated"] = get_timestamp()
             self._write_json(self.sequence_file, data)
-        print(f"Account-{account_num} ({email}) priority: {normalized} "
-              "(used by priority-consume-first).")
+        print(f"{accent('Set')} the priority of {self.label(account_num, email)} to "
+              f"{normalized} (used by the priority-consume-first strategy)")
 
     def set_account_disabled(self, identifier: str, disabled: bool) -> None:
         """Hold an account out of rotation (``disabled=True``) or return it.
@@ -2541,11 +2537,11 @@ class ClaudeAccountSwitcher:
         data = self._get_sequence_data() or {}
         record = data.get("accounts", {}).get(account_num)
         if not record:
-            raise AccountNotFoundError(f"Account-{account_num} does not exist")
+            raise AccountNotFoundError(f"#{account_num} does not exist; qswap list shows the accounts")
 
         verb = "disabled" if disabled else "enabled"
         if bool(record.get("disabled")) == disabled:
-            print(dimmed(f"Account-{account_num} ({email}) is already {verb}."))
+            print(dimmed(f"{self.label(account_num, email)} is already {verb}"))
             return
 
         if disabled:
@@ -2556,23 +2552,22 @@ class ClaudeAccountSwitcher:
         self._write_json(self.sequence_file, data)
         self._logger.info(f"{verb.capitalize()} account {account_num}: {email}")
 
-        print(f"{accent(verb.capitalize())} Account-{account_num} ({email}).")
+        print(f"{accent(verb.capitalize())} {self.label(account_num, email)}")
 
         if disabled:
             active = data.get("activeAccountNumber")
             if str(active) == account_num:
                 print(dimmed(
-                    "  It is the active account — it stays live until you switch "
-                    "away; it just won't be an automatic switch target."
+                    "  It is the active account: it stays in use until you switch\n"
+                    "  away, but auto-switch will not pick it again."
                 ))
             if not self.switchable_account_numbers():
                 warning(
-                    "  No accounts remain in rotation — auto-switch and bare "
-                    "switch have nothing to pick. Re-enable one with "
-                    "qswap enable <num|email>."
+                    "  No account is left in rotation, so auto-switch and a bare\n"
+                    "  switch have nothing to pick. Bring one back: qswap enable N"
                 )
         else:
-            print(dimmed("  It is back in the rotation."))
+            print(dimmed("  It is back in rotation."))
 
     def account_kind_for(self, account_num: str) -> str:
         """Public wrapper: ``"api_key"`` or ``"oauth"`` (setup-tokens read as oauth)."""
@@ -3444,7 +3439,7 @@ class ClaudeAccountSwitcher:
         pids = self._live_session_pids(account_num, email)
         if pids:
             raise SessionError(
-                f"Account-{account_num} ({email}) has a live session-mode Claude "
+                f"{self.label(account_num, email)} has a live session-mode Claude "
                 f"instance (PID {', '.join(map(str, pids))}). "
                 f"Exit it first, then retry {action}."
             )
@@ -3452,7 +3447,7 @@ class ClaudeAccountSwitcher:
         _, unreadable = scan_live_sessions(session_dir)
         if unreadable:
             raise SessionError(
-                f"Account-{account_num} ({email}) has {unreadable} session "
+                f"{self.label(account_num, email)} has {unreadable} session "
                 f"record(s) that could not be read, so whether a Claude "
                 f"instance is live cannot be determined. Inspect "
                 f"{session_dir / 'sessions'} and remove or repair them, then "
@@ -3629,7 +3624,7 @@ class ClaudeAccountSwitcher:
             account_num, email, org_uuid
         ):
             raise SessionError(
-                f"Account-{account_num} ({email}) has a session profile whose "
+                f"{self.label(account_num, email)} has a session profile whose "
                 "credential has rotated past the stored backup, and it could "
                 "not be adopted into the backup: the profile's identity file "
                 "(.claude.json) could not be read, or a Claude instance started "
@@ -4196,7 +4191,7 @@ class ClaudeAccountSwitcher:
         )
         raise ConfigError(
             f"Email '{identifier}' is ambiguous — matches accounts: {details}. "
-            f"Use account number instead (e.g., qswap --switch-to 1)."
+            f"Use account number instead (for example qswap switch 1)."
         )
 
     def _get_sequence_data_migrated(self) -> dict | None:
@@ -4374,8 +4369,7 @@ class ClaudeAccountSwitcher:
             tag = self._get_display_tag(current_email, matched_org_name, current_org_uuid)
             self._logger.info(f"Updated credentials for account {account_num}: {current_email}")
             print(
-                f"{accent('Updated credentials')} for Account {account_num} "
-                f"({current_email} {muted(f'[{tag}]')})."
+                f"{accent('Updated')} the saved login of {self.label(account_num)}"
             )
             return
 
@@ -4405,15 +4399,9 @@ class ClaudeAccountSwitcher:
                 is_same = (existing_email == current_email
                            and existing.get("organizationUuid", "") == current_org_uuid)
                 if not is_same:
-                    existing_tag = self._get_display_tag(
-                        existing_email,
-                        existing.get("organizationName", ""),
-                        existing.get("organizationUuid", ""),
-                    )
-                    warning(f"Slot {slot} already occupied")
-                    print(
-                        f"{existing_email} {muted(f'[{existing_tag}]')}"
-                    )
+                    if not assume_yes and not prompts.interactive():
+                        raise prompts.needs_confirmation(f"qswap add --slot {slot}")
+                    warning(f"Slot {slot} holds {self.label(account_num, existing_email)}")
                     if not prompts.confirm(
                         f"Overwrite slot {slot}?", assume_yes=assume_yes,
                         command=f"qswap add --slot {slot}",
@@ -4540,11 +4528,10 @@ class ClaudeAccountSwitcher:
         data["lastUpdated"] = get_timestamp()
 
         self._write_json(self.sequence_file, data)
-        tag = self._get_display_tag(current_email, organization_name, organization_uuid)
         self._logger.info(f"Added account {account_num}: {current_email} (org: {organization_uuid or 'personal'})")
         if migrate_from:
-            print(f"{dimmed(f'Moved from slot {migrate_from} → {slot}')}")
-        print(f"{accent('Added')} Account {account_num}: {current_email} {muted(f'[{tag}]')}")
+            print(dimmed(f"Moved from slot {migrate_from} → {slot}"))
+        print(f"{accent('Added')} {self.label(account_num)}")
 
     def add_account_from_token(
         self,
@@ -4658,10 +4645,7 @@ class ClaudeAccountSwitcher:
             self._write_json(self.sequence_file, seq)
             kind_label = "API key" if is_api_key else "token"
             self._logger.info(f"Updated {kind_label} for account {account_num}: {email}")
-            print(
-                f"{accent(f'Updated {kind_label}')} for Account {account_num} "
-                f"({email} {muted('[personal]')})."
-            )
+            print(f"{accent('Updated')} the {kind_label} of {self.label(account_num)}")
             return
 
         displace_slot = None
@@ -4686,13 +4670,9 @@ class ClaudeAccountSwitcher:
                     and existing.get("organizationUuid", "") == ""
                 )
                 if not is_same:
-                    existing_tag = self._get_display_tag(
-                        existing_email,
-                        existing.get("organizationName", ""),
-                        existing.get("organizationUuid", ""),
-                    )
-                    warning(f"Slot {slot} already occupied")
-                    print(f"{existing_email} {muted(f'[{existing_tag}]')}")
+                    if not assume_yes and not prompts.interactive():
+                        raise prompts.needs_confirmation(f"qswap add-token --slot {slot}")
+                    warning(f"Slot {slot} holds {self.label(account_num, existing_email)}")
                     if not prompts.confirm(
                         f"Overwrite slot {slot}?", assume_yes=assume_yes,
                         command=f"qswap add-token --slot {slot}",
@@ -4770,11 +4750,8 @@ class ClaudeAccountSwitcher:
         source_label = "API key" if is_api_key else "token"
         self._logger.info(f"Added account {account_num} from {source_label}: {email}")
         if migrate_from:
-            print(f"{dimmed(f'Moved from slot {migrate_from} → {slot}')}")
-        print(
-            f"{accent('Added')} Account {account_num}: {email} "
-            f"{muted('[personal]')} {muted(f'(from {source_label})')}"
-        )
+            print(dimmed(f"Moved from slot {migrate_from} → {slot}"))
+        print(f"{accent('Added')} {self.label(account_num)} {muted(f'(from {source_label})')}")
 
     def remove_account(self, identifier: str, assume_yes: bool = False) -> None:
         """Remove account from managed accounts.
@@ -4804,15 +4781,16 @@ class ClaudeAccountSwitcher:
                     if acc.get("email") == identifier
                 ]
                 if len(matches) > 1:
-                    print(f"Multiple accounts found for '{identifier}':")
-                    for num in matches:
-                        acc = data["accounts"][num]
-                        tag = self._get_display_tag(
-                            acc.get("email", ""),
-                            acc.get("organizationName", ""),
-                            acc.get("organizationUuid", ""),
-                        )
-                        print(f"  {num}: {identifier} {muted(f'[{tag}]')}")
+                    if prompts.interactive():
+                        print(f"{identifier} matches more than one account:")
+                        for num in matches:
+                            acc = data["accounts"][num]
+                            tag = self._get_display_tag(
+                                acc.get("email", ""),
+                                acc.get("organizationName", ""),
+                                acc.get("organizationUuid", ""),
+                            )
+                            print(f"  {self.label(num, identifier)} {muted('· ' + tag)}")
                     choice = prompts.choose(
                         "Enter the number of the account to remove:", matches,
                         unasked=(
@@ -4835,14 +4813,14 @@ class ClaudeAccountSwitcher:
         account_info = data.get("accounts", {}).get(account_num)
 
         if not account_info:
-            raise AccountNotFoundError(f"Account-{account_num} does not exist")
+            raise AccountNotFoundError(f"#{account_num} does not exist; qswap list shows the accounts")
 
         email = account_info.get("email")
         active_account = data.get("activeAccountNumber")
 
         # Check before the confirmation prompt (better UX); the chokepoint in
         # _delete_account_files re-checks as a safety net for all paths.
-        self._ensure_no_live_session(account_num, email, "--remove-account")
+        self._ensure_no_live_session(account_num, email, "qswap remove")
 
         name = self.label(account_num, email)
         if str(active_account) == account_num:
@@ -6312,7 +6290,7 @@ class ClaudeAccountSwitcher:
                 other = by_fp.get(fp)
                 if other:
                     out.append(
-                        f"Account-{other} and Account-{snum} hold the same "
+                        f"{self.label(other, long=False)} and {self.label(snum, long=False)} hold the same "
                         f"credential ({email}) — one slot's backup was "
                         "overwritten. Log in with the missing account and "
                         "re-add it: qswap add --slot N"
@@ -6325,7 +6303,7 @@ class ClaudeAccountSwitcher:
                 other = by_identity.get(key)
                 if other and other != snum:
                     out.append(
-                        f"Account-{other} and Account-{snum} both authenticate "
+                        f"{self.label(other, long=False)} and {self.label(snum, long=False)} both authenticate "
                         f"as {email} — remove or re-login one of them."
                     )
                 elif not other:
@@ -6390,7 +6368,7 @@ class ClaudeAccountSwitcher:
                     and abs(d7_ts - o_d7_ts) <= _LOCKSTEP_RESET_TOLERANCE_S
                 ):
                     out.append(
-                        f"Account-{other} and Account-{snum} report identical "
+                        f"{self.label(other, long=False)} and {self.label(snum, long=False)} report identical "
                         "usage and matching reset times — they may be the "
                         "same account (issue #117). If it persists, log in "
                         "with the missing account and re-add it: "
@@ -6959,12 +6937,12 @@ class ClaudeAccountSwitcher:
                     reason = "(no stored credentials/config)"
                     console_reason = (
                         "(no stored credentials/config, re-add with "
-                        f"qswap --add-account --slot {target})"
+                        f"qswap add --slot {target})"
                     )
                 if json_output:
                     warnings.append(f"Skipped Account-{target} {reason}")
                 else:
-                    print(f"{accent('Skipping')} Account-{target} {console_reason}")
+                    print(f"{accent('Skipping')} {self.label(target, long=False)} {console_reason}")
                 fallback = next(
                     (str(num) for num in sequence
                      if str(num) != target
@@ -6982,7 +6960,7 @@ class ClaudeAccountSwitcher:
                         )
                     raise ConfigError(
                         "No managed accounts have valid stored credentials/config. "
-                        "Re-add a slot with: qswap --add-account --slot <number>"
+                        "Re-add a slot with: qswap add --slot <number>"
                     )
                 target = fallback
             op = self._perform_switch(target, emit_output=not json_output)
@@ -7004,13 +6982,13 @@ class ClaudeAccountSwitcher:
                     reason="unmanaged-account",
                     from_ref=ref,
                     to_ref=ref,
-                    message="Active account is not managed; run qswap --add-account",
+                    message="Active account is not managed; run qswap add",
                 )
             print(f"{accent('Notice:')} Active account '{current_email}' was not managed.")
             self.add_account()
             data = self._get_sequence_data()
             account_num = data.get("activeAccountNumber")
-            print(f"It has been automatically added as Account-{account_num}.")
+            print(f"It has been automatically added as {self.label(account_num, long=False)}.")
             print(dimmed("Please run the switch command again to switch to the next account."))
             return None
 
@@ -7068,7 +7046,7 @@ class ClaudeAccountSwitcher:
                     )
                 print(dimmed(
                     f"Current account usage is unavailable — staying on "
-                    f"Account-{current_num}. Run qswap --switch to rotate."
+                    f"{self.label(current_num, long=False)}. Run qswap switch to rotate anyway."
                 ))
                 return None
             if note == "no-comparison":
@@ -7083,7 +7061,7 @@ class ClaudeAccountSwitcher:
                     )
                 print(dimmed(
                     f"No other account has usage data to compare — staying on "
-                    f"Account-{current_num}. Run qswap --switch to rotate."
+                    f"{self.label(current_num, long=False)}. Run qswap switch to rotate anyway."
                 ))
                 return None
             if note == "incomplete-comparison":
@@ -7098,7 +7076,7 @@ class ClaudeAccountSwitcher:
                     )
                 print(dimmed(
                     f"No account with known usage has more remaining quota; some "
-                    f"usage is unavailable — staying on Account-{current_num}."
+                    f"usage is unavailable — staying on {self.label(current_num, long=False)}."
                 ))
                 return None
             if note == "stay":
@@ -7113,7 +7091,7 @@ class ClaudeAccountSwitcher:
                     )
                 print(
                     f"{accent('Already on the account with the most remaining quota')} "
-                    f"(Account-{current_num})."
+                    f"({self.label(current_num, long=False)})."
                 )
                 return None
             if note == "exhausted":
@@ -7130,7 +7108,7 @@ class ClaudeAccountSwitcher:
                     )
                 warning(
                     f"All accounts are at their {limits_label} — staying on "
-                    f"Account-{current_num}."
+                    f"{self.label(current_num, long=False)}."
                 )
                 return None
             # note == "none": fall through; rotation reports the lack of targets.
@@ -7167,7 +7145,7 @@ class ClaudeAccountSwitcher:
                 if json_output:
                     warnings.append(f"Skipped Account-{candidate} (disabled)")
                 else:
-                    print(f"{accent('Skipping')} Account-{candidate} (disabled)")
+                    print(f"{accent('Skipping')} {self.label(candidate, long=False)} (disabled)")
                 continue
             if not self._account_is_switchable(candidate):
                 if json_output:
@@ -7176,9 +7154,9 @@ class ClaudeAccountSwitcher:
                     )
                 else:
                     print(
-                        f"{accent('Skipping')} Account-{candidate} "
+                        f"{accent('Skipping')} {self.label(candidate, long=False)} "
                         f"(no stored credentials/config, re-add with "
-                        f"qswap --add-account --slot {candidate})"
+                        f"qswap add --slot {candidate})"
                     )
                 continue
             if strategy == "next-available":
@@ -7203,7 +7181,7 @@ class ClaudeAccountSwitcher:
                             f"Skipped Account-{candidate} (at {label} limit)"
                         )
                     else:
-                        print(f"{accent('Skipping')} Account-{candidate} (at {label} limit)")
+                        print(f"{accent('Skipping')} {self.label(candidate, long=False)} (at {label} limit)")
                     continue
             next_account = candidate
             break
@@ -7225,7 +7203,7 @@ class ClaudeAccountSwitcher:
                 )
             warning(
                 f"All other accounts are at their {limits_label} — staying on "
-                f"Account-{current_num}."
+                f"{self.label(current_num, long=False)}."
             )
             return None
 
@@ -7238,7 +7216,7 @@ class ClaudeAccountSwitcher:
                 )
             print(dimmed(
                 "No other accounts have valid stored credentials/config.\n"
-                "Re-add a skipped slot with: qswap --add-account --slot <number>"
+                "Re-add a skipped slot with: qswap add --slot <number>"
             ))
             return None
 
@@ -7265,7 +7243,7 @@ class ClaudeAccountSwitcher:
                         message=f"Already on Account-{next_account} ({current_email})",
                     )
                 print(
-                    f"{accent('Already on')} Account-{next_account} ({current_email})"
+                    f"{accent('Already on')} {self.label(next_account, current_email)}"
                 )
                 return None
 
@@ -7310,15 +7288,16 @@ class ClaudeAccountSwitcher:
                     if acc.get("email") == identifier
                 ]
                 if len(matches) > 1:
-                    print(f"Multiple accounts found for '{identifier}':")
-                    for num in matches:
-                        acc = data["accounts"][num]
-                        tag = self._get_display_tag(
-                            acc.get("email", ""),
-                            acc.get("organizationName", ""),
-                            acc.get("organizationUuid", ""),
-                        )
-                        print(f"  {num}: {identifier} {muted(f'[{tag}]')}")
+                    if prompts.interactive():
+                        print(f"{identifier} matches more than one account:")
+                        for num in matches:
+                            acc = data["accounts"][num]
+                            tag = self._get_display_tag(
+                                acc.get("email", ""),
+                                acc.get("organizationName", ""),
+                                acc.get("organizationUuid", ""),
+                            )
+                            print(f"  {self.label(num, identifier)} {muted('· ' + tag)}")
                     choice = prompts.choose(
                         "Enter the number of the account to switch to:", matches,
                         unasked=(
@@ -7339,7 +7318,7 @@ class ClaudeAccountSwitcher:
 
         data = self._get_sequence_data()
         if target_account not in data.get("accounts", {}):
-            raise AccountNotFoundError(f"Account-{target_account} does not exist")
+            raise AccountNotFoundError(f"#{target_account} does not exist; qswap list shows the accounts")
 
         # Short-circuit a no-op before mutating (issue #79). A self-switch
         # would first back up the live credentials into the target slot —
@@ -7368,12 +7347,12 @@ class ClaudeAccountSwitcher:
                     ref = account_ref(int(target_account), email)
                     if not json_output:
                         print(
-                            f"{accent('Already on')} Account-{target_account} ({email})"
+                            f"{accent('Already on')} {self.label(target_account, email)}"
                         )
                         print(dimmed(
                             "To rewrite the live login from the stored backup "
                             "(e.g. after --import), run: "
-                            f"qswap --switch-to {target_account} --force"
+                            f"qswap switch {target_account} --force"
                         ))
                         return None
                     return self._switch_noop(
@@ -7808,13 +7787,13 @@ class ClaudeAccountSwitcher:
             # (locked / non-GUI session) — a re-add would needlessly burn the
             # stored grant.
             raise SwitchError(
-                f"Account-{account_num}'s backup is in the macOS Keychain "
+                f"{self.label(account_num, long=False)}'s backup is in the macOS Keychain "
                 f"but it is unreadable right now (locked or no GUI "
                 f"session). Retry from a GUI terminal; do not re-add."
             )
         raise SwitchError(
-            f"Account-{account_num} has no stored credentials. "
-            f"Re-add with: qswap --add-account --slot {account_num}"
+            f"{self.label(account_num, long=False)} has no stored credentials. "
+            f"Re-add with: qswap add --slot {account_num}"
         )
 
     def _refuse_session_shell(self) -> None:
@@ -7904,7 +7883,7 @@ class ClaudeAccountSwitcher:
                         else f"{unreadable} session record(s) that could not be read"
                     )
                     raise SwitchError(
-                        f"Account-{target_account} ({pre_email}) has {who}, and "
+                        f"{self.label(target_account, pre_email)} has {who}, and "
                         "its session profile's credential has rotated past the "
                         "stored backup: the backup is a consumed generation, and "
                         "activating it would fail with invalid_grant on its first "
@@ -7914,7 +7893,7 @@ class ClaudeAccountSwitcher:
                     )
                 if pids:
                     msg = (
-                        f"Account-{target_account} ({pre_email}) has a live "
+                        f"{self.label(target_account, pre_email)} has a live "
                         "session-mode Claude instance "
                         f"(PID {', '.join(map(str, pids))}). Running the same "
                         "account as both the default login and a session can make "
@@ -7940,7 +7919,7 @@ class ClaudeAccountSwitcher:
                     # generation, and proceeding would activate it silently
                     # -- the very landmine adoption exists to defuse.
                     raise SwitchError(
-                        f"Account-{target_account} ({pre_email}) has a session "
+                        f"{self.label(target_account, pre_email)} has a session "
                         "profile whose credential has rotated past the stored "
                         "backup, and it could not be adopted into the backup: "
                         "the profile's identity file (.claude.json) could not "
@@ -8010,8 +7989,8 @@ class ClaudeAccountSwitcher:
                 target_config = self._read_account_config(target_account, target_email)
                 if not target_config:
                     raise SwitchError(
-                        f"Account-{target_account} has no stored config backup. "
-                        f"Re-add with: qswap --add-account --slot {target_account}"
+                        f"{self.label(target_account, long=False)} has no stored config backup. "
+                        f"Re-add with: qswap add --slot {target_account}"
                     )
                 try:
                     target_config_data = json.loads(target_config)
@@ -8170,12 +8149,14 @@ class ClaudeAccountSwitcher:
                     target_account, target_email, target_oauth.get("organizationUuid") or ""
                 )
                 if emit_output:
-                    print(
-                        f"{accent('Activated')} Account-{target_account} ({target_email})"
-                    )
-                    print()
+                    if from_ref and str(from_ref.get("number")) == str(target_account):
+                        print(
+                            f"{accent('Restored')} the live login of "
+                            f"{self.label(target_account, target_email)} from its saved copy"
+                        )
+                    else:
+                        print(f"{accent('Switched to')} {self.label(target_account, target_email)}")
                     self._print_switch_followup()
-                    print()
                 self._replan_new_active(
                     target_account,
                     target_email,
@@ -8240,7 +8221,7 @@ class ClaudeAccountSwitcher:
                         msg = (
                             "Credential ownership mismatch detected. The live "
                             "credential was preserved and was not written "
-                            f"into Account-{current_account}. If Account-"
+                            f"into {self.label(current_account, long=False)}. If #"
                             f"{foreign_slot} later cannot authenticate, log "
                             "in as it and run: qswap add --slot "
                             f"{foreign_slot}"
@@ -8249,7 +8230,7 @@ class ClaudeAccountSwitcher:
                         msg = (
                             "The live credential was previously identified "
                             "as another account's. It was preserved and not "
-                            f"written into Account-{current_account}. If the "
+                            f"written into {self.label(current_account, long=False)}. If the "
                             "owning account later cannot authenticate, log "
                             "in as it and run: qswap add"
                         )
@@ -8257,7 +8238,7 @@ class ClaudeAccountSwitcher:
                         msg = (
                             "The live login does not match a managed "
                             "account. It was preserved and not written into "
-                            f"Account-{current_account}. If you need that "
+                            f"{self.label(current_account, long=False)}. If you need that "
                             "account, log in as it and run: qswap add"
                         )
                     if emit_output:
@@ -8270,9 +8251,9 @@ class ClaudeAccountSwitcher:
                     # may be written.
                     msg = (
                         "Credential ownership mismatch detected. The live "
-                        f"credential already matches Account-{foreign_slot}'s "
+                        f"credential already matches {self.label(foreign_slot, long=False)}'s "
                         "stored backup, so nothing was written into "
-                        f"Account-{current_account}."
+                        f"{self.label(current_account, long=False)}."
                     )
                     if emit_output:
                         warning(msg)
@@ -8292,7 +8273,7 @@ class ClaudeAccountSwitcher:
                     msg = (
                         "The live credential's tokens were wiped (Claude "
                         "Code clears them when a refresh is rejected). "
-                        f"Account-{current_account}'s stored backup was "
+                        f"{self.label(current_account, long=False)}'s stored backup was "
                         "kept. If the account cannot authenticate after "
                         "switching back, log in with Claude Code and run: "
                         "qswap add"
@@ -8360,8 +8341,8 @@ class ClaudeAccountSwitcher:
 
                 if not target_config:
                     raise SwitchError(
-                        f"Account-{target_account} has no stored config backup. "
-                        f"Re-add with: qswap --add-account --slot {target_account}"
+                        f"{self.label(target_account, long=False)} has no stored config backup. "
+                        f"Re-add with: qswap add --slot {target_account}"
                     )
 
                 # Step 3: Activate target account - credentials
@@ -8436,15 +8417,17 @@ class ClaudeAccountSwitcher:
         # only — suppressed in JSON mode (the nested list_accounts() would
         # otherwise leak human output onto the JSON stdout).
         if emit_output:
-            print(f"{accent('Switched to')} Account-{target_account} ({target_email})")
+            source = (
+                f"{self.label(from_ref.get('number'), long=False)} → "
+                if from_ref and from_ref.get("number") is not None else ""
+            )
+            print(f"{accent('Switched')} {source}{self.label(target_account, target_email)}")
             try:
-                self.list_accounts()
+                self._print_account(target_account)
             except Exception as e:
                 self._logger.warning(f"Post-switch usage display failed: {e!r}")
-                print(dimmed("  (usage display unavailable — run `qswap --list` to retry)"))
-            print()
+                print(dimmed("  Usage could not be shown; qswap list shows it."))
             self._print_switch_followup()
-            print()
         self._replan_new_active(
             target_account,
             target_email,
@@ -8469,11 +8452,27 @@ class ClaudeAccountSwitcher:
             backend = "keychain" if self._use_keychain() else "file"
         if backend == "keychain":
             print(dimmed(
-                "Restart Claude Code to apply immediately — otherwise the "
-                "session can take up to ~30 seconds to pick up the new account."
+                "Claude Code picks up the new account within 30 seconds; restart "
+                "it to switch now."
             ))
         else:
-            print(dimmed("New account is active on your next message — no restart needed."))
+            print(dimmed("Claude Code uses the new account from its next message."))
+
+    def _print_account(self, number: str) -> None:
+        """One account's block, freshly read (after a switch)."""
+        from ai_quota_swap import display
+
+        infos = [i for i in self._build_accounts_info() if str(i[0]) == str(number)]
+        if not infos:
+            return
+        entries = self._collect_usage_entries(infos)
+        block = self._account_block(
+            infos[0], entries[str(number)], seq_data=self._get_sequence_data() or {},
+            plans=self._plans_for_pass(infos, None), set_aside=self.set_aside_accounts(),
+            settings=load_settings(self.backup_dir),
+        )
+        for line in display.render_block(block):
+            print(line)
 
     def _quarantined_history_files(self) -> int:
         """How many collided transcripts are parked under the backup dir.
@@ -8541,7 +8540,7 @@ class ClaudeAccountSwitcher:
             )
             raise SessionError(
                 f"Live session-mode Claude instance(s) found: {details}. "
-                "Exit them first, then retry --purge."
+                "Exit them first, then run qswap purge again."
             )
         if unreadable:
             details = "; ".join(
@@ -8551,9 +8550,11 @@ class ClaudeAccountSwitcher:
                 f"Session records that could not be read: {details}. Whether a "
                 "Claude instance is live cannot be determined, and purging "
                 "would pull a live profile out from under it. Repair or remove "
-                "them, then retry --purge."
+                "them, then run qswap purge again."
             )
 
+        if not assume_yes and not prompts.interactive():
+            raise prompts.needs_confirmation("qswap purge")
         warning("This will remove ALL ai-quota-swap data from your system:")
         print(f"  - Backup directory: {self.backup_dir}")
         if legacy_distinct and legacy.exists():

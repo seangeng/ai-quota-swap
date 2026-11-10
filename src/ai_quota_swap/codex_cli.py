@@ -36,58 +36,61 @@ PROG = "qswap codex"
 NOT_YET = ("run",)
 
 LOGOUT_WARNING = (
-    "Never run `codex logout` on a login qswap has saved: it signs the login "
-    "out at OpenAI, so every saved copy of it stops working."
+    "Never run `codex logout` on a login qswap has saved: it signs the login\n"
+    "out at OpenAI, and every saved copy of it stops working."
 )
 
 SECOND_ACCOUNT_STEPS = """\
 Adding another account:
   qswap codex login
-  It logs the account in under a private, temporary Codex home, saves it, and
-  deletes that home; your current Codex login stays signed in and live.
-  (Plain `codex login` in your normal Codex home signs the current login out
-  at OpenAI first, which kills qswap's saved copy of it too.)
+  It logs the account in under a private, temporary Codex home, saves it,
+  and deletes that home; your current Codex login stays signed in. (Plain
+  `codex login` in your normal Codex home signs the current login out at
+  OpenAI first, which kills qswap's saved copy of it too.)
 
   By hand, if qswap codex login cannot run codex:
     tmp="$(mktemp -d)"
     CODEX_HOME="$tmp" codex login        # log in with the other account
     CODEX_HOME="$tmp" qswap codex add
-    rm -rf "$tmp"                        # deleting the file does not sign it out
+    rm -rf "$tmp"                        # deleting the file does not sign out
 """
 
 HELP = f"""\
-usage: {PROG} <command> [args] [options]
+usage: {PROG} <command> [options]
 
-[EXPERIMENTAL] Multi-account switcher for OpenAI Codex CLI (ChatGPT logins)
+Switch between Codex (ChatGPT) logins, by hand or automatically. Experimental.
 
-Commands:
-  {PROG} help                          show this help
-  {PROG} list                          list managed Codex accounts
-  {PROG} status                        show the live Codex login
-  {PROG} switch                        rotate to the next account
-  {PROG} switch <num|email>            switch to a specific account
-  {PROG} add                           save the current Codex login
-  {PROG} login [-- args]               log in a further account and save it
-  {PROG} remove <num|email>            stop managing an account
-  {PROG} disable <num|email>           hold an account out of rotation
-  {PROG} enable <num|email>            return a disabled account to rotation
-  {PROG} threshold <num|email> <pct>   set one account's switch-away point
-  {PROG} threshold                     list per-account overrides
-  {PROG} priority <num|email> <tier>   set priority (higher first; default 0)
-  {PROG} priority                      list account priorities
-  {PROG} alias <num|email> <name>      set a short alias for an account
-  {PROG} alias <num|email> --unset     remove an account's alias
-  {PROG} alias                         list all aliases
-  {PROG} auto                          auto-switch when the active account runs out
-  {PROG} reset                         list Codex usage reset credits (+ the auto plan)
-  {PROG} reset <num|email>             spend one credit on that account
+Accounts
+  list                  every Codex account and its usage
+  status                the live Codex login
+  switch [ACCOUNT]      switch to an account, or to the next one
+  add                   save the current Codex login as an account
+  login                 log in another account and save it
+  remove ACCOUNT        stop managing an account
+  alias ACCOUNT NAME    give an account a short name
+  disable, enable       hold an account out of rotation, or bring it back
 
-Not available yet: run. Aliases: ls=list  rm=remove
+Automatic switching and resets
+  auto                  switch when the active account runs out
+  threshold, priority   per-account switch line and order
+  reset [ACCOUNT]       list reset credits, or spend one
 
-Add --json to list, status, switch, reset or auto for machine-readable output.
+Options
+  -h, --help            this map ({PROG} help COMMAND for one command)
+  --json                with list, status, switch, reset, auto, priority
+
+ACCOUNT is a number (2), an email, or an alias. Aliases: ls=list, rm=remove.
+Usage and cost: qswap usage --provider codex.
 
 {SECOND_ACCOUNT_STEPS}
 {LOGOUT_WARNING}
+"""
+
+#: Bare `qswap codex`.
+BARE_HINT = f"""\
+{PROG} manages several Codex (ChatGPT) logins.
+  {PROG} help    the commands
+  {PROG} list    your Codex accounts and their usage
 """
 
 
@@ -129,20 +132,21 @@ def _run(args: argparse.Namespace, action: Callable, *, as_json: bool = False) -
 
 
 def _parser(verb: str, description: str, epilog: str | None = None) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    from ai_quota_swap.argparsing import ArgumentParser
+
+    parser = ArgumentParser(
         prog=f"{PROG} {verb}",
         description=description,
         epilog=epilog,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--debug", action="store_true", help="log debug detail")
     return parser
 
 
 def _json_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--json", action="store_true",
-        help="Emit machine-readable JSON to stdout (see docs/json-output.md)",
+        help="machine-readable output (docs/json-output.md)",
     )
 
 
@@ -152,62 +156,113 @@ def _json_flag(parser: argparse.ArgumentParser) -> None:
 def _add(argv: list[str]) -> None:
     parser = _parser(
         "add",
-        "Save the login currently in Codex's auth.json ($CODEX_HOME/auth.json, "
-        "default ~/.codex/auth.json) as a managed account. Run it again for a "
-        "login that is already managed to refresh its saved copy. To add "
-        "another account, use qswap codex login instead.",
-        epilog=f"{SECOND_ACCOUNT_STEPS}\n{LOGOUT_WARNING}",
+        "Save the login Codex is using now ($CODEX_HOME/auth.json) as a managed "
+        "account; for one already saved, refresh its saved copy. To add another "
+        "account, use qswap codex login.",
+        epilog="""examples:
+  qswap codex add
+  qswap codex add --alias work
+""",
     )
-    parser.add_argument("--slot", type=int, metavar="NUM", help="Store the account in this slot")
-    parser.add_argument("--alias", metavar="NAME", help="Set a short display alias for the account")
+    parser.add_argument("--slot", type=int, metavar="NUM", help="store it as this account number")
+    parser.add_argument("--alias", metavar="NAME", help="give it a short name")
+    parser.add_argument("-y", "--yes", action="store_true",
+                        help="replace the account already in --slot without asking")
     args = parser.parse_args(argv)
-    _run(args, lambda s: s.add_account(slot=args.slot, alias=args.alias))
+    _run(args, lambda s: s.add_account(slot=args.slot, alias=args.alias, assume_yes=args.yes))
 
 
 def _list(argv: list[str]) -> None:
-    parser = _parser("list", "List managed Codex accounts with their usage.")
+    parser = _parser(
+        "list", "List the managed Codex accounts with their usage. Read-only.",
+        epilog="""examples:
+  qswap codex list
+  qswap codex list --json
+""",
+    )
     _json_flag(parser)
     args = parser.parse_args(argv)
     _run(args, lambda s: s.list_accounts(json_output=args.json), as_json=args.json)
 
 
 def _status(argv: list[str]) -> None:
-    parser = _parser("status", "Show the live Codex login and its usage.")
+    parser = _parser(
+        "status", "Show the live Codex login, its usage, and whether Codex "
+        "auto-switch is running. Read-only.",
+        epilog="""examples:
+  qswap codex status
+  qswap codex status --json
+""",
+    )
     _json_flag(parser)
     args = parser.parse_args(argv)
-    _run(args, lambda s: s.status(json_output=args.json), as_json=args.json)
+
+    def action(s):
+        payload = s.status(json_output=args.json)
+        if args.json:
+            return payload
+        from ai_quota_swap.cli import _auto_switch_line, _auto_switch_state
+
+        count = s.managed_count()
+        if count:
+            print()
+            print(dimmed(f"{count} Codex account{'' if count == 1 else 's'} "
+                         f"{'is' if count == 1 else 'are'} managed."))
+            state = _auto_switch_state()
+            if "codex" not in state["providers"]:
+                state = {**state, "running": False, "providers": []}
+            else:
+                state = {**state, "providers": ["codex"]}
+            line = _auto_switch_line(state)
+            print(line.replace("Start it with: qswap auto", "Start it with: qswap codex auto"))
+        return None
+
+    _run(args, action, as_json=args.json)
 
 
 def _switch(argv: list[str]) -> None:
     parser = _parser(
         "switch",
-        "Make a saved Codex login the live one. Without an account, rotate to "
-        "the next one. The login being replaced is saved first, so a renewal "
-        "Codex did is kept. A running background server is restarted "
-        "(codex.restartDaemon); running codex sessions keep the old account "
-        "until they exit.",
-        epilog="""Examples:
-  qswap codex switch
+        "Make a saved Codex login the live one; without ACCOUNT, the next one. "
+        "Running codex sessions keep the old account until they exit.",
+        epilog="""examples:
   qswap codex switch 2
-  qswap codex switch user@example.com --json
+  qswap codex switch
+  qswap codex switch work --json
 """,
     )
-    parser.add_argument("account", nargs="?", metavar="NUM|EMAIL", help="Account to switch to")
+    parser.add_argument("account", nargs="?", metavar="ACCOUNT",
+                        help="number, email or alias; omit to rotate")
     parser.add_argument(
         "--force", action="store_true",
-        help="With an account: overwrite a live login qswap does not manage "
-        "(it is lost unless saved elsewhere)",
+        help="with ACCOUNT: switch even if it needs re-login, or replace a "
+        "live login qswap does not manage (lost unless saved elsewhere)",
     )
     _json_flag(parser)
     args = parser.parse_args(argv)
     if args.force and args.account is None:
-        parser.error("--force can only be used with 'switch <num|email>'")
+        parser.error("--force can only be used with 'switch ACCOUNT'")
     if args.account is not None and not args.account:
-        parser.error("'switch' requires a non-empty NUM|EMAIL")
+        parser.error("'switch' requires a non-empty ACCOUNT")
     if args.account is None:
         action = lambda s: s.switch(json_output=args.json)  # noqa: E731
     else:
-        action = lambda s: s.switch_to(args.account, json_output=args.json, force=args.force)  # noqa: E731
+        def action(s):
+            notes: list[str] = []
+            try:
+                number = s._resolve(s._require_registry(), args.account)
+                live = s.current_account_number()
+            except (ProviderError, ValueError):
+                number = live = None
+            if number is not None and number != live:
+                notes = s.check_switch_target(number, force=args.force)
+                if not args.json:
+                    for note in notes:
+                        warning(f"Warning: {note}")
+            payload = s.switch_to(args.account, json_output=args.json, force=args.force)
+            if isinstance(payload, dict) and notes:
+                payload["warnings"] = [*notes, *payload.get("warnings", [])]
+            return payload
     _run(args, action, as_json=args.json)
 
 
@@ -215,49 +270,56 @@ def _remove(argv: list[str]) -> None:
     parser = _parser(
         "remove",
         "Stop managing an account and delete qswap's saved copy of its login. "
-        "The login itself is not signed out.",
-        epilog=LOGOUT_WARNING,
+        "The login itself stays signed in. Alias: rm.",
+        epilog=f"""examples:
+  qswap codex remove 2
+  qswap codex remove old@example.com --yes
+
+{LOGOUT_WARNING}
+""",
     )
-    parser.add_argument("account", metavar="NUM|EMAIL")
+    parser.add_argument("account", metavar="ACCOUNT", help="number, email or alias")
+    parser.add_argument("-y", "--yes", action="store_true", help="do not ask first")
     args = parser.parse_args(argv)
     if not args.account:
-        parser.error("'remove' requires a non-empty NUM|EMAIL")
-    _run(args, lambda s: s.remove_account(args.account))
+        parser.error("'remove' requires a non-empty ACCOUNT")
+    _run(args, lambda s: s.remove_account(args.account, assume_yes=args.yes))
 
 
 def _disable(argv: list[str], disabled: bool) -> None:
     verb = "disable" if disabled else "enable"
     parser = _parser(
         verb,
-        "Hold an account out of rotation (bare switch skips it); it stays a "
-        "valid target for switch <num|email>." if disabled
+        "Hold an account out of rotation: a bare switch and auto-switch skip "
+        "it; qswap codex switch ACCOUNT can still pick it." if disabled
         else "Return a disabled account to rotation.",
+        epilog=f"""examples:
+  qswap codex {verb} 2
+""",
     )
-    parser.add_argument("account", metavar="NUM|EMAIL")
+    parser.add_argument("account", metavar="ACCOUNT", help="number, email or alias")
     args = parser.parse_args(argv)
     if not args.account:
-        parser.error(f"'{verb}' requires a non-empty NUM|EMAIL")
+        parser.error(f"'{verb}' requires a non-empty ACCOUNT")
     _run(args, lambda s: s.set_account_disabled(args.account, disabled))
 
 
 def _alias(argv: list[str]) -> None:
     parser = _parser(
         "alias",
-        "Set, remove, or list a short display alias for an account. Once set, "
-        "the alias can be used anywhere an account number or email is accepted "
-        "(switch, remove, disable, enable, threshold, priority).",
-        epilog="""Examples:
+        "Set, remove or list short names for Codex accounts. A name works "
+        "anywhere an account number or email does.",
+        epilog="""examples:
   qswap codex alias 2 work
-  qswap codex alias user@example.com work
   qswap codex alias 2 --unset
-  qswap codex alias                   # list all aliases
+  qswap codex alias                   # list them
 """,
     )
-    parser.add_argument("account", nargs="?", metavar="NUM|EMAIL",
-                        help="Account to alias (number or email). Omit to list aliases.")
+    parser.add_argument("account", nargs="?", metavar="ACCOUNT",
+                        help="number or email; omit to list the aliases")
     parser.add_argument("alias_name", nargs="?", metavar="NAME",
-                        help="Alias to set (letters, digits, ., -, _; not purely numeric).")
-    parser.add_argument("--unset", action="store_true", help="Remove the account's alias")
+                        help="letters, digits, '.', '-', '_'; not only digits")
+    parser.add_argument("--unset", action="store_true", help="remove the account's alias")
     args = parser.parse_args(argv)
     if args.unset and args.alias_name:
         parser.error("--unset does not take a NAME argument")
@@ -267,66 +329,64 @@ def _alias(argv: list[str]) -> None:
         parser.error("NAME is required (or pass --unset to remove the alias)")
 
     def action(s):
+        from ai_quota_swap.cli import _print_aliases
+
         if args.account is None:
-            rows = s.list_aliases()
-            if not rows:
-                print(dimmed("No aliases set"))
-                return
-            print(bolded("Aliases:"))
-            for num, name, email in rows:
-                print(f"  {num}: {name} {muted(f'({email})')}")
+            _print_aliases(s.list_aliases(), "qswap codex alias")
             return
         if args.unset:
             num = s.unset_alias(args.account)
-            print(f"{accent('Removed alias')} for Account {num}")
+            print(f"{accent('Removed the alias')} of {s.label(num)}")
         else:
             num, normalized = s.set_alias(args.account, args.alias_name)
-            print(f"{accent('Set alias')} '{normalized}' for Account {num}")
+            print(f"{accent('Named')} {s.label(num)}")
 
     _run(args, action)
 
 
-_ENGINE_NOTE = "Used by qswap codex auto."
+_ENGINE_NOTE = "Used only by qswap codex auto"
 
 
 def _threshold(argv: list[str]) -> None:
     parser = _parser(
         "threshold",
-        "Set, remove, or list a per-account switch-away threshold for Codex "
-        "accounts.",
-        epilog=f"""Examples:
+        "Set, remove or list a Codex account's own switch line, in place of "
+        "codex.threshold for that account.",
+        epilog="""examples:
   qswap codex threshold 2 95
   qswap codex threshold 2 --unset
-  qswap codex threshold               # list overrides
-
-Valid range: {ACCOUNT_THRESHOLD_MIN:g}-{ACCOUNT_THRESHOLD_MAX:g} (percent used).
-{_ENGINE_NOTE}
+  qswap codex threshold               # list the default and each override
 """,
     )
-    parser.add_argument("account", nargs="?", metavar="NUM|EMAIL")
+    parser.add_argument("account", nargs="?", metavar="ACCOUNT",
+                        help="number, email or alias; omit to list")
     parser.add_argument(
         "threshold", nargs="?", metavar="PCT",
-        help=f"Percent used at which to switch away "
-        f"({ACCOUNT_THRESHOLD_MIN:g}-{ACCOUNT_THRESHOLD_MAX:g}).",
+        help=f"percent used, {ACCOUNT_THRESHOLD_MIN:g} to {ACCOUNT_THRESHOLD_MAX:g}",
     )
-    parser.add_argument("--unset", action="store_true", help="Remove the account's override")
+    parser.add_argument("--unset", action="store_true", help="remove the account's own line")
     args = parser.parse_args(argv)
     if args.unset and args.threshold:
         parser.error("--unset does not take a PCT argument")
     if args.unset and args.account is None:
-        parser.error("NUM|EMAIL is required with --unset")
+        parser.error("ACCOUNT is required with --unset")
     if args.account is not None and not args.unset and args.threshold is None:
         parser.error("PCT is required (or pass --unset to remove the override)")
 
     def action(s):
         if args.account is None:
-            print(bolded("Switch-away thresholds:"))
+            from ai_quota_swap.settings import load_engine_settings
+
+            print(bolded("Switch lines"))
+            default = load_engine_settings(s.data_root, "codex").threshold
+            print(f"  {dimmed('default (codex.threshold)')}  {default:g}%")
             rows = [(n, p.threshold) for n, p in s.account_policies().items()
                     if p.threshold is not None]
             if not rows:
-                print(dimmed("  No per-account overrides set"))
+                print(dimmed("  No account has its own line. Set one with: "
+                             "qswap codex threshold N PCT"))
             for num, value in rows:
-                print(f"  Account-{num}  {value:g}%")
+                print(f"  {s.label(num)}  {value:g}%")
             print(dimmed(_ENGINE_NOTE))
             return
         try:
@@ -341,34 +401,34 @@ Valid range: {ACCOUNT_THRESHOLD_MIN:g}-{ACCOUNT_THRESHOLD_MAX:g} (percent used).
 def _priority(argv: list[str]) -> None:
     parser = _parser(
         "priority",
-        "Set or list account priority tiers. Higher numbers are used first.",
-        epilog=_ENGINE_NOTE,
+        "Set or list Codex account priorities: higher tiers are used first.",
+        epilog="""examples:
+  qswap codex priority 2 3
+  qswap codex priority 2 --unset
+  qswap codex priority                # list them
+""",
     )
-    parser.add_argument("account", nargs="?", metavar="NUM|EMAIL|ALIAS")
+    parser.add_argument("account", nargs="?", metavar="ACCOUNT",
+                        help="number, email or alias; omit to list")
     parser.add_argument("priority", nargs="?", metavar="TIER",
-                        help=f"Integer from 0 to {ACCOUNT_PRIORITY_MAX} (default 0)")
-    parser.add_argument("--unset", action="store_true", help="Return to priority 0")
+                        help=f"a whole number from 0 to {ACCOUNT_PRIORITY_MAX} (default 0)")
+    parser.add_argument("--unset", action="store_true", help="return to priority 0")
+    _json_flag(parser)
     args = parser.parse_args(argv)
     if args.unset and args.priority is not None:
         parser.error("--unset does not take a TIER argument")
     if args.unset and args.account is None:
-        parser.error("NUM|EMAIL|ALIAS is required with --unset")
+        parser.error("ACCOUNT is required with --unset")
     if args.account is not None and args.priority is None and not args.unset:
         parser.error("TIER is required (or pass --unset)")
+    from ai_quota_swap.cli import print_priorities
 
-    def action(s):
-        if args.account is None:
-            print(bolded("Account priorities (higher first; default 0):"))
-            for num, policy in s.account_policies().items():
-                print(f"  Account-{num}  {s.account_email(num)}  {policy.priority}")
-            print(dimmed(_ENGINE_NOTE))
-            return
-        try:
-            s.set_account_priority(args.account, None if args.unset else args.priority)
-        except ValueError as e:
-            raise ValidationError(str(e)) from None
+    def make(debug: bool = False):
+        switcher = _switcher(debug=debug)
+        switcher.check_storage()
+        return switcher
 
-    _run(args, action)
+    print_priorities(make, args, engine_note="qswap codex auto")
 
 
 def _login(argv: list[str]) -> None:
@@ -379,22 +439,19 @@ def _login(argv: list[str]) -> None:
         head, tail = argv, []
     parser = _parser(
         "login",
-        "Log in a further Codex account and save it, without touching the "
-        "login you are on. Runs `codex login` under a private, temporary Codex "
-        "home (CODEX_HOME), saves the login it leaves the way qswap codex add "
-        "does (an account already saved gets its saved copy updated), and "
-        "deletes the temporary home. Your Codex home and the live account do "
-        "not change; switch with qswap codex switch.",
-        epilog=f"""Examples:
+        "Log in another Codex account and save it, without touching the login "
+        "you are on: codex login runs in a private, temporary Codex home that "
+        "is deleted afterwards.",
+        epilog=f"""examples:
   qswap codex login
   qswap codex login --alias work
-  qswap codex login -- --device-auth     # arguments after -- go to codex login
+  qswap codex login -- --device-auth   # arguments after -- go to codex login
 
 {LOGOUT_WARNING}
 """,
     )
-    parser.add_argument("--slot", type=int, metavar="NUM", help="Store the account in this slot")
-    parser.add_argument("--alias", metavar="NAME", help="Set a short display alias for the account")
+    parser.add_argument("--slot", type=int, metavar="NUM", help="store it as this account number")
+    parser.add_argument("--alias", metavar="NAME", help="give it a short name")
     args = parser.parse_args(head)
     _run(args, lambda s: s.login_new_account(tail, slot=args.slot, alias=args.alias))
 
@@ -437,25 +494,33 @@ _VERBS: dict[str, Callable[[list[str]], None]] = {
 
 def dispatch(argv: list[str]) -> None:
     """Run ``qswap codex <argv>``."""
+    from ai_quota_swap.argparsing import usage_error
+
     if not argv:
-        print(f"usage: {PROG} <command> [args] [options]", file=sys.stderr)
-        print(f"{PROG}: error: no command given — try '{PROG} help'", file=sys.stderr)
-        sys.exit(2)
+        print(BARE_HINT, end="")
+        return
     verb, rest = argv[0], argv[1:]
     if verb in ("help", "-h", "--help"):
+        if verb == "help" and rest and rest[0] not in ("-h", "--help"):
+            target = rest[0]
+            if target in _VERBS:
+                _VERBS[target](["--help"])
+                return
+            usage_error(f"{PROG} help", f"unknown command '{target}'; {PROG} help lists them")
         print(HELP, end="")
         return
     handler = _VERBS.get(verb)
     if handler is None:
         if verb == "usage":
-            message = (
-                f"{PROG} usage is not a Codex command: run qswap usage --provider codex"
-            )
-        elif verb in NOT_YET:
-            message = f"{PROG} {verb} is not available yet"
-        else:
-            message = f"{PROG} {verb} is not a Codex command (try '{PROG} help')"
-        _fail(FeatureUnavailableError(message), _wants_json(argv))
+            _fail(FeatureUnavailableError(
+                "Codex usage is part of qswap usage: qswap usage --provider codex"
+            ), _wants_json(argv))
+        if verb in NOT_YET:
+            _fail(FeatureUnavailableError(f"{PROG} {verb} is not available yet"), _wants_json(argv))
+        usage_error(
+            PROG, f"unknown command '{verb}'; {PROG} help lists them",
+            as_json=_wants_json(argv),
+        )
     handler(rest)
 
 

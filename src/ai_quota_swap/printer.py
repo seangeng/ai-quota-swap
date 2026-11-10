@@ -173,19 +173,42 @@ def reddened(text: str) -> str:
 # --- Line printers (call print() internally) ---
 
 
+#: Messages are wrapped to this many columns (docs/design/ux.md).
+MESSAGE_WIDTH = 80
+
+
+def wrap_message(msg: str, width: int = MESSAGE_WIDTH) -> str:
+    """``msg`` with every line longer than ``width`` wrapped; a wrapped
+    line's continuation keeps its indent. Words (and commands' arguments)
+    are never split."""
+    import textwrap
+
+    out = []
+    for line in msg.split("\n"):
+        if len(line) <= width:
+            out.append(line)
+            continue
+        indent = " " * (len(line) - len(line.lstrip(" ")))
+        out.extend(textwrap.wrap(
+            line, width, subsequent_indent=indent or "  ",
+            break_on_hyphens=False, break_long_words=False,
+        ) or [line])
+    return "\n".join(out)
+
+
 def error(msg: str) -> None:
-    """Print an error message (red) to stderr."""
-    print(_style(msg, _pal("red")), file=sys.stderr)
+    """Print an error message (red) to stderr, wrapped to 80 columns."""
+    print(_style(wrap_message(msg), _pal("red")), file=sys.stderr)
 
 
 def warning(msg: str, *, file=None) -> None:
-    """Print a warning message (yellow).
+    """Print a warning message (yellow), wrapped to 80 columns.
 
     ``file`` routes it elsewhere than stdout — stderr for anything a
     long-running process emits, since stderr stays line-buffered when it is
     redirected to a file and stdout does not.
     """
-    print(_style(msg, _pal("yellow")), file=file)
+    print(_style(wrap_message(msg), _pal("yellow")), file=file)
 
 
 # --- Display helpers for process detection ---
