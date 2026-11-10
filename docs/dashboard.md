@@ -77,6 +77,8 @@ The menu then starts with `Add maya@example.com · Claude Code` and `Add maya@ex
 
 Every account in full, both providers, updated as readings arrive. A row flashes when a new reading lands. The title is `Watching all accounts`. It adds `snapshot 2m ago` when the screen's last read is a minute old or more, and `refreshing 5s` when a read is slow. The page is read-only until you press `s`.
 
+<img src="../assets/screenshots/raw/watch.png" alt="The watch page: every Claude Code and Codex account with its 5h, 7d and Fable bars, reset times, held resets and an API key's spend" width="800">
+
 | Key | Does |
 |---|---|
 | `s` | arm selection: a cursor appears on the active account |

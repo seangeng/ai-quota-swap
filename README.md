@@ -64,9 +64,9 @@ When something looks wrong, run `qswap doctor` first. It checks Claude Code, Cod
 
 ## Switching automatically
 
-`qswap auto` checks the active account every minute and switches before it runs out:
+`qswap auto` checks the active account every minute and switches before it runs out. Here the dashboard's auto view runs it live, and the active account climbs past its 90% line:
 
-<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/auto.png" alt="qswap auto: one line per check; at 91% of the 5-hour window it switches from #1 personal to #2 work" width="780">
+<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/autoswitch.gif" alt="Recording: in the dashboard's auto view, going live; #1 personal climbs from 87% to 92% of its 5-hour window and the engine switches to #2 work" width="800">
 
 It switches at 90% by default (`qswap config set autoswitch.threshold 85` to change it) and moves to the account with the most quota left. Other strategies use up first the weekly quota that resets soonest, or follow an order you set. `--dry-run` says what it would do without doing it, and `qswap auto --once` checks once and reports the outcome in its exit code, for cron. Details, strategies and running it as a service: [docs/auto-switch.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/auto-switch.md).
 
@@ -80,6 +80,8 @@ Anthropic grants some plans banked usage resets (Claude Code's `/limit-reset`). 
 | five-hour reset | the 5-hour window |
 | weekly reset | the all-models weekly window |
 | full reset | the 5-hour and the weekly windows; every Codex reset credit is one |
+
+<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/reset.gif" alt="Recording: #1 personal is at 100% of its Fable window and holds a Fable reset and a weekly reset; the auto engine spends the Fable reset and Fable drops to 0%, keeping the weekly one" width="800">
 
 `qswap reset` lists what each account holds and what auto mode would spend now; `qswap reset 1` spends one on account 1, the narrowest kind that clears a window at 95% or more. While auto-switch runs, it spends resets by itself when switching cannot help (`resets.auto last-resort`, the default), at most 3 a day for each provider. Modes and guards: [docs/resets.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/resets.md).
 

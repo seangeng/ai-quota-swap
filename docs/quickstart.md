@@ -70,7 +70,12 @@ Codex support is experimental; read [codex.md](codex.md) before your first Codex
   <img src="../assets/screenshots/raw/list-light.png" alt="qswap list: Claude Code and Codex accounts with their 5h, 7d and Fable usage, reset times, plans, held resets and an API key's spend" width="780">
 </picture>
 
-Each account shows its plan and its windows: `5h` (the 5-hour window), `7d` (the weekly window) and per-model weekly windows such as `Fable`, each with when it refills. A figure turns yellow at the account's switch line and red at its limit. `Holds 1 Fable reset` means the account has a usage reset banked ([resets.md](resets.md)). `qswap status` shows only the active account of each provider.
+Each account shows its plan and its windows: `5h` (the 5-hour window), `7d` (the weekly window) and per-model weekly windows such as `Fable`, each with when it refills. A figure turns yellow at the account's switch line and red at its limit. `Holds 1 Fable reset` means the account has a usage reset banked ([resets.md](resets.md)). `qswap status` shows only the active account of each provider, and whether auto-switch is running:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/screenshots/raw/status.png">
+  <img src="../assets/screenshots/raw/status-light.png" alt="qswap status: the active Claude Code and Codex accounts with their windows, how many accounts are managed, and that auto-switch is not running" width="780">
+</picture>
 
 ## 5. Switch
 
