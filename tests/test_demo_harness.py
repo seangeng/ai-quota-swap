@@ -335,9 +335,10 @@ class TestScenarioStates:
     def test_usage_attributes_codex_sessions_to_codex_accounts(self):
         r = _run(["usage", "--", "usage", "--by", "account", "--provider", "codex"])
         assert r.returncode == 0, r.stderr
-        assert "Account-1 (maya@example.com)" in r.stdout
-        assert "Account-2 work (maya@northwind.example.com)" in r.stdout
-        assert "not managed by qswap" not in r.stdout
+        # A Codex-only view: account labels without the provider's name.
+        assert "  #1 maya@example.com " in r.stdout
+        assert "  #2 work " in r.stdout
+        assert "not managed" not in r.stdout
         assert "unattributed" not in r.stdout
 
     def test_trouble_shows_each_failure_state(self):

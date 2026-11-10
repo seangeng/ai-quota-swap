@@ -11,15 +11,26 @@ Attribution at report time
     qswap had not yet observed), and a profile's login does not change, so
     the whole session goes to that account. Sessions that start before the
     first activation stay unattributed: there is no backfill.
+
+Text output
+    Every line fits ``display.WIDTH`` columns (docs/design/ux.md). The label
+    column takes what the number columns leave and cuts a longer label with
+    an ellipsis: account and model names lose their end, paths their start;
+    a row's ``head`` and ``tail`` (a session id, "(not managed)") are kept.
+    A report with no usage prints a sentence saying why, and what to do,
+    instead of a table of zeros.
 """
 
 from __future__ import annotations
 
 import os
+import textwrap
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from ai_quota_swap.display import WIDTH, fit, wrap
+from ai_quota_swap.labels import account_label
 from ai_quota_swap.ledger.activations import ActivationLog, identity_key
 from ai_quota_swap.ledger.pricing import (
     ANTHROPIC_SOURCE,
@@ -35,6 +46,8 @@ GROUPINGS = ("day", "model", "account", "project", "provider", "session")
 PROVIDERS = ("claude", "codex")
 PROVIDER_LABELS = {"claude": "Claude Code", "codex": "Codex"}
 UNATTRIBUTED = ""
+#: Ends the label of an account qswap does not manage.
+NOT_MANAGED = " (not managed)"
 
 _TEXT_ROW_LIMIT = 50
 
@@ -98,6 +111,12 @@ class Row:
     label: str
     totals: Totals = field(default_factory=Totals)
     extra: dict = field(default_factory=dict)
+    # How the text table cuts a label too wide for its column: ``head`` and
+    # ``tail`` (a start and an end of ``label``) stay whole, and the middle
+    # loses its end (``cut="end"``) or, for a path, its start (``"start"``).
+    head: str = ""
+    tail: str = ""
+    cut: str = "end"
 
 
 @dataclass
@@ -113,10 +132,21 @@ class Report:
     profile_sessions: int
     prices: PriceTable
     attribution_starts: dict[str, str | None]
+    # Set by run_usage, for the text report's empty states. The directories a
+    # scan looked in when it found no session file at all (home as ``~``);
+    # None when it found some, or did not scan.
+    searched_dirs: tuple[str, ...] | None = None
+    # True when the report came from the ledger without a scan (--no-scan).
+    unscanned: bool = False
 
     @property
     def unattributed_share(self) -> float:
         return self.unattributed_tokens / self.total.tokens if self.total.tokens else 0.0
+
+    @property
+    def empty(self) -> bool:
+        """No usage at all in the report's range."""
+        return not self.total.tokens and not self.total.requests
 
 
 def day_bounds(since: date, until: date) -> tuple[int, int]:
@@ -134,7 +164,10 @@ class Accounts:
     """Labels for account keys, from the provider registries."""
 
     def __init__(self, registries: dict[str, dict | None], logs: dict[str, ActivationLog]):
-        self.by_key: dict[str, dict] = {}
+        # (provider, account key) → number, email, alias. Claude and Codex
+        # each number their accounts from 1, so a key is looked up in its own
+        # provider's registry only.
+        self.by_key: dict[tuple[str, str], dict] = {}
         self.by_owner: dict[str, str] = {}
         for provider, reg in registries.items():
             accounts = (reg or {}).get("accounts") or {}
@@ -146,40 +179,45 @@ class Accounts:
                 org = acct.get("organizationUuid") or ""
                 key = identity_key(acct["email"], org)
                 self.by_key.setdefault(
-                    key,
+                    (provider, key),
                     {
                         "number": int(num) if str(num).isdigit() else None,
                         "email": acct["email"],
                         "alias": acct.get("alias") or "",
-                        "provider": provider,
                     },
                 )
                 if provider == "claude" and acct.get("uuid"):
                     self.by_owner[f"{acct['uuid']}|{org}"] = key
-        self.former_numbers: dict[str, int] = {}
-        for log in logs.values():
-            self.former_numbers.update(log.numbers())
+        self.former_numbers: dict[str, dict[str, int]] = {
+            provider: log.numbers() for provider, log in logs.items()
+        }
 
     def owner_key(self, owner: str | None) -> str | None:
         return self.by_owner.get(owner) if owner else None
 
-    def describe(self, key: str) -> tuple[str, dict | None]:
+    def describe(
+        self, key: str, provider: str | None = "claude", *, show_provider: bool = False
+    ) -> tuple[str, dict | None, str]:
+        """``(label, JSON info, tail)`` for an account key in ``provider``'s
+        usage. ``show_provider`` prefixes the provider's name (``Claude #2
+        work``), for a report holding both providers' usage. ``tail`` is the
+        end of the label a narrow table must keep (``" (not managed)"``)."""
         if key == UNATTRIBUTED:
-            return "unattributed", None
+            return "unattributed", None, ""
         if key == DESKTOP_ACCOUNT:
-            return "Claude desktop app (its own login)", None
+            return "Claude desktop app", None, ""
         email, _, _org = key.partition("|")
-        info = self.by_key.get(key)
+        prefix = provider if show_provider else None
+        info = self.by_key.get((provider or "", key))
         if info is not None:
-            num, alias = info["number"], info["alias"]
-            label = f"Account-{num}" if num is not None else "Account"
-            label += f" {alias} ({email})" if alias else f" ({email})"
-            return label, {"number": num, "email": email}
-        num = self.former_numbers.get(key)
-        info = {"number": None, "email": email}
+            num = info["number"]
+            label = account_label(num, alias=info["alias"] or None, email=email, provider=prefix)
+            return label, {"number": num, "email": email}, ""
+        found: dict = {"number": None, "email": email}
+        num = self.former_numbers.get(provider or "", {}).get(key)
         if num is not None:
-            info["formerNumber"] = num
-        return f"{email} (not managed by qswap)", info
+            found["formerNumber"] = num
+        return account_label(None, email=email, provider=prefix) + NOT_MANAGED, found, NOT_MANAGED
 
 
 def _profile_sessions(
@@ -229,7 +267,9 @@ def build_report(
     unpriced: dict[str, int] = {}
     unattributed = 0
     used_profile_sessions: set[str] = set()
+    seen_providers: set[str] = set()
     for prov, hour, account, model, project, session, *toks in raw:
+        seen_providers.add(prov)
         toks = tuple(toks)
         if prov == "claude" and session in overrides and account not in (DESKTOP_ACCOUNT,):
             account = overrides[session]
@@ -247,7 +287,9 @@ def build_report(
         elif by == "model":
             gkey = model
         elif by == "account":
-            gkey = account
+            # One row per provider's account: the two number their accounts
+            # separately. Unattributed usage is one row whatever its provider.
+            gkey = (None, account) if account == UNATTRIBUTED else (prov, account)
         elif by == "project":
             gkey = project
         elif by == "provider":
@@ -273,8 +315,9 @@ def build_report(
             groups.values(),
             key=lambda r: (-(r.totals.cost or 0.0), -r.totals.tokens, str(r.key)),
         )
+    both = len(seen_providers) > 1
     for row in rows:
-        _label(row, by, accounts)
+        _label(row, by, accounts, show_provider=both)
     return Report(
         by=by,
         since=since,
@@ -298,16 +341,20 @@ def _iso_or_none(ts: float | None) -> str | None:
     return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
 
 
-def _short_path(path: str) -> str:
-    if not path:
-        return "(no project)"
+def home_path(path: str | Path) -> str:
+    """``path`` with the home directory spelled ``~``."""
+    path = str(path)
     home = str(Path.home())
     if path == home or path.startswith(home + os.sep):
         return "~" + path[len(home):]
     return path
 
 
-def _label(row: Row, by: str, accounts: Accounts) -> None:
+def _short_path(path: str) -> str:
+    return home_path(path) if path else "(no project)"
+
+
+def _label(row: Row, by: str, accounts: Accounts, *, show_provider: bool = False) -> None:
     if by == "day":
         row.label = row.key.strftime("%a %Y-%m-%d")  # type: ignore[union-attr]
     elif by == "model":
@@ -316,16 +363,21 @@ def _label(row: Row, by: str, accounts: Accounts) -> None:
             model[: -len(FAST_SUFFIX)] + " (fast)" if model.endswith(FAST_SUFFIX) else model
         )
     elif by == "account":
-        row.label, info = accounts.describe(str(row.key))
+        prov, key = row.key  # type: ignore[misc]
+        row.label, info, row.tail = accounts.describe(key, prov, show_provider=show_provider)
         row.extra["account"] = info
+        row.extra["provider"] = prov
     elif by == "project":
         row.label = _short_path(str(row.key))
+        row.cut = "start"
     elif by == "provider":
         row.label = PROVIDER_LABELS.get(str(row.key), str(row.key))
     else:
         prov, session = row.key  # type: ignore[misc]
         row.extra["provider"] = prov
-        row.label = f"{session[:8] or '(none)'}  {_short_path(row.extra.get('project', ''))}"
+        row.head = f"{session[:8] or '(none)':<8}  "
+        row.label = row.head + _short_path(row.extra.get("project", ""))
+        row.cut = "start"
 
 
 # -- JSON --------------------------------------------------------------------
@@ -344,8 +396,9 @@ def report_to_json(report: Report, scan: dict | None = None) -> dict:
             key = row.key
         entry = {"key": key, "label": row.label, **row.totals.to_json()}
         if report.by == "account":
-            entry["key"] = row.key or None
+            entry["key"] = row.key[1] or None  # type: ignore[index]
             entry["account"] = row.extra.get("account")
+            entry["provider"] = row.extra.get("provider")
         elif report.by == "session":
             entry["provider"] = row.extra.get("provider")
             entry["project"] = row.extra.get("project")
@@ -410,60 +463,149 @@ _BY_TITLES = {
 }
 
 
+_HEADS = ("Input", "Output", "Cache read", "Cache write", "Est. cost")
+_GAP = 2  # columns between two cells
+_INDENT = "  "
+
+
+def fit_label(row: Row, width: int) -> str:
+    """``row.label`` cut to ``width`` columns with an ellipsis, keeping its
+    ``head`` and ``tail`` whole when there is room for anything between."""
+    label = row.label
+    if len(label) <= width:
+        return label
+    head, tail = row.head, row.tail
+    middle = label[len(head): len(label) - len(tail)]
+    room = width - len(head) - len(tail)
+    if room < 2:
+        return fit(label, width)
+    if row.cut == "start":
+        kept = middle[-(room - 1):]
+        # Start at a directory boundary when one is in reach: "…/checkout-api".
+        cut = min((i for i in (kept.find("/"), kept.find("\\")) if i > 0), default=-1)
+        if 0 < cut < len(kept) - 1:
+            kept = kept[cut:]
+        return head + "…" + kept + tail
+    return head + fit(middle, room) + tail
+
+
+def _cells(t: Totals) -> tuple[str, ...]:
+    return (
+        fmt_tokens(t.input), fmt_tokens(t.output), fmt_tokens(t.cache_read),
+        fmt_tokens(t.cache_write), fmt_cost(t),
+    )
+
+
+def _span_words(report: Report) -> str:
+    """``on 2026-11-10`` / ``between 2026-11-04 and 2026-11-10``."""
+    if report.since == report.until:
+        return f"on {report.since.isoformat()}"
+    return f"between {report.since.isoformat()} and {report.until.isoformat()}"
+
+
+def _wider_days(report: Report) -> int | None:
+    """A ``--days`` worth suggesting after an empty range."""
+    span = (report.until - report.since).days + 1
+    return next((n for n in (30, 90, 365) if n > span), None)
+
+
+def _or_list(items: tuple[str, ...]) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " or " + items[-1]
+
+
+def empty_lines(report: Report) -> list[str]:
+    """Why ``report`` has no usage, and what to do, as sentences (unwrapped)."""
+    command = "qswap usage" + (f" --provider {report.provider}" if report.provider else "")
+    if report.searched_dirs is not None:
+        tools = PROVIDER_LABELS.get(report.provider or "", "Claude Code or Codex")
+        return [
+            f"No {tools} session files were found in {_or_list(report.searched_dirs)}.",
+            f"Use {tools}, then run {command} again.",
+        ]
+    scope = f"{PROVIDER_LABELS[report.provider]} " if report.provider in PROVIDER_LABELS else ""
+    if report.unscanned:
+        return [
+            f"No {scope}usage {_span_words(report)} in the ledger.",
+            "Run the command again without --no-scan to read new session files.",
+        ]
+    lines = [f"No {scope}usage {_span_words(report)}."]
+    days = _wider_days(report)
+    if days is not None:
+        by = f" --by {report.by}" if report.by != "day" else ""
+        lines.append(f"To look further back: {command} --days {days}{by}")
+    return lines
+
+
 def render_text(
-    report: Report, *, notes: list[str] | None = None, last_line: str | None = None
+    report: Report,
+    *,
+    notes: list[str] | None = None,
+    last_line: str | None = None,
+    width: int = WIDTH,
 ) -> str:
-    """The report as text. ``last_line`` (such as what the scan left out) ends
-    it, muted."""
+    """The report as text, every line at most ``width`` columns.
+    ``last_line`` (such as what the scan left out) ends it, muted. A report
+    with no usage is a sentence saying why, and the next step."""
     from ai_quota_swap.printer import bolded, dimmed, muted
 
+    def wrapped(text: str) -> list[str]:
+        out: list[str] = []
+        for s in wrap(text, width):
+            # A word longer than the line (a deep path) is broken rather
+            # than let through.
+            out.extend([s] if len(s) <= width else textwrap.wrap(s, width))
+        return out
+
     lines: list[str] = []
+    if report.empty:
+        for text in empty_lines(report):
+            lines.extend(wrapped(text))
+        tail = [f"Pricing override: {w}" for w in report.prices.warnings] + list(notes or [])
+        for text in tail:
+            lines.extend(dimmed(s) for s in wrapped(text))
+        if last_line:
+            lines.extend(muted(s) for s in wrapped(last_line))
+        return "\n".join(lines)
+
     span = (
         report.since.isoformat()
         if report.since == report.until
         else f"{report.since.isoformat()} to {report.until.isoformat()}"
     )
     who = PROVIDER_LABELS.get(report.provider or "", "Claude Code and Codex")
-    lines.append(bolded(f"Token usage, {span}, {who}, by {report.by}"))
+    lines.extend(bolded(s) for s in wrapped(f"Token usage, {span}, {who}, by {report.by}"))
     lines.append("")
     rows = report.rows
     hidden = 0
     if report.by != "day" and len(rows) > _TEXT_ROW_LIMIT:
         hidden = len(rows) - _TEXT_ROW_LIMIT
         rows = rows[:_TEXT_ROW_LIMIT]
-    labels = [r.label for r in rows] + ["Total", _BY_TITLES[report.by]]
-    width = min(max(len(s) for s in labels), 56)
-    heads = ("Input", "Output", "Cache read", "Cache write", "Est. cost")
-    widths = (9, 9, 12, 13, 12)
+    body = [(r, _cells(r.totals)) for r in rows]
+    total_cells = _cells(report.total)
+    widths = [
+        _GAP + max([len(_HEADS[i]), len(total_cells[i])] + [len(c[i]) for _r, c in body])
+        for i in range(len(_HEADS))
+    ]
+    # The session view's label is two columns: the id and the project.
+    title = "Session   Project" if report.by == "session" else _BY_TITLES[report.by]
+    room = width - len(_INDENT) - sum(widths)
+    label_width = min(max(len(s) for s in [r.label for r in rows] + ["Total", title]), room)
 
     def line(label: str, cells: tuple[str, ...]) -> str:
-        if len(label) > width:
-            label = "…" + label[-(width - 1):]
-        return "  " + label.ljust(width) + "".join(c.rjust(w) for c, w in zip(cells, widths))
+        return (
+            _INDENT + label.ljust(label_width)
+            + "".join(c.rjust(w) for c, w in zip(cells, widths))
+        )
 
-    lines.append(dimmed(line(_BY_TITLES[report.by], heads)))
-    for r in rows:
-        t = r.totals
-        cells = (
-            fmt_tokens(t.input), fmt_tokens(t.output), fmt_tokens(t.cache_read),
-            fmt_tokens(t.cache_write), fmt_cost(t),
-        )
-        text = line(r.label, cells)
-        lines.append(muted(text) if not t.tokens else text)
+    lines.append(dimmed(line(fit(title, label_width), _HEADS)))
+    for r, cells in body:
+        text = line(fit_label(r, label_width), cells)
+        lines.append(muted(text) if not r.totals.tokens else text)
     if hidden:
-        lines.append(dimmed(f"  … {hidden} more (--json lists all)"))
-    t = report.total
-    lines.append(
-        bolded(
-            line(
-                "Total",
-                (
-                    fmt_tokens(t.input), fmt_tokens(t.output), fmt_tokens(t.cache_read),
-                    fmt_tokens(t.cache_write), fmt_cost(t),
-                ),
-            )
-        )
-    )
+        lines.append(dimmed(f"{_INDENT}… {hidden} more (--json lists all)"))
+    lines.append(bolded(line("Total", total_cells)))
     lines.append("")
     footer = [
         f"Costs are estimates at API list prices (Anthropic and OpenAI pricing pages, "
@@ -483,7 +625,8 @@ def render_text(
     for w in report.prices.warnings:
         footer.append(f"Pricing override: {w}")
     footer.extend(notes or [])
-    lines.extend(dimmed(f) for f in footer)
+    for text in footer:
+        lines.extend(dimmed(s) for s in wrapped(text))
     if last_line:
-        lines.append(muted(last_line))
+        lines.extend(muted(s) for s in wrapped(last_line))
     return "\n".join(lines)
