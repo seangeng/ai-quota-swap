@@ -108,6 +108,8 @@ def seed_claude(switcher, scenario: Scenario) -> None:
                 record["priority"] = a.priority
             if a.threshold is not None:
                 record["threshold"] = a.threshold
+            if a.budget is not None:
+                record["budget"] = a.budget
             data["accounts"][n] = record
             if a.slot not in data["sequence"]:
                 data["sequence"].append(a.slot)
@@ -369,13 +371,13 @@ def seed_ledger(backup_dir: Path, scenario: Scenario) -> None:
             continue
         a = scenario.account(slot)
         acts.append(json.dumps({
-            "ts": _iso(ts), "number": a.slot, "email": a.email, "org": a.org_uuid, "source": "switch",
+            "ts": _iso(ts), "number": a.slot, "email": a.email, "org": _org(a), "source": "switch",
         }, separators=(",", ":")))
     # The live login at the scenario clock is the active account.
     active = scenario.account(scenario.active)
     acts.append(json.dumps({
         "ts": _iso(now - 1800), "number": active.slot, "email": active.email,
-        "org": active.org_uuid, "source": "switch",
+        "org": _org(active), "source": "switch",
     }, separators=(",", ":")))
     _write(backup_dir / "activations.jsonl", acts)
 
@@ -397,3 +399,22 @@ def seed_ledger(backup_dir: Path, scenario: Scenario) -> None:
         }, separators=(",", ":")))
     if codex_acts:
         _write(backup_dir / "codex" / "activations.jsonl", codex_acts)
+
+    if ledger.prescan:
+        from ai_quota_swap.ledger.usage import resolve_range, run_usage
+
+        since, until = resolve_range(days=ledger.days, since=None, until=None,
+                                     today=scenario.clock.date())
+        run_usage(backup_dir, since=since, until=until, by="day", scan=True,
+                  registry=_registry(backup_dir), progress=False)
+
+
+def _org(a: ClaudeAccount) -> str:
+    """The organization the activation log records: an API key has none, as
+    its registry record says."""
+    return "" if a.api_key else a.org_uuid
+
+
+def _registry(backup_dir: Path) -> dict:
+    path = backup_dir / "sequence.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}

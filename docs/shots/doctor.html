@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<meta name="color-scheme" content="dark">
+<title>qswap doctor</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { display: flex; justify-content: center; }
+  .window {
+    width: fit-content; box-sizing: border-box; overflow: hidden;
+    background: #17181c; border: 1px solid #33343a; border-radius: 12px;
+  }
+  .titlebar {
+    position: relative; height: 40px; display: flex; align-items: center;
+    background: #222327; border-bottom: 1px solid #33343a;
+  }
+  .dots { display: flex; gap: 8px; padding-left: 16px; }
+  .dots i { display: block; width: 12px; height: 12px; border-radius: 50%; }
+  .dots i:nth-child(1) { background: #ff5f57; }
+  .dots i:nth-child(2) { background: #febc2e; }
+  .dots i:nth-child(3) { background: #28c840; }
+  .title {
+    position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
+    font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: #9a9a98;
+  }
+  .screen {
+    margin: 0; padding: 20px 28px 24px; color: #e4e4e2;
+    width: 80ch;
+    font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
+      "DejaVu Sans Mono", "Liberation Mono", monospace;
+    font-size: 15px; line-height: 1.5; white-space: pre;
+    font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
+    tab-size: 8;
+  }
+  .prompt { color: #8a8a88; }
+  .cmd { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="window" id="window">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="title">qswap doctor</div></div>
+<pre class="screen"><span class="prompt">$</span> <span class="cmd">qswap doctor</span>
+<span style="font-weight: bold">Claude Code</span>
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  Claude Code 2.1.0 on PATH
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  logged in as maya@example.com
+  <span style="color: #e2ba6a; text-decoration-color: #e2ba6a">warn</span>  that login is not managed by qswap
+        <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">fix:</span> qswap add
+
+<span style="font-weight: bold">Codex</span>
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  Codex 2.1.0 on PATH
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  Codex keeps its login in auth.json (file storage)
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  logged in as maya@example.com
+  <span style="color: #e2ba6a; text-decoration-color: #e2ba6a">warn</span>  that login is not managed by qswap
+        <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">fix:</span> qswap codex add
+
+<span style="font-weight: bold">Data directory</span>
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  ~/.ai-quota-swap
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  private to you (mode 700)
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  saved logins are kept in the login Keychain, which is responding
+
+<span style="font-weight: bold">Menu bar</span>
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  not set up
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">        qswap menubar starts it, now and at every login</span>
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  installed outside ~/Documents, ~/Desktop and ~/Downloads
+
+<span style="font-weight: bold">Auto-switch</span>
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  Claude Code: not running
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">        start one with qswap auto or qswap menubar --auto-switch</span>
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  Codex: not running
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">        start one with qswap codex auto</span>
+
+<span style="font-weight: bold">qswap</span>
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  Python 3.13.5
+  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">ok  </span>  ai-quota-swap 0.1.0 · installed with uv tool
+
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">Network checks skipped; run qswap doctor --online to include them.</span>
+
+<span style="color: #e2ba6a; text-decoration-color: #e2ba6a">2 warnings, no failures</span></pre>
+</div>
+</body>
+</html>

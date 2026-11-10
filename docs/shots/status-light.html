@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<meta name="color-scheme" content="light">
+<title>qswap status</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { display: flex; justify-content: center; }
+  .window {
+    width: fit-content; box-sizing: border-box; overflow: hidden;
+    background: #fbfaf7; border: 1px solid #d9d7d1; border-radius: 12px;
+  }
+  .titlebar {
+    position: relative; height: 40px; display: flex; align-items: center;
+    background: #ecebe7; border-bottom: 1px solid #d9d7d1;
+  }
+  .dots { display: flex; gap: 8px; padding-left: 16px; }
+  .dots i { display: block; width: 12px; height: 12px; border-radius: 50%; }
+  .dots i:nth-child(1) { background: #ff5f57; }
+  .dots i:nth-child(2) { background: #febc2e; }
+  .dots i:nth-child(3) { background: #28c840; }
+  .title {
+    position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
+    font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: #6d6c68;
+  }
+  .screen {
+    margin: 0; padding: 20px 28px 24px; color: #242422;
+    width: 80ch;
+    font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
+      "DejaVu Sans Mono", "Liberation Mono", monospace;
+    font-size: 15px; line-height: 1.5; white-space: pre;
+    font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
+    tab-size: 8;
+  }
+  .prompt { color: #8a8984; }
+  .cmd { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="window" id="window">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="title">qswap status</div></div>
+<pre class="screen"><span class="prompt">$</span> <span class="cmd">qswap status</span>
+<span style="font-weight: bold">Claude Code</span>
+  #1 <span style="color: #954c2a; text-decoration-color: #954c2a">personal</span><span style="color: #635d55; text-decoration-color: #635d55"> (maya@example.com) · </span><span style="font-weight: bold">active</span><span style="color: #635d55; text-decoration-color: #635d55"> · Max 20x</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">├</span> <span style="color: #635d55; text-decoration-color: #635d55">5h   </span>  <span style="color: #635d55; text-decoration-color: #635d55"> 46%</span>  <span style="color: #635d55; text-decoration-color: #635d55">resets 16:55 · in 2h 35m</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">├</span> <span style="color: #635d55; text-decoration-color: #635d55">7d   </span>  <span style="color: #635d55; text-decoration-color: #635d55"> 38%</span>  <span style="color: #635d55; text-decoration-color: #635d55">resets Nov 13 20:20 · in 3d 6h</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">└</span> <span style="color: #635d55; text-decoration-color: #635d55">Fable</span>  <span style="color: #635d55; text-decoration-color: #635d55"> 52%</span>  <span style="color: #635d55; text-decoration-color: #635d55">resets Nov 13 20:20 · in 3d 6h</span>
+<span style="color: #635d55; text-decoration-color: #635d55">     Holds 1 Fable reset · usable once a limit is reached · use by Dec 28</span>
+<span style="font-weight: bold">Codex</span>
+  #1 maya@example.com<span style="color: #635d55; text-decoration-color: #635d55"> · </span><span style="font-weight: bold">active</span><span style="color: #635d55; text-decoration-color: #635d55"> · Plus</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">├</span> <span style="color: #635d55; text-decoration-color: #635d55">5h   </span>  <span style="color: #635d55; text-decoration-color: #635d55"> 22%</span>  <span style="color: #635d55; text-decoration-color: #635d55">resets 18:00 · in 3h 40m</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">└</span> <span style="color: #635d55; text-decoration-color: #635d55">7d   </span>  <span style="color: #635d55; text-decoration-color: #635d55"> 47%</span>  <span style="color: #635d55; text-decoration-color: #635d55">resets Nov 14 17:20 · in 4d 3h</span>
+
+<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">5 Claude Code accounts and 2 Codex accounts are managed.</span>
+Auto-switch is not running. Start it with: qswap auto</pre>
+</div>
+</body>
+</html>

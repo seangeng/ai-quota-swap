@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=1200">
+<meta name="viewport" content="width=device-width">
 <meta name="color-scheme" content="dark">
 <title>qswap auto</title>
 <style>
   html, body { margin: 0; padding: 0; background: transparent; }
   body { display: flex; justify-content: center; }
   .window {
-    width: 1200px; box-sizing: border-box; overflow: hidden;
+    width: fit-content; box-sizing: border-box; overflow: hidden;
     background: #17181c; border: 1px solid #33343a; border-radius: 12px;
   }
   .titlebar {
@@ -28,6 +28,7 @@
   }
   .screen {
     margin: 0; padding: 20px 28px 24px; color: #e4e4e2;
+    width: 80ch;
     font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
       "DejaVu Sans Mono", "Liberation Mono", monospace;
     font-size: 15px; line-height: 1.5; white-space: pre;
@@ -43,13 +44,14 @@
   <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
     <div class="title">qswap auto</div></div>
 <pre class="screen"><span class="prompt">$</span> <span class="cmd">qswap auto</span>
-<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">Auto-switch running: threshold 90%, every 60s — Ctrl-C to stop</span>
-14:20:00  <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">Account-1 (maya@example.com): 5h 86% used (switch at 90%) | others: #2: 5h 12% · 7d 21%, #3: 5h 93% · 7d 81%</span>
-14:20:00  <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">no switch: below-threshold (5h 86% &lt; 90%)</span>
-14:21:00  <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">Account-1 (maya@example.com): 5h 88% used (switch at 90%) | others: #2: 5h 12% · 7d 21%, #3: 5h 93% · 7d 81%</span>
-14:21:00  <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">no switch: below-threshold (5h 88.5% &lt; 90%)</span>
-14:22:00  <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">Account-1 (maya@example.com): 5h 91% used (switch at 90%) | others: #2: 5h 12% · 7d 21%, #3: 5h 93% · 7d 81%</span>
-14:22:00  <span style="color: #d7875f; text-decoration-color: #d7875f">Switched Account-1 -&gt; Account-2 (maya@northwind.example.com) (proactive)</span></pre>
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">Auto-switch running: switch at 90% · checks every 60s · Ctrl-C to stop</span>
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">14:20:00</span>  <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">#1 personal at 5h 78% (switch at 90%) · no switch needed</span>
+            <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">#2 work       </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h 12% · 7d 21%</span>
+            <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">#3 night-shift</span>  <span style="color: #e2ba6a; text-decoration-color: #e2ba6a">5h 93% · 7d 81% · over its switch line</span>
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">14:21:00</span>  <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">#1 personal at 5h 88% (switch at 90%) · no switch needed</span>
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">14:22:00</span>  <span style="color: #d7875f; text-decoration-color: #d7875f">Switched #1 personal → #2 work · 5h reached 91%</span>
+            <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">#2 work       </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h 12% · 7d 21%</span>
+            <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">#3 night-shift</span>  <span style="color: #e2ba6a; text-decoration-color: #e2ba6a">5h 93% · 7d 81% · over its switch line</span></pre>
 </div>
 </body>
 </html>

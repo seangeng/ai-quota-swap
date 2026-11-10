@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=1200">
+<meta name="viewport" content="width=device-width">
 <meta name="color-scheme" content="light">
 <title>qswap reset</title>
 <style>
   html, body { margin: 0; padding: 0; background: transparent; }
   body { display: flex; justify-content: center; }
   .window {
-    width: 1200px; box-sizing: border-box; overflow: hidden;
+    width: fit-content; box-sizing: border-box; overflow: hidden;
     background: #fbfaf7; border: 1px solid #d9d7d1; border-radius: 12px;
   }
   .titlebar {
@@ -28,6 +28,7 @@
   }
   .screen {
     margin: 0; padding: 20px 28px 24px; color: #242422;
+    width: 80ch;
     font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
       "DejaVu Sans Mono", "Liberation Mono", monospace;
     font-size: 15px; line-height: 1.5; white-space: pre;
@@ -43,25 +44,31 @@
   <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
     <div class="title">qswap reset</div></div>
 <pre class="screen"><span class="prompt">$</span> <span class="cmd">qswap reset</span>
-<span style="font-weight: bold">Usage resets</span><span style="color: #8f8f8c; text-decoration-color: #8f8f8c">   auto: active — when the account in use reaches 95% on a window its reset clears</span>
-  1: maya@example.com <span style="color: #954c2a; text-decoration-color: #954c2a">(active)</span>
-     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">├</span> <span style="color: #635d55; text-decoration-color: #635d55"> 1× Fable   usable now · use by Dec 28</span>  <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">launch-2611-fable · next</span>
-     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">└</span> <span style="color: #635d55; text-decoration-color: #635d55"> 1× session needs a limit hit first · use by Nov 30</span>  <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">tenure-12m-session</span>
-  2: maya@northwind.example.com
+<span style="font-weight: bold">Usage resets</span>
+<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Auto: active · when the account in use reaches 95% on a window its reset clears</span>
+
+  #1 <span style="color: #954c2a; text-decoration-color: #954c2a">personal</span><span style="color: #635d55; text-decoration-color: #635d55"> (maya@example.com) · </span><span style="font-weight: bold">active</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">├</span> <span style="color: #635d55; text-decoration-color: #635d55">1 Fable reset · clears Fable usage only · next</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">│</span> <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">usable now · use by Dec 28 · id launch-2611-fable</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">└</span> <span style="color: #635d55; text-decoration-color: #635d55">1 weekly reset · clears all weekly usage</span>
+       <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">usable once a limit is reached · use by Nov 30 · id tenure-12m-weekly</span>
+  #2 <span style="color: #954c2a; text-decoration-color: #954c2a">work</span><span style="color: #635d55; text-decoration-color: #635d55"> (maya@northwind.example.com)</span>
      <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">└</span> <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">not eligible (plan)</span>
-  3: ops@example.net
+  #3 <span style="color: #954c2a; text-decoration-color: #954c2a">night-shift</span><span style="color: #635d55; text-decoration-color: #635d55"> (ops@example.net)</span>
      <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">└</span> <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">no resets held</span>
-  4: sam@example.org
+  #4 <span style="color: #954c2a; text-decoration-color: #954c2a">side</span><span style="color: #635d55; text-decoration-color: #635d55"> (sam@example.org)</span>
      <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">└</span> <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">not eligible (plan)</span>
-<span style="color: #954c2a; text-decoration-color: #954c2a">Auto would now use a Fable reset on Account-1 (active-limit: Fable 100%, 3.3d before it resets on its own)</span>
-<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Auto resets in the last 24h: 0/3</span>
+
+<span style="color: #954c2a; text-decoration-color: #954c2a">Auto would now use a Fable reset on #1 personal (Fable at 100%, 3d 6h before it</span>
+<span style="color: #954c2a; text-decoration-color: #954c2a">refills on its own).</span>
+<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Spent automatically in the last 24h: 0 of 3.</span>
 
 <span class="prompt">$</span> <span class="cmd">qswap reset 1 --yes</span>
-<span style="color: #954c2a; text-decoration-color: #954c2a">Used a Fable reset on Account-1 (maya@example.com): Fable refilled · 0 left on this grant</span>
-   <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">├</span> <span style="color: #635d55; text-decoration-color: #635d55">5h:      31%   resets 17:25         in 3h 5m</span>
-   <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">├</span> <span style="color: #635d55; text-decoration-color: #635d55">7d:      52%   resets Nov 13 20:20  in 3d 6h</span>
-   <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">├</span> <span style="color: #635d55; text-decoration-color: #635d55">Fable:    0%   resets Nov 13 20:20  in 3d 6h</span>
-   <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">└</span> <span style="color: #635d55; text-decoration-color: #635d55">resets:   1    session · use by Nov 30 · not usable now</span></pre>
+<span style="color: #954c2a; text-decoration-color: #954c2a">Used a Fable reset on #1 personal: Fable refilled · 0 left on this grant</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">├</span> <span style="color: #635d55; text-decoration-color: #635d55">5h   </span>  <span style="color: #635d55; text-decoration-color: #635d55"> 31%</span>  <span style="color: #635d55; text-decoration-color: #635d55">resets 17:25 · in 3h 5m</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">├</span> <span style="color: #635d55; text-decoration-color: #635d55">7d   </span>  <span style="color: #635d55; text-decoration-color: #635d55"> 52%</span>  <span style="color: #635d55; text-decoration-color: #635d55">resets Nov 13 20:20 · in 3d 6h</span>
+     <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">└</span> <span style="color: #635d55; text-decoration-color: #635d55">Fable</span>  <span style="color: #635d55; text-decoration-color: #635d55">  0%</span>  <span style="color: #635d55; text-decoration-color: #635d55">resets Nov 13 20:20 · in 3d 6h</span>
+<span style="color: #635d55; text-decoration-color: #635d55">     Holds 1 weekly reset · usable once a limit is reached · use by Nov 30</span></pre>
 </div>
 </body>
 </html>

@@ -136,10 +136,11 @@ def parse_size(text: str) -> tuple[int, int]:
     return int(cols), int(rows)
 
 
-async def fit_cells(new_page, server, theme: str, cols: int, rows: int) -> tuple[int, int]:
+async def fit_cells(new_page, server, theme: str, cols: int, rows: int,
+                    font: int = FONT) -> tuple[int, int]:
     """Pixel width and height of the terminal area that xterm.js fits to
-    exactly ``cols`` x ``rows`` at :data:`FONT`."""
-    w, h = 9 * cols + 40, 20 * rows + 40
+    exactly ``cols`` x ``rows`` at ``font`` px."""
+    w, h = round(0.6 * font * cols) + 40, round(1.25 * font * rows) + 40
     # Each fit floors pixels / cell size, so each answer bounds the cell size;
     # the next try aims for the middle of the target cell.
     cw_lo, cw_hi, ch_lo, ch_hi = 0.0, float("inf"), 0.0, float("inf")
@@ -148,7 +149,7 @@ async def fit_cells(new_page, server, theme: str, cols: int, rows: int) -> tuple
         page = await new_page()
         await page.setup(w + 200, h + 200)
         await page.send("Page.addScriptToEvaluateOnNewDocument", {"source": SIZE_HOOK})
-        await page.goto(server.url(f"fontsize={FONT}&w={w}&h={h}&theme={theme}"))
+        await page.goto(server.url(f"fontsize={font}&w={w}&h={h}&theme={theme}"))
         await page.wait_for(READY)
         await page.wait_for("window.__qswapCells !== null")
         got = json.loads(await page.eval("JSON.stringify(window.__qswapCells)"))
