@@ -519,6 +519,8 @@ An API-key account's row shows what it has spent today and this month, and its b
 - [docs/usage.md](docs/usage.md) — `qswap usage`: what it reads, what the token and cost columns mean, why the cost is an estimate, your own prices, and how usage is attributed to accounts. Read it before trusting the account split.
 - [docs/api-accounts.md](docs/api-accounts.md) — API-key accounts: their spend, monthly budgets and what a budget does not do, registering an organization's Admin key and what that key can do, and `usage --billed`. Read it before registering an Admin key.
 - [docs/menubar.md](docs/menubar.md) — how the macOS menu bar runs under launchd: start at login, the wrapper app in `/Applications`, file locations, upgrades, the Login Items switch. Read it when the icon is missing or the service misbehaves.
+- [SECURITY.md](SECURITY.md) — what qswap stores and where, which endpoints it calls, how to report a vulnerability, and how to remove everything. [CHANGELOG.md](CHANGELOG.md) lists what changed.
+- [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/architecture.md](docs/architecture.md) — for contributors: setup, running the tool against fake accounts, tests, lint, and a map of the code.
 
 `qswap --help` and `qswap <command> --help` document every flag.
 

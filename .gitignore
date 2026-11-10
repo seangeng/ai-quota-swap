@@ -6,8 +6,17 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
-.venv
+# Virtual environments (.venv, and any side environment such as .venv-3.12)
+.venv*
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
 
 # superpowers session planning artifacts (not part of the project)
 docs/superpowers/
