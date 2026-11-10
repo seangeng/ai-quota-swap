@@ -967,6 +967,25 @@ class TestUpgradeRestartsARunningMenuBar:
         captured = capsys.readouterr()
         assert "not restarted" in captured.out + captured.err
 
+    def test_any_provider_error_is_a_warning_too(self, monkeypatch, capsys):
+        # The catch is the provider-neutral base, not Claude Code's subclass.
+        from ai_quota_swap import update_check
+        from ai_quota_swap.exceptions import ClaudeSwitchError, CodexLoginError
+
+        assert not issubclass(CodexLoginError, ClaudeSwitchError)
+        monkeypatch.setattr("ai_quota_swap.launch_agent.service_pid", lambda *a, **k: 4242)
+
+        def boom(*a, **k):
+            raise CodexLoginError("something only a Codex path raises")
+
+        monkeypatch.setattr("ai_quota_swap.launch_agent.kickstart", boom)
+        monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: _NEW_BUILD)
+        update_check._restart_menubar_if_rebuilt(_OLD_BUILD)
+        captured = capsys.readouterr()
+        assert "not restarted onto the new build: something only a Codex path raises" in (
+            captured.out + captured.err
+        )
+
     @patch("ai_quota_swap.update_check.subprocess.run")
     @patch("ai_quota_swap.update_check._detect_install_method", return_value="uv")
     def test_run_self_upgrade_wires_the_restart_in(self, mock_detect, mock_run, monkeypatch, capsys):

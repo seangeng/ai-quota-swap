@@ -174,6 +174,21 @@ def held_resets(counts: Sequence[tuple[str, int]], provider: str | None = "claud
     return ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
+#: What ``qswap remove`` / ``qswap codex remove`` ask; ``{name}`` is the
+#: account's long label. Every surface that removes an account asks this.
+_REMOVE_QUESTIONS = {
+    "claude": "Remove {name} and delete its saved login?",
+    "codex": "Stop managing {name} and delete qswap's saved copy of its login?",
+}
+
+
+def remove_question(provider: str | None, name: str) -> str:
+    """The question before an account is removed: ``Remove #2 work
+    (maya@example.com) and delete its saved login?``."""
+    template = _REMOVE_QUESTIONS.get(provider or "claude", _REMOVE_QUESTIONS["claude"])
+    return template.format(name=name)
+
+
 def grant_state(reason: str | None) -> str:
     """One wording for why a held reset cannot be used yet (``list`` and
     ``reset`` both say this); ``None`` reads "usable now"."""

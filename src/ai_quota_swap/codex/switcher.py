@@ -1452,8 +1452,10 @@ class CodexSwitcher:
         name = self.label(num, email)
         if live_num == num:
             warning(f"Warning: {name} is the live Codex login")
+        from ai_quota_swap import display
+
         if not prompts.confirm(
-            f"Stop managing {name} and delete qswap's saved copy of its login?",
+            display.remove_question("codex", name),
             assume_yes=assume_yes, command="qswap codex remove",
         ):
             print(dimmed("Cancelled; nothing was removed."))

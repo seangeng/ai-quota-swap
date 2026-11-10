@@ -67,9 +67,13 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("--without-cli", action="append", choices=("claude", "codex"), default=[],
                    help="act as if this CLI is not installed (repeatable); by default "
                         "both are, whatever this machine has")
+    p.add_argument("--menubar", action="store_true",
+                   help="print the menu bar's menu for the scenario as an outline "
+                        "(the menu bar itself needs macOS and rumps; this is its "
+                        "description, built by ai_quota_swap.menubar.build_menu)")
     p.add_argument("--tui-child", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(head)
-    if "--" not in argv and not args.serve:
+    if "--" not in argv and not args.serve and not args.menubar:
         p.error("give the qswap arguments after --, e.g. run.py fleet -- list "
                 "(a bare `--` runs qswap with no arguments)")
     return args, tail
@@ -156,6 +160,15 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
     install_cli_fakes(args.without_cli)
     random.seed(scenario.name)  # the engine's poll jitter, run to run
 
+    if args.menubar:
+        print(menubar_outline(switcher))
+        if sb.violations:
+            print("run.py: the run crossed the sandbox:", file=sys.stderr)
+            for v in sb.violations:
+                print(f"  - {v}", file=sys.stderr)
+            return EXIT_VIOLATION
+        return 0
+
     code = 0
     blocks = []
     # A bare `--` is qswap with no arguments (its usage error off a terminal).
@@ -199,6 +212,41 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
             print(f"  - {v}", file=sys.stderr)
         return EXIT_VIOLATION
     return code
+
+
+def menubar_outline(switcher) -> str:
+    """The menu bar's menu for the seeded scenario, as the app builds it once
+    its first read and its first ledger scan are done: both providers read
+    through the same paths the app uses (``menubar_data``), engines off, the
+    scenario's settings."""
+    import time
+
+    from ai_quota_swap import menubar, menubar_data
+    from ai_quota_swap.settings import load_codex_settings, load_settings
+    from ai_quota_swap.snapshot_source import SnapshotSource
+
+    root = switcher.backup_dir
+    # The app's background ledger scan, as it runs a minute after launch.
+    menubar_data.scan_ledger(root, registry=switcher._get_sequence_data())
+    now = time.time()
+    claude = menubar_data.claude_state(
+        switcher, SnapshotSource(switcher), full=False, store_only=False, now=now,
+    )
+    codex = menubar_data.CodexReader(root).state(full=False, store_only=False, now=now)
+    now = time.time()  # the menu is drawn after the read, as in the app
+    inp = menubar.MenuInput(
+        claude=claude,
+        codex=codex,
+        settings=menubar.MenuBarSettings.load(root / "menubar_settings.json"),
+        now=now,
+        cost=menubar_data.read_cost(root),
+        history=menubar_data.read_history(root / "ai-quota-swap.log"),
+        thresholds={
+            "claude": load_settings(root).threshold,
+            "codex": load_codex_settings(root).threshold,
+        },
+    )
+    return menubar.build_menu(inp).outline()
 
 
 def split_commands(args: list[str]) -> list[list[str]]:
