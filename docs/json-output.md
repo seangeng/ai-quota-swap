@@ -32,6 +32,8 @@ These apply to `list` rows and the managed active row from `status --json`. All 
 | `threshold` | a per-account threshold is set with `qswap threshold` | e.g. `85.0`; absent otherwise, so a fleet that never sets a policy emits rows identical to before. |
 | `alias` | an alias is set with `qswap alias` | e.g. `"dev"`; accounts without one omit the key. |
 | `loginExpiresAt` | the stored login records when its refresh token expires | ISO-8601 UTC: the moment the slot will need a fresh `/login` and `qswap add --slot N`, so a script can warn a few days ahead instead of discovering `relogin_required`. Absent when Claude Code recorded no such date for that login. |
+| `budget` | a monthly budget is set with `qswap budget` (API-key accounts only) | Dollars a month, e.g. `500.0`. |
+| `apiSpend` | the row is an API-key account and its spend is known, it has a budget, or an organization is registered ([api-accounts.md](api-accounts.md)) | `used` (dollars this UTC month, `null` when unknown), `limit` (the budget or `null`), `pct` (`used` over `limit`, or `null`), `currency` (`"USD"`), `today` (dollars today, UTC), `source` (`"admin-api"`: Anthropic's usage report for the key, priced at list prices; `"ledger"`: an estimate from this machine's transcripts; `null`: no figure), `month` (`"2026-11"`), `resetsAt` (the next month's start), and when known `asOf` (when the figure was read), `organization` and `apiKeyId` (the linked key), `unpricedTokens` (tokens of models without a price, left out of `used`), `note` (why the figure is not Anthropic's, e.g. `"Admin API rate limited"`). The row's `usageStatus` stays `api_key` and `usage` stays `null`. |
 | `plan` | the slot's subscription plan has been read from the profile endpoint at least once | `label` as the human views print it (`Ultra`, `Max 5x`, `Pro`, `Team`, `Free`), the raw `tier`, then `organizationType`, `billingType`, `subscriptionStatus` and `planDisplayName` when the profile carried them, `expired` (`true` once the subscription is `canceled` and the account is back on the free tier; the human views show that as a highlighted `Free`) and `fetchedAt`, the last successful profile read. Plans refresh on their own six-hour cadence, not with usage. |
 
 ## Pace fields on weekly windows
@@ -91,6 +93,10 @@ Account numbers are per provider: Claude account 1 and Codex account 1 are diffe
 
 `qswap auto --json` (and `qswap codex auto --json`) emits an event stream instead: one JSON object per line (`{"schemaVersion":1,"event":"switch","ts":…, …}`) with kinds like `poll`, `switch`, `no-switch`, `account-quarantined`, `all-exhausted`, `limit-reset`, `error`. The contract is additive: new kinds, fields and `reason` values may appear, so scripts should ignore unknown ones. One `no-switch` reason so far is Codex-only: `switch-deferred`, a switch the provider refused for now with nothing changed (a running Codex may be renewing the live token); the next tick tries again.
 
+`budget-warning` is emitted once per API-key account per UTC month when its spend reaches 80% of its budget: `{account: {number, email}, usedUsd, budgetUsd, pct, month, source}`, `source` as in `apiSpend`. An active API-key account at its budget leaves with a `switch` whose `trigger` is `at-limit`.
+
+`qswap budget --json` prints `{schemaVersion, accounts: [{number, email, budget, apiSpend}]}` for the API-key accounts (`apiSpend` as above, or `null`); with an account and an amount, `{schemaVersion, number, email, budget, changed}`. `qswap api org list --json` prints `{schemaVersion, organizations: [{name, organizationName, organizationId, storage, added, linkedAccounts}], environmentKey}`; it never includes a key.
+
 ## `qswap usage --json`
 
 One object with `schemaVersion`, the request (`by`, `since`, `until` as local dates, `timezone` as a UTC offset such as `-0500`, `provider` or `null`), and:
@@ -106,5 +112,6 @@ One object with `schemaVersion`, the request (`by`, `since`, `until` as local da
 | `pricing` | `fetched` (the date the table was copied from the vendors' pages), `sources`, `override` (the `pricing.json` path when it changed anything), `warnings`. |
 | `scan` | What this run read: `filesSeen`, `filesRead`, `bytesRead`, `newEvents`, `duplicates`, `missing`, `skippedCompressed`, `seconds`. Absent with `--no-scan`. |
 | `notes` | Present when files were skipped or unreadable. |
+| `billed` | Only with `--billed`: `since`, `until`, `timezone` (`"UTC"`), `startingAt`, `endingAt` (the exact window asked of Anthropic), `by` (`day`, `model`, `key` or `workspace`), `notes`, and `organizations`: per organization `name`, `organizationName`, `organizationId`, `rows` (`key`, `label`, `input`, `output`, `cacheRead`, `cacheWrite5m`, `cacheWrite1h`, `costUsd`, `costSource`: `"cost-report"`, or `"estimate"` for per-key rows), `total` (the token fields and `billedCostUsd`, the cost report's total), `error` (`null`, or `{type, message}`), `costError` when only the cost report failed, and `fetchedAt`. |
 
 `estimate` is always `true`: subscription usage is not billed per token. See [usage.md](usage.md).

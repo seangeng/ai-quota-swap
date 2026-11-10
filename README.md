@@ -291,6 +291,9 @@ qswap auto                      # Auto-switch when nearing rate limits (see abov
 qswap reset                     # List usage resets; `qswap reset 2` uses one (see above)
 qswap usage                     # Tokens and estimated API cost for the last 7 days (docs/usage.md)
 qswap usage --by account        # ... by account; also --by model|project|provider|session, --days N
+qswap usage --billed            # ... plus what Anthropic billed your organization (Admin key)
+qswap budget 3 500              # A monthly budget for API-key account 3; `qswap budget` lists them
+qswap api org add               # Register an organization's Admin key, for exact API-key spend
 qswap config                    # Show or edit settings (see Configuration below)
 qswap list                      # Show all accounts with 5h/7d usage and reset times
 qswap list --token-status       # Add source-labelled OAuth token diagnostics
@@ -346,7 +349,7 @@ The original flag spellings (`qswap --switch`, `qswap --list`, ...) keep working
 | macOS | macOS Keychain | `~/.ai-quota-swap/` |
 | Linux / WSL | File-based (inside the backup directory, under `credentials/`) | `${XDG_DATA_HOME:-~/.local/share}/ai-quota-swap/` |
 
-Session-mode profiles (`qswap run`) live under the backup directory in `sessions/`. Tool preferences (`settings.json`) and auto-switch state (`autoswitch_state.json` — cooldown and quarantined accounts; delete it to reset) live in the backup directory root, as do the token ledger behind `qswap usage` (`ledger.db`, rebuilt from your session files if deleted), the record of which account was live when (`activations.jsonl`), and your own prices (`pricing.json`, optional).
+Session-mode profiles (`qswap run`) live under the backup directory in `sessions/`. Tool preferences (`settings.json`) and auto-switch state (`autoswitch_state.json` — cooldown and quarantined accounts; delete it to reset) live in the backup directory root, as do the token ledger behind `qswap usage` (`ledger.db`, rebuilt from your session files if deleted), the record of which account was live when (`activations.jsonl`), and your own prices (`pricing.json`, optional). Organizations registered with `qswap api org add` are listed in `api_orgs.json` (no keys in it; each Admin key is stored like a saved login), and Anthropic's report answers are kept for a few minutes in `cache/admin_api.json`.
 
 On Linux/WSL, set `XDG_DATA_HOME` to override the default location.
 
@@ -491,9 +494,20 @@ qswap add-token --email user@example.com     # optional label override
 
 - **Setup-tokens show `usage unavailable` by default**, because the usage endpoint does not answer them (their scope is inference-only). With `qswap config set usage.headerProbe true`, qswap reads their 5h/7d utilization (and Fable's weekly window) from the rate-limit headers of a 1-output-token Haiku request instead, sent at the normal poll cadence. Each probe is a real (tiny) request on that account's subscription, which is why it is off by default.
 - **What the probe can't do.** Other per-model windows and extra-usage spend are not in those headers. A reading missing the 5h or 7d window (or a window `autoswitch.model` names) is shown but not used for auto-switching. An account the server rejects for quota is marked as at its limit, with no further probe, until the refusal's `Retry-After` passes.
-- **API-key accounts.** Any bare `sk-ant-...` value that is not an OAuth token (`sk-ant-oat...`) registers a managed API-key account (the kind Claude Code uses after `/login` with a key). It switches like any other account, but API keys have no subscription quota, so they show no usage and the usage-aware `switch` strategies never skip them as rate-limited. Use keys scoped to a single workspace: a multi-workspace key needs an `anthropic-workspace-id` header on every request, which Claude Code does not add for a stored key.
+- **API-key accounts.** Any bare `sk-ant-...` value that is not an OAuth token (`sk-ant-oat...`) registers a managed API-key account (the kind Claude Code uses after `/login` with a key). It switches like any other account, but API keys have no subscription quota, so they show spend instead of usage (see [API-key spend and budgets](#api-key-spend-and-budgets)) and the usage-aware `switch` strategies never skip them as rate-limited. Use keys scoped to a single workspace: a multi-workspace key needs an `anthropic-workspace-id` header on every request, which Claude Code does not add for a stored key.
 
 </details>
+
+### API-key spend and budgets
+
+An API-key account's row shows what it has spent today and this month, and its budget when one is set:
+
+```
+  3: api-key-3@token.local [personal]
+     API key · $4.12 today · $212.40 this month of $500 (42%)
+```
+
+`qswap budget 3 500` sets a monthly budget: auto-switch warns at 80%, never switches to the account at its budget, and leaves it for an account with room when it reaches the budget while in use. It is a brake inside qswap, not a cap at Anthropic. The figure is exact per key when the organization's Admin key is registered with `qswap api org add` (an Admin key can manage the whole organization; qswap only reads reports with it), and otherwise estimated from this machine's transcripts and marked `estimate`. `qswap usage --billed` shows what Anthropic billed the organization. Details: [docs/api-accounts.md](docs/api-accounts.md).
 
 **Note:** Third-party providers configured through `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` are not managed or switched; those exported variables stay in effect after a switch, so unset them to use the swapped account.
 
@@ -503,6 +517,7 @@ qswap add-token --email user@example.com     # optional label override
 - [docs/json-output.md](docs/json-output.md) — every field in `--json` output, including the optional ones. Read it before writing a script against `qswap list --json` or `qswap auto --json`.
 - [docs/codex.md](docs/codex.md) — Codex accounts: adding a second account without signing the first out, what a switch does to running sessions, the background server and the desktop app, `qswap codex auto`, usage reset credits, and what qswap never does. Read it before your first Codex switch.
 - [docs/usage.md](docs/usage.md) — `qswap usage`: what it reads, what the token and cost columns mean, why the cost is an estimate, your own prices, and how usage is attributed to accounts. Read it before trusting the account split.
+- [docs/api-accounts.md](docs/api-accounts.md) — API-key accounts: their spend, monthly budgets and what a budget does not do, registering an organization's Admin key and what that key can do, and `usage --billed`. Read it before registering an Admin key.
 - [docs/menubar.md](docs/menubar.md) — how the macOS menu bar runs under launchd: start at login, the wrapper app in `/Applications`, file locations, upgrades, the Login Items switch. Read it when the icon is missing or the service misbehaves.
 
 `qswap --help` and `qswap <command> --help` document every flag.

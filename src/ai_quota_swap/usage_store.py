@@ -314,6 +314,10 @@ class UsageEntry:
     # import-usage``) keeps every collector off this slot. Appended for the
     # same positional compatibility as ``claim_until``.
     held_until: float | None = None
+    # An API-key account's spend reading (``api_spend.readings``), set beside
+    # the ``"api key"`` sentinel by the collector; never persisted, never part
+    # of ``decision_value``. Appended for the same positional compatibility.
+    api_spend: dict | None = None
 
     def fresh(self, now: float, ttl: float = SERVE_TTL_S) -> bool:
         return self.fetched_at is not None and (now - self.fetched_at) <= ttl

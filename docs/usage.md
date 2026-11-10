@@ -66,12 +66,32 @@ Put a `pricing.json` next to `ledger.db` in the qswap data directory (`~/.ai-quo
 | `--days N` | The last N days, today included (default 7) |
 | `--since DATE` | First day, `YYYY-MM-DD` |
 | `--until DATE` | Last day, included (with `--since`; default today) |
-| `--by day\|model\|account\|project\|provider\|session` | How rows are grouped (default `day`) |
+| `--by day\|model\|account\|project\|provider\|session` | How rows are grouped (default `day`); `key` and `workspace` too, with `--billed` |
 | `--provider claude\|codex` | Only one CLI's usage |
 | `--json` | The same data as JSON with `schemaVersion: 1` |
 | `--no-scan` | Report from the ledger without reading new session data |
 | `--rescan` | Rebuild the ledger from the session files |
 | `--all` | Read every session file into the ledger, not only those the dates need, without rebuilding it |
+| `--billed` | Also show what Anthropic reports for each registered organization (below) |
+
+## What Anthropic billed: `--billed`
+
+```bash
+qswap usage --billed                      # the last 7 days, by day
+qswap usage --billed --by model --days 30
+qswap usage --billed --by key             # per API key, labelled with the account it is linked to
+qswap usage --billed --by workspace
+```
+
+`--billed` adds a section per organization registered with `qswap api org add` (or named by `ANTHROPIC_ADMIN_KEY` for that one command; see [api-accounts.md](api-accounts.md#register-an-organization)): tokens by type from Anthropic's usage report and cost from its cost report, in US dollars, for the same dates. It is the only part of `qswap usage` that uses the network, and only when you ask for it.
+
+- **Days are UTC**, as in Anthropic's reports, while the rest of `qswap usage` uses your local days. The section's heading says so.
+- **Groupings.** By day, model, key (`--by account` reads as key) or workspace. `--by key` and `--by workspace` need `--billed`. With project, provider or session the section is shown by day and says why.
+- **Cost per key is estimated.** Anthropic's cost report cannot be split by API key, so with `--by key` each key's cost is its tokens at list prices, marked `Est. cost`; the total is the cost report's.
+- **The cost report is the bill's view.** It includes web search and code execution (shown as their own rows with `--by model`) and excludes Priority Tier, which is billed separately. It will not match the estimated cost above it, which prices only this machine's tokens at list prices.
+- **The last few minutes may be missing.** Anthropic's reports lag by about five minutes; answers are kept for five minutes so repeated runs do not ask again.
+
+When there is nothing to show, the section says so in one line: no organization registered, the Admin key was rejected (with how to replace it), the Admin API is rate limiting, or no usage has been reported for the window yet. `--json` adds the section as `billed` ([json-output.md](json-output.md#qswap-usage---json)).
 
 ## How usage is attributed to accounts
 

@@ -33,6 +33,10 @@ One threshold compared against the busiest window forces the same number on wind
 
 To hold an account out of rotation yourself — a work account you don't want touched, one you're resting — run `qswap disable <num|email>`; `qswap enable <num|email>` puts it back. Disabled accounts are skipped by auto-switch, bare `qswap switch`, and the `best` / `next-available` strategies, but stay fully managed and remain a valid explicit `qswap switch <num|email>` target. They show a `(disabled)` marker in `qswap list`, in the [TUI](../README.md#interactive-dashboard-tui), and in the [menu bar](../README.md#menu-bar-macos) — both of which also let you toggle the state in place (TUI: menu → *Disable / enable account…*; menu bar: *Disable / enable account*).
 
+## API-key accounts and budgets
+
+API-key accounts have no windows, so they are never ranked against subscriptions. Auto-switch only lands on one as a last resort, when it must move and no subscription has room, and only with `--include-api-key-accounts`. An active API-key account is left alone, unless it has a monthly budget (`qswap budget`) and has reached it: then it counts as at its limit and auto-switch moves to an account with room, skipping the cooldown as any at-limit escape does. An API-key account at its budget is never a target, and at 80% of its budget auto-switch emits one `budget-warning` per month. Without a budget, or before its spend is known, nothing changes. See [api-accounts.md](api-accounts.md).
+
 ## Per-model limits
 
 By default only the account-wide 5h/7d windows drive switching. If you work on one model and hit its **weekly per-model limit** first (e.g. Fable), add `--model Fable` (or `qswap config set autoswitch.model Fable`) to fold that model's window into the decision, so it switches off an account whose model quota is spent even while its 5h/7d windows still have room.

@@ -28,6 +28,9 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 DB_FILENAME = "ledger.db"
+# ``meta`` key: when ``qswap usage`` last finished a scan (epoch seconds), so
+# a spend figure read without scanning can say how old it is.
+LAST_SCAN_META = "last_scan_at"
 
 TOKEN_FIELDS = (
     "input",

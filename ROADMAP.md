@@ -115,20 +115,24 @@ figure.
 - History of quota readings, so the dashboard can show burn rate and "weekly limit reached
   Thursday 15:00 at this pace".
 
-### M4. API accounts
+### M4. API accounts (done)
 
-Design: [docs/design/api-accounts.md](docs/design/api-accounts.md).
+Design: [docs/design/api-accounts.md](docs/design/api-accounts.md). Guide:
+[docs/api-accounts.md](docs/api-accounts.md).
 
-API-key accounts currently read "API key (no quota)".
-
-- Spend today and this month on every API-key account row: exact per key from Anthropic's
-  Admin API when an organization's Admin key is registered, otherwise estimated from the
-  local ledger.
-- `qswap api org add|list|remove` for Admin keys; qswap only sends GET requests with them.
-- `qswap budget`: a monthly budget per API account. The engine stops routing to an account
-  at its budget.
-- `qswap usage --billed`: an organization's actual usage and cost as Anthropic reports it.
-- Later: OpenAI organization usage.
+- Spend today and this month on every API-key account row (`list`, `list --json`, the
+  dashboard, the menu bar): from Anthropic's usage report per key when an organization's Admin
+  key is registered and the account is linked to its key, otherwise estimated from the local
+  ledger and labelled as an estimate. Months and days are UTC.
+- `qswap api org add|list|remove` for Admin keys, stored like saved logins; qswap only sends
+  GET requests with them, and `ANTHROPIC_ADMIN_KEY` works for one command without being
+  stored.
+- `qswap budget`: a monthly budget per API-key account. The engine warns at 80% once a month,
+  never switches to an account at its budget, and leaves an active one that reaches it.
+- `qswap usage --billed`: an organization's usage and billed cost as Anthropic reports them,
+  by day, model, key or workspace.
+- Later: OpenAI organization usage; refreshing the local estimate from the engine without a
+  `qswap usage` run.
 
 ### M5. Engine
 
