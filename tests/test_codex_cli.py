@@ -301,7 +301,13 @@ class TestUnifiedList:
         assert codex["activeAccountNumber"] == 2
         assert [row["number"] for row in codex["accounts"]] == [1, 2]
         codex_only = json.loads(run(["codex", "list", "--json"], capsys)[1])
-        assert codex["accounts"] == codex_only["accounts"]
+
+        def steady(rows):
+            # Two reads a moment apart: an age in seconds may tick between them.
+            ages = ("usageAgeSeconds", "lastGoodAgeSeconds")
+            return [{k: v for k, v in row.items() if k not in ages} for row in rows]
+
+        assert steady(codex["accounts"]) == steady(codex_only["accounts"])
 
     def test_a_codex_problem_never_fails_the_claude_list(self, two, capsys):
         (two.codex_home / "config.toml").write_text('cli_auth_credentials_store = "keyring"\n')
