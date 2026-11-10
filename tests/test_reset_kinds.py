@@ -420,19 +420,25 @@ class TestCountsByKind:
         assert _resets_badge(one_kind, time.time()) == "2 resets"
 
     def test_menu_bar_row(self):
-        from ai_quota_swap.menubar import format_account_label
+        # Held resets by kind, compact and last (menubar.held_compact).
+        from ai_quota_swap.display import Reading
+        from ai_quota_swap.menubar import AccountState, account_row
 
         far = _far()
         now = time.time()
+
+        def row(usage, **kw):
+            acc = AccountState("claude", "1", "a@example.com",
+                               entry=Reading(last_good=usage, fetched_at=now), **kw)
+            return account_row(acc, now=now, stale_after_s=900).text
+
         mixed = _usage(grants=[fable("a", ends=far, left=2), weekly("w", ends=far)])
-        label = format_account_label(1, "a@example.com", mixed, now=now)
-        assert label.endswith(" · resets: 2 Fable · 1 weekly")
-        one = format_account_label(1, "a@example.com", _usage(grants=[fable("a", ends=far)]), now=now)
-        assert one.endswith(" · 1 reset")
-        assert "reset" not in format_account_label(1, "a@example.com", _usage(), now=now).split("7d")[0]
+        assert row(mixed).endswith(" · 2 Fable · 1 weekly resets")
+        assert row(_usage(grants=[fable("a", ends=far)])).endswith(" · 1 Fable reset")
+        assert "reset" not in row(_usage())
         # The login note stays last.
-        due = format_account_label(1, "a@example.com", mixed, now=now, login_expires_at=now + 3600)
-        assert due.index("resets: 2 Fable") < due.index("re-login")
+        due = row(mixed, login_expires_at=now + 3600)
+        assert due.index("2 Fable") < due.index("re-login")
 
 
 class TestEventWording:

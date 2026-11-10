@@ -415,14 +415,14 @@ def _restart_menubar_if_rebuilt(before: dict) -> None:
     if after is None or after == before:
         return
     from ai_quota_swap import launch_agent
-    from ai_quota_swap.exceptions import ClaudeSwitchError
+    from ai_quota_swap.exceptions import ProviderError
 
     try:
         pid = launch_agent.service_pid()
         if pid is None:
             return
         launch_agent.kickstart(restart=True)
-    except (ClaudeSwitchError, OSError) as exc:
+    except (ProviderError, OSError) as exc:
         # The upgrade itself succeeded; only the restart did not.
         warning(f"Menu bar not restarted onto the new build: {exc}")
         return

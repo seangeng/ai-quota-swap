@@ -4825,8 +4825,10 @@ class ClaudeAccountSwitcher:
         if str(active_account) == account_num:
             warning(f"Warning: {name} is the active account")
 
+        from ai_quota_swap import display
+
         if not prompts.confirm(
-            f"Remove {name} and delete its saved login?",
+            display.remove_question("claude", name),
             assume_yes=assume_yes, command="qswap remove",
         ):
             print(dimmed("Cancelled; nothing was removed."))
