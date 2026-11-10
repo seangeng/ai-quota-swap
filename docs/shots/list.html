@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=1200">
+<meta name="viewport" content="width=device-width">
 <meta name="color-scheme" content="dark">
 <title>qswap list</title>
 <style>
   html, body { margin: 0; padding: 0; background: transparent; }
   body { display: flex; justify-content: center; }
   .window {
-    width: 1200px; box-sizing: border-box; overflow: hidden;
+    width: fit-content; box-sizing: border-box; overflow: hidden;
     background: #17181c; border: 1px solid #33343a; border-radius: 12px;
   }
   .titlebar {
@@ -28,6 +28,7 @@
   }
   .screen {
     margin: 0; padding: 20px 28px 24px; color: #e4e4e2;
+    width: 80ch;
     font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
       "DejaVu Sans Mono", "Liberation Mono", monospace;
     font-size: 15px; line-height: 1.5; white-space: pre;
@@ -43,27 +44,40 @@
   <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
     <div class="title">qswap list</div></div>
 <pre class="screen"><span class="prompt">$</span> <span class="cmd">qswap list</span>
-<span style="font-weight: bold">Accounts:</span>
-  1: <span style="color: #d7875f; text-decoration-color: #d7875f">personal</span> (maya@example.com) <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">[personal]</span> <span style="color: #d7875f; text-decoration-color: #d7875f; font-weight: bold">(active)</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">·</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">Max 20x</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h:      46%   resets 16:55         in 2h 35m</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d:      38%   resets Nov 13 20:20  in 3d 6h</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">Fable:   52%   resets Nov 13 20:20  in 3d 6h</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets:   1    Fable · use by Dec 28 · not usable now</span>
+<span style="font-weight: bold">Claude Code accounts</span>
+  #1 <span style="color: #d7875f; text-decoration-color: #d7875f">personal</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@example.com) · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Max 20x</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 46%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 16:55 · in 2h 35m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 38%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 13 20:20 · in 3d 6h</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">Fable</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 52%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 13 20:20 · in 3d 6h</span>
+<span style="color: #bcbcbc; text-decoration-color: #bcbcbc">     Holds 1 Fable reset · usable once a limit is reached · use by Dec 28</span>
 
-  2: <span style="color: #d7875f; text-decoration-color: #d7875f">work</span> (maya@northwind.example.com) <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">[Northwind Labs]</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">·</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">Team</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">$$:  18%   resets Nov 30 14:20  $18.40 / $100.00</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h:  12%   resets 18:30         in 4h 10m</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d:  21%   resets Nov 15 16:20  in 5d 2h</span>
+  #2 <span style="color: #d7875f; text-decoration-color: #d7875f">work</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@northwind.example.com) · Team · Northwind Labs</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">extra</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 18%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 30 14:20 · in 20d 0h · $18.40 of $100.00</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 12%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 18:30 · in 4h 10m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 21%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 15 16:20 · in 5d 2h</span>
 
-  3: <span style="color: #d7875f; text-decoration-color: #d7875f">night-shift</span> (ops@example.net) <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">[personal]</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">·</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">Max 5x</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h:      93%   resets 14:58         in 38m</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d:      81%   resets Nov 12 09:20  in 1d 19h</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">Fable:   97%   resets Nov 12 09:20  in 1d 19h  (ahead of pace)</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets:   1    session · use by Nov 30 · not usable now</span>
+  #3 <span style="color: #d7875f; text-decoration-color: #d7875f">night-shift</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (ops@example.net) · Max 5x</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #e2ba6a; text-decoration-color: #e2ba6a"> 93%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 14:58 · in 38m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 81%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 12 09:20 · in 1d 19h</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">Fable</span>  <span style="color: #e2ba6a; text-decoration-color: #e2ba6a"> 97%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 12 09:20 · in 1d 19h · ahead of pace</span>
+<span style="color: #bcbcbc; text-decoration-color: #bcbcbc">     Holds 1 five-hour reset · usable once a limit is reached · use by Nov 30</span>
 
-  4: <span style="color: #d7875f; text-decoration-color: #d7875f">side</span> (sam@example.org) <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">[personal]</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">(disabled)</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">·</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">Pro</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h:   0%   resets 19:20         in 5h 0m</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d:   9%   resets Nov 16 15:20  in 6d 1h</span></pre>
+  #4 <span style="color: #d7875f; text-decoration-color: #d7875f">side</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (sam@example.org) · disabled · Pro</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">  0%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 19:20 · in 5h 0m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">  9%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 16 15:20 · in 6d 1h</span>
+
+  #5 <span style="color: #d7875f; text-decoration-color: #d7875f">ci</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (api-key-5@token.local) · API key</span>
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">     $2.06 today · $25.16 this month of $40 (63%) · estimate</span>
+
+<span style="font-weight: bold">Codex accounts</span>
+  #1 maya@example.com<span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Plus</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 22%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 18:00 · in 3h 40m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 47%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 14 17:20 · in 4d 3h</span>
+
+  #2 <span style="color: #d7875f; text-decoration-color: #d7875f">work</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@northwind.example.com) · Team</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">  8%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 19:15 · in 4h 55m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 15%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 16 16:20 · in 6d 2h</span>
+<span style="color: #bcbcbc; text-decoration-color: #bcbcbc">     Holds 1 reset credit · use by Nov 22</span></pre>
 </div>
 </body>
 </html>

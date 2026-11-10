@@ -104,10 +104,17 @@ disabled flags, settings, and optionally a session history.
 - `autoswitch`: the active account climbs from 86% to past its 90% line and
   the engine switches to the account with the most headroom.
 - `reset`: the active account is at 100% on its Fable weekly window and holds
-  a Fable reset; `reset-after` is the same state once it is spent.
+  a Fable reset and a weekly reset; `reset-after` is the same state once the
+  Fable reset is spent.
 - `usage`: the `fleet` accounts plus two weeks of Claude Code and Codex
   sessions across six models and five projects, with both providers'
   activation logs, for `qswap usage` and its `--by` views.
+- `showcase`: the README's hero. The `fleet` accounts, with the API-key
+  account on a $40 monthly budget, and two weeks of sessions in which that
+  key was the active login on weekday mornings and afternoons. The history is
+  read into the ledger while seeding (as an earlier `qswap usage` would have),
+  so `list` shows the key's spend against its budget and the dashboard's cost
+  line and usage screen have numbers.
 - `empty`, `empty-claude`, `empty-claude-codex`: the first run. Nothing is
   managed and there is no `settings.json`; the variants add a live Claude Code
   login, then a live Codex login as well.
@@ -133,13 +140,21 @@ shows several ticks in seconds.
 ## Shots and pages
 
 `shots.py` lists the shots. CLI shots render to `docs/shots/<name>.html` and
-`<name>-light.html`: a 1200 px terminal window, the tool's own colours, no
-external fonts or scripts. TUI shots come from the dashboard served by
-textual-serve on 127.0.0.1 (`run.py <scenario> --serve`), in a page that matches
-the CLI windows (`web/app_index.html`); each browser session starts its own
-fully guarded app process. Their PNGs are also wrapped in static pages
-(`docs/shots/dashboard.html`, `watch.html`) so the whole set can be published
-from `docs/shots/` with `index.html` as the entry.
+`<name>-light.html`: a terminal window as wide as the shot's column count (80
+for most) at one font size, the tool's own colours, no external fonts or
+scripts. TUI shots come from the dashboard served by textual-serve on
+127.0.0.1 (`run.py <scenario> --serve`), in a page that matches the CLI windows
+(`web/app_index.html`); each is sized in cells (columns x rows, fitted the way
+`tour.py` fits them) and may play keys from the first frame (`u` for the usage
+screen, `g` for the auto view). Each browser session starts its own fully
+guarded app process. Their PNGs are also wrapped in static pages
+(`docs/shots/dashboard.html`, `watch.html`, ...) so the whole set can be
+published from `docs/shots/` with `index.html` as the entry.
+
+The README and the docs use the PNGs in `assets/screenshots/raw/`. The README
+links them by absolute `raw.githubusercontent.com` URL, so they render on PyPI
+too; after regenerating, check that every name the README and `docs/` use
+still exists.
 
 ## Capturing
 

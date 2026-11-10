@@ -310,11 +310,19 @@ def install_doctor_fakes() -> None:
     """``qswap doctor`` asks ``claude --version`` and ``codex --version`` and
     reads ``launchctl print``: process spawns the sandbox refuses. Like the
     Codex fakes above, these answer from memory: a fixed version for any CLI
-    found on PATH, and a menu bar job launchd does not know."""
+    found on PATH, and a menu bar job launchd does not know. Its install line
+    reads as a ``uv tool install`` on a fixed Python, the way a user's would,
+    rather than this checkout and whatever Python runs the harness."""
     from ai_quota_swap import doctor
+
+    real_install_info = doctor._install_info
+
+    def install_info() -> dict:
+        return {**real_install_info(), "python": "3.13.5", "method": "uv", "editable": False}
 
     doctor._cli_version = lambda path: "2.1.0 (demo)"
     doctor._launchctl_print = lambda: (113, "")
+    doctor._install_info = install_info
 
 
 def install_time_compression(auto, coordinates, *, stop_after: bool) -> None:

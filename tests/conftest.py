@@ -1,4 +1,4 @@
-"""Pytest fixtures for Claude Switch tests."""
+"""Pytest fixtures for the ai-quota-swap tests."""
 
 from __future__ import annotations
 
@@ -1113,7 +1113,7 @@ def pytest_collection_modifyitems(items):
         AssertionError: assert '' == 'fake-token-read'
 
     ``xdist_group`` sends the whole group to one worker, so these serialize
-    against each other while the other ~1900 tests keep running in parallel.
+    against each other while the rest of the suite keeps running in parallel.
     A no-op when xdist is not installed: the marker is simply never consumed.
 
     ``tryfirst`` because xdist reads the group off the item when it builds the

@@ -1,135 +1,239 @@
-# JSON output reference
+# JSON output
 
-`qswap list --json`, `qswap status --json` and `qswap switch --json` print a single JSON object on stdout; human-readable notices go to stderr. The commands and an example are in the [README](../README.md#json-output-for-scripting).
+Add `--json` to a qswap command and a script can read what you see on screen: each account's quota and when it refills, whether a login needs renewing, what a switch did, every decision the auto-switch engine makes, token costs, and what `qswap doctor` found. This page shows each command's real output, the rules that keep scripts working across releases, and every field.
 
-The same three commands under `qswap codex` (`qswap codex list --json`, ...) print the same shapes for Codex accounts; the differences are listed under [Codex](#codex). `qswap codex reset --json` and `qswap codex auto --json` print what `qswap reset --json` and `qswap auto --json` print.
+## Commands
 
-## Contract
-
-- Every payload carries a `schemaVersion` (currently `1`), including `qswap reset --json` and `qswap codex reset --json`.
-- Every failure under `--json` is the error envelope on stdout, `{"schemaVersion":1,"error":{"type":…,"message":…}}`: a handled error exits 1, a usage error (unknown verb, bad flag, missing argument) exits 64 with `type` `"UsageError"`. `message` is for people; key scripts on `type` and the exit code.
-- `--switch`/`--switch-to` report `{"switched": true|false, "from": …, "to": …, "strategy": …, "reason": …, "message": …, "warnings": […]}`. A target whose usage could not be read, or is old, adds a line to `warnings`; one that needs re-login is refused with the error envelope (type `SwitchError`) unless `--anyway`. A rotation (`switch` with no account) skips such accounts and lists each in `warnings` as `Skipped Account-N (needs re-login)`.
-- Payloads only gain fields. The human-readable strings inside them (`message`, `warnings`) keep the spelling scripts saw before (`Account-2`), even where the text output now says `#2 work`.
-
-## Commands with `--json`
-
-| Command | Payload |
+| Command | Prints |
 |---|---|
-| `list`, `codex list` | `{schemaVersion, activeAccountNumber, accounts}`, plus `providers.codex` (below) |
-| `status`, `codex status` | `{schemaVersion, active, totalManagedAccounts}`; `qswap status` adds `providers.codex` (Codex's `{active, totalManagedAccounts}`, when a Codex account is managed or a Codex login is live) and `autoSwitch` (`{running, providers, dryRun, lastTickAt}`: whether an engine's heartbeat is current; `lastTickAt` is epoch seconds or `null`). `totalManagedAccounts` stays the Claude Code count. |
-| `switch`, `codex switch` | the switch result above |
-| `reset`, `codex reset` | `{schemaVersion, auto, plan, accounts}`; with an account, `{schemaVersion, account, grantId, result}` (see [Usage resets](#usage-resets)) |
-| `priority`, `codex priority` | `{schemaVersion, accounts: [{number, email, priority}]}`; with an account and a tier, `{schemaVersion, account: {number, email}, priority}` |
-| `config`, `config list` | `{schemaVersion, path, settings: [{key, value, isSet}]}`; `config get KEY --json`: `{schemaVersion, key, value, isSet}` |
-| `auto`, `codex auto` | an event stream (below) |
-| `usage` | below |
-| `budget`, `api org list` | below |
-| `doctor` | `{schemaVersion, checks: [{id, group, status, summary, fix}], counts: {pass, warn, fail, skip}, online}`; `status` is `pass`, `warn`, `fail` or `skip`, `fix` the command to run or `null`. Exit 1 when any check fails. |
+| `list`, `codex list` | `{schemaVersion, activeAccountNumber, accounts}`; `qswap list` adds `providers.codex` |
+| `status`, `codex status` | `{schemaVersion, active, totalManagedAccounts}`; `qswap status` adds `providers.codex` and `autoSwitch` |
+| `switch`, `codex switch` | a [switch result](#switch) |
+| `reset`, `codex reset` | `{schemaVersion, auto, plan, accounts}`; with an account, `{schemaVersion, account, grantId, result}` |
+| `priority`, `codex priority` | `{schemaVersion, accounts: [{number, email, priority}]}`; setting one, `{schemaVersion, account: {number, email}, priority}` |
+| `config`, `config list` | `{schemaVersion, path, settings: [{key, value, isSet}]}`; `config get KEY`, `{schemaVersion, key, value, isSet}` |
+| `usage` | a [token and cost report](#usage) |
+| `budget` | `{schemaVersion, accounts: [{number, email, budget, apiSpend}]}`; setting one, `{schemaVersion, number, email, budget, changed}` |
+| `api org list` | `{schemaVersion, organizations: [{name, organizationName, organizationId, storage, added, linkedAccounts}], environmentKey}`; never a key |
+| `doctor` | `{schemaVersion, checks: [{id, group, status, summary, fix}], counts, online}` |
+| `auto`, `codex auto` | one [event](#auto-switch-events) per line |
 
-## Usage windows
+Any other command answers `--json` with a usage error (exit 64). Real output follows; `...` marks lines left out.
 
-Each account row has a `usage` object with `fiveHour` and `sevenDay` windows (`pct`, `resetsAt`).
-
-- A window's `pct` is `null` when the usage API reported `utilization: null` for it.
-- A window the account does not have (an Ultra account's `fiveHour`) is omitted.
-- Usage is served from a per-account cache: when the usage API is briefly unreachable, the last-known numbers are shown instead of nothing (the human view marks them with their age, e.g. `· 2m ago`).
-
-## Optional row fields
-
-These apply to `list` rows and the managed active row from `status --json`. All are additive.
-
-| Field | Present when | Meaning |
-|---|---|---|
-| `usageFetchedAt`, `usageAgeSeconds` | the row has decision-trusted usage | How old the measurement is. |
-| `lastGoodUsage`, `lastGoodFetchedAt`, `lastGoodAgeSeconds` | `usage` is null but a last-known measurement exists: data too old to drive a decision (`usageStatus` stays `unavailable`), or a row in a non-`ok` state such as `token_expired` | Preserves the human display without making the account actionable. |
-| `usageError` | `usage` is null and nothing else explains it (`usageStatus` is `unavailable`) | The last fetch failure by kind (e.g. `http-429`, `timeout`). |
-| `usageRetryAt` | the cache is backing off from that failure | The time of the next attempt. |
-| `disabled` | the account is held out of rotation with `qswap disable` | `true`; absent otherwise. |
-| `threshold` | a per-account threshold is set with `qswap threshold` | e.g. `85.0`; absent otherwise, so a fleet that never sets a policy emits rows identical to before. |
-| `alias` | an alias is set with `qswap alias` | e.g. `"dev"`; accounts without one omit the key. |
-| `loginExpiresAt` | the stored login records when its refresh token expires | ISO-8601 UTC: the moment the slot will need a fresh `/login` and `qswap add --slot N`, so a script can warn a few days ahead instead of discovering `relogin_required`. Absent when Claude Code recorded no such date for that login. |
-| `budget` | a monthly budget is set with `qswap budget` (API-key accounts only) | Dollars a month, e.g. `500.0`. |
-| `apiSpend` | the row is an API-key account and its spend is known, it has a budget, or an organization is registered ([api-accounts.md](api-accounts.md)) | `used` (dollars this UTC month, `null` when unknown), `limit` (the budget or `null`), `pct` (`used` over `limit`, or `null`), `currency` (`"USD"`), `today` (dollars today, UTC), `source` (`"admin-api"`: Anthropic's usage report for the key, priced at list prices; `"ledger"`: an estimate from this machine's transcripts; `null`: no figure), `month` (`"2026-11"`), `resetsAt` (the next month's start), and when known `asOf` (when the figure was read), `organization` and `apiKeyId` (the linked key), `unpricedTokens` (tokens of models without a price, left out of `used`), `note` (why the figure is not Anthropic's, e.g. `"Admin API rate limited"`). The row's `usageStatus` stays `api_key` and `usage` stays `null`. |
-| `needsRelogin` | always (`list` rows and the managed `status` row) | `true` when the account will not be used until its owner logs in again: its saved login was refused, or the auto-switch engine set it aside. The text views say `needs re-login`. |
-| `setAside` | the auto-switch engine holds the account out | `{"reason": …}`, e.g. `"invalid_grant"` (the saved login was refused) or `"identity-conflict"`; cleared when the login is replaced (`qswap add`). |
-| `plan` | the slot's subscription plan has been read from the profile endpoint at least once | `label` as the human views print it (`Ultra`, `Max 5x`, `Pro`, `Team`, `Free`), the raw `tier`, then `organizationType`, `billingType`, `subscriptionStatus` and `planDisplayName` when the profile carried them, `expired` (`true` once the subscription is `canceled` and the account is back on the free tier; the human views show that as a highlighted `Free`) and `fetchedAt`, the last successful profile read. Plans refresh on their own six-hour cadence, not with usage. |
-
-## Pace fields on weekly windows
-
-Weekly windows (`sevenDay` and per-model `scoped` entries, never `fiveHour`) additively carry pace fields once the week is about a day old.
-
-| Field | Meaning |
-|---|---|
-| `expectedPct` | Where usage would sit if spread evenly across the week. |
-| `aheadOfPace` | `true` when meaningfully above that: the same signal the human views show as an `(ahead)`/`(ahead of pace)` marker. |
-| `projectedExhaustionAt` | The current rate extrapolated into an ETA to 100%. |
-| `willLastToReset` | Whether the quota will last to the reset at the current rate. |
-
-The two projections stay `--json`-only, since a linear projection is too rough to present as fact in the UI.
-
-## Usage resets
-
-`usage.resets` (in `list` rows) and each account's `resets` in `qswap reset --json` list the account's grants. Each grant has `kind` (`Fable` or another model's name, `session`, `weekly`, `full`, or `reset` for a shape qswap cannot name) and `scope`, the class the planner works with: `model` (per-model weekly windows only, such as a Fable reset), `session` (the 5-hour window), `weekly` (the all-models weekly window), `full` (both) or `unknown` (never spent automatically). `clears` lists the windows it resets by their server names; `clearsUnknown` lists any window names qswap does not know (such a grant is never spent automatically either).
-
-`qswap reset --json` reports `auto.weeklyForModelLimit`, and its `plan` (like the `plan` of a `limit-reset` event) carries `scope` next to `grantKind`. A `limit-reset` event also has `scope` at its top level.
-
-## Codex
-
-`qswap codex list --json`, `status --json` and `switch --json` use the envelopes above. In a Codex row:
-
-- `organizationUuid` is the ChatGPT account (or workspace) id and `organizationName` is empty. `isOrganization` is `true` only for a workspace plan (Team, Business, Enterprise, ...).
-- `usage` carries `fiveHour` and `sevenDay` when the account has those windows (a Pro account reports only `sevenDay`); any other window, and each model-specific limit, is a `scoped` entry with a `name`.
-- `plan` has `label` (`Plus`, `Pro`, `Team`, ...), `tier` (the raw `plan_type`), `planDisplayName`, `expired` (always `false`) and `fetchedAt`.
-- `usage.resets` lists the account's reset credits, one grant per credit (`resetsLeft` 1 while it is available, `endsAt` its expiry). Every credit is a full reset; its `scope` is `full` when the account has both windows and `weekly` on a weekly-only plan.
-- `usageStatus` can also be `unknown_until_used`: a saved login whose access token expired while unused (or was refused). Codex renews it the first time it runs on that account. `token_expired` is the live login's state: its token ran out while Codex was idle.
-
-`qswap codex reset --json` has the shape of `qswap reset --json`: bare, `{auto, plan, accounts}` with each account's `resets` in the shape above; with an account, `{account, grantId, result}`, where `grantId` is the credit id and `result.result` is `reset`, `already_used` (the credit was already spent with this request id; counts as done), `ineligible` (`reason: "nothing_to_reset"`), `unavailable` (`reason: "no_credit"`), `auth_error`, `rate_limited` or `error`. After a `reset`, `result.detail` says how many windows the server reset when it said so (`"2 windows reset"`), and `resetsLeft` is `null`: a credit is single-use, so the account's remaining credits are in its next reading.
-
-A Codex `switch` result may add `backgroundServer`: `{"pid", "restarted": true}`, or `{"pid", "restarted": false, "reason"}` when the restart was turned off (`codex.restartDaemon`) or failed. A failed restart is also in `warnings`; the switch itself still happened.
-
-### Codex in `qswap list --json`
-
-When at least one Codex account is managed, `qswap list --json` adds a top-level `providers` object; every other top-level key keeps its meaning, so a script reading only Claude accounts sees no change, and `import-usage` ignores the new key.
-
-```json
+```
+$ qswap list --json
 {
   "schemaVersion": 1,
-  "activeAccountNumber": 2,
-  "accounts": [ … Claude rows … ],
-  "providers": {
-    "codex": {
-      "activeAccountNumber": 1,
-      "accounts": [ … Codex rows, as in qswap codex list --json … ]
-    }
+  "activeAccountNumber": 1,
+  "accounts": [
+    {
+      "number": 1,
+      "email": "maya@example.com",
+...
+      "active": true,
+      "usageStatus": "ok",
+      "usage": {
+        "fiveHour": {
+          "pct": 46.0,
+          "resetsAt": "2026-11-10T16:55:30+00:00",
+          "countdown": "2h 35m",
+          "clock": "16:55"
+        },
+...
+      },
+...
+      "usageAgeSeconds": 119.2,
+      "needsRelogin": false
+    },
+...
+  ],
+...
+}
+$ qswap status --json
+{
+  "schemaVersion": 1,
+  "active": {
+    "number": 1,
+...
+  },
+  "totalManagedAccounts": 5,
+...
+  "autoSwitch": {
+    "running": false,
+    "providers": [],
+    "dryRun": false,
+    "lastTickAt": null
   }
 }
 ```
 
-Account numbers are per provider: Claude account 1 and Codex account 1 are different accounts. If the Codex accounts cannot be read (for example, Codex keeps its login in the OS keyring), `providers.codex` is `{"activeAccountNumber": null, "accounts": [], "error": {"type", "message"}}` and the Claude part is unaffected.
+```
+$ qswap switch 2 --json
+{
+  "schemaVersion": 1,
+  "switched": true,
+  "from": {
+    "number": 1,
+    "email": "maya@example.com"
+  },
+  "to": {
+    "number": 2,
+    "email": "maya@northwind.example.com"
+  },
+  "strategy": "direct",
+  "reason": "switched",
+  "message": "Switched to Account-2 (maya@northwind.example.com)",
+  "warnings": []
+}
+```
 
-## `qswap auto --json`
+`reset` and `auto` print one object per line:
 
-`qswap auto --json` (and `qswap codex auto --json`) emits an event stream instead: one JSON object per line (`{"schemaVersion":1,"event":"switch","ts":…, …}`) with kinds like `poll`, `switch`, `no-switch`, `account-quarantined`, `all-exhausted`, `limit-reset`, `error`. The contract is additive: new kinds, fields and `reason` values may appear, so scripts should ignore unknown ones. One `no-switch` reason so far is Codex-only: `switch-deferred`, a switch the provider refused for now with nothing changed (a running Codex may be renewing the live token); the next tick tries again.
+```
+$ qswap reset 1 --yes --json
+{"schemaVersion": 1, "account": {"number": 1, "email": "maya@example.com"}, "grantId": "launch-2611-fable", "result": {"result": "reset", "reason": null, "resetsLeft": 0, "cleared": ["seven_day_overage_included"], "weeklyResetsAt": "2026-11-13T20:20:30+00:00", "cooldownUntil": null, "detail": null}}
+$ qswap auto --json
+...
+{"schemaVersion": 1, "event": "poll", "ts": "2026-11-10T14:22:00Z", "active": {"number": 1, "email": "maya@example.com"}, "headroomPct": {"1": 9.0, "2": 79.0, "3": 7.0}, "threshold": 90.0, "windowsPct": {"1": {"5h": 91.0, "7d": 38.0}, "2": {"5h": 12.0, "7d": 21.0}, "3": {"5h": 93.0, "7d": 81.0}}}
+{"schemaVersion": 1, "event": "switch", "ts": "2026-11-10T14:22:00Z", "trigger": "proactive", "from": {"number": 1, "email": "maya@example.com"}, "to": {"number": 2, "email": "maya@northwind.example.com"}, "warnings": [], "dryRun": false}
+```
 
-`budget-warning` is emitted once per API-key account per UTC month when its spend reaches 80% of its budget: `{account: {number, email}, usedUsd, budgetUsd, pct, month, source}`, `source` as in `apiSpend`. An active API-key account at its budget leaves with a `switch` whose `trigger` is `at-limit`.
+```
+$ qswap usage --json
+{
+  "schemaVersion": 1,
+  "by": "day",
+...
+  "rows": [
+    {
+      "key": "2026-11-04",
+      "label": "Wed 2026-11-04",
+...
+      "costUsd": 41.9432,
+      "unpricedTokens": 0
+    },
+...
+}
+$ qswap doctor --json
+{
+  "schemaVersion": 1,
+  "checks": [
+...
+    {
+      "id": "codex.cli",
+      "group": "codex",
+      "status": "warn",
+      "summary": "Codex was not found (codex is not on PATH)",
+      "fix": "npm install -g @openai/codex"
+    },
+...
+}
+```
 
-`qswap budget --json` prints `{schemaVersion, accounts: [{number, email, budget, apiSpend}]}` for the API-key accounts (`apiSpend` as above, or `null`); with an account and an amount, `{schemaVersion, number, email, budget, changed}`. `qswap api org list --json` prints `{schemaVersion, organizations: [{name, organizationName, organizationId, storage, added, linkedAccounts}], environmentKey}`; it never includes a key.
+## Contract
 
-## `qswap usage --json`
+- Every payload and every event carries `schemaVersion`, now `1`. It changes only for a breaking change.
+- The contract is additive: payloads only gain fields, and new event kinds and `reason` values may appear. Ignore what you do not know.
+- stdout holds only JSON: one document, or with `auto` one object per line. Notices go to stderr, and the daily update check does not run. Parse the JSON rather than matching text; indentation differs between commands.
+- A command that fails prints an error envelope on stdout. `type` is the kind of error (`SwitchError`, `ConfigError`, `ValidationError`, `ConfirmationRequiredError` when a command needs `--yes` and has no terminal to ask on, `UsageError`, ...). Key scripts on `type` and the exit code; `message` is for people.
+- The strings in a switch result are for people too. `message` and a rotation's skip lines (`Skipped Account-2 (needs re-login)`) keep the `Account-N` spelling of earlier releases, while other warnings and error messages name accounts the way the text output does (`#3 night-shift: usage unavailable (HTTP 503); switching anyway`). Use `from`, `to` and `number` instead.
 
-One object with `schemaVersion`, the request (`by`, `since`, `until` as local dates, `timezone` as a UTC offset such as `-0500`, `provider` or `null`), and:
+A refused switch, to an account that needs re-login:
 
-| Field | Meaning |
+```
+$ qswap switch 2 --json
+{
+  "schemaVersion": 1,
+  "error": {
+    "type": "SwitchError",
+    "message": "#2 work needs re-login (its saved login was refused); not switched.\nLog in to it in Claude Code (/login), then run: qswap add\nTo switch to it anyway: qswap switch 2 --anyway"
+  }
+}
+```
+
+| Exit code | Meaning |
 |---|---|
-| `rows` | One per group, in the order the text view prints them. `key` is the date (`--by day`), model id, project path, provider (`claude`/`codex`), session id, or account key (`email\|org`, `null` for unattributed, `desktop` for the Claude desktop app). Account rows add `account: {number, email}` and `provider` (`claude`, `codex`, or `null` for unattributed usage); session rows add `provider` and `project`. |
-| `total` | The same token fields over every row. |
-| token fields (rows and `total`) | `input` (not from the cache), `output` (thinking and reasoning included), `cacheRead`, `cacheWrite5m`, `cacheWrite1h`, `reasoning` (the part of `output` the CLI reported as thinking or reasoning), `requests` (responses), `totalTokens`, `costUsd` (estimate at API prices; `null` when every token in the row is from a model without a price), `unpricedTokens`. |
-| `unpricedModels` | `[{model, tokens}]` for models the price table does not cover. |
-| `unattributedTokens`, `unattributedShare` | Tokens used before qswap recorded which account was live. |
-| `attributionStarts` | Per provider, when its activation log begins (`null` if it has none). |
-| `pricing` | `fetched` (the date the table was copied from the vendors' pages), `sources`, `override` (the `pricing.json` path when it changed anything), `warnings`. |
-| `scan` | What this run read: `filesSeen`, `filesRead`, `bytesRead`, `newEvents`, `duplicates`, `missing`, `skippedCompressed`, `seconds`. Absent with `--no-scan`. |
-| `notes` | Present when files were skipped or unreadable. |
-| `billed` | Only with `--billed`: `since`, `until`, `timezone` (`"UTC"`), `startingAt`, `endingAt` (the exact window asked of Anthropic), `by` (`day`, `model`, `key` or `workspace`), `notes`, and `organizations`: per organization `name`, `organizationName`, `organizationId`, `rows` (`key`, `label`, `input`, `output`, `cacheRead`, `cacheWrite5m`, `cacheWrite1h`, `costUsd`, `costSource`: `"cost-report"`, or `"estimate"` for per-key rows), `total` (the token fields and `billedCostUsd`, the cost report's total), `error` (`null`, or `{type, message}`), `costError` when only the cost report failed, and `fetchedAt`. |
+| 0 | Success. `auto --once`: it switched (with `--dry-run`, it would have) |
+| 1 | A handled error, printed as the envelope. `doctor`: a check failed (its normal payload is printed). `auto --once`: an error |
+| 2 | `auto --once` only: nothing to do, including a check that only spent a usage reset |
+| 3 | `auto --once` only: blocked; it wanted to switch, but no account could take over |
+| 64 | A usage error (unknown verb, bad flag, missing argument), printed as the envelope with `type` `UsageError` |
+| 130 | Interrupted with Ctrl-C. No further JSON is printed |
 
-`estimate` is always `true`: subscription usage is not billed per token. See [usage.md](usage.md).
+## Account rows
+
+`list` and `codex list` rows, and the `active` object of `status`, share these fields: `number`, `email`, `organizationName`, `organizationUuid`, `isOrganization`, `active` (list only; `status` has `managed: true` instead), `usageStatus` and `usage`. `usage` is an object only when `usageStatus` is `ok`, a reading recent enough to act on (at most 5 minutes old), and `null` for every other status: `unavailable` (no such reading; `usageError` says why, and `lastGoodUsage` may hold an older one), `relogin_required` (the saved login was refused; the text views say `needs re-login`), `token_expired` (the active login's token expired and renews on its own), `unknown_until_used` (Codex: a saved login whose token expired while unused; Codex renews it on first use), `api_key` (no quota; billed per token), `keychain_unavailable` (the active login could not be read from a locked or busy macOS Keychain), `foreign_credential` (the active login belongs to another account; switching to this one repairs it) and `no_credentials` (no saved login).
+
+Optional fields, each absent unless its condition holds:
+
+| Field | Present when | Meaning |
+|---|---|---|
+| `usageFetchedAt`, `usageAgeSeconds` | `usage` is an object | When the reading was taken, and its age |
+| `lastGoodUsage`, `lastGoodFetchedAt`, `lastGoodAgeSeconds` | `usage` is null and an older reading exists | That reading, for display only |
+| `usageError` | `usageStatus` is `unavailable` and a read failed | The failure: `http-503`, `http-429`, `timeout`, ... |
+| `usageRetryAt` | qswap is waiting before it reads again | When the next read is due |
+| `alias` | an alias is set | e.g. `"personal"` |
+| `disabled` | the account is held out with `qswap disable` (list rows) | `true` |
+| `threshold` | a per-account switch line is set with `qswap threshold` (list rows) | e.g. `85.0` |
+| `needsRelogin` | always, in list rows and Claude Code's `status` row | `true` when the account will not be used until its owner logs in again |
+| `setAside` | the auto-switch engine holds the account out | `{"reason": "invalid_grant"}` (its login was refused) or `"identity-conflict"` (it belongs to another account) |
+| `loginExpiresAt` | Claude Code list rows whose saved login records an expiry | When it will need a fresh `/login` and `qswap add` |
+| `plan` | list rows, once the plan has been read | `label` as the text views print it (`Max 20x`, `Team`, `Pro`, ...), the raw `tier`, `organizationType`, `billingType`, `subscriptionStatus` and `planDisplayName` when known, `expired` and `fetchedAt` |
+| `budget` | an API-key account with a monthly budget (`qswap budget`) | Dollars a month, e.g. `500.0` |
+| `apiSpend` | an API-key account with a known spend, a budget, or a registered organization ([api-accounts.md](api-accounts.md)) | `used` and `today` (dollars, UTC, `null` when unknown), `limit`, `pct`, `currency`, `source` (`admin-api`, `ledger` or `null`), `month`, `resetsAt`, and when known `asOf`, `organization`, `apiKeyId`, `unpricedTokens`, `note` |
+
+`usage` holds `fiveHour` and `sevenDay` when the account has them: `pct` (`null` when the server gave no figure), `resetsAt`, and the text view's `countdown` and `clock`. `scoped` lists per-model weekly windows, each with a `name` such as `Fable`. `spend` is extra usage on a subscription (`used`, `limit`, `pct`, `currency`, `resetsAt`, `countdown`, `clock`). A setup-token reading taken with `usage.headerProbe` adds `source: "headers"`, and a refusal adds `rejected: {retryAfterS, resetsAt}`. Once a week is a day old, `sevenDay` and each `scoped` window add `expectedPct` (where even use would be), `aheadOfPace`, `projectedExhaustionAt` and `willLastToReset`. The last two are rough linear projections, so only JSON shows them.
+
+`usage.resets` lists the usage resets an account holds: `eligible`, `ineligibleReason`, `atLimit`, `nextGrantId`, `weeklyResetsAt`, `cooldownUntil`, `resetsLeft`, and `grants`. Each grant has `id`, `label`, `kind` (the model name such as `Fable`, `session`, `weekly`, `full`, or `reset` for a shape qswap cannot name), `scope` (`model`, `session` for the 5-hour window, `weekly`, `full`, or `unknown`, which is never spent automatically), `resetsLeft`, `resetsTotal`, `startsAt`, `endsAt`, `clears` and `clearsUnknown` (window names as the server spells them), `blocking`, `usableNow`, `useRequiresLimit`, `givesBackWeekly`, `paused`, `unavailableReason`, `unusableReason` and `percentUsed`.
+
+Codex rows differ: `organizationUuid` is the ChatGPT account or workspace id, `organizationName` is empty, and `isOrganization` is `true` only on a workspace plan. `plan` has `label` (`Plus`, `Pro`, `Team`, ...), `tier`, `planDisplayName`, `expired` (always `false`) and `fetchedAt`. Each reset credit is one grant of kind `full`; its `scope` is `full`, or `weekly` on a plan with only a weekly window. Codex rows never carry `loginExpiresAt`, `budget` or `apiSpend`, and Codex's `status` row has no `needsRelogin`.
+
+## List and status
+
+`qswap list --json` adds, only when there is something to say, `duplicateAccountWarnings` and `lockstepUsageWarnings` (sentences about two accounts that look like one), `unclaimedCredentials` (ids for `qswap unclaimed`), and `providers.codex`, `{activeAccountNumber, accounts}`, once a Codex account is managed. When the Codex accounts cannot be read, `providers.codex` is `{"activeAccountNumber": null, "accounts": [], "error": {type, message}}` and the Claude Code part is unaffected. Account numbers are per provider. `qswap import-usage` reads only the top-level `accounts`. With nothing managed, `accounts` is `[]` and `activeAccountNumber` is `null`.
+
+`status`'s `active` is `null` when nobody is logged in, and `{email, managed: false}` for a login qswap does not manage (Codex may add `problem`). `totalManagedAccounts` counts Claude Code accounts. `providers.codex` (`{active, totalManagedAccounts}`, or `{active: null, error}`) appears when a Codex account is managed or Codex is logged in. `autoSwitch` says whether an engine is running, from its heartbeat: `running`, `providers`, `dryRun`, and `lastTickAt` in epoch seconds or `null`.
+
+## Switch
+
+`switched`, `from` and `to` (`{number, email}`; equal when nothing switched), `strategy` (`direct` for `switch N`, `rotation`, `best`, `next-available`), `reason`, `message` and `warnings`. `reason` is `switched`, or for `switched: false`: `already-active`, `already-best`, `candidates-exhausted`, `no-valid-target`, `only-one-account`, `unmanaged-account` or `usage-unavailable`. A target that needs re-login is refused with a `SwitchError` envelope unless `--anyway`. A target whose usage is unreadable or old is switched to, with a line in `warnings`. A Codex switch may add `backgroundServer`: `{pid, restarted: true}`, or `{pid, restarted: false, reason}` when `codex.restartDaemon` is off or the restart failed.
+
+## Reset
+
+Bare `reset --json` prints `auto` (the `resets.*` settings: `mode`, `threshold`, `minHoursLeft`, `expiryDays`, `expiryThreshold`, `weeklyForModelLimit`, plus `usedToday` and `maxPerDay`), `plan` (what auto-switch would spend now, or `null`: `account`, `grantId`, `grantKind`, `scope`, `reason`, `window`, `pct`, `windowResetsAt`, `hoursLeft`, `grantEndsAt`, `projected`), and `accounts`: `{number, email, active, resets, error}`, where `resets` has the shape of `usage.resets` and `error` says why it is `null` (`no reading`, `api key`, a read failure). Spending one prints `result`: `result`, `reason`, `resetsLeft`, `cleared`, `weeklyResetsAt`, `cooldownUntil`, `detail`. For Claude Code, `result` is `reset`, `already_used`, `not_limited`, `cooldown`, `ineligible` or `unavailable` as the server answered, or `rate_limited`, `auth_error` or `error` when no answer came. For Codex it is `reset` (with `detail` such as `"2 windows reset"` and `resetsLeft` `null`), `already_used` (counts as done), `ineligible` (`reason: "nothing_to_reset"`), `unavailable` (`reason: "no_credit"`), `auth_error`, `rate_limited` or `error`. See [resets.md](resets.md).
+
+## Auto-switch events
+
+Each line has `schemaVersion`, `event` and `ts`. Account numbers inside `headroomPct`, `windowsPct`, `fetchErrors`, the quarantine events and `plan.account` are strings.
+
+| `event` | Fields | Emitted when |
+|---|---|---|
+| `poll` | `active`, `headroomPct` (account → percent left, `null` unknown), `threshold`, `windowsPct`, `fetchErrors`, `weeklyThreshold` when set | every check |
+| `switch` | `trigger` (`proactive`, `at-limit`, `failover`, `consume-first`, `priority`), `from`, `to`, `warnings`, `dryRun` | it switched, or would have with `--dry-run` |
+| `no-switch` | `reason`, `detail` | it stayed |
+| `limit-reset` | `account`, `plan`, `scope`, `result` (`null` in a dry run), `dryRun` | it spent a usage reset |
+| `account-quarantined` | `number`, `email`, `reason` (`invalid_grant`, `identity-conflict`) | it set an account aside; text says `needs re-login` |
+| `account-unquarantined` | `number`, `email`, `reason` (`credentials-replaced`, `account-replaced`) | that account's login was replaced |
+| `all-exhausted` | `earliestResetAt` | every account is at its limit |
+| `budget-warning` | `account`, `usedUsd`, `budgetUsd`, `pct`, `month`, `source` | an API-key account reached 80% of its budget, once a month |
+| `sleep` | `seconds`, `until` | the next check is further off than usual |
+| `config-warning` | `message` | a setting matches nothing, such as an `autoswitch.model` no account reports |
+| `error` | `message`, `transient` | a check failed |
+
+`no-switch` reasons: `below-threshold`, `cooldown`, `active-idle`, `active-usage-unknown`, `active-api-key`, `already-active`, `already-consuming-priority`, `already-consuming-soonest`, `no-active-account`, `no-candidates`, `no-comparison`, `no-qualifying-candidate`, `no-viable-target`, `reset-unknown`, `stale-usage`, `unmanaged-active-account`, and Codex's `switch-deferred` (Codex may be renewing the active login's token; the next check tries again). See [auto-switch.md](auto-switch.md).
+
+## Usage
+
+The request (`by`, `since` and `until` as local dates, `timezone` as a UTC offset, `provider` or `null`), then:
+
+- `rows`, in the text view's order. `key` is the date, model id, project path, provider, session id, or account key (`email|organization`, `null` for unattributed usage, `desktop` for the Claude desktop app); `label` is what the text view prints. Account rows add `account` (`{number, email}`, with `number` `null` for an account qswap does not manage; `null` for unattributed and desktop rows) and `provider` (`null` for unattributed usage); session rows add `provider` and `project`.
+- `total`, and in each row: `input`, `output` (reasoning included), `cacheRead`, `cacheWrite5m`, `cacheWrite1h`, `reasoning`, `requests`, `totalTokens`, `costUsd` (an estimate at API prices; `null` when no token in the row has a price) and `unpricedTokens`.
+- `estimate` (always `true`), `unpricedModels` (`[{model, tokens}]`), `unattributedTokens`, `unattributedShare`, `attributionStarts` (per provider), `pricing` (`fetched`, `sources`, `override`, `warnings`).
+- `scan`, unless `--no-scan`: `filesSeen`, `filesRead`, `bytesRead`, `newEvents`, `duplicates`, `missing`, `skippedCompressed`, `modifiedSince`, `filesSkipped`, `olderFilesNotInLedger`, `seconds`. `notes` when files were skipped or unreadable.
+- `billed`, only with `--billed`: `since`, `until`, `timezone` (`"UTC"`), `startingAt`, `endingAt`, `by`, `notes`, and `organizations`, each with `name`, `organizationName`, `organizationId`, `rows` (`key`, `label`, token fields, `costUsd`, `costSource`: `cost-report` or `estimate`), `total` (token fields and `billedCostUsd`), `error`, `costError` when only the cost report failed, and `fetchedAt`.
+
+See [usage.md](usage.md).
+
+## Doctor
+
+Each check has a stable `id` (`claude.cli`, `claude.login`, `claude.managed`, `codex.cli`, `codex.storage`, `codex.login`, `codex.managed`, `data.dir`, `data.permissions`, `data.store`, `menubar.service`, `menubar.running`, `menubar.location`, `menubar.platform`, `auto.claude`, `auto.codex`, `install.python`, `install.method`, with `--online` `network.anthropic` and `network.chatgpt`, and `GROUP.error` for a check that could not run), its `group`, `status` (`pass`, `warn`, `fail` or `skip`), `summary`, and `fix`, the command to run, or `null`. Which checks appear depends on the machine. `counts` tallies the statuses; `online` says whether the network checks ran. See [troubleshooting.md](troubleshooting.md).

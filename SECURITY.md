@@ -28,7 +28,7 @@ What that means for you:
 
 - These endpoints can change or disappear without notice. When one does, the readings it supplied show as unavailable until qswap is updated.
 - Anthropic reports resets only to Claude Code, so qswap reads them with Claude Code's own client agent string. Anthropic sees those reads as coming from Claude Code.
-- Spending a reset cannot be undone. Automatic spending waits for a fresh reading, spends at most 3 a day across all accounts, and sends an idempotency key so a retry cannot spend a second one.
+- Spending a reset cannot be undone. Automatic spending waits for a fresh reading, spends at most 3 a day for each provider (Claude Code and Codex count separately), and sends an idempotency key so a retry cannot spend a second one.
 - Whether this use fits the terms of your plan is your decision. Read them.
 
 Two documented Anthropic APIs are used only when you turn them on: the Admin API (GET requests under `api.anthropic.com/v1/organizations/`) for organizations you registered, and, with `usage.headerProbe true`, a one-token Haiku request to `api.anthropic.com/v1/messages` that reads a setup-token's usage from the response headers. Each probe is a real request on that account.

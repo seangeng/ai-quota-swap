@@ -19,8 +19,8 @@ from rich.console import Console
 from rich.terminal_theme import TerminalTheme
 from rich.text import Text
 
-WINDOW_WIDTH = 1200  # CSS px, the README shot width
-FONT_SIZE = 15  # px; ~120 columns fit the window at this size
+FONT_SIZE = 15  # px, the same in every window, so text keeps one scale
+PADDING_X = 28  # px on each side of the text
 
 DARK = TerminalTheme(
     (23, 24, 28),
@@ -102,14 +102,14 @@ def page(blocks: list[Block], *, title: str, theme: str, columns: int) -> str:
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width={WINDOW_WIDTH}">
+<meta name="viewport" content="width=device-width">
 <meta name="color-scheme" content="{theme}">
 <title>{html.escape(title)}</title>
 <style>
   html, body {{ margin: 0; padding: 0; background: transparent; }}
   body {{ display: flex; justify-content: center; }}
   .window {{
-    width: {WINDOW_WIDTH}px; box-sizing: border-box; overflow: hidden;
+    width: fit-content; box-sizing: border-box; overflow: hidden;
     background: {c["bg"]}; border: 1px solid {c["border"]}; border-radius: 12px;
   }}
   .titlebar {{
@@ -127,7 +127,8 @@ def page(blocks: list[Block], *, title: str, theme: str, columns: int) -> str:
     color: {c["chrome_fg"]};
   }}
   .screen {{
-    margin: 0; padding: 20px 28px 24px; color: {c["fg"]};
+    margin: 0; padding: 20px {PADDING_X}px 24px; color: {c["fg"]};
+    width: {columns}ch;
     font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
       "DejaVu Sans Mono", "Liberation Mono", monospace;
     font-size: {FONT_SIZE}px; line-height: 1.5; white-space: pre;

@@ -1,122 +1,169 @@
-# Menu bar app (macOS)
+# Menu bar (macOS)
 
-Reference for `qswap menubar`. Installing it is in the [README](../README.md#menu-bar-macos).
+The menu bar app puts the active account's usage in the macOS menu bar and lists every Claude Code and Codex account in its menu. Click an account to switch to it, and turn on auto-switch per provider. This page covers installing it, starting it, what each row means, its settings, its notifications and its files.
 
-## Lifecycle
+This build of the menu bar, with both providers and per-provider auto-switch, has not yet been run by hand on a Mac. It is tested through `menubar.build_menu`, the function that builds every row of the menu, and through unit tests only.
 
-`qswap menubar` hands the menu bar to launchd and returns: it keeps running after you close the terminal, comes back at login and is restarted if it crashes. Running the command again only tells you it is already up. *Quit* in the menu stops it until the next login. *Settings → Start at login* turns the login start off, after which `qswap menubar` runs it for the current session only. `qswap menubar --uninstall-service` removes it altogether, and `qswap menubar --foreground` runs it attached to the terminal instead, for debugging.
+## Install
+
+The menu bar needs the `menubar` extra (it adds `rumps`). The package is not on PyPI yet, so install from the repository:
 
 ```bash
-qswap menubar --service-status      # running? pid? starts at login? auto-switch on?
-qswap menubar --install-service     # register the login start again and restart it now
-qswap menubar --uninstall-service   # stop it and remove the LaunchAgent
-qswap menubar --foreground          # run attached to this terminal, for debugging
+uv tool install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
+# or: pipx install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
 ```
+
+If qswap is already installed without the extra, `qswap menubar` stops with `The menu bar needs the 'menubar' extra. Install it with: uv tool install --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'` (the pipx form when you installed with pipx).
+
+Keep the install out of `~/Documents`, `~/Desktop` and `~/Downloads`. The uv and pipx defaults already are. See [Limits](#limits).
+
+## Start and stop
+
+`qswap menubar` hands the menu bar to launchd and returns. The first time, it prints `Menu bar started (pid N).`, then says it keeps running after you close the terminal and starts at login, and prints where its plist and log are. From then on launchd starts it at login and restarts it if it crashes. Running `qswap menubar` again prints `Menu bar is already running (pid N).`
+
+Each start also says whether it will switch accounts. Auto-switch is off until you turn it on, and until then the start warns `auto-switch: off -- the menu bar shows usage but will not switch accounts; turn it on from the menu, or re-run with --auto-switch`.
+
+| Command | Does |
+|---|---|
+| `qswap menubar` | start it; the first time, also set it to start at login |
+| `qswap menubar --auto-switch` | turn Claude Code's auto-switch on and start the menu bar, restarting a running one to apply it (`--no-auto-switch` turns it off) |
+| `qswap menubar --service-status` | installed? running, with its pid? starts at login? which build? which auto-switch toggles are on? |
+| `qswap menubar --install-service` | register the start at login again and restart it now |
+| `qswap menubar --uninstall-service` | stop it and remove its LaunchAgent and wrapper app |
+| `qswap menubar --foreground` | run it attached to this terminal, for debugging; refused while the service runs |
+
+*Quit* in the menu stops it until the next login. *Settings → Start at login* turns the start at login off, after which `qswap menubar` starts it for the current session only.
+
+`qswap upgrade` restarts a running menu bar when the build changed. After an upgrade made another way, the next `qswap menubar` restarts it onto the new build, and `--service-status` warns until then.
 
 ## What the menu shows
 
-The menu uses the same words as `qswap list`, `qswap status`, the dashboard and the `qswap auto` log ([design/ux.md](design/ux.md)), so a state reads the same everywhere.
-
-The **title** is `⇄` followed by the active account's alias (or the part of its email before `@`) and its 5h and 7d percentages, for example `⇄ personal · 46% · 38%`. *Settings → Title percentage* chooses which windows it shows and *Show model limits in title* adds per-model limits such as `Fable 52%`. A refused setup-token reads `limit reached`. When Codex manages an account, *Settings → Title follows* chooses whose active account the title shows: Claude Code's (the default), Codex's, or whichever active account is closest to its limit. A `⚠` in front of the icon means an auto-switch engine stopped and is waiting for a click.
-
-The **first row** says, in words, whether auto-switch is running for each provider and how old the active accounts' readings are: `Auto-switch off · usage read 2m ago`, `Auto-switch running for Claude Code and Codex · usage read just now`, `Auto-switch: Claude Code running, Codex off · usage as of 2h 0m ago`. When an engine stopped (it failed to start, or its thread ended) the row reads `⚠ Auto-switch stopped, click to restart` and a click restarts it; its tooltip says why. When the menu bar's own engine is off and a `qswap auto` in a terminal is running for that provider, the row says `running in qswap auto`.
-
-Then the **accounts**, one row each, the active one checked. With no Codex account managed this is Claude Code's list alone, as it always was. Once Codex manages one, there are two sections, *Claude Code accounts* and *Codex accounts*. A row is short enough to scan at a glance:
+The demo harness prints the menu as an outline for its synthetic accounts. In the outline, `✓` is a check mark, `⚠` a row drawn in orange, `▸` a submenu, and `(greyed)` a row you cannot click:
 
 ```text
-#1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset
-#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset
-#1 personal · 5h 100% (resets in 1h 12m) · 7d 64%
-#2 work · needs re-login
+$ uv run python scripts/demo/run.py fleet --menubar
+title: ⇄ personal · 46% · 38%
+  Auto-switch off · usage read 1m ago  (greyed)
+────
+  Claude Code accounts  (heading)
+✓ #1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset
+  #2 work · 5h 12% · 7d 21% · extra 18%
+  ⚠ #3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset
+  #4 side · disabled · 5h 0% · 7d 9%
+  #5 ci · API key · $0.00 today · $0.00 this month · estimate
+────
+  Codex accounts  (heading)
+✓ #1 maya@example.com · 5h 22% · 7d 47%
+  #2 work · 5h 8% · 7d 15% · 1 reset credit
+────
+  Rotate to next (Claude Code)
+  Switch to best (Claude Code)
+  Next available (Claude Code)
+────
+  Add account ▸
+      Add from a setup-token or API key…
+      Log in another Codex account…
+...
+  Refresh now
+  Quit
 ```
 
-- the account's short name, `#1 personal`, or `#1 maya@example.com` when it has no alias;
-- each window as a bare percentage, and `extra 18%` for extra-usage spend. Only once the account is blocked does a row say when it comes back: a window at its limit (100%, or a refused setup-token, `limit reached`) adds `(resets in 1h 12m)`, and with several at the limit only the one that resets last carries it, since that is when the account is usable again;
-- the usage resets it holds, last: `1 Fable reset`, `2 Fable · 1 weekly resets`, `1 reset credit` for Codex;
-- `disabled` for an account held out of rotation (`#4 side · disabled · 5h 0% · 7d 9%`);
-- in place of the percentages, a state in `qswap list`'s words: `needs re-login` for an account whose saved login was refused or that the auto-switch engine set aside until its owner logs in again; `usage unavailable (HTTP 503), retrying` when no reading could be taken; `usage not read yet`;
-- `as of 3h 5m ago` after the percentages of a reading older than three refresh intervals (at least 15 minutes);
-- for an API-key account, its spend as `qswap list` shows it (`API key · $4.12 today · $212.40 this month · estimate`), or with a budget in the compact form, `API key · $4.12 today · $212.40/$500 (42%) est.` (`(104%, over budget)` past it);
-- `re-login in 5d 12h` at the end while a saved login nears its expiry.
+**The title** is `⇄`, then the active account's alias (or its email up to the `@`), then its 5-hour and weekly percentages. *Settings → Title percentage*, *Show model limits in title* (adds `Fable 52%`) and *Show account name in menu bar* change it. With Codex accounts managed, *Settings → Title follows* picks Claude Code's active account, Codex's, or whichever is closest to its limit. `⚠ ⇄` means an auto-switch engine stopped.
 
-A row is at most 72 characters. When one would be longer, the account's name gives way first (`#5 api-…`, its number kept); only then is the end cut.
+**The first row** says which engines run and how old the active accounts' readings are: `Auto-switch off · usage read 1m ago`, `Auto-switch running for Claude Code and Codex`, `Auto-switch: Claude Code running, Codex off`. A reading older than three refresh intervals (and at least 15 minutes) reads `usage as of 2h 0m ago`. When an engine stopped, the row reads `⚠ Auto-switch stopped, click to restart`; click it to restart, and hover for the reason. With the menu bar's toggle off and a `qswap auto` running in a terminal, it says `running in qswap auto`.
 
-A row that needs you (needs re-login, a window at or past the account's switch line, an API-key account over its budget) is drawn in orange. The switch line is the account's own threshold, else the provider's `autoswitch.threshold` (or `weeklyThreshold` for the weekly windows) or `codex.threshold`. Hovering over a row shows the account's full block as `qswap list` prints it, with every window's reset clock, `ahead of pace`, the plan, the full email, when held resets must be used, and the next step. Clicking a row switches that provider to the account. Switching to an account that needs re-login first asks, with the same explanation `qswap switch` gives when it refuses; *Switch anyway* is what `--anyway` does on the command line.
+**The accounts** come one row each, with the active account checked. Codex gets its own section once it manages an account. A row is at most 72 characters and uses `qswap list`'s words:
 
-With nothing managed the section says `No accounts are managed yet.` and the next step for each login on this machine; a line that names a live login adds it when clicked.
+- the account, `#2 work` (or `#1 maya@example.com` without an alias), and `disabled` for one held out of rotation;
+- each window as a bare percentage, and `extra 18%` for extra-usage spend. Once a window is at its limit it adds when it comes back: `5h 100% (resets in 1h 12m)`;
+- the usage resets held: `1 Fable reset`, `1 five-hour reset`, `1 reset credit` for Codex;
+- or a state in place of the figures: `needs re-login`, `usage unavailable (HTTP 503), retrying`, `usage not read yet`, an API-key account's spend;
+- `as of 3h 4m ago` after an old reading, and `re-login in 5d 12h` while a saved login nears its expiry.
 
-The **cost row**, `Today $12.40 · 7 days $179.72 (estimated)`, is the total of both providers over today and the last seven days, the same figures `qswap usage` reports, at API list prices (a `+` marks a total that leaves out tokens of a model with no known price). It is information; clicking it does nothing. It appears once the ledger holds anything. The menu bar reads the ledger without scanning, and brings it up to date in the background a minute after it starts and then every 15 minutes: a scan reads every changed session file and can take seconds on a large history, and the figures are estimates over a day and a week, so a quarter of an hour of lag changes nothing. Running `qswap usage` updates the row at once.
+A row is orange when it needs you: needs re-login, a window at or past the account's switch line, or an API-key account over its budget. Hover a row for its full `qswap list` block. Click a row to switch that provider to the account. For an account that needs re-login, a *Switch anyway?* dialog first shows the explanation `qswap switch` gives, and its *Switch anyway* button does what `--anyway` does. Switches made anywhere else (`qswap switch`, Claude Code's `/login`, `codex login`) show within about a second.
 
-Below that:
+**The cost row**, `Today $17.07 · 7 days $179.72 (estimated)`, totals both providers over today and the last seven days at API list prices, as `qswap usage` does ([usage.md](usage.md)). It appears once the ledger holds anything. Clicking it does nothing. The menu bar reads new session files a minute after it starts and every 15 minutes after that. A `qswap usage` run shows up at the next refresh.
 
-- *Rotate to next*, *Switch to best*, *Next available*: Claude Code's rotation strategies (with both providers they say `(Claude Code)`).
-- *Add account*: *Add the current Claude Code login* or *Add the current Codex login* when that provider is logged in to an account qswap does not manage; *Add from a setup-token or API key…*, one dialog with the token first and an optional email (without one the account is named `setup-token-N@token.local` or `api-key-N@token.local`, as `qswap add-token` does); *Log in another Codex account…*, which shows the command to run in a terminal (`qswap codex login`) and copies it, since the menu bar cannot host Codex's sign-in.
-- *Disable / enable account* and *Remove account*: every account, named with its provider (`Codex #2 work`) when both providers are managed. Removing asks the question `qswap remove` asks; for a Codex account it adds that only qswap's copy is deleted and why not to run `codex logout`.
-- *Refresh current credentials*: saves Claude Code's live login into its account again.
-- *Switch history*: the last ten switches from the log, newest first (`#3 ops → #1 personal · 2026-11-10 14:20`), and *Open full log…*.
+**Below the cost row:**
 
-## Settings
+- *Rotate to next*, *Switch to best*, *Next available*: Claude Code's rotation strategies (`qswap switch`, `--strategy best`, `--strategy next-available`).
+- *Add account*: *Add the current Claude Code login (…)* or *Add the current Codex login (…)* when a provider is signed in with a login qswap does not manage; *Add from a setup-token or API key…*, one dialog with the token and an optional email ([api-accounts.md](api-accounts.md)); *Log in another Codex account…*, which shows `qswap codex login` to run in a terminal and copies it if you click *Copy command*.
+- *Disable / enable account* and *Remove account*: every account, named with its provider (`Codex #2 work`) when both are managed. Removing asks what `qswap remove` asks.
+- *Refresh current credentials*: saves the login Claude Code is signed in with into its account again.
+- *Switch history*: the last ten switches, newest first, and *Open full log…*.
+- *Refresh now*: read usage again now.
 
-*Settings* holds the display preferences, one auto-switch toggle per provider, the switch lines, and *Start at login*. They live in `menubar_settings.json` in the data directory:
-
-| Key | Default | Meaning |
-|---|---|---|
-| `show_account_name` | `true` | the account's name in the title |
-| `title_pct` | `"both"` | which percentages the title shows: `off`, `5h`, `7d`, `both` |
-| `title_scoped` | `false` | add per-model limits to the title |
-| `refresh_interval` | `60` | seconds between reads: `30`, `60` or `300` |
-| `auto_switch_enabled` | `false` | *Auto-switch Claude Code* |
-| `codex_auto_switch_enabled` | `false` | *Auto-switch Codex* (shown once Codex manages an account) |
-| `title_follows` | `"claude"` | whose active account the title shows: `claude`, `codex`, or `closest` |
-
-A file written by an earlier build loads as it did: Claude Code's auto-switch as it was, Codex's off, the title on Claude Code. The CLI and the menu bar both write this file; a key a build does not know is kept and written back unchanged. The switch lines are qswap's own settings, not the menu bar's: *Auto-switch threshold* (with both providers, *Claude Code threshold*) sets `autoswitch.threshold`, and *Codex threshold* sets `codex.threshold`.
+With nothing managed, the accounts section says `No accounts are managed yet.` and the next step for each login on this machine. Click a line that names a login to add it.
 
 ## Auto-switch
 
-Each toggle that is on runs the same engine as [`qswap auto`](../README.md#automatic-switching) (`qswap codex auto` for Codex), in a thread of its own, with that provider's settings: the `autoswitch.*` settings for both, and `codex.threshold` as Codex's switch line. The menu bar and the command line therefore stay in sync. Both toggles are off until you turn them on; `qswap menubar --auto-switch` turns Claude Code's on from the terminal (`--no-auto-switch` off), and both that command and `--service-status` say which toggles are on. *Auto-switch Codex* asks first, because a Codex switch restarts Codex's background server, which interrupts work in progress. A hosted engine's heartbeat names `qswap menubar`, so `qswap status` and `qswap doctor` can tell it from a `qswap auto` in a terminal.
+*Settings → Auto-switch Claude Code* and *Settings → Auto-switch Codex* (shown once Codex manages an account) each run the same engine as `qswap auto` or `qswap codex auto` ([auto-switch.md](auto-switch.md)), in a thread of its own. Both use the `autoswitch.*` settings, and Codex uses `codex.threshold` as its switch line. The menu bar's engines switch for real; there is no dry run here. Turning on Codex's toggle asks first, because a Codex switch restarts Codex's background server, which interrupts work in progress.
+
+*Settings → Claude Code threshold* and *Codex threshold* (with Claude Code alone, *Auto-switch threshold*) write the switch line to `settings.json` and restart that engine. An engine's heartbeat names `qswap menubar`, so `qswap status` and `qswap doctor` can tell it from a `qswap auto` in a terminal.
+
+## Settings
+
+The menu's own preferences live in `menubar_settings.json` in the data directory (`~/.ai-quota-swap` on macOS). Change them from the menu; the menu bar reads the file when it starts.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `show_account_name` | `true` | the account's name in the title |
+| `title_pct` | `"both"` | percentages in the title: `off`, `5h`, `7d` or `both` |
+| `title_scoped` | `false` | add per-model limits (`Fable 52%`) to the title |
+| `refresh_interval` | `60` | seconds between reads: `30`, `60` or `300` |
+| `auto_switch_enabled` | `false` | *Auto-switch Claude Code* |
+| `codex_auto_switch_enabled` | `false` | *Auto-switch Codex* |
+| `title_follows` | `"claude"` | whose active account the title shows: `claude`, `codex` or `closest` |
+
+A file from an earlier build loads as it did, and a key this build does not know is kept. The switch lines are qswap settings, shared with the command line ([settings.md](settings.md)):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `autoswitch.threshold` | `90` | Claude Code's switch line; the menu offers 80, 90, 95 and 98 |
+| `codex.threshold` | `99` | Codex's switch line; the menu offers 90, 95, 98 and 99 |
+
+`qswap config set autoswitch.threshold 95` changes it too, but a running engine picks the change up only when it restarts. Use the menu's threshold submenu, or turn the toggle off and on.
 
 ## Notifications
 
-Every notification is titled `ai-quota-swap` and says one thing, in the auto log's words. When both providers are managed the account is named with its provider.
+Every notification is titled `ai-quota-swap`. With both providers managed, the account is named with its provider (`Claude #1 personal`).
 
 | Event | Example | How often |
 |---|---|---|
-| An engine switched | `Switched Claude #1 personal → #2 work · 5h reached 91%` | every switch |
+| An engine switched | `Switched #1 personal → #2 work · 5h reached 91%` | every switch |
 | You switched from the menu | `Switched #1 personal → #2 work. Claude Code picks up the new account within 30 seconds; restart it to apply now.` | every switch |
 | A usage reset was used | `Used a Fable reset on #1 personal · Fable reached 100%, 3d before it resets on its own · 0 left on this grant` | every reset |
-| A reset could not be used | `Did not use a Fable reset on #1 personal: refused` | once per account and result |
+| A reset was not used | `Did not use a Fable reset on #1 personal: refused` | once per account and result |
 | An account needs re-login | `#4 side needs re-login: its saved login was refused. Log in to it in Claude Code (/login), then run: qswap add` | once per account and reason |
 | Every account is at its limit | `All accounts are at their limit; the first resets 15:32 · in 1h 12m` | once per provider until the next switch or reset time |
 | An API-key budget nears | `#5 ci has spent $410.00 of its $500.00 monthly budget (82%)` | once per account and month |
-| A setting does nothing | `Warning: autoswitch.model 'Fabel' matches no limit any account reports` | once, whichever engine noticed |
-| An engine's check failed | `Auto-switch error: network unreachable. It retries by itself.` | once per message an hour, across both engines |
+| A setting matches nothing | `Warning: autoswitch.model 'Fabel' matches no limit any account reports` | once, whichever engine noticed |
+| An engine's check failed | `Auto-switch error: network unreachable. It retries by itself.` | once per message an hour |
 | An engine stopped | `Auto-switch stopped: the engine loop ended on its own. Open the menu to restart it.` | every time |
-| An engine did not start | `Codex auto-switch did not start: Codex keeps its login in the OS keyring …` | every attempt |
+| An engine did not start | `Codex auto-switch did not start: No Codex accounts are managed yet.` | every attempt |
 
-## Errors
-
-A failed action (a switch, an add, a remove) shows the command line's error message in an alert; nothing a click does can end the app. Anything unexpected also goes to the log with its traceback.
-
-## How it is built
-
-`menubar.build_menu` turns a snapshot of both providers and the settings into the whole menu (title, sections, rows with their text, check marks, attention and an action), and `menubar_app` only draws that and maps each action to a handler, so everything the menu says is tested without macOS. Reads run in background threads (`menubar_data`), the engines in theirs (`menubar_engines`), and notification texts and their de-duplication are in `menubar_notify`. The demo harness prints the menu for any scenario: `uv run python scripts/demo/run.py fleet --menubar`. Switches made elsewhere (the CLI, Claude Code's `/login`, `codex login`) show within about a second: the menu bar stats Claude Code's config file and Codex's `auth.json` once a second and reads them only when they change.
-
-## The wrapper app
-
-`qswap menubar` runs from a small wrapper app, `/Applications/AI Quota Swap Menubar.app`, that it builds (and refreshes after upgrades) on every start. The wrapper gives it the bundle identifier `com.ai-quota-swap.menubar`, which menu bar managers (Dimble, Ice, Bartender, SaneBar) need to list, hide and order the icon. If `/Applications` is not writable the bundle lands in the data directory with a one-line warning; there, the first time a manager hides anything the icon goes down with it. Set `AI_QUOTA_SWAP_NO_BUNDLE=1` to run in the plain interpreter instead.
+A failed action (a switch, an add, a remove) shows the command line's error in an alert.
 
 ## Files
 
-The plist lives at `~/Library/LaunchAgents/com.aiquotaswap.menubar.plist` while Start at login is on and in the data directory while it is off; logs go to `~/Library/Logs/com.aiquotaswap.menubar.{log,err}`.
+| File | What |
+|---|---|
+| `~/Library/LaunchAgents/com.aiquotaswap.menubar.plist` | the LaunchAgent while Start at login is on; in the data directory while it is off |
+| `~/Library/Logs/com.aiquotaswap.menubar.log`, `.err` | the service's output |
+| `~/.ai-quota-swap/ai-quota-swap.log` | the switch log that *Switch history* reads |
+| `/Applications/AI Quota Swap Menubar.app` | the wrapper app, rebuilt on every start |
 
-## Upgrades
+The wrapper app gives the process the bundle identifier `com.ai-quota-swap.menubar`, which menu bar managers (Dimble, Ice, Bartender, SaneBar) need to list, hide and order the icon. `AI_QUOTA_SWAP_NO_BUNDLE=1 qswap menubar --foreground` runs without it; the service does not pass that variable on. The service does take the `CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, `XDG_DATA_HOME`, proxy and certificate variables (`HTTPS_PROXY`, `SSL_CERT_FILE` and the like) of the shell that set it up, and `--install-service` from a shell with other values says what changed.
 
-`qswap upgrade` restarts a running menu bar when the build changed; after an upgrade made some other way, the next `qswap menubar` notices the old build and restarts it.
+## How it is built
 
-## Environment
+`menubar.build_menu` turns both providers' state and the settings into the whole menu, and a thin `rumps` layer draws it and maps each row to a handler. The design is in [architecture.md](architecture.md).
 
-The service follows the `CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR` and `XDG_DATA_HOME` of the shell that set it up, and `--install-service` from a shell in another profile says what moved.
+## Limits
 
-## Login Items & Extensions
-
-If you switched it off under System Settings → General → Login Items & Extensions → Allow in the Background, `qswap menubar` still starts it when you ask, but says that macOS will not start it at login until you turn that back on.
+- This build has not been run by hand on a Mac. Codex account switching has only been tested with fakes ([codex.md](codex.md)).
+- macOS only. Elsewhere `qswap menubar` prints `The menu bar is only available on macOS.` and exits 1. `qswap auto` switches accounts on every platform.
+- **Install location.** macOS privacy rules keep launchd agents out of `~/Documents`, `~/Desktop` and `~/Downloads`, so the service cannot start when qswap runs from there (an editable install from a checkout in `~/Documents`, for example). `qswap menubar` does not notice. `qswap doctor` reports it as `qswap runs from ~/Documents/…; macOS keeps background services out of ~/Documents`. Reinstall outside those folders with `uv tool install --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'`, then run `qswap menubar` ([troubleshooting.md](troubleshooting.md)).
+- On macOS 26, a framework build of Python (Homebrew's, python.org's) has been seen not to draw the icon: the process runs and logs nothing. `qswap menubar` warns about it. With uv, reinstall on uv's own Python: `uv tool install --managed-python --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'`.
+- If you switched it off under System Settings → General → Login Items & Extensions → Allow in the Background, `qswap menubar` still starts it when you ask, but macOS will not start it at login.
+- When `/Applications` is not writable, the wrapper app goes in the data directory, and a menu bar manager that hides anything hides this icon too.

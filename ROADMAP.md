@@ -9,12 +9,29 @@ were worth. Claude Code first, Codex second, API keys third.
 
 ## Where it stands
 
-Inherited from claude-swap 1.1.0b1: multi-account switching for Claude Code, the auto-switch
-engine, parallel sessions (`run`), the TUI, the macOS menu bar, JSON output, export and import.
+Feature-complete for a first release, 0.1.0, which is prepared but not yet on PyPI. What works:
 
-Added in this fork so far: usage resets for Claude (`reset`, a `resets:` row, auto-spend with the
-modes `active`, `last-resort`, `on-limit`, `off`, a daily brake, and a locked two-engine
-reservation).
+- Claude Code accounts, from claude-swap 1.1.0b1 and extended: switching by hand and
+  automatically, parallel sessions (`run`, `map`), export and import, JSON output.
+- Codex accounts (experimental): add, `qswap codex login`, switch, auto-switch, reset credits.
+  Tested against fakes only; not yet run with two real Codex accounts, and no real reset credit
+  has been spent.
+- Usage resets by kind for both providers, spent by hand or by the engine under `resets.auto`,
+  with a fresh reading, a daily cap per provider and request-id reuse.
+- `qswap usage`: tokens and estimated cost from the local session files of both CLIs.
+- API-key accounts: spend, monthly budgets, Admin API figures, `usage --billed`.
+- A dashboard and a macOS menu bar covering both providers, with an auto-switch engine per
+  provider. The menu bar's new build has not yet been run by hand.
+- `qswap doctor`, task-first docs, screenshots and recordings made from invented accounts.
+
+What remains, in rough order:
+
+- Live tests with a second, real Codex account, and the first real reset-credit spend.
+- `qswap codex run`: one `CODEX_HOME` per account, for parallel Codex sessions (M2c).
+- `where`: the best account per provider now, and when each exhausted one returns (M5).
+- Hooks: run a command on a switch, a limit reached, or a reset used (M5).
+- OpenAI organization usage for API keys (M4, later).
+- The first PyPI release (M7).
 
 ## Principles
 
@@ -71,7 +88,7 @@ Result: the existing tests pass. Nine of them were reaching real endpoints (Anth
 token refresh, PyPI) and now patch those calls. Until M2a, `qswap codex <verb>` exited 1 with
 "Codex support is not available yet".
 
-### M2. Codex
+### M2. Codex (M2a and M2b done; M2c open)
 
 Design: [docs/design/codex.md](docs/design/codex.md). Experimental until it has been run with
 two Codex accounts.
@@ -94,26 +111,26 @@ two Codex accounts.
   saves it, so the live login is never signed out). `qswap usage` also notices a Codex login
   changed outside qswap. Spending a credit is tested against a fake server only; the first
   real spend is the maintainer's to make.
-- M2c: `qswap codex run`, one `CODEX_HOME` per account, for parallel accounts.
+- [ ] M2c: `qswap codex run`, one `CODEX_HOME` per account, for parallel accounts.
 
 Rules: qswap never refreshes a Codex login, never runs `codex logout`, and copies login
 records byte for byte.
 
-### M3. Token and cost ledger
+### M3. Token and cost ledger (done, two items open)
 
-Design: [docs/design/ledger.md](docs/design/ledger.md).
+Design: [docs/design/ledger.md](docs/design/ledger.md). Guide: [docs/usage.md](docs/usage.md).
 
 `usage` command: tokens by day, account, model, and project, with an API-equivalent dollar
 figure.
 
-- Incremental readers for Claude Code transcripts (`~/.claude/projects/**/*.jsonl`) and Codex
-  session files, into a small SQLite store.
-- Attribution: a structured switch log says which account was active when; `run` sessions
+- [x] Incremental readers for Claude Code transcripts (`~/.claude/projects/**/*.jsonl`) and
+  Codex session files, into a small SQLite store.
+- [x] Attribution: a structured switch log says which account was active when; `run` sessions
   attribute exactly.
-- A bundled price table with a user override file. Costs are labeled as estimates.
-- Per subscription: value used against plan price, cache hit rate.
-- History of quota readings, so the dashboard can show burn rate and "weekly limit reached
-  Thursday 15:00 at this pace".
+- [x] A bundled price table with a user override file. Costs are labeled as estimates.
+- [ ] Per subscription: value used against plan price, cache hit rate.
+- [ ] History of quota readings, so the dashboard can show burn rate and "weekly limit reached
+  Thursday 15:00 at this pace". (`--json` carries a linear projection on weekly windows today.)
 
 ### M4. API accounts (done)
 
@@ -131,36 +148,41 @@ Design: [docs/design/api-accounts.md](docs/design/api-accounts.md). Guide:
   never switches to an account at its budget, and leaves an active one that reaches it.
 - `qswap usage --billed`: an organization's usage and billed cost as Anthropic reports them,
   by day, model, key or workspace.
-- Later: OpenAI organization usage; refreshing the local estimate from the engine without a
+- [ ] Later: OpenAI organization usage; refreshing the local estimate from the engine without a
   `qswap usage` run.
 
 ### M5. Engine
 
-- One reset policy across providers.
-- `where`: the best account per provider right now, and when each exhausted one returns.
-- Wait or switch: don't jump to an account with 1% left when the current one resets in 40
+- [x] One reset policy across providers: Codex credits follow the same `resets.*` settings.
+- [ ] `where`: the best account per provider right now, and when each exhausted one returns.
+- [ ] Wait or switch: don't jump to an account with 1% left when the active one resets in 40
   minutes.
-- Hooks: run a user command on switch, limit reached, and reset used.
+- [ ] Hooks: run a user command on switch, limit reached, and reset used.
 
 ### M6. Surfaces
 
-- TUI: provider sections, history sparklines, a usage and cost screen.
-- Menu bar: Codex rows, cost today.
-- `statusline`: a one-line output for Claude Code's status line.
-- A documented, versioned JSON schema for every command.
+- [x] TUI: provider sections, a usage and cost screen, an auto view per provider.
+- [ ] TUI: history sparklines.
+- [x] Menu bar: Codex rows, cost today, auto-switch per provider.
+- [ ] `statusline`: a one-line output for Claude Code's status line.
+- [x] Every `--json` payload versioned (`schemaVersion`) and documented in
+  [docs/json-output.md](docs/json-output.md). A machine-readable schema file is not written yet.
 
 ### M7. Public release
 
-- A README a developer can act on in one screen: what it does, install, first account, the
-  five commands that matter. Framed screenshots and short demo recordings of the dashboard,
-  `list`, auto-switch, and a reset being spent, all made from a fake account store.
-- Task-first docs under `docs/`: quickstart, auto-switch, resets, Codex, usage and cost,
-  sessions, menu bar, JSON schema, troubleshooting.
-- `SECURITY.md` on how credentials are stored and which unofficial endpoints are used.
+- [x] A README a developer can act on in one screen: what it does, install, first account, the
+  commands that matter. Screenshots and short recordings of the dashboard, `list`,
+  auto-switch, and a reset being spent, all made from a fake account store. (Unframed: the
+  ScreenFramed step needs a login the build machine does not have.)
+- [x] Task-first docs under `docs/`: quickstart, auto-switch, resets, Codex, usage and cost,
+  API accounts, sessions, dashboard, menu bar, settings, JSON output, troubleshooting, coming
+  from claude-swap.
+- [x] `SECURITY.md` on how credentials are stored and which unofficial endpoints are used.
   `CONTRIBUTING.md`, `CHANGELOG.md`.
-- CI on macOS, Linux, and Windows. Releases to PyPI by trusted publishing.
-- A scrub pass: no personal emails, tokens, or account data in tests, fixtures, or history.
-- GitHub description and topics: `claude-code`, `codex`, `account-switcher`, `multi-account`,
+- [x] CI on macOS, Linux, and Windows. A publish workflow for PyPI by trusted publishing.
+- [ ] The first release to PyPI.
+- [ ] A scrub pass: no personal emails, tokens, or account data in tests, fixtures, or history.
+- [ ] GitHub description and topics: `claude-code`, `codex`, `account-switcher`, `multi-account`,
   `rate-limit`, `usage-tracking`.
 
 ## Not planned

@@ -185,15 +185,32 @@ def capture_shots(only: set[str] | None = None) -> list[Path]:
         if only and shot.name not in only:
             continue
         png = RAW_DIR / f"{shot.name}.png"
-        with Server(shot.scenario, shot.view, shot.theme) as server:
-            url = server.url(TUI_QUERY.format(font=shot.font_size, height=shot.height, theme=shot.theme))
-            asyncio.run(cdp.shoot(url, png, width=VIEWPORT[0], height=VIEWPORT[1], scale=2,
-                                  ready=READY, settle=4.0))
+        with Server(shot.scenario, theme=shot.theme) as server:
+            asyncio.run(_shoot_tui(server, shot, png))
         compress(png)
         image_page(png, SHOTS_DIR / f"{shot.name}.html", shot.caption)
         log(f"png    {png.relative_to(REPO)}  {png.stat().st_size // 1024} KB")
         out.append(png)
     return out
+
+
+async def _shoot_tui(server: Server, shot: shots.TuiShot, png: Path) -> None:
+    """One dashboard shot: a terminal of exactly ``shot.columns`` x
+    ``shot.rows`` cells, the shot's keys played from the first frame."""
+    import tour  # noqa: PLC0415  (tour imports this module)
+
+    async with cdp.chrome(2) as new_page:
+        w, h = await tour.fit_cells(new_page, server, shot.theme, shot.columns, shot.rows,
+                                    font=shot.font_size)
+        page = await new_page()
+        await page.setup(w + 120, h + 160)
+        await page.goto(server.url(f"fontsize={shot.font_size}&w={w}&h={h}&theme={shot.theme}"))
+        await page.wait_for(READY)
+        await asyncio.sleep(shot.settle)
+        await tour.play(page, shot.steps)
+        await asyncio.sleep(0.8)
+        await page.screenshot(png, "#window")
+        await page.close()
 
 
 # -- ScreenFramed -------------------------------------------------------------
@@ -406,8 +423,9 @@ def write_index() -> Path:
             f"<td>{html.escape(shot.caption)}</td><td>{links}</td><td>{pngs}</td></tr>"
         )
     for shot in shots.TUI_SHOTS:
+        keys = " ".join(str(v) for k, v in shot.steps if k in ("type", "key"))
         rows.append(
-            f"<tr><td><code>qswap {'watch' if shot.view == 'watch' else 'tui'}</code></td>"
+            f"<tr><td><code>qswap{(' then ' + html.escape(keys)) if keys else ''}</code></td>"
             f"<td>{html.escape(shot.caption)}</td><td><a href=\"{shot.name}.html\">{shot.theme}</a></td>"
             f"<td><a href=\"../../assets/screenshots/raw/{shot.name}.png\">PNG</a></td></tr>"
         )
