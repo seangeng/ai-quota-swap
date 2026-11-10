@@ -1846,7 +1846,15 @@ def _print_menubar_auto_switch(*, suggest_flag: bool) -> None:
     """
     from ai_quota_swap.menubar import MenuBarSettings
 
-    if MenuBarSettings.load(_menubar_settings_path()).auto_switch_enabled:
+    settings = MenuBarSettings.load(_menubar_settings_path())
+    if settings.codex_auto_switch_enabled:
+        # Codex's toggle is in the menu only (Settings → Auto-switch Codex).
+        if settings.auto_switch_enabled:
+            print("  auto-switch: on for Claude Code and Codex")
+        else:
+            print("  auto-switch: on for Codex, off for Claude Code")
+        return
+    if settings.auto_switch_enabled:
         print("  auto-switch: on")
         return
     hint = (

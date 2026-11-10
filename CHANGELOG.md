@@ -23,10 +23,10 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - Claude Code and Codex accounts in one dashboard, a section each, with each provider's active account in full; the watch page, the switch picker and the disable and remove menus list both, and every action goes to the account's own provider.
 - A card says what `qswap list` says, in the same order and words (`needs re-login` with its next step, `usage unavailable (HTTP 503), retrying`, `as of 3h ago`, held resets as a sentence, `extra` for extra-usage spend), coloured by the account's own switch line.
 - A cost line under the title (today and the last 7 days, estimated at API prices), and a usage screen (`u`): the `qswap usage` report, regrouped with Tab, 7 or 30 days with `d`.
-- The auto view runs one engine per provider, each with its own badge, line and toggle (Tab between them, or side by side from 140 columns); "Next best" lists only what the engine would consider.
+- The auto view runs one engine per provider, hosted as the menu bar hosts them, each with its own badge (`OFF`, `DRY-RUN`, `LIVE`), line and toggle (Tab between them, or side by side from 140 columns); "Next best" lists only what the engine would consider.
 - A first run says how to log in or offers `Add <email>` first; the add menu lists what each provider can add, `qswap codex login` included. No menu offers an action that cannot work.
 - Nothing wraps at 80 columns: emails give way before aliases and plans before figures, and a crowded screen keeps every account on one line before it folds any.
-- Switching to an account that needs re-login is refused with the command line's message and a "Switch anyway" choice. Errors read as on the command line, never as a traceback. `esc` goes back and `q` quits on every screen.
+- Switching to an account that needs re-login is refused with the command line's message and a "Switch anyway" choice; removing asks what `qswap remove` asks. Errors read as on the command line, never as a traceback. `esc` goes back and `q` quits on every screen.
 
 ### Codex (experimental)
 
@@ -36,6 +36,16 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `qswap codex auto` runs the shared auto-switch engine over Codex accounts and switches only once the active account is out (`codex.threshold`, default 99), because a switch restarts Codex's background server.
 - `qswap codex reset` lists and spends Codex reset credits, and auto mode spends them under the same `resets.*` settings as Claude.
 - qswap never refreshes a Codex login and never runs `codex logout`. Tested against fakes; not yet run with two real Codex accounts.
+
+### Menu bar (macOS)
+
+- Codex accounts get a section of their own once Codex manages one; clicking a row switches that provider, and the add, disable and remove menus cover both, named with their provider.
+- One auto-switch toggle per provider (*Auto-switch Claude Code*, *Auto-switch Codex*), each hosting that provider's engine in its own thread with its own settings (`codex.threshold` for Codex). The first row says, in words, which engines run; *Settings → Title follows* puts Claude Code's, Codex's or the closest-to-its-limit account in the title.
+- Account rows are short (`#1 personal · 5h 46% · 7d 38% · 1 Fable reset`, at most 72 characters): a countdown only once a window is at its limit, orange from the switch line, the full `qswap list` block as the tooltip. Rows and notifications use the command line's words: `#2 work`, `needs re-login` (also for an account the engine set aside), `usage unavailable (HTTP 503), retrying`, `as of 3h 5m ago`, `extra`, API-key spend. Notifications are titled `ai-quota-swap` and say each thing once, across both engines.
+- A cost row, `Today $12.40 · 7 days $179.72 (estimated)`, from the ledger, which the menu bar scans in the background every 15 minutes.
+- Adding from a token is one dialog (token, optional email, setup-token or API key); removing asks what `qswap remove` asks; switching to an account that needs re-login asks first with `qswap switch`'s explanation.
+- `menubar_settings.json` gains `codex_auto_switch_enabled` and `title_follows`; an older file loads as before, and keys a build does not know are kept.
+- The menu is described by one pure function (`menubar.build_menu`) and drawn by a thin rumps layer; `scripts/demo/run.py SCENARIO --menubar` prints it.
 
 ### Usage and cost
 

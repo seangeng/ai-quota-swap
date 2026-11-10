@@ -568,7 +568,9 @@ def short_text(reading: dict) -> str:
 
 
 def menu_text(reading: dict) -> str:
-    """For a menu bar row, within its note width: ``$4.12 today · $212.40/$500 (42%)``."""
+    """For a menu bar row, within its note width: ``$4.12 today ·
+    $212.40/$500 (42%)``; ``(104%, over budget)`` past the budget, as
+    :func:`spend_text` says it."""
     spend = reading.get("spend") or {}
     used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
     if used is None:
@@ -576,7 +578,11 @@ def menu_text(reading: dict) -> str:
     today = reading.get("today")
     text = f"{money(today)} today · " if today is not None else ""
     text += money(used)
-    text += f"/{budget_money(limit)} ({pct:.0f}%)" if limit is not None and pct is not None else " this month"
+    if limit is not None and pct is not None:
+        tag = f"{pct:.0f}%" + (", over budget" if pct >= 100 else "")
+        text += f"/{budget_money(limit)} ({tag})"
+    else:
+        text += " this month"
     if reading.get("source") == SOURCE_LEDGER:
         text += " est."
     return text

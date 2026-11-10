@@ -1,7 +1,8 @@
 """Live auto-switch screen: the real engines, visualized.
 
 One :class:`AutoSwitchEngine` per provider with accounts, each in a thread
-worker. Opens in **dry-run** — opening a view must never start switching
+of its own, hosted as the menu bar hosts its engines
+(``menubar_engines.EngineSupervisor``). Opens in **dry-run** — opening a view must never start switching
 accounts on its own; going live is an explicit, confirmed action, per
 provider. The engine's own state file semantics (shared cooldown, quarantine
 list, state lock) make it safe to run alongside an external ``qswap auto``.
@@ -39,6 +40,7 @@ from ai_quota_swap.autoswitch import (
 from ai_quota_swap.json_output import USAGE_RELOGIN_REQUIRED
 from ai_quota_swap.labels import PROVIDER_SHORT
 from ai_quota_swap.lines import binding_window
+from ai_quota_swap.menubar_engines import EngineStoppedEvent, EngineSupervisor
 from ai_quota_swap.settings import SETTING_SPECS, load_engine_settings, parse_model_names
 from ai_quota_swap.tui import data
 from ai_quota_swap.tui.modals import ConfirmModal
@@ -155,7 +157,7 @@ class EngineState:
 
     provider: str
     settings: object = None
-    engine: AutoSwitchEngine | None = None
+    dry_run: bool = True
     configured: float | None = None  # the file's threshold, restored on exit
     adjusting: bool = False
     entry_threshold: float | None = None
@@ -197,6 +199,8 @@ class AutoScreen(Screen):
         self._states: dict[str, EngineState] = {}
         self._selected: str = "claude"
         self._providers: list[str] = []
+        # The menu bar's host: one engine per provider, each in a thread.
+        self._supervisor = EngineSupervisor(self._make_engine, self._engine_event)
 
     # -- layout -------------------------------------------------------------
 
@@ -241,11 +245,13 @@ class AutoScreen(Screen):
             if i:
                 text.append("   ")
             state = self._states.get(provider)
-            live = state is not None and state.engine is not None and not state.engine.dry_run
+            running = self._supervisor.running(provider)
+            live = running and state is not None and not state.dry_run
             selected = provider == self._selected
             name = f" {display.provider_name(provider)} "
             text.append(name, style=f"bold {palette.foreground} reverse" if selected else palette.muted)
-            text.append(" LIVE" if live else " dry run", style=palette.accent if live else palette.muted)
+            mode = " LIVE" if live else (" dry run" if running else " off")
+            text.append(mode, style=palette.accent if live else palette.muted)
         text.append("    tab switches", style=palette.muted)
         self.query_one("#auto-tabs", Static).update(text)
 
@@ -267,9 +273,8 @@ class AutoScreen(Screen):
         self._layout()
 
     def on_unmount(self) -> None:
-        for provider, state in self._states.items():
-            if state.engine is not None:
-                state.engine.stop()
+        self._supervisor.stop_all()
+        for provider in self._states:
             sw = self.app.switcher_for(provider)
             if sw is not None:
                 # A session threshold must not outlive the engine it steered.
@@ -342,8 +347,9 @@ class AutoScreen(Screen):
         self.refresh_bindings()
         if state.settings.threshold == state.entry_threshold:
             return  # no net change: nothing to announce, no tick to force
-        if state.engine is not None:
-            state.engine.wake()  # show a decision at the new value now
+        engine = self._engine(provider)
+        if engine is not None:
+            engine.wake()  # show a decision at the new value now
         self._note(provider, f"switch line set to {pct_label(state.settings.threshold)}% "
                              "for this session")
 
@@ -352,8 +358,9 @@ class AutoScreen(Screen):
         if value == state.settings.threshold:
             return
         state.settings = replace(state.settings, threshold=value)
-        if state.engine is not None:
-            state.engine.apply_threshold(value)
+        engine = self._engine(provider)
+        if engine is not None:
+            engine.apply_threshold(value)
         self.app.set_session_threshold(
             provider, None if value == state.configured else value
         )
@@ -390,31 +397,39 @@ class AutoScreen(Screen):
         width = (self.query_one("#event-log", RichLog).size.width or self.app.size.width) - 3
         return max(40, width - (TAG_WIDTH if self.both else 0))
 
-    def _start_engine(self, provider: str, *, dry_run: bool) -> None:
+    def _make_engine(self, provider: str, emit) -> AutoSwitchEngine:
+        """The supervisor's factory: ``provider``'s engine over its switcher,
+        with this view's session settings and mode. Raising is a failed start
+        (a Codex home that keeps its login in the keyring, say)."""
         state = self._states[provider]
         sw = self.app.switcher_for(provider)
         if sw is None or state.settings is None:
-            return
+            raise RuntimeError(f"{display.provider_name(provider)} is not available here")
+        if provider == "codex" and hasattr(sw, "require_accounts"):
+            sw.require_accounts()  # one clear line instead of an idle engine
         buffer: list[str] = []
         log = AutoLog(buffer.append, provider=provider, width=self._log_width())
-        state.log = log
         engine = AutoSwitchEngine(
             sw, state.settings,
-            lambda event, p=provider, lg=log, buf=buffer: self._emit_from_thread(p, lg, buf, event),
-            dry_run=dry_run,
+            lambda event, lg=log, buf=buffer: emit((lg, buf, event)),
+            dry_run=state.dry_run,
         )
         engine.host_label = "qswap dashboard"
-        state.engine = engine
-        state.buffer = buffer
-        self.run_worker(
-            engine.run_loop,
-            thread=True,
-            group="engine",
-            exit_on_error=False,
-            name=f"auto-engine-{provider}-{'dry' if dry_run else 'live'}",
-        )
+        state.log, state.buffer = log, buffer
+        return engine
+
+    def _engine(self, provider: str):
+        return self._supervisor.engine(provider)
+
+    def _start_engine(self, provider: str, *, dry_run: bool) -> None:
+        state = self._states[provider]
+        state.dry_run = dry_run
+        failure = self._supervisor.start(provider)
         self._update_badge(provider)
         self._update_tabs()
+        if failure:
+            self._note(provider, f"{display.provider_name(provider)} auto-switch did not start: {failure}")
+            return
         mode = ("dry run: watching only, switching nothing" if dry_run
                 else f"live: switches accounts at {pct_label(state.settings.threshold)}%")
         self._note(provider, f"{display.provider_name(provider)} auto-switch {mode}")
@@ -430,18 +445,31 @@ class AutoScreen(Screen):
             text.truncate(width, overflow="ellipsis")
         self.query_one("#event-log", RichLog).write(text)
 
-    def _emit_from_thread(self, provider: str, log: AutoLog, buffer: list[str],
-                          event: AutoSwitchEvent) -> None:
-        """Engine ``on_event`` callback — runs on that engine's worker thread:
-        the command line's log turns the event into lines, the UI thread
-        writes them."""
+    def _engine_event(self, provider: str, payload) -> None:
+        """The supervisor's ``on_event``, on an engine's thread: the command
+        line's log turns an engine event into lines, the UI thread writes
+        them. A thread that ended arrives as an ``EngineStoppedEvent``."""
+        if isinstance(payload, EngineStoppedEvent):
+            self._to_ui(self._on_engine_stopped, provider, payload)
+            return
+        log, buffer, event = payload
         with printer.force_color():
             log(event)
         lines, buffer[:] = list(buffer), []
+        self._to_ui(self._on_engine_lines, provider, event, lines)
+
+    def _to_ui(self, fn, *args) -> None:
         try:
-            self.app.call_from_thread(self._on_engine_lines, provider, event, lines)
+            self.app.call_from_thread(fn, *args)
         except Exception:
             pass  # app/screen tearing down mid-tick; the lines have nowhere to go
+
+    def _on_engine_stopped(self, provider: str, event: EngineStoppedEvent) -> None:
+        if not self.is_attached or not self._supervisor.stopped(provider, event):
+            return  # a predecessor, or one this view stopped itself
+        self._update_badge(provider)
+        self._update_tabs()
+        self._note(provider, f"{display.provider_name(provider)} auto-switch stopped: {event.human()}")
 
     def _on_engine_lines(self, provider: str, event: AutoSwitchEvent | None, lines: list[str]) -> None:
         if not self.is_attached:
@@ -460,10 +488,10 @@ class AutoScreen(Screen):
 
     def action_toggle_live(self) -> None:
         state = self._states.get(self._selected)
-        if state is None or state.engine is None:
+        if state is None:
             return
         name = display.provider_name(state.provider)
-        if state.engine.dry_run:
+        if state.dry_run:
             self.app.push_screen(
                 ConfirmModal(
                     f"Go live for {name}? qswap switches the active {name} account "
@@ -480,20 +508,23 @@ class AutoScreen(Screen):
 
     def _restart_engine(self, provider: str, *, dry_run: bool) -> None:
         state = self._states[provider]
-        if state.engine is not None:
-            state.engine.stop()
         if state.log is not None:
             # A check still waiting for its decision prints before the switch.
             with printer.force_color():
                 state.log.flush()
             lines, state.buffer[:] = list(state.buffer), []
             self._on_engine_lines(provider, None, lines)
+        self._supervisor.stop(provider)
         self._start_engine(provider, dry_run=dry_run)
 
     def _update_badge(self, provider: str) -> None:
         state = self._states.get(provider)
         badge = self.query_one(f"#badge-{provider}", Static)
-        live = state is not None and state.engine is not None and not state.engine.dry_run
+        if not self._supervisor.running(provider):
+            badge.update(" OFF ")
+            badge.set_classes("mode-badge off")
+            return
+        live = state is not None and not state.dry_run
         badge.update(" LIVE " if live else " DRY-RUN ")
         badge.set_classes("mode-badge " + ("live" if live else "dry"))
 

@@ -1761,6 +1761,41 @@ class TestAutoScreen:
             assert [e.switcher for e in live] == [codex]
             assert fake_engine.instances[0].stopped is False
 
+    async def test_an_engine_that_cannot_start_says_why(self, tmp_path, fake_engine):
+        claude, codex = fleet_fakes(tmp_path)
+
+        def keyring():
+            raise ConfigError("Codex keeps its login in the OS keyring; qswap needs auth.json")
+
+        codex.require_accounts = keyring
+        app = make_app(claude, codex)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await self._open(pilot)
+            await settle(pilot)
+            from textual.widgets import RichLog, Static
+
+            assert [e.switcher for e in fake_engine.instances] == [claude]  # Claude's still runs
+            badge = app.screen.query_one("#badge-codex", Static).render().plain
+            assert badge.strip() == "OFF"
+            texts = [line.text for line in app.screen.query_one("#event-log", RichLog).lines]
+            assert any("Codex auto-switch did not start: Codex keeps its login in the OS keyring"
+                       in t for t in texts)
+
+    async def test_an_engine_that_ends_on_its_own_is_reported(self, tmp_path, fake_engine):
+        fake = FakeSwitcher([make_account(1, active=True), make_account(2)], tmp_path)
+        app = make_app(fake)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await self._open(pilot)
+            await settle(pilot)
+            fake_engine.instances[0]._stop.set()  # the loop returns without being asked
+            for _ in range(20):
+                await pilot.pause(0.05)
+            from textual.widgets import RichLog, Static
+
+            texts = [line.text for line in app.screen.query_one("#event-log", RichLog).lines]
+            assert any("auto-switch stopped: the engine loop ended on its own" in t for t in texts)
+            assert app.screen.query_one("#badge-claude", Static).render().plain.strip() == "OFF"
+
     async def test_wide_terminal_shows_both_panels(self, tmp_path, fake_engine):
         claude, codex = fleet_fakes(tmp_path)
         app = make_app(claude, codex)

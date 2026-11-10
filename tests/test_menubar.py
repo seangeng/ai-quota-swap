@@ -1,9 +1,11 @@
-"""Tests for the menu bar module.
+"""Tests for the menu bar.
 
-These tests never import or run rumps/AppKit. They exercise the pure helpers
-(settings store, title/label formatting, usage/snapshot adapters, log parsing)
-only — the auto-switch engine itself lives in ``ai_quota_swap.autoswitch`` and is
-tested there.
+None of these import or run rumps or AppKit (neither is installed on the
+Linux and Windows CI runners, nor in the dev environment): they exercise the
+pure layer (settings, the menu description, rows, title, health row,
+dialogs), the notification texts and their de-duplication, the engine
+supervisor with fake engines, the outside-change watcher with fake stats,
+and the background reads against temporary files.
 """
 
 from __future__ import annotations
@@ -11,16 +13,63 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import plistlib
+import sqlite3
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
-from ai_quota_swap import menubar, oauth
-from ai_quota_swap.autoswitch import ErrorEvent
-from ai_quota_swap.exceptions import ClaudeSwitchError
-from ai_quota_swap.menubar import ENGINE_ERROR_REPEAT_S, should_surface_engine_error
+from ai_quota_swap import menubar, menubar_data, menubar_engines, menubar_notify, oauth
+from ai_quota_swap.autoswitch import (
+    AllExhaustedEvent,
+    BudgetWarningEvent,
+    ConfigWarningEvent,
+    ErrorEvent,
+    EventContext,
+    PollEvent,
+    QuarantineEvent,
+    ResetEvent,
+    SwitchEvent,
+)
+from ai_quota_swap.display import Lines, Reading
+from ai_quota_swap.exceptions import (
+    ClaudeSwitchError,
+    CodexLoginError,
+    ConfigError,
+    SwitchError,
+)
+from ai_quota_swap.lines import BindingWindow
+from ai_quota_swap.menubar import (
+    ENGINE_ERROR_REPEAT_S,
+    AccountState,
+    Action,
+    CostSummary,
+    EngineState,
+    MenuBarSettings,
+    MenuInput,
+    ProviderState,
+    SwitchRecord,
+    should_surface_engine_error,
+)
 from ai_quota_swap.switcher import USAGE_API_KEY, USAGE_RELOGIN_REQUIRED
+from tests.test_reset_kinds import fable, session, weekly
+from tests.test_resets import _usage as _reset_usage
+
+_NOW = 1_000_000.0
+_STALE = 900.0
+
+
+def _iso(delta_s):  # ISO-8601 for _NOW + delta_s, UTC
+    return _dt.datetime.fromtimestamp(_NOW + delta_s, _dt.timezone.utc).isoformat()
+
+
+@pytest.fixture(autouse=True)
+def _no_engine_threads_left():
+    """No test leaves an engine thread running."""
+    yield
+    alive = [t.name for t in threading.enumerate() if t.name.startswith("qswap-") and t.is_alive()]
+    assert not alive, f"engine threads still running: {alive}"
 
 
 # --- notification identity -----------------------------------------------------
@@ -55,74 +104,113 @@ def test_notification_identity_heals_corrupt_info_plist(tmp_path: Path):
     assert result == info
     data = plistlib.loads(info.read_bytes())
     assert data["CFBundleIdentifier"] == "com.ai-quota-swap.menubar"
-    assert data["CFBundleName"] == "AI Quota Swap"
     assert not (executable.parent / "Info.plist.tmp").exists()
 
 
 def test_notification_identity_is_noop_off_macos(tmp_path: Path):
     executable = tmp_path / "bin" / "python3"
-    assert menubar.ensure_notification_identity(
-        executable, platform="linux"
-    ) is None
+    assert menubar.ensure_notification_identity(executable, platform="linux") is None
     assert not (executable.parent / "Info.plist").exists()
 
 
 # --- settings ------------------------------------------------------------------
 
 def test_settings_defaults_when_file_missing(tmp_path: Path):
-    s = menubar.MenuBarSettings.load(tmp_path / "nope.json")
+    s = MenuBarSettings.load(tmp_path / "nope.json")
     assert s.show_account_name is True
     assert s.title_pct == "both"
     assert s.refresh_interval == 60
     assert s.auto_switch_enabled is False
+    assert s.codex_auto_switch_enabled is False
+    assert s.title_follows == "claude"
 
 
 def test_settings_round_trip(tmp_path: Path):
     path = tmp_path / "menubar_settings.json"
-    original = menubar.MenuBarSettings(
-        show_account_name=False,
-        title_pct="5h",
-        refresh_interval=300,
-        auto_switch_enabled=True,
+    original = MenuBarSettings(
+        show_account_name=False, title_pct="5h", refresh_interval=300,
+        auto_switch_enabled=True, codex_auto_switch_enabled=True, title_follows="closest",
     )
     original.save(path)
-    loaded = menubar.MenuBarSettings.load(path)
-    assert loaded == original
+    assert MenuBarSettings.load(path) == original
+    assert json.loads(path.read_text())["codex_auto_switch_enabled"] is True
+
+
+def test_an_old_file_loads_as_it_did(tmp_path: Path):
+    # Written by a build before Codex: Claude Code's auto-switch as it was,
+    # Codex off, the title on Claude Code.
+    path = tmp_path / "menubar_settings.json"
+    path.write_text(json.dumps({
+        "show_account_name": True, "title_pct": "5h", "title_scoped": False,
+        "refresh_interval": 30, "auto_switch_enabled": True,
+    }))
+    s = MenuBarSettings.load(path)
+    assert s.auto_switch_enabled is True
+    assert s.codex_auto_switch_enabled is False
+    assert s.title_follows == "claude"
+    assert s.title_pct == "5h" and s.refresh_interval == 30
+
+
+def test_saving_keeps_keys_this_build_does_not_know(tmp_path: Path):
+    # The CLI and the menu bar both write the file; a newer build's key must
+    # survive an older writer (this build) toggling something.
+    path = tmp_path / "menubar_settings.json"
+    path.write_text(json.dumps({"auto_switch_enabled": True, "some_future_key": {"x": 1}}))
+    s = MenuBarSettings.load(path)
+    s.codex_auto_switch_enabled = True
+    s.save(path)
+    raw = json.loads(path.read_text())
+    assert raw["some_future_key"] == {"x": 1}
+    assert raw["auto_switch_enabled"] is True and raw["codex_auto_switch_enabled"] is True
+    assert MenuBarSettings.load(path).extra == {"some_future_key": {"x": 1}}
 
 
 def test_settings_save_is_atomic(tmp_path: Path, monkeypatch):
-    # The CLI and the running menu bar share this file, and load() reads a
-    # torn write as defaults (auto-switch off), so save() must not truncate
-    # in place.
+    # load() reads a torn write as defaults (auto-switch off), so save() must
+    # not truncate in place.
     calls = []
     monkeypatch.setattr(
         menubar, "atomic_write_text", lambda path, text, **kw: calls.append((path, kw))
     )
     path = tmp_path / "menubar_settings.json"
-    menubar.MenuBarSettings(auto_switch_enabled=True).save(path)
+    MenuBarSettings(auto_switch_enabled=True).save(path)
     assert calls == [(path, {"mode": 0o600})]
 
 
 def test_settings_corrupt_file_falls_back_to_defaults(tmp_path: Path):
     path = tmp_path / "menubar_settings.json"
     path.write_text("{ this is not json", encoding="utf-8")
-    s = menubar.MenuBarSettings.load(path)
-    assert s == menubar.MenuBarSettings()
+    assert MenuBarSettings.load(path) == MenuBarSettings()
 
 
-def test_settings_ignores_unknown_and_bad_types(tmp_path: Path):
+def test_settings_ignores_bad_types_and_unknown_choices(tmp_path: Path):
     path = tmp_path / "menubar_settings.json"
-    path.write_text(
-        json.dumps(
-            {"refresh_interval": "fast", "bogus": 1, "show_account_name": False}
-        ),
-        encoding="utf-8",
-    )
-    s = menubar.MenuBarSettings.load(path)
-    # bad-typed refresh_interval falls back to default; valid bool is kept
+    path.write_text(json.dumps({
+        "refresh_interval": "fast", "show_account_name": False, "title_follows": "gemini",
+        "title_pct": "always", "codex_auto_switch_enabled": "yes", "auto_switch_enabled": 1,
+    }))
+    s = MenuBarSettings.load(path)
     assert s.refresh_interval == 60
     assert s.show_account_name is False
+    assert s.title_follows == "claude" and s.title_pct == "both"
+    assert s.codex_auto_switch_enabled is False and s.auto_switch_enabled is False
 
+
+def test_settings_a_bool_is_not_an_interval(tmp_path: Path):
+    path = tmp_path / "menubar_settings.json"
+    path.write_text(json.dumps({"refresh_interval": True}))
+    assert MenuBarSettings.load(path).refresh_interval == 60
+
+
+def test_settings_toggle_per_provider():
+    s = MenuBarSettings()
+    s.set_auto_enabled("codex", True)
+    assert s.auto_enabled("codex") and not s.auto_enabled("claude")
+    s.set_auto_enabled("claude", True)
+    assert s.auto_switch_enabled is True
+
+
+# --- usage summary (one reading as row segments) -----------------------------------
 
 _USAGE = {
     "five_hour": {"pct": 42.0},
@@ -131,720 +219,423 @@ _USAGE = {
 }
 
 
-# --- usage display helpers -----------------------------------------------------
-
 def test_tightest_pct_uses_max_window():
     assert menubar.tightest_pct(_USAGE) == 42.0
-
-
-def test_tightest_pct_none_for_non_dict_or_empty():
     assert menubar.tightest_pct("no credentials") is None
-    assert menubar.tightest_pct(None) is None
-    assert menubar.tightest_pct({"spend": {"pct": 90.0}}) is None  # no 5h/7d
+    assert menubar.tightest_pct({"spend": {"pct": 90.0}}) is None
 
 
-def test_usage_summary_dict():
-    assert menubar.usage_summary(_USAGE) == "5h 42% · 7d 18% · $ 30%"
+def test_usage_summary_says_extra_for_extra_usage():
+    assert menubar.usage_summary(_USAGE, _NOW) == "5h 42% · 7d 18% · extra 30%"
 
 
 def test_usage_summary_partial_windows():
-    assert menubar.usage_summary({"five_hour": {"pct": 5.0}}) == "5h 5%"
+    assert menubar.usage_summary({"five_hour": {"pct": 5.0}}, _NOW) == "5h 5%"
 
 
 def test_usage_summary_includes_scoped_model_limits():
-    # Per-model weekly limits (e.g. Fable) come through as usage["scoped"], after
-    # 5h/7d and before spend.
     usage = {
         "five_hour": {"pct": 82.0},
         "seven_day": {"pct": 12.0},
         "scoped": [{"name": "Fable", "pct": 4.0}],
         "spend": {"pct": 30.0},
     }
-    assert menubar.usage_summary(usage) == "5h 82% · 7d 12% · Fable 4% · $ 30%"
+    assert menubar.usage_summary(usage, _NOW) == "5h 82% · 7d 12% · Fable 4% · extra 30%"
 
 
-def test_usage_summary_leads_with_a_probe_rejection():
+def test_usage_summary_leads_with_a_refused_probe_as_limit_reached():
     usage = {
         "five_hour": {"pct": 20.0},
         "seven_day": {"pct": 30.0},
-        "rejected": {
-            "retry_after_s": 3600.0,
-            "resets_at": _dt.datetime.fromtimestamp(
-                _NOW + 3600, tz=_dt.timezone.utc
-            ).isoformat(),
-        },
+        "rejected": {"retry_after_s": 3600.0, "resets_at": _iso(3600)},
     }
-    assert menubar.usage_summary(usage, _NOW) == "rejected (!) (1h 0m) · 5h 20% · 7d 30%"
+    assert menubar.usage_summary(usage, _NOW) == "limit reached (resets in 1h 0m) · 5h 20% · 7d 30%"
 
 
-def test_usage_summary_scoped_over_limit_marker():
-    usage = {"scoped": [{"name": "Fable", "pct": 100.0}]}
-    assert menubar.usage_summary(usage) == "Fable 100% (!)"
+def test_usage_summary_window_at_its_limit_says_when_it_resets():
+    assert menubar.usage_summary({"scoped": [{"name": "Fable", "pct": 100.0}]}, _NOW) == "Fable 100%"
+    assert menubar.usage_summary({"five_hour": {"pct": 100.0, "resets_at": _iso(600)}}, _NOW) == (
+        "5h 100% (resets in 10m)"
+    )
 
 
-def test_usage_summary_scoped_multiple_and_countdown():
+def test_usage_summary_never_rounds_up_to_the_limit():
+    assert menubar.usage_summary({"five_hour": {"pct": 99.6}}, _NOW) == "5h 99%"
+
+
+def test_usage_summary_bare_percentages_below_the_line():
+    usage = {"scoped": [
+        {"name": "Fable", "pct": 4.0, "resets_at": _iso(2 * 3600)},
+        {"name": "Opus", "pct": 55.0},
+    ]}
+    assert menubar.usage_summary(usage, _NOW, Lines(five_hour=90.0)) == "Fable 4% · Opus 55%"
+
+
+def test_usage_summary_no_countdown_below_the_limit():
+    # Past the switch line the account still works: the percentage is enough.
     usage = {
-        "scoped": [
-            {"name": "Fable", "pct": 4.0, "resets_at": _iso(2 * 3600)},
-            {"name": "Opus", "pct": 55.0},
-        ],
+        "five_hour": {"pct": 93.0, "resets_at": _iso(38 * 60)},
+        "seven_day": {"pct": 81.0, "resets_at": _iso(86400 + 19 * 3600)},
+        "scoped": [{"name": "Fable", "pct": 97.0, "resets_at": _iso(86400 + 19 * 3600)}],
     }
-    assert menubar.usage_summary(usage, _NOW) == "Fable 4% (2h 0m) · Opus 55%"
+    assert menubar.usage_summary(usage, _NOW, Lines(five_hour=90.0)) == "5h 93% · 7d 81% · Fable 97%"
 
 
-def test_usage_summary_string_sentinel_passthrough():
-    assert menubar.usage_summary("no credentials") == "no credentials"
+def test_usage_summary_one_countdown_on_the_window_that_resets_last():
+    # Blocked on two windows: usable again when the later one resets.
+    usage = {
+        "five_hour": {"pct": 100.0, "resets_at": _iso(38 * 60)},
+        "seven_day": {"pct": 81.0, "resets_at": _iso(86400 + 19 * 3600)},
+        "scoped": [{"name": "Fable", "pct": 100.0, "resets_at": _iso(86400 + 19 * 3600)}],
+    }
+    assert menubar.usage_summary(usage, _NOW) == "5h 100% · 7d 81% · Fable 100% (resets in 1d 19h)"
+    # A refused probe is at the limit too, and can be the one that lasts.
+    usage = {"five_hour": {"pct": 100.0, "resets_at": _iso(600)},
+             "rejected": {"resets_at": _iso(3600)}}
+    assert menubar.usage_summary(usage, _NOW) == "limit reached (resets in 1h 0m) · 5h 100%"
+    # A window at the limit with no reset time known: no countdown at all.
+    assert menubar.usage_summary({"seven_day": {"pct": 100.0}}, _NOW) == "7d 100%"
 
 
-def test_usage_summary_none():
-    assert menubar.usage_summary(None) == "usage unavailable"
-
-
-def test_usage_summary_seven_day_ahead_of_pace_marker():
-    # 1 day elapsed of the week, 50% used -> far ahead of the ~14% expected.
+def test_usage_summary_never_says_ahead_of_pace():
+    # Pace is in the tooltip (the list block), not the row.
     usage = {"seven_day": {"pct": 50.0, "resets_at": _iso(6 * 86400)}}
-    out = menubar.usage_summary(usage, _NOW, fetched_at=_NOW)
-    assert out == "7d 50% (ahead) (6d 0h)"
+    assert menubar.usage_summary(usage, _NOW) == "7d 50%"
 
 
-def test_usage_summary_five_hour_never_shows_pace_marker():
-    usage = {"five_hour": {"pct": 90.0, "resets_at": _iso(4 * 3600)}}
-    out = menubar.usage_summary(usage, _NOW, fetched_at=_NOW)
-    assert "ahead" not in out
-
-
-def test_usage_summary_scoped_ahead_of_pace_marker():
-    usage = {"scoped": [{"name": "Fable", "pct": 50.0, "resets_at": _iso(6 * 86400)}]}
-    out = menubar.usage_summary(usage, _NOW, fetched_at=_NOW)
-    assert out == "Fable 50% (ahead) (6d 0h)"
-
-
-def test_usage_summary_maxed_scoped_marker_wins_over_pace():
-    # At/over the limit shows "(!)" — the more urgent signal — not "(ahead)".
-    usage = {"scoped": [{"name": "Fable", "pct": 100.0, "resets_at": _iso(6 * 86400)}]}
-    out = menubar.usage_summary(usage, _NOW, fetched_at=_NOW)
-    assert "(!)" in out
-    assert "ahead" not in out
-
-
-def test_usage_summary_no_pace_marker_without_fetched_at():
-    usage = {"seven_day": {"pct": 50.0, "resets_at": _iso(6 * 86400)}}
-    out = menubar.usage_summary(usage, _NOW)
-    assert "ahead" not in out
-
-
-def test_usage_summary_no_pace_marker_on_window_rolled_to_zero():
-    # A weekly window whose resets_at has already passed (stale cache, not
-    # refetched since the actual reset) is rolled to a display pct of 0% —
-    # pace must be computed against that rolled 0%, not the raw stale pct,
-    # or the display would show "7d 0% (ahead)" (a marker paired with a
-    # percentage it doesn't correspond to).
+def test_usage_summary_rolls_a_passed_weekly_window_to_zero():
     usage = {"seven_day": {"pct": 95.0, "resets_at": _iso(-3 * 86400)}}
-    out = menubar.usage_summary(usage, _NOW, fetched_at=_NOW - 4 * 86400)
-    assert "ahead" not in out
-    assert "7d 0%" in out
-
-
-def test_usage_summary_scoped_no_pace_marker_on_window_rolled_to_zero():
+    assert menubar.usage_summary(usage, _NOW, Lines(five_hour=90.0)) == "7d 0%"
     usage = {"scoped": [{"name": "Fable", "pct": 95.0, "resets_at": _iso(-3 * 86400)}]}
-    out = menubar.usage_summary(usage, _NOW, fetched_at=_NOW - 4 * 86400)
-    assert "ahead" not in out
-    assert "Fable 0%" in out
+    assert menubar.usage_summary(usage, _NOW) == "Fable 0%"
 
 
-def test_format_account_label():
-    label = menubar.format_account_label(2, "loc@example.com", _USAGE)
-    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30%"
-
-
-def test_format_account_label_with_alias():
-    label = menubar.format_account_label(2, "loc@example.com", _USAGE, alias="dev")
-    assert label == "2  dev  (loc@example.com)  5h 42% · 7d 18% · $ 30%"
-
-
-def test_format_account_label_disabled_marker():
-    label = menubar.format_account_label(2, "loc@example.com", _USAGE, disabled=True)
-    assert label == "2  loc@example.com  (disabled)  5h 42% · 7d 18% · $ 30%"
-
-
-def test_format_account_label_login_due():
-    now = 1_000_000.0
-    label = menubar.format_account_label(
-        2, "loc@example.com", _USAGE, now=now, login_expires_at=now + 5 * 86400 + 12 * 3600
-    )
-    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30% · re-login in 5d 12h"
-
-
-def test_format_account_label_login_not_due_yet_says_nothing():
-    now = 1_000_000.0
-    label = menubar.format_account_label(
-        2, "loc@example.com", _USAGE, now=now, login_expires_at=now + 23 * 86400
-    )
-    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30%"
-
-
-def test_format_account_label_login_unknown_says_nothing():
-    label = menubar.format_account_label(2, "loc@example.com", _USAGE, login_expires_at=None)
-    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30%"
-
-
-def test_format_account_label_login_past():
-    now = 1_000_000.0
-    label = menubar.format_account_label(
-        2, "loc@example.com", _USAGE, now=now, login_expires_at=now - 60
-    )
-    assert label == "2  loc@example.com  5h 42% · 7d 18% · $ 30% · needs re-login"
-
-
-def test_format_account_label_quarantined_row_already_says_it():
-    # The sentinel text is the row's usage summary; no second "re-login".
-    now = 1_000_000.0
-    label = menubar.format_account_label(
-        2, "loc@example.com", menubar.SENTINEL_NOTES[USAGE_RELOGIN_REQUIRED],
-        now=now, login_expires_at=now - 60, quarantined=True,
-    )
-    assert label == "2  loc@example.com  needs re-login"
-
-
-def test_format_account_label_usage_unavailable_still_carries_the_note():
-    now = 1_000_000.0
-    label = menubar.format_account_label(
-        2, "loc@example.com", None, now=now, login_expires_at=now + 5 * 3600 + 7 * 60
-    )
-    assert label == "2  loc@example.com  usage unavailable · re-login in 5h 7m"
-
-
-# --- usage logging -------------------------------------------------------------
-
-def test_format_usage_log_full():
-    usage = {
-        "five_hour": {"pct": 35.0, "clock": "06:59"},
-        "seven_day": {"pct": 55.0, "clock": "Jun 29 21:59"},
-    }
-    assert menubar.format_usage_log("a@x.com", usage) == (
-        "usage a@x.com: 5h 35% (resets 06:59) · 7d 55% (resets Jun 29 21:59)"
-    )
-
-
-def test_format_usage_log_without_clock():
-    usage = {"five_hour": {"pct": 0.0}, "seven_day": {"pct": 12.0}}
-    assert menubar.format_usage_log("a@x.com", usage) == "usage a@x.com: 5h 0% · 7d 12%"
-
-
-def test_format_usage_log_partial_window():
-    usage = {"seven_day": {"pct": 12.0, "clock": "Jul 3"}}
-    assert menubar.format_usage_log("a@x.com", usage) == "usage a@x.com: 7d 12% (resets Jul 3)"
-
-
-def test_format_usage_log_none_when_no_numeric_window():
-    assert menubar.format_usage_log("a@x.com", None) is None
-    assert menubar.format_usage_log("a@x.com", "rate limited") is None
-    assert menubar.format_usage_log("a@x.com", {"spend": {"pct": 5.0}}) is None
-
-
-def test_usage_log_key_ignores_clock_tracks_pct():
-    u1 = {"five_hour": {"pct": 35.0, "clock": "06:59"}, "seven_day": {"pct": 55.0}}
-    u2 = {"five_hour": {"pct": 35.0, "clock": "07:59"}, "seven_day": {"pct": 55.0}}
-    u3 = {"five_hour": {"pct": 36.0}, "seven_day": {"pct": 55.0}}
-    assert menubar._usage_log_key(u1) == menubar._usage_log_key(u2)  # clock-only change
-    assert menubar._usage_log_key(u1) != menubar._usage_log_key(u3)  # pct change
-    assert menubar._usage_log_key(None) == (None, None)
-
-
-# --- title ---------------------------------------------------------------------
-
-def test_format_title_flags_a_rejected_active_account():
-    s = menubar.MenuBarSettings(show_account_name=True, title_pct="5h")
-    usage = {**_USAGE, "rejected": {"retry_after_s": None, "resets_at": None}}
-    assert menubar.format_title("loc@example.com", usage, s) == "⇄ loc · rejected (!) · 42%"
-
-
-def test_format_title_name_and_5h():
-    s = menubar.MenuBarSettings(show_account_name=True, title_pct="5h")
-    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ loc · 42%"
-
-
-def test_format_title_prefers_alias_over_local_part():
-    s = menubar.MenuBarSettings(show_account_name=True, title_pct="off")
-    assert menubar.format_title("loc@example.com", _USAGE, s, alias="dev") == "⇄ dev"
-
-
-def test_format_title_name_only_when_pct_off():
-    s = menubar.MenuBarSettings(show_account_name=True, title_pct="off")
-    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ loc"
-
-
-def test_format_title_5h_only():
-    s = menubar.MenuBarSettings(show_account_name=False, title_pct="5h")
-    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ 42%"
-
-
-def test_format_title_7d_only():
-    s = menubar.MenuBarSettings(show_account_name=False, title_pct="7d")
-    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ 18%"
-
-
-def test_format_title_both_windows():
-    s = menubar.MenuBarSettings(show_account_name=False, title_pct="both")
-    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ 42% · 18%"
-
-
-def test_format_title_both_windows_with_name():
-    s = menubar.MenuBarSettings(show_account_name=True, title_pct="both")
-    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ loc · 42% · 18%"
-
-
-def test_format_title_icon_only_when_off():
-    s = menubar.MenuBarSettings(show_account_name=False, title_pct="off")
-    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄"
-
-
-def test_format_title_scoped_appends_model_limits():
-    # title_pct="off" + title_scoped gives a title tracking only the scoped model
-    s = menubar.MenuBarSettings(show_account_name=True, title_pct="off", title_scoped=True)
-    usage = {**_USAGE, "scoped": [{"name": "Fable", "pct": 55.0}]}
-    assert menubar.format_title("loc@example.com", usage, s) == "⇄ loc · Fable 55%"
-
-
-def test_format_title_scoped_after_windows_multiple_models():
-    s = menubar.MenuBarSettings(show_account_name=False, title_pct="both", title_scoped=True)
-    usage = {
-        **_USAGE,
-        "scoped": [{"name": "Fable", "pct": 55.0}, {"name": "Opus", "pct": 7.0}],
-    }
-    assert menubar.format_title("loc@example.com", usage, s) == "⇄ 42% · 18% · Fable 55% · Opus 7%"
-
-
-def test_format_title_scoped_off_by_default():
-    # default settings ignore scoped windows entirely
-    s = menubar.MenuBarSettings(show_account_name=False, title_pct="off")
-    usage = {**_USAGE, "scoped": [{"name": "Fable", "pct": 55.0}]}
-    assert not s.title_scoped
-    assert menubar.format_title("loc@example.com", usage, s) == "⇄"
-
-
-def test_format_title_icon_only_when_no_active_account():
-    s = menubar.MenuBarSettings(show_account_name=True, title_pct="both")
-    assert menubar.format_title(None, None, s) == "⇄"
-
-
-def test_format_title_truncates_long_local_part():
-    s = menubar.MenuBarSettings(show_account_name=True, title_pct="off")
-    title = menubar.format_title("averylonglocalpart@example.com", None, s)
-    assert title == "⇄ averylonglo*"  # 12 chars: 11 letters + asterisk marker
-
-
-def test_format_title_both_drops_unavailable_windows():
-    s = menubar.MenuBarSettings(show_account_name=False, title_pct="both")
-    assert menubar.format_title("loc@x.com", "no credentials", s) == "⇄"
-
-
-def test_format_title_both_keeps_available_window():
-    s = menubar.MenuBarSettings(show_account_name=False, title_pct="both")
-    # only 5h present -> 7d dropped, no trailing separator
-    assert menubar.format_title("loc@x.com", {"five_hour": {"pct": 9.0}}, s) == "⇄ 9%"
-
-
-def test_format_title_and_summary_with_a_null_five_hour_window():
-    # Ultra accounts have no 5-hour limit; the usage API reports the window as null.
-    usage = oauth.build_usage_result({"five_hour": None, "seven_day": {"utilization": 25.0}})
-    s = menubar.MenuBarSettings(show_account_name=False, title_pct="both")
-    assert menubar.format_title("loc@x.com", usage, s) == "⇄ 25%"
-    assert menubar.usage_summary(usage) == "7d 25%"
-
-
-# --- reset-time helpers --------------------------------------------------------
-
-def test_resets_at_ts_orders_and_handles_missing():
-    early = {"resets_at": "2026-06-24T07:00:00+00:00"}
-    late = {"resets_at": "2026-06-26T07:00:00+00:00"}
-    assert menubar._resets_at_ts(early) < menubar._resets_at_ts(late)
-    assert menubar._resets_at_ts({"pct": 5.0}) == float("inf")   # no resets_at
-    assert menubar._resets_at_ts({"resets_at": "garbage"}) == float("inf")
-    assert menubar._resets_at_ts(None) == float("inf")
-
-
-_NOW = 1_000_000.0
-
-
-def _iso(delta_s):  # ISO-8601 for _NOW + delta_s, UTC
-    return _dt.datetime.fromtimestamp(_NOW + delta_s, _dt.timezone.utc).isoformat()
-
-
-def test_live_countdown_formats_from_resets_at():
-    assert menubar._live_countdown({"resets_at": _iso(9 * 3600 + 5 * 60)}, _NOW) == "9h 5m"
-    assert menubar._live_countdown({"resets_at": _iso(86400 + 19 * 3600)}, _NOW) == "1d 19h"
-    assert menubar._live_countdown({"resets_at": _iso(34 * 60)}, _NOW) == "34m"
-
-
-def test_live_countdown_none_when_passed_or_missing():
-    assert menubar._live_countdown({"resets_at": _iso(-60)}, _NOW) is None   # already reset
-    assert menubar._live_countdown({"pct": 5.0}, _NOW) is None               # no resets_at
-    assert menubar._live_countdown("no credentials", _NOW) is None
-
-
-def test_usage_summary_live_countdown_from_resets_at():
-    usage = {
-        "five_hour": {"pct": 42.0, "resets_at": _iso(2 * 3600 + 33 * 60)},
-        "seven_day": {"pct": 18.0, "resets_at": _iso(86400 + 19 * 3600)},
-        "spend": {"pct": 30.0},
-    }
-    assert menubar.usage_summary(usage, _NOW) == "5h 42% (2h 33m) · 7d 18% (1d 19h) · $ 30%"
-
-
-def test_usage_summary_omits_countdown_when_passed_or_missing():
-    # 5h reset already passed (stale data) -> omit; 7d has no resets_at -> omit
+def test_usage_summary_omits_a_countdown_that_passed_or_is_missing():
     usage = {"five_hour": {"pct": 53.0, "resets_at": _iso(-60)}, "seven_day": {"pct": 8.0}}
     assert menubar.usage_summary(usage, _NOW) == "5h 53% · 7d 8%"
 
 
-# --- switch-history log parsing ------------------------------------------------
-
-_SWITCH_LOG = (
-    "2026-06-27 00:57:50,178 - INFO - Switched from account 1 to 3\n"
-    "2026-06-27 02:06:21,302 - INFO - usage a@x.com: 5h 10%\n"
-    "2026-06-27 02:10:00,000 - INFO - Switched from account 3 to 1\n"
-)
+def test_usage_summary_with_a_null_five_hour_window():
+    usage = oauth.build_usage_result({"five_hour": None, "seven_day": {"utilization": 25.0}})
+    assert menubar.usage_summary(usage) == "7d 25%"
 
 
-def test_parse_switch_history_most_recent_first():
-    assert menubar.parse_switch_history(_SWITCH_LOG) == [
-        "3 → 1   2026-06-27 02:10",
-        "1 → 3   2026-06-27 00:57",
-    ]
-
-
-def test_parse_switch_history_respects_limit():
-    lines = "\n".join(
-        f"2026-06-27 0{i}:00:00,000 - INFO - Switched from account 1 to 2"
-        for i in range(1, 6)
-    )
-    out = menubar.parse_switch_history(lines, limit=2)
-    assert len(out) == 2
-    assert out[0] == "1 → 2   2026-06-27 05:00"  # newest first
-
-
-def test_parse_switch_history_empty_or_no_matches():
-    assert menubar.parse_switch_history("") == []
-    assert menubar.parse_switch_history("nothing relevant here") == []
-
-
-# --- snapshot adapter (fakes for AccountsSnapshot / UsageEntry) -----------------
-
-class _FakeEntry:
-    def __init__(self, sentinel=None, last_good=None, fetched_at=None):
-        self.sentinel = sentinel
-        self.last_good = last_good
-        self.fetched_at = fetched_at
-
-
-class _FakeAcct:
-    def __init__(
-        self, number, email, is_active, usage, alias="", disabled=False, login_expires_at=None
-    ):
-        self.number = number
-        self.email = email
-        self.is_active = is_active
-        self.usage = usage
-        self.alias = alias
-        self.disabled = disabled
-        self.login_expires_at = login_expires_at
-
-
-class _FakeSnap:
-    def __init__(self, accounts):
-        self.accounts = accounts
-
-
-def test_account_display_usage_sentinel_note_last_good_or_none():
-    assert menubar._account_display_usage(
-        _FakeEntry(sentinel=USAGE_API_KEY)
-    ) == menubar.SENTINEL_NOTES[USAGE_API_KEY]
-    lg = {"five_hour": {"pct": 5.0}}
-    assert menubar._account_display_usage(_FakeEntry(last_good=lg)) == lg
-    assert menubar._account_display_usage(_FakeEntry()) is None
-
-
-def test_adapt_snapshot_shape_and_active_selection():
-    # _adapt_snapshot is a pure transform of an AccountsSnapshot (the fetch
-    # pacing now lives in SnapshotSource, tested separately).
-    lg = {"five_hour": {"pct": 10.0}, "seven_day": {"pct": 20.0}}
-    accts = [
-        _FakeAcct(
-            "1", "a@x.com", True, _FakeEntry(last_good=lg, fetched_at=123.0), login_expires_at=456.0
-        ),
-        _FakeAcct(
-            "2", "b@x.com", False, _FakeEntry(sentinel=USAGE_API_KEY), disabled=True
-        ),
-        _FakeAcct(
-            "3", "c@x.com", False, _FakeEntry(sentinel=USAGE_RELOGIN_REQUIRED)
-        ),
-    ]
-    snap = menubar._adapt_snapshot(_FakeSnap(accts))
-    assert snap["active_email"] == "a@x.com"
-    assert snap["active_usage"] == lg
-    assert snap["active_alias"] == ""
-    # (num, email, is_active, display_usage, last_good, alias, disabled, fetched_at, login_expires_at, quarantined)
-    assert snap["accounts"][0] == ("1", "a@x.com", True, lg, lg, "", False, 123.0, 456.0, False)
-    # sentinel account: display is the human note, last_good/fetched_at are None; disabled carried through
-    assert snap["accounts"][1] == (
-        "2", "b@x.com", False, menubar.SENTINEL_NOTES[USAGE_API_KEY], None, "", True, None, None, False,
-    )
-    # the re-login sentinel is the one that marks the account quarantined
-    assert snap["accounts"][2][9] is True
-
-
-def test_adapt_snapshot_empty():
-    assert menubar._adapt_snapshot(_FakeSnap([])) == menubar.EMPTY_SNAPSHOT
-
-
-def test_take_worker_snapshot_bypasses_store_only_on_explicit_refresh():
-    calls = []
-
-    class _FakeSource:
-        def take(self, *, full=False, store_only=False):
-            calls.append((full, store_only))
-            return _FakeSnap([])
-
-    source = _FakeSource()
-    _, store_only = menubar._take_worker_snapshot(
-        source, full=False, has_engine=True
-    )
-    assert store_only is True
-    assert calls[-1] == (False, True)
-
-    _, store_only = menubar._take_worker_snapshot(
-        source, full=True, has_engine=True
-    )
-    assert store_only is False
-    assert calls[-1] == (True, False)
-
-    _, store_only = menubar._take_worker_snapshot(
-        source, full=False, has_engine=False
-    )
-    assert store_only is False
-    assert calls[-1] == (False, False)
-
-
-# --- weekly reset roll-forward (static 7-day cadence) --------------------------
+# --- weekly roll-forward ----------------------------------------------------------
 
 def test_rolled_weekly_window_advances_passed_reset():
     w = {"pct": 95.0, "resets_at": _iso(-3 * 86400), "countdown": "stale", "clock": "old"}
     rolled = menubar._rolled_weekly_window(w, _NOW)
-    assert rolled["pct"] == 0.0  # the window objectively rolled over
+    assert rolled["pct"] == 0.0
     assert abs(menubar._resets_at_ts(rolled) - (_NOW + 4 * 86400)) < 1
-    assert "countdown" not in rolled and "clock" not in rolled  # stale strings dropped
-
-
-def test_rolled_weekly_window_advances_multiple_missed_weeks():
-    w = {"pct": 80.0, "resets_at": _iso(-10 * 86400)}  # two boundaries crossed
-    rolled = menubar._rolled_weekly_window(w, _NOW)
-    assert abs(menubar._resets_at_ts(rolled) - (_NOW + 4 * 86400)) < 1
+    assert "countdown" not in rolled and "clock" not in rolled
 
 
 def test_rolled_weekly_window_leaves_future_or_unknown_untouched():
     future = {"pct": 42.0, "resets_at": _iso(2 * 86400)}
     assert menubar._rolled_weekly_window(future, _NOW) is future
-    no_reset = {"pct": 42.0}
-    assert menubar._rolled_weekly_window(no_reset, _NOW) is no_reset
     assert menubar._rolled_weekly_window(None, _NOW) is None
 
 
-def test_usage_summary_reflects_passed_weekly_reset():
-    # 7d reset a day ago: show it as reset (0%) with the next weekly boundary,
-    # from the static schedule alone. 5h is untouched (dynamic session window).
-    usage = {
-        "five_hour": {"pct": 10.0},
-        "seven_day": {"pct": 95.0, "resets_at": _iso(-86400)},
-    }
-    assert menubar.usage_summary(usage, _NOW) == "5h 10% · 7d 0% (6d 0h)"
+def test_resets_at_ts_orders_and_handles_missing():
+    early = {"resets_at": "2026-06-24T07:00:00+00:00"}
+    late = {"resets_at": "2026-06-26T07:00:00+00:00"}
+    assert menubar._resets_at_ts(early) < menubar._resets_at_ts(late)
+    assert menubar._resets_at_ts({"pct": 5.0}) == float("inf")
+    assert menubar._resets_at_ts({"resets_at": "garbage"}) == float("inf")
 
 
-def test_usage_summary_scoped_reflects_passed_weekly_reset():
-    usage = {"scoped": [{"name": "Fable", "pct": 100.0, "resets_at": _iso(-86400)}]}
-    # rolled to 0% → the over-limit "(!)" marker is gone too
-    assert menubar.usage_summary(usage, _NOW) == "Fable 0% (6d 0h)"
+def test_live_countdown():
+    assert menubar._live_countdown({"resets_at": _iso(9 * 3600 + 5 * 60)}, _NOW) == "9h 5m"
+    assert menubar._live_countdown({"resets_at": _iso(-60)}, _NOW) is None
+    assert menubar._live_countdown("no credentials", _NOW) is None
 
 
-def test_format_title_reflects_passed_weekly_reset():
-    s = menubar.MenuBarSettings(show_account_name=False, title_pct="7d")
-    usage = {"seven_day": {"pct": 95.0, "resets_at": _iso(-86400)}}
-    assert menubar.format_title("a@x.com", usage, s, _NOW) == "⇄ 0%"
+# --- account rows -------------------------------------------------------------------
+
+def _acct(number="1", email="maya@example.com", *, usage=None, provider="claude",
+          fetched_at=_NOW - 60, **kw) -> AccountState:
+    entry = kw.pop("entry", None)
+    if entry is None and (usage is not None or fetched_at is not None):
+        entry = Reading(last_good=usage, fetched_at=fetched_at if usage is not None else None)
+    return AccountState(provider, number, email, entry=entry, **kw)
 
 
-# --- run() app glue ------------------------------------------------------------
-
-def test_run_without_rumps_raises_clean_error(monkeypatch):
-    """A missing menubar extra surfaces as ClaudeSwitchError, not a traceback.
-
-    The module is import-safe without rumps, so the CLI's ImportError guard
-    around ``from ai_quota_swap.menubar import run`` can never fire — the import
-    failure happens inside ``run()``. Blocking the import (a ``None`` entry in
-    ``sys.modules`` makes ``import rumps`` raise) checks that ``run()`` turns
-    it into the error type the CLI renders with the install hint.
-    """
-    monkeypatch.setitem(sys.modules, "rumps", None)
-    with pytest.raises(ClaudeSwitchError, match=r"ai-quota-swap\[menubar\]"):
-        menubar.run(switcher=None)
+def _row(acc: AccountState, now: float = _NOW):
+    return menubar.account_row(acc, now=now, stale_after_s=_STALE)
 
 
-class TestFrameworkBuildWarning:
-    """The menu bar draws nothing from a framework build on macOS 26.
-
-    See #310. The interpreter *version* is not the variable — measured with the
-    same bare rumps app, Homebrew 3.14.6 and 3.10.21 (both framework) draw
-    nothing while uv-managed 3.14.7 and 3.13.15 (neither framework) draw.
-    Nothing here can fix that; these tests are about the warning, not the icon.
-    """
-
-    def test_silent_on_a_build_that_draws(self):
-        assert menubar.framework_build_warning("", "uv", "26.6.2") is None
-
-    def test_silent_on_macos_where_framework_builds_still_draw(self):
-        # The evidence is a framework build *on macOS 26*. Warning on 14 or 15
-        # would nag every Homebrew user on every launch, and in the service log
-        # on every restart, about something that works there.
-        assert menubar.framework_build_warning("Python", "uv", "15.7") is None
-        assert menubar.framework_build_warning("Python", "uv", "14.2") is None
-
-    def test_warns_from_macos_26_onwards(self):
-        assert menubar.framework_build_warning("Python", "uv", "26.0") is not None
-        assert menubar.framework_build_warning("Python", "uv", "27.1") is not None
-
-    def test_unreadable_macos_version_stays_quiet(self):
-        assert menubar.framework_build_warning("Python", "uv", "") is None
-
-    def test_the_wording_does_not_overclaim(self):
-        # An observation on one machine that has also been seen to behave
-        # otherwise; "observed" is what the evidence supports.
-        msg = menubar.framework_build_warning("Python", "uv", "26.6.2")
-        assert "observed" in msg
-
-    def test_warns_on_a_framework_build(self):
-        assert menubar.framework_build_warning("Python", "uv", "26.6.2") is not None
-
-    def test_the_version_is_not_the_gate(self):
-        # A framework build warns whatever the version; a non-framework one
-        # never does. Keying on version_info was the original mistake here.
-        assert menubar.framework_build_warning("Python", None, "26.6.2") is not None
-        assert menubar.framework_build_warning("", None, "26.6.2") is None
-
-    def test_uv_gets_a_uv_remedy(self):
-        msg = menubar.framework_build_warning("Python", "uv", "26.6.2")
-        assert "--managed-python" in msg
-
-    def test_pipx_is_not_handed_a_uv_command(self):
-        # `uv tool install --force` would overwrite pipx's own executable.
-        msg = menubar.framework_build_warning("Python", "pipx", "26.6.2")
-        assert "uv tool install" not in msg
-        assert "pipx install" in msg
-
-    def test_unknown_install_method_still_says_what_to_aim_for(self):
-        msg = menubar.framework_build_warning("Python", None, "26.6.2")
-        assert "non-framework" in msg
-
-    def test_the_warning_names_the_silence(self):
-        # The symptom is that everything looks healthy, so say so.
-        msg = menubar.framework_build_warning("Python", "uv", "26.6.2")
-        assert "logs nothing" in msg
+_OK = {"five_hour": {"pct": 46.0, "resets_at": _iso(2 * 3600 + 35 * 60)},
+       "seven_day": {"pct": 38.0, "resets_at": _iso(3 * 86400 + 6 * 3600)}}
 
 
-# --- engine errors must not vanish -------------------------------------------
-#
-# The hosted auto-switch engine reports a failed tick as an ErrorEvent. The
-# menu bar dropped those: nothing in the log, nothing on screen. Field case —
-# every tick's switch raised "Current account credential is empty" for two
-# days while the icon sat there looking healthy.
+def test_row_names_the_account_with_its_short_label():
+    row = _row(_acct(alias="personal", usage=_OK, active=True))
+    assert row.text == "#1 personal · 5h 46% · 7d 38%"
+    assert row.checked and not row.attention
+    assert _row(_acct(usage=_OK)).text == "#1 maya@example.com · 5h 46% · 7d 38%"
 
 
-def test_engine_error_is_surfaced_the_first_time():
-    ev = ErrorEvent(message="Current account credential is empty")
-    assert should_surface_engine_error(ev, {}, now=1000.0) is True
+def test_row_tooltip_is_the_block_list_prints():
+    row = _row(_acct(alias="personal", usage=_OK, active=True, plan="Max 20x"))
+    assert row.tooltip.splitlines()[0] == "#1 personal (maya@example.com) · active · Max 20x"
+    assert "5h      46%  resets" in row.tooltip
+    assert "\x1b[" not in row.tooltip
 
 
-def test_engine_error_repeating_every_tick_is_not_a_notification_storm():
-    ev = ErrorEvent(message="Current account credential is empty")
-    seen: dict = {}
-    assert should_surface_engine_error(ev, seen, now=1000.0) is True
-    assert should_surface_engine_error(ev, seen, now=1060.0) is False
+def test_row_disabled():
+    assert _row(_acct(usage=_OK, disabled=True)).text.startswith("#1 maya@example.com · disabled · 5h 46%")
 
 
-def test_engine_error_resurfaces_after_the_quiet_period():
-    ev = ErrorEvent(message="Current account credential is empty")
-    seen: dict = {}
-    should_surface_engine_error(ev, seen, now=1000.0)
-    assert should_surface_engine_error(ev, seen, now=1000.0 + ENGINE_ERROR_REPEAT_S) is True
+def test_row_needs_relogin_from_the_sentinel():
+    acc = _acct(alias="work", entry=Reading(sentinel=USAGE_RELOGIN_REQUIRED))
+    row = _row(acc)
+    assert row.text == "#1 work · needs re-login"
+    assert row.attention
+    assert "log in to it in Claude Code (/login), then run: qswap add" in row.tooltip
+    assert "quarantine" not in row.text + row.tooltip
 
 
-def test_two_alternating_engine_errors_are_each_limited():
-    a = ErrorEvent(message="Current account credential is empty")
-    b = ErrorEvent(message="Claude config file not found")
-    seen: dict = {}
-    surfaced = [
-        should_surface_engine_error(ev, seen, now=1000.0 + 60 * i)
-        for i, ev in enumerate([a, b, a, b, a, b])
+def test_row_an_account_the_engine_set_aside_needs_relogin():
+    acc = _acct(alias="side", usage=_OK, set_aside="invalid_grant")
+    row = _row(acc)
+    assert row.text == "#1 side · needs re-login"
+    assert row.attention
+    assert "needs re-login (its saved login was refused): log in to it" in " ".join(row.tooltip.split())
+
+
+def test_row_unavailable():
+    acc = _acct(entry=Reading(last_error="http-503", fetched_at=None))
+    assert _row(acc).text == "#1 maya@example.com · usage unavailable (HTTP 503), retrying"
+
+
+def test_row_unavailable_with_a_known_backoff():
+    acc = _acct(entry=Reading(last_error="http-503", backoff_until=_NOW + 240))
+    assert _row(acc).text.endswith("usage unavailable (HTTP 503), retrying in 4m")
+
+
+def test_row_stale_reading_says_as_of():
+    acc = _acct(entry=Reading(last_good=_OK, fetched_at=_NOW - 3 * 3600, last_error="timeout"))
+    assert _row(acc).text == "#1 maya@example.com · 5h 46% · 7d 38% · as of 3h 0m ago (timed out)"
+
+
+def test_row_a_quiet_reading_is_not_called_old():
+    # The engine polls an alternate every 5 to 10 minutes; that is not stale.
+    acc = _acct(entry=Reading(last_good=_OK, fetched_at=_NOW - 10 * 60))
+    assert "as of" not in _row(acc).text
+
+
+def test_row_at_its_limit_needs_attention():
+    usage = {"five_hour": {"pct": 100.0, "resets_at": _iso(72 * 60)}, "seven_day": {"pct": 64.0}}
+    row = _row(_acct(usage=usage))
+    assert row.text == "#1 maya@example.com · 5h 100% (resets in 1h 12m) · 7d 64%"
+    assert row.attention
+
+
+def test_row_past_its_own_line_is_orange_without_a_countdown():
+    usage = {"five_hour": {"pct": 93.0, "resets_at": _iso(38 * 60)}, "seven_day": {"pct": 81.0}}
+    row = _row(_acct(alias="night", usage=usage, lines=Lines(five_hour=90.0)))
+    assert row.text == "#1 night · 5h 93% · 7d 81%"
+    assert row.attention
+    # Its own threshold of 95 puts 93% under the line.
+    assert not _row(_acct(alias="night", usage=usage, lines=Lines(five_hour=95.0))).attention
+
+
+def test_row_held_resets_last_and_compact():
+    far = _NOW + 120 * 86400
+    usage = _reset_usage(grants=[fable("a", ends=far), weekly("w", ends=far)])
+    assert _row(_acct(usage=usage)).text == "#1 maya@example.com · 7d 30% · 1 Fable · 1 weekly resets"
+    usage = _reset_usage(grants=[fable("a", ends=far, left=2)])
+    assert _row(_acct(usage=usage)).text.endswith("· 7d 30% · 2 Fable resets")
+    usage = _reset_usage(grants=[session("s", ends=far)])
+    assert _row(_acct(usage=usage)).text.endswith("· 1 five-hour reset")
+    assert "holds" not in _row(_acct(usage=usage)).text
+
+
+def test_row_codex_reset_credits():
+    far = _NOW + 30 * 86400
+    usage = _reset_usage(grants=[fable("c", ends=far)])
+    row = _row(_acct(provider="codex", usage=usage))
+    assert row.text.endswith("· 1 reset credit")
+
+
+def _api_reading(used=212.40, limit=500.0, today=4.12, source="ledger"):
+    pct = used / limit * 100 if limit else None
+    return {"spend": {"used": used, "limit": limit, "pct": pct}, "today": today,
+            "source": source, "as_of": _NOW, "unpriced_tokens": 0}
+
+
+def test_row_api_key_with_a_budget_is_compact():
+    acc = _acct(number="5", email="ci@example.com", alias="ci", kind="api_key",
+                entry=Reading(sentinel=USAGE_API_KEY, api_spend=_api_reading()))
+    row = _row(acc)
+    assert row.text == "#5 ci · API key · $4.12 today · $212.40/$500 (42%) est."
+    assert "$212.40 this month of $500 (42%) · estimate" in row.tooltip  # qswap list's words
+    assert not row.attention
+
+
+def test_row_api_key_without_a_budget_as_the_command_line_says():
+    acc = _acct(number="5", alias="ci", kind="api_key", entry=Reading(
+        sentinel=USAGE_API_KEY, api_spend=_api_reading(limit=None)))
+    assert _row(acc).text == "#5 ci · API key · $4.12 today · $212.40 this month · estimate"
+
+
+def test_row_api_key_over_budget_is_never_cut_where_it_matters():
+    acc = _acct(number="7", email="ci@x.com", kind="api_key",
+                entry=Reading(sentinel=USAGE_API_KEY, api_spend=_api_reading(used=520.0)))
+    row = _row(acc)
+    assert row.attention
+    # The name gives way first (its number stays); the budget stays whole.
+    assert row.text == "#7 ci@x… · API key · $4.12 today · $520.00/$500 (104%, over budget) est."
+    long_name = _acct(number="5", email="api-key-5@token.local", kind="api_key",
+                      entry=Reading(sentinel=USAGE_API_KEY, api_spend=_api_reading(used=520.0)))
+    text = _row(long_name).text
+    assert text == "#5 api-… · API key · $4.12 today · $520.00/$500 (104%, over budget) est."
+    assert len(text) <= menubar.ROW_LIMIT
+
+
+def test_row_api_key_without_a_reading():
+    acc = _acct(number="5", kind="api_key", entry=Reading(sentinel=USAGE_API_KEY))
+    assert _row(acc).text == "#5 maya@example.com · API key · no quota; billed per token"
+
+
+def test_row_not_read_yet():
+    assert _row(_acct(entry=Reading())).text == "#1 maya@example.com · usage not read yet"
+    assert _row(AccountState("claude", "1", "maya@example.com")).text.endswith("usage not read yet")
+
+
+def test_row_a_provider_note_keeps_the_state_and_tooltips_the_rest():
+    acc = _acct(provider="codex", entry=Reading(sentinel="usage unknown until used"))
+    row = _row(acc)
+    assert row.text == "#1 maya@example.com · usage unknown until used"
+    assert "Codex renews the expired token on first use" in row.tooltip
+
+
+def test_row_login_due_and_past():
+    due = _row(_acct(usage=_OK, login_expires_at=_NOW + 5 * 86400 + 12 * 3600))
+    assert due.text.endswith("· re-login in 5d 12h")
+    past = _row(_acct(usage=_OK, login_expires_at=_NOW - 60))
+    assert past.text.endswith("· needs re-login") and past.attention
+    later = _row(_acct(usage=_OK, login_expires_at=_NOW + 23 * 86400))
+    assert "re-login" not in later.text
+
+
+_H, _D = 3600, 86400
+_FAR = _NOW + 60 * _D
+_CLAUDE_LINES = Lines(five_hour=90.0)
+_CODEX_LINES = Lines(five_hour=99.0)
+
+
+def _w(pct, resets_in):
+    return {"pct": float(pct), "resets_at": _iso(resets_in)}
+
+
+# The demo harness's `fleet` and `trouble` scenarios (scripts/demo/scenarios.py),
+# as the menu sees them: Claude Code's line at 90%, Codex's at 99%.
+_FLEET = [
+    _acct("1", "maya@example.com", alias="personal", active=True, lines=_CLAUDE_LINES, usage={
+        "five_hour": _w(46, 2 * _H + 35 * 60), "seven_day": _w(38, 3 * _D + 6 * _H),
+        "scoped": [{"name": "Fable", **_w(52, 3 * _D + 6 * _H)}],
+        "resets": _reset_usage(grants=[fable("f", ends=_FAR)])["resets"]}),
+    _acct("2", "maya@northwind.example.com", alias="work", lines=_CLAUDE_LINES, usage={
+        "spend": {"pct": 18.0, "used": 18.4, "limit": 100.0, "resets_at": _iso(20 * _D)},
+        "five_hour": _w(12, 4 * _H + 10 * 60), "seven_day": _w(21, 5 * _D + 2 * _H)}),
+    _acct("3", "ops@example.net", alias="night-shift", lines=_CLAUDE_LINES, usage={
+        "five_hour": _w(93, 38 * 60), "seven_day": _w(81, _D + 19 * _H),
+        "scoped": [{"name": "Fable", **_w(97, _D + 19 * _H)}],
+        "resets": _reset_usage(grants=[session("s", ends=_FAR)])["resets"]}),
+    _acct("4", "sam@example.org", alias="side", disabled=True, lines=_CLAUDE_LINES, usage={
+        "five_hour": _w(0, 5 * _H), "seven_day": _w(9, 6 * _D + _H)}),
+    _acct("5", "api-key-5@token.local", alias="ci", kind="api_key", entry=Reading(
+        sentinel=USAGE_API_KEY, api_spend=_api_reading(used=0.0, limit=None, today=0.0))),
+    _acct("1", "maya@example.com", provider="codex", active=True, lines=_CODEX_LINES, usage={
+        "five_hour": _w(22, 3 * _H + 40 * 60), "seven_day": _w(47, 4 * _D + 3 * _H)}),
+    _acct("2", "maya@northwind.example.com", provider="codex", alias="work", lines=_CODEX_LINES, usage={
+        "five_hour": _w(8, 4 * _H + 55 * 60), "seven_day": _w(15, 6 * _D + 2 * _H),
+        "resets": _reset_usage(grants=[fable("c", ends=_FAR)])["resets"]}),
+]
+_TROUBLE = [
+    _acct("1", "maya@example.com", alias="personal", active=True, lines=_CLAUDE_LINES, usage={
+        "five_hour": _w(100, _H + 12 * 60), "seven_day": _w(64, 3 * _D + 6 * _H)}),
+    _acct("2", "maya@northwind.example.com", alias="work", entry=Reading(sentinel=USAGE_RELOGIN_REQUIRED)),
+    _acct("3", "ops@example.net", alias="night-shift", entry=Reading(last_error="http-503")),
+    _acct("4", "sam@example.org", alias="side", set_aside="invalid_grant", lines=_CLAUDE_LINES,
+          usage={"five_hour": _w(5, 4 * _H + 40 * 60), "seven_day": _w(30, 4 * _D)}),
+    _acct("5", "lee@example.net", alias="spare", lines=_CLAUDE_LINES, entry=Reading(
+        last_good={"five_hour": _w(40, 2 * _H + 30 * 60), "seven_day": _w(55, 3 * _D)},
+        fetched_at=_NOW - (3 * _H + 4 * 60), last_error="timeout")),
+    _acct("1", "maya@example.com", provider="codex", active=True, lines=_CODEX_LINES, usage={
+        "five_hour": _w(41, 2 * _H + 5 * 60), "seven_day": _w(100, _D + 7 * _H)}),
+    _acct("2", "maya@northwind.example.com", provider="codex", alias="work",
+          entry=Reading(sentinel="usage unknown until used")),
+]
+
+
+def test_fleet_rows_are_short():
+    assert [_row(a).text for a in _FLEET] == [
+        "#1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset",
+        "#2 work · 5h 12% · 7d 21% · extra 18%",
+        "#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset",
+        "#4 side · disabled · 5h 0% · 7d 9%",
+        "#5 ci · API key · $0.00 today · $0.00 this month · estimate",
+        "#1 maya@example.com · 5h 22% · 7d 47%",
+        "#2 work · 5h 8% · 7d 15% · 1 reset credit",
     ]
-    assert surfaced == [True, True, False, False, False, False]
 
 
-def test_engine_errors_differing_only_in_numbers_are_one_error():
-    seen: dict = {}
-    first = ErrorEvent(message="LockError: lock held by pid 4242 for 31s")
-    later = ErrorEvent(message="LockError: lock held by pid 4243 for 92s")
-    assert should_surface_engine_error(first, seen, now=1000.0) is True
-    assert should_surface_engine_error(later, seen, now=1060.0) is False
+def test_trouble_rows_are_short():
+    assert [_row(a).text for a in _TROUBLE] == [
+        "#1 personal · 5h 100% (resets in 1h 12m) · 7d 64%",
+        "#2 work · needs re-login",
+        "#3 night-shift · usage unavailable (HTTP 503), retrying",
+        "#4 side · needs re-login",
+        "#5 spare · 5h 40% · 7d 55% · as of 3h 4m ago (timed out)",
+        "#1 maya@example.com · 5h 41% · 7d 100% (resets in 1d 7h)",
+        "#2 work · usage unknown until used",
+    ]
 
 
-def test_engine_error_table_is_pruned():
-    seen: dict = {}
-    for i in range(50):
-        should_surface_engine_error(
-            ErrorEvent(message=f"error kind {chr(65 + i % 26)}{i}"), seen, now=0.0
-        )
-    should_surface_engine_error(ErrorEvent(message="x"), seen, now=ENGINE_ERROR_REPEAT_S)
-    assert list(seen) == ["x"]
+def test_no_account_row_exceeds_the_row_limit():
+    assert menubar.ROW_LIMIT == 72
+    for acc in _FLEET + _TROUBLE:
+        row = _row(acc)
+        assert len(row.text) <= menubar.ROW_LIMIT, row.text
+        # The tooltip keeps everything the row leaves out.
+        assert row.tooltip.splitlines()[0].startswith(acc.label(long=False))
+    night = _row(_FLEET[2])
+    assert night.attention  # past its line, not at its limit: orange, no countdown
+    assert "Fable   97%  resets" in night.tooltip and "Holds 1 five-hour reset" in night.tooltip
+    # No ordinary row in either fixture needs cutting.
+    assert not any(_row(a).text.endswith("…") for a in _FLEET + _TROUBLE)
 
 
+def test_a_long_label_gives_way_before_the_numbers():
+    acc = _acct("9", "a.very.long.address.for.a.shared.mailbox@example-corporation.com",
+                usage=_FLEET[2].entry.last_good, lines=_CLAUDE_LINES)
+    text = _row(acc).text
+    assert len(text) == menubar.ROW_LIMIT
+    assert text.endswith(" · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset")
+    assert text.startswith("#9 a.very.long.addres…")
 
-# --- sentinel rows: the state, not the remedy ---------------------------------
 
+def test_fit_row_cuts_the_end_once_the_label_is_at_its_floor():
+    from ai_quota_swap import display
 
-def test_menu_note_keeps_the_state_and_drops_the_remedy():
-    from ai_quota_swap.switcher import USAGE_RELOGIN_REQUIRED
-
-    note = menubar.SENTINEL_NOTES[USAGE_RELOGIN_REQUIRED]
-    assert "qswap add" in note, "premise: the note carries a remedy"
-    assert menubar.menu_note(note) == "needs re-login"
+    parts = ["#9 work", "x" * 80]
+    assert menubar.fit_row(parts) == display.fit("#9 work · " + "x" * 80, menubar.ROW_LIMIT)
+    assert menubar.fit_row(["#1 a", "5h 3%"]) == "#1 a · 5h 3%"
 
 
 def test_every_sentinel_note_fits_a_menu_row():
-    # A menu is as wide as its widest row; one expired account must not
-    # double it (the 614pt row #171 measured against 314pt for the others).
     for note in menubar.SENTINEL_NOTES.values():
         short = menubar.menu_note(note)
         assert " — " not in short
         assert len(short) <= menubar.MENU_NOTE_LIMIT
 
 
-def test_menu_note_truncates_an_unknown_long_state_with_an_ellipsis():
-    short = menubar.menu_note("x" * 60)
-    assert short.endswith("…")
-    assert len(short) == menubar.MENU_NOTE_LIMIT
-
-
-def test_menu_note_leaves_a_short_note_alone():
-    assert menubar.menu_note("API key (no quota)") == "API key (no quota)"
-    assert menubar.usage_summary("no credentials") == "no credentials"
-
-
-def test_account_row_shows_the_sentinel_state_not_the_remedy():
-    from ai_quota_swap.switcher import USAGE_RELOGIN_REQUIRED
-
-    label = menubar.format_account_label(
-        2, "b@x.com", menubar.SENTINEL_NOTES[USAGE_RELOGIN_REQUIRED]
-    )
-    assert label.endswith("needs re-login")
-    assert "qswap add" not in label
+def test_menu_note_truncates_and_leaves_short_notes():
+    assert menubar.menu_note("x" * 60).endswith("…")
+    assert len(menubar.menu_note("x" * 60)) == menubar.MENU_NOTE_LIMIT
+    assert menubar.menu_note("API key") == "API key"
 
 
 def test_set_tooltip_reaches_the_native_item_and_tolerates_its_absence():
@@ -859,99 +650,975 @@ def test_set_tooltip_reaches_the_native_item_and_tolerates_its_absence():
             self._menuitem = _NSMenuItem()
 
     item = _Item()
-    menubar._set_tooltip(item, "re-login needed — the full remedy")
-    assert item._menuitem.tip == "re-login needed — the full remedy"
-    menubar._set_tooltip(object(), "ignored")  # no native item behind it: no error
+    menubar._set_tooltip(item, "the full text")
+    assert item._menuitem.tip == "the full text"
+    menubar._set_tooltip(object(), "ignored")
 
 
-# --- health row: auto-switch state + refresh age -------------------------------
+# --- usage log lines ------------------------------------------------------------------
 
-
-def test_health_label_off():
-    label, attention = menubar.health_label(
-        auto_enabled=False, engine_running=False, usage_age=90, refresh_interval=60
+def test_format_usage_log():
+    usage = {"five_hour": {"pct": 35.0, "clock": "06:59"}, "seven_day": {"pct": 55.0, "clock": "Jun 29 21:59"}}
+    assert menubar.format_usage_log("#1 personal", usage) == (
+        "usage #1 personal: 5h 35% (resets 06:59) · 7d 55% (resets Jun 29 21:59)"
     )
-    assert label == "Auto-switch off · usage read 1m ago"
-    assert attention is False
+    assert menubar.format_usage_log("#1", None) is None
+    assert menubar.format_usage_log("#1", {"spend": {"pct": 5.0}}) is None
 
 
-def test_health_label_running():
-    label, attention = menubar.health_label(
-        auto_enabled=True, engine_running=True, usage_age=30, refresh_interval=60
-    )
-    assert label == "Auto-switch running · usage read just now"
-    assert attention is False
+def test_usage_log_key_ignores_clock_tracks_pct():
+    u1 = {"five_hour": {"pct": 35.0, "clock": "06:59"}, "seven_day": {"pct": 55.0}}
+    u2 = {"five_hour": {"pct": 35.0, "clock": "07:59"}, "seven_day": {"pct": 55.0}}
+    u3 = {"five_hour": {"pct": 36.0}, "seven_day": {"pct": 55.0}}
+    assert menubar._usage_log_key(u1) == menubar._usage_log_key(u2)
+    assert menubar._usage_log_key(u1) != menubar._usage_log_key(u3)
 
 
-def test_health_label_enabled_but_not_running_needs_attention():
-    # The state that used to look healthy: the toggle on, no engine behind it.
-    label, attention = menubar.health_label(
-        auto_enabled=True, engine_running=False, usage_age=30, refresh_interval=60
-    )
-    assert label.startswith("⚠ Auto-switch stopped, click to restart")
-    assert attention is True
+# --- title ------------------------------------------------------------------------
+
+def test_format_title_variants():
+    s = MenuBarSettings(show_account_name=True, title_pct="5h")
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ loc · 42%"
+    assert menubar.format_title("loc@example.com", _USAGE, s, alias="dev") == "⇄ dev · 42%"
+    s = MenuBarSettings(show_account_name=False, title_pct="7d")
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ 18%"
+    s = MenuBarSettings(show_account_name=False, title_pct="both")
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄ 42% · 18%"
+    s = MenuBarSettings(show_account_name=False, title_pct="off")
+    assert menubar.format_title("loc@example.com", _USAGE, s) == "⇄"
+    assert menubar.format_title(None, None, MenuBarSettings()) == "⇄"
 
 
-def test_health_label_dates_a_stale_reading_and_a_missing_one():
-    label, _ = menubar.health_label(
-        auto_enabled=False, engine_running=False, usage_age=2 * 3600, refresh_interval=60
-    )
-    assert "usage stale, read 2h 0m ago" in label
-    label, _ = menubar.health_label(
-        auto_enabled=False, engine_running=False, usage_age=None, refresh_interval=60
-    )
+def test_format_title_says_limit_reached_for_a_refused_probe():
+    s = MenuBarSettings(show_account_name=True, title_pct="5h")
+    usage = {**_USAGE, "rejected": {"retry_after_s": None, "resets_at": None}}
+    assert menubar.format_title("loc@example.com", usage, s) == "⇄ loc · limit reached · 42%"
+
+
+def test_format_title_scoped_and_truncation():
+    s = MenuBarSettings(show_account_name=False, title_pct="both", title_scoped=True)
+    usage = {**_USAGE, "scoped": [{"name": "Fable", "pct": 55.0}, {"name": "Opus", "pct": 7.0}]}
+    assert menubar.format_title("loc@example.com", usage, s) == "⇄ 42% · 18% · Fable 55% · Opus 7%"
+    s = MenuBarSettings(show_account_name=True, title_pct="off")
+    assert menubar.format_title("averylonglocalpart@example.com", None, s) == "⇄ averylonglo*"
+
+
+def test_format_title_reflects_a_passed_weekly_reset():
+    s = MenuBarSettings(show_account_name=False, title_pct="7d")
+    usage = {"seven_day": {"pct": 95.0, "resets_at": _iso(-86400)}}
+    assert menubar.format_title("a@x.com", usage, s, _NOW) == "⇄ 0%"
+
+
+def test_format_title_attention_prefix():
+    assert menubar.format_title(None, None, MenuBarSettings(), attention=True) == "⚠ ⇄"
+
+
+def _claude(*accounts, **kw) -> ProviderState:
+    return ProviderState("claude", tuple(accounts), **kw)
+
+
+def _codex(*accounts, **kw) -> ProviderState:
+    kw.setdefault("managed", len(accounts))
+    return ProviderState("codex", tuple(accounts), **kw)
+
+
+def _inp(claude=None, codex=None, **kw) -> MenuInput:
+    kw.setdefault("settings", MenuBarSettings())
+    kw.setdefault("thresholds", {"claude": 90.0, "codex": 99.0})
+    return MenuInput(claude=claude or _claude(), codex=codex or _codex(), now=_NOW, **kw)
+
+
+def _usage_at(h5, d7=10.0):
+    return {"five_hour": {"pct": h5}, "seven_day": {"pct": d7}}
+
+
+_C1 = _acct("1", "maya@example.com", alias="personal", usage=_usage_at(46, 38), active=True)
+_C2 = _acct("2", "maya@northwind.example.com", alias="work", usage=_usage_at(12, 21))
+_X1 = _acct("1", "maya@example.com", provider="codex", usage=_usage_at(80, 47), active=True)
+_X2 = _acct("2", "maya@northwind.example.com", provider="codex", alias="work", usage=_usage_at(8, 15))
+
+
+@pytest.mark.parametrize(
+    "follows, codex_pct, expected",
+    [
+        ("claude", 80, "claude"),
+        ("codex", 80, "codex"),
+        ("closest", 80, "codex"),   # Codex 80% is closer than Claude's 46%
+        ("closest", 46, "claude"),  # a tie keeps Claude Code
+        ("closest", 20, "claude"),
+    ],
+)
+def test_title_follows_each_setting(follows, codex_pct, expected):
+    x1 = _acct("1", "maya@example.com", provider="codex", usage=_usage_at(codex_pct), active=True)
+    inp = _inp(_claude(_C1, _C2), _codex(x1, _X2), settings=MenuBarSettings(title_follows=follows))
+    assert menubar.title_provider(inp) == expected
+
+
+def test_title_following_codex_shows_codex_s_account():
+    s = MenuBarSettings(title_follows="codex")
+    inp = _inp(_claude(_C1), _codex(_X1, _X2), settings=s)
+    assert menubar.build_menu(inp).title == "⇄ maya · 80% · 47%"
+
+
+def test_title_follows_claude_code_without_codex_accounts():
+    inp = _inp(_claude(_C1), _codex(), settings=MenuBarSettings(title_follows="codex"))
+    assert menubar.title_provider(inp) == "claude"
+    assert menubar.build_menu(inp).title == "⇄ personal · 46% · 38%"
+
+
+def test_title_falls_back_to_the_provider_with_an_active_account():
+    no_active = _acct("1", "maya@example.com", usage=_usage_at(10))
+    inp = _inp(_claude(no_active), _codex(_X1), settings=MenuBarSettings(title_follows="claude"))
+    assert menubar.title_provider(inp) == "codex"
+    inp = _inp(_claude(_C1), _codex(_X2), settings=MenuBarSettings(title_follows="codex"))
+    assert menubar.title_provider(inp) == "claude"
+
+
+def test_title_of_an_account_that_needs_relogin_shows_no_numbers():
+    acc = _acct("1", "maya@example.com", alias="personal", usage=_OK, active=True, set_aside="invalid_grant")
+    assert menubar.build_menu(_inp(_claude(acc))).title == "⇄ personal"
+
+
+# --- health row --------------------------------------------------------------------
+
+def test_health_label_claude_only():
+    assert menubar.health_label(auto_enabled=False, engine_running=False, usage_age=90,
+                                refresh_interval=60) == ("Auto-switch off · usage read 1m ago", False)
+    assert menubar.health_label(auto_enabled=True, engine_running=True, usage_age=30,
+                                refresh_interval=60) == ("Auto-switch running · usage read just now", False)
+    label, attention = menubar.health_label(auto_enabled=True, engine_running=False, usage_age=30,
+                                            refresh_interval=60)
+    assert label.startswith("⚠ Auto-switch stopped, click to restart") and attention
+
+
+def test_health_label_dates_an_old_reading_and_a_missing_one():
+    label, _ = menubar.health_label(auto_enabled=False, engine_running=False, usage_age=2 * 3600,
+                                    refresh_interval=60)
+    assert label.endswith("usage as of 2h 0m ago")
+    label, _ = menubar.health_label(auto_enabled=False, engine_running=False, usage_age=None,
+                                    refresh_interval=60)
     assert label.endswith("no usage reading yet")
 
 
 def test_health_label_stale_threshold_has_a_floor():
-    # Three 30 s display intervals is not stale while the engine polls the
-    # active account every few minutes; the floor is fifteen minutes.
-    label, _ = menubar.health_label(
-        auto_enabled=True, engine_running=True, usage_age=600, refresh_interval=30
-    )
-    assert "stale" not in label
-    label, _ = menubar.health_label(
-        auto_enabled=True, engine_running=True, usage_age=16 * 60, refresh_interval=30
-    )
-    assert "stale" in label
-    # With a long interval the multiple wins: 3 x 600 s = 30 min.
-    label, _ = menubar.health_label(
-        auto_enabled=True, engine_running=True, usage_age=20 * 60, refresh_interval=600
-    )
-    assert "stale" not in label
-
-
-def _row(num, is_active, fetched_at):
-    return (num, f"a{num}@x.com", is_active, {}, {}, None, False, fetched_at)
-
-
-def test_active_usage_age_dates_the_active_accounts_reading_not_the_snapshot():
-    # A store-only refresh is new; the reading it serves can be hours old.
-    snapshot = {"accounts": [_row(1, False, 1000.0), _row(2, True, 1000.0 - 2.5 * 3600)]}
-    assert menubar.active_usage_age(snapshot, now=1000.0) == 2.5 * 3600
-
-
-def test_active_usage_age_is_none_without_an_active_reading():
-    assert menubar.active_usage_age({"accounts": [_row(1, False, 10.0)]}, now=20.0) is None
-    assert menubar.active_usage_age({"accounts": [_row(1, True, None)]}, now=20.0) is None
-    assert menubar.active_usage_age(dict(menubar.EMPTY_SNAPSHOT), now=20.0) is None
+    def text(age, interval):
+        return menubar.health_label(auto_enabled=True, engine_running=True, usage_age=age,
+                                    refresh_interval=interval)[0]
+    assert "as of" not in text(600, 30)
+    assert "as of" in text(16 * 60, 30)
+    assert "as of" not in text(20 * 60, 600)
 
 
 @pytest.mark.parametrize(
-    "seconds, text",
-    [(5, "just now"), (120, "2m ago"), (3900, "1h 5m ago"), (90000, "1d 1h ago")],
+    "claude, codex, both, expected, attention",
+    [
+        ("off", "off", True, "Auto-switch off", False),
+        ("running", "running", True, "Auto-switch running for Claude Code and Codex", False),
+        ("running", "off", True, "Auto-switch: Claude Code running, Codex off", False),
+        ("off", "stopped", True, "⚠ Auto-switch: Claude Code off, Codex stopped, click to restart", True),
+        ("stopped", "stopped", True, "⚠ Auto-switch stopped for Claude Code and Codex, click to restart", True),
+        ("running", "stopped", False, "Auto-switch running", False),  # Codex not shown
+    ],
 )
-def test_age_text(seconds, text):
-    assert menubar._age_text(seconds) == text
+def test_engines_in_words(claude, codex, both, expected, attention):
+    states = [EngineState("claude", claude), EngineState("codex", codex)]
+    assert menubar.engines_text(states, both=both) == (expected, attention)
+
+
+def test_engines_running_elsewhere():
+    states = [EngineState("claude", "elsewhere", host="qswap auto"), EngineState("codex", "off")]
+    assert menubar.engines_text(states, both=False) == ("Auto-switch running in qswap auto", False)
+
+
+def test_health_row_dates_the_oldest_active_reading():
+    c1 = _acct("1", usage=_OK, active=True, fetched_at=_NOW - 60)
+    x1 = _acct("1", provider="codex", usage=_OK, active=True, fetched_at=_NOW - 300)
+    assert menubar.usage_age(_inp(_claude(c1), _codex(x1))) == 300
+    assert menubar.usage_age(_inp(_claude(c1))) == 60
+    assert menubar.usage_age(_inp(_claude(_acct("1", usage=None, active=True)))) is None
+
+
+def test_health_row_restarts_a_stopped_engine():
+    engines = {"claude": EngineState("claude", "stopped", failure="RuntimeError: boom")}
+    menu = menubar.build_menu(_inp(_claude(_C1), engines=engines))
+    health = menu.section("health").rows[0]
+    assert health.action == Action("restart-engines") and health.attention
+    assert health.tooltip == "RuntimeError: boom"
+    assert menu.title.startswith("⚠ ⇄")
+
+
+@pytest.mark.parametrize(
+    "enabled, running, beat, pid, expected",
+    [
+        (False, False, None, 1, "off"),
+        (True, True, None, 1, "running"),
+        (True, False, None, 1, "stopped"),
+        (False, False, {"mode": "loop", "nextTickAt": _NOW + 30, "pid": 2, "host": "qswap auto"}, 1, "elsewhere"),
+        (False, False, {"mode": "loop", "nextTickAt": _NOW + 30, "pid": 1}, 1, "off"),  # our own, old
+        (False, False, {"mode": "loop", "nextTickAt": _NOW - 3600, "pid": 2}, 1, "off"),  # long gone
+    ],
+)
+def test_engine_state(enabled, running, beat, pid, expected):
+    state = menubar.engine_state("claude", enabled=enabled, running=running, heartbeat=beat, now=_NOW, pid=pid)
+    assert state.state == expected
+
+
+# --- the menu, Claude Code only --------------------------------------------------------
+
+def _texts(row) -> list[str]:
+    return [c.text for c in row.children if not c.separator]
+
+
+def test_claude_only_menu_looks_as_it_did():
+    menu = menubar.build_menu(_inp(_claude(_C1, _C2, live_email="maya@example.com")))
+    assert [s.key for s in menu.sections] == ["health", "claude", "switch", "manage", "app"]
+    assert menu.section("claude").heading is None
+    rows = menu.section("claude").rows
+    assert rows[0].text == "#1 personal · 5h 46% · 7d 38%"
+    assert rows[0].checked and rows[0].action == Action("switch", "claude", "1")
+    assert not rows[1].checked and rows[1].action == Action("switch", "claude", "2")
+    assert [r.text for r in menu.section("switch").rows] == ["Rotate to next", "Switch to best", "Next available"]
+    assert menu.find("Rotate to next").action == Action("rotate", "claude", value=None)
+    assert menu.find("Switch to best").action == Action("rotate", "claude", value="best")
+    assert _texts(menu.find("Disable / enable account")) == [
+        "#1 personal (maya@example.com)", "#2 work (maya@northwind.example.com)",
+    ]
+    assert _texts(menu.find("Remove account"))[0] == "#1 personal (maya@example.com)"
+    assert menu.find("Refresh current credentials").text == "Refresh current credentials"
+    settings = _texts(menu.find("Settings"))
+    assert "Auto-switch Claude Code" in settings and "Auto-switch threshold" in settings
+    assert not any("Codex" in t or "Title follows" in t for t in settings)
+    assert "Codex" not in menu.outline()
+    assert menu.title == "⇄ personal · 46% · 38%"
+
+
+def test_claude_only_add_menu():
+    menu = menubar.build_menu(_inp(_claude(_C1, live_email="maya@example.com")))
+    assert _texts(menu.find("Add account")) == ["Add from a setup-token or API key…"]
+    # A live login qswap does not manage adds itself.
+    unmanaged = _claude(_C2, live_email="new@example.com")
+    menu = menubar.build_menu(_inp(unmanaged))
+    add = menu.find("Add account")
+    assert add.children[0].text == "Add the current Claude Code login (new@example.com)"
+    assert add.children[0].action == Action("add-current", "claude")
+
+
+def test_disable_submenu_checks_the_disabled_one():
+    c2 = _acct("2", "b@x.com", usage=_OK, disabled=True)
+    menu = menubar.build_menu(_inp(_claude(_C1, c2)))
+    rows = menu.find("Disable / enable account").children
+    assert [r.checked for r in rows] == [False, True]
+    assert rows[1].action == Action("toggle-disabled", "claude", "2", False)
+    assert rows[0].action == Action("toggle-disabled", "claude", "1", True)
+
+
+def test_settings_reflect_threshold_and_checks():
+    s = MenuBarSettings(auto_switch_enabled=True, title_pct="7d", refresh_interval=300)
+    menu = menubar.build_menu(_inp(_claude(_C1), settings=s, start_at_login=True))
+    assert menu.find("Auto-switch Claude Code").checked
+    assert menu.find("Start at login").checked
+    assert [r.text for r in menu.find("Auto-switch threshold").children if r.checked] == ["90%"]
+    assert [r.text for r in menu.find("Title percentage").children if r.checked] == ["Weekly window (7d)"]
+    assert [r.text for r in menu.find("Refresh interval").children if r.checked] == ["5 minutes"]
+    assert menu.find("80%").action == Action("threshold", "claude", value=80)
+
+
+# --- the menu, both providers ------------------------------------------------------------
+
+def _both_menu(**kw):
+    return menubar.build_menu(_inp(_claude(_C1, _C2), _codex(_X1, _X2), **kw))
+
+
+def test_both_providers_have_a_section_each():
+    menu = _both_menu()
+    assert [s.key for s in menu.sections] == ["health", "claude", "codex", "switch", "manage", "app"]
+    assert menu.section("claude").heading == "Claude Code accounts"
+    assert menu.section("codex").heading == "Codex accounts"
+    codex = menu.section("codex").rows
+    assert codex[0].text == "#1 maya@example.com · 5h 80% · 7d 47%"
+    assert codex[0].checked and codex[0].action == Action("switch", "codex", "1")
+    assert codex[1].action == Action("switch", "codex", "2")
+
+
+def test_both_providers_name_the_provider_in_the_account_submenus():
+    menu = _both_menu()
+    assert _texts(menu.find("Remove account")) == [
+        "Claude #1 personal (maya@example.com)", "Claude #2 work (maya@northwind.example.com)",
+        "Codex #1 maya@example.com", "Codex #2 work (maya@northwind.example.com)",
+    ]
+    assert menu.find("Remove account").children[2].action == Action("remove", "codex", "1")
+    assert _texts(menu.find("Disable / enable account"))[3] == "Codex #2 work (maya@northwind.example.com)"
+
+
+def test_both_providers_settings_and_strategies():
+    s = MenuBarSettings(codex_auto_switch_enabled=True, title_follows="closest")
+    menu = _both_menu(settings=s)
+    assert [r.text for r in menu.section("switch").rows] == [
+        "Rotate to next (Claude Code)", "Switch to best (Claude Code)", "Next available (Claude Code)",
+    ]
+    assert menu.find("Auto-switch Codex").checked
+    assert menu.find("Auto-switch Codex").action == Action("toggle-auto", "codex")
+    assert not menu.find("Auto-switch Claude Code").checked
+    assert [r.text for r in menu.find("Codex threshold").children if r.checked] == ["99%"]
+    assert [r.text for r in menu.find("Title follows").children if r.checked] == [
+        "Whichever is closest to its limit",
+    ]
+    assert _texts(menu.find("Add account")) == [
+        "Add from a setup-token or API key…", "Log in another Codex account…",
+    ]
+    assert menu.find("Refresh current credentials").text == "Refresh current credentials (Claude Code)"
+
+
+def test_codex_managed_but_claude_not():
+    menu = menubar.build_menu(_inp(_claude(live_email="maya@example.com"), _codex(_X1)))
+    assert [r.text for r in menu.section("claude").rows] == [
+        "No Claude Code accounts are managed yet.",
+        "Claude Code is logged in as maya@example.com. Add it with: qswap add",
+    ]
+    assert menu.section("claude").rows[1].action == Action("add-current", "claude")
+    assert menu.section("switch") is None
+
+
+def test_codex_that_cannot_be_read_says_why():
+    codex = ProviderState("codex", managed=2, error="Codex keeps this login in the OS keyring")
+    menu = menubar.build_menu(_inp(_claude(_C1), codex))
+    assert [r.text for r in menu.section("codex").rows] == [
+        "Codex could not be read: Codex keeps this login in the OS keyring",
+    ]
+
+
+def test_an_unmanaged_codex_login_can_be_added_without_codex_accounts():
+    menu = menubar.build_menu(_inp(_claude(_C1), _codex(live_email="x@example.com")))
+    assert menu.section("codex") is None
+    assert menu.find("Add the current Codex login (x@example.com)").action == Action("add-current", "codex")
+
+
+# --- first run -------------------------------------------------------------------------
+
+def test_first_run_with_nothing_logged_in():
+    menu = menubar.build_menu(_inp(_claude(cli_found=True)))
+    rows = menu.section("accounts").rows
+    assert [r.text for r in rows] == [
+        "No accounts are managed yet.",
+        "Claude Code is not logged in. Log in with claude (/login), then run: qswap add",
+    ]
+    assert all(r.disabled for r in rows)
+    assert menu.section("switch") is None
+    assert _texts(menu.find("Remove account")) == ["No accounts are managed yet."]
+    assert menu.title == "⇄"
+
+
+def test_first_run_without_claude_code_installed():
+    rows = menubar.build_menu(_inp(_claude(cli_found=False))).section("accounts").rows
+    assert rows[1].text == "Claude Code was not found on PATH. Install it and log in, then run: qswap add"
+
+
+def test_first_run_with_a_claude_login():
+    menu = menubar.build_menu(_inp(_claude(live_email="maya@example.com")))
+    rows = menu.section("accounts").rows
+    assert rows[1].text == "Claude Code is logged in as maya@example.com. Add it with: qswap add"
+    assert rows[1].action == Action("add-current", "claude")
+    assert _texts(menu.find("Add account"))[0] == "Add the current Claude Code login (maya@example.com)"
+
+
+def test_first_run_with_both_logins():
+    menu = menubar.build_menu(_inp(_claude(live_email="maya@example.com"), _codex(live_email="maya@example.com")))
+    rows = menu.section("accounts").rows
+    assert [r.text for r in rows] == [
+        "No accounts are managed yet.",
+        "Claude Code is logged in as maya@example.com. Add it with: qswap add",
+        "Codex is logged in as maya@example.com. Add it with: qswap codex add",
+    ]
+    assert rows[2].action == Action("add-current", "codex")
+    assert _texts(menu.find("Add account"))[:2] == [
+        "Add the current Claude Code login (maya@example.com)",
+        "Add the current Codex login (maya@example.com)",
+    ]
+
+
+# --- trouble states in the menu -----------------------------------------------------------
+
+def test_trouble_menu():
+    far = _NOW + 120 * 86400
+    accounts = [
+        _acct("1", alias="personal", active=True,
+              usage={"five_hour": {"pct": 100.0, "resets_at": _iso(72 * 60)}, "seven_day": {"pct": 64.0}}),
+        _acct("2", "w@x.com", entry=Reading(sentinel=USAGE_RELOGIN_REQUIRED)),
+        _acct("3", "o@x.com", entry=Reading(last_error="http-503")),
+        _acct("4", "s@x.com", usage=_OK, set_aside="invalid_grant"),
+        _acct("5", "l@x.com", entry=Reading(last_good=_OK, fetched_at=_NOW - 3 * 3600, last_error="timeout")),
+        _acct("6", "f@x.com", usage=_reset_usage(grants=[fable("a", ends=far), weekly("w", ends=far)])),
+        _acct("7", "ci@x.com", kind="api_key",
+              entry=Reading(sentinel=USAGE_API_KEY, api_spend=_api_reading(used=520.0))),
+    ]
+    rows = menubar.build_menu(_inp(_claude(*accounts))).section("claude").rows
+    assert [r.attention for r in rows] == [True, True, False, True, False, False, True]
+    assert rows[6].text.endswith("· API key · $4.12 today · $520.00/$500 (104%, over budget) est.")
+    assert rows[0].text == "#1 personal · 5h 100% (resets in 1h 12m) · 7d 64%"
+    assert rows[1].text == "#2 w@x.com · needs re-login"
+    assert rows[2].text == "#3 o@x.com · usage unavailable (HTTP 503), retrying"
+    assert rows[3].text == "#4 s@x.com · needs re-login"
+    assert rows[4].text == "#5 l@x.com · 5h 46% · 7d 38% · as of 3h 0m ago (timed out)"
+    assert rows[5].text == "#6 f@x.com · 7d 30% · 1 Fable · 1 weekly resets"
+    assert all(len(r.text) <= menubar.ROW_LIMIT for r in rows)
+    words = " ".join(r.text for r in rows)
+    for banned in ("quarantined", "usage unknown", "Account-", "$$", "(!)", "rejected"):
+        assert banned not in words
+
+
+# --- cost row --------------------------------------------------------------------------
+
+def test_cost_row():
+    menu = menubar.build_menu(_inp(_claude(_C1), cost=CostSummary(today=12.4, week=179.72)))
+    row = menu.section("cost").rows[0]
+    assert row.text == "Today $12.40 · 7 days $179.72 (estimated)"
+    assert row.action is None and row.disabled
+
+
+def test_cost_row_hidden_without_a_ledger():
+    assert menubar.build_menu(_inp(_claude(_C1))).section("cost") is None
+
+
+def test_cost_row_marks_unpriced_tokens_as_the_report_does():
+    assert CostSummary(today=0.0, week=5.0, today_unpriced=10, week_unpriced=10).text() == (
+        "Today n/a · 7 days $5.00+ (estimated)"
+    )
+
+
+# --- switch history --------------------------------------------------------------------
+
+_SWITCH_LOG = (
+    "2026-06-27 00:57:50,178 - INFO - Switched from account 1 to 3\n"
+    "2026-06-27 02:06:21,302 - INFO - usage a@x.com: 5h 10%\n"
+    "2026-06-27 02:08:00,000 - INFO - Switched Codex from account None to 2\n"
+    "2026-06-27 02:10:00,000 - INFO - Switched from account 3 to 1\n"
+)
+
+
+def test_parse_switch_history_both_providers_newest_first():
+    assert menubar.parse_switch_history(_SWITCH_LOG) == [
+        SwitchRecord("claude", "3", "1", "2026-06-27 02:10"),
+        SwitchRecord("codex", None, "2", "2026-06-27 02:08"),
+        SwitchRecord("claude", "1", "3", "2026-06-27 00:57"),
+    ]
+    assert menubar.parse_switch_history("") == []
+
+
+def test_parse_switch_history_respects_limit():
+    lines = "\n".join(f"2026-06-27 0{i}:00:00,000 - INFO - Switched from account 1 to 2" for i in range(1, 6))
+    out = menubar.parse_switch_history(lines, limit=2)
+    assert len(out) == 2 and out[0].stamp == "2026-06-27 05:00"
+
+
+def test_history_rows_use_account_labels():
+    history = tuple(menubar.parse_switch_history(_SWITCH_LOG))
+    c3 = _acct("3", "o@x.com", alias="ops", usage=_OK)
+    claude_only = menubar.build_menu(_inp(_claude(_C1, c3), history=history))
+    assert _texts(claude_only.find("Switch history")) == [
+        "#3 ops → #1 personal · 2026-06-27 02:10",
+        "#1 personal → #3 ops · 2026-06-27 00:57",
+        "Open full log…",
+    ]
+    both = menubar.build_menu(_inp(_claude(_C1, c3), _codex(_X1, _X2), history=history))
+    assert _texts(both.find("Switch history"))[:2] == [
+        "Claude #3 ops → #1 personal · 2026-06-27 02:10",
+        "to Codex #2 work · 2026-06-27 02:08",
+    ]
+
+
+def test_history_empty():
+    menu = menubar.build_menu(_inp(_claude(_C1)))
+    assert _texts(menu.find("Switch history")) == ["No switches logged yet", "Open full log…"]
+
+
+def test_every_action_has_a_handler():
+    import re as _re
+
+    source = (Path(menubar.__file__).parent / "menubar_app.py").read_text(encoding="utf-8")
+    handlers = set(_re.findall(r"def _do_(\w+)\(", source))
+    assert {k.replace("-", "_") for k in menubar.ACTION_KINDS} <= handlers
+    menus = [
+        _both_menu(engines={"claude": EngineState("claude", "stopped")}, history=(
+            SwitchRecord("claude", "1", "2", "2026-06-27 02:10"),)),
+        menubar.build_menu(_inp(_claude(live_email="a@x.com"), _codex(live_email="a@x.com"))),
+    ]
+
+    def walk(rows):
+        for row in rows:
+            if row.action is not None:
+                assert row.action.kind in menubar.ACTION_KINDS, row.action
+            walk(row.children)
+
+    for menu in menus:
+        walk(menu.rows())
+
+
+def test_outline_marks_state():
+    out = _both_menu().outline(actions=True)
+    assert "✓ #1 personal · 5h 46%" in out
+    assert "Codex accounts  (heading)" in out
+    assert "Add account ▸" in out
+    assert "[switch codex 2]" in out
+
+
+# --- dialogs ---------------------------------------------------------------------------
+
+def test_remove_asks_what_the_command_line_asks():
+    title, message = menubar.remove_dialog("claude", "#2 work (maya@example.com)")
+    assert title == "Remove account"
+    assert message == "Remove #2 work (maya@example.com) and delete its saved login?"
+    _, message = menubar.remove_dialog("codex", "#2 work (maya@example.com)")
+    assert message.startswith("Stop managing #2 work (maya@example.com) and delete qswap's saved copy of its login?")
+    assert "codex logout" in message
+
+
+def test_the_switchers_ask_the_same_question(monkeypatch):
+    from ai_quota_swap import display
+
+    assert display.remove_question("claude", "#1 a") == "Remove #1 a and delete its saved login?"
+    for path in ("switcher.py", "codex/switcher.py"):
+        text = (Path(menubar.__file__).parent / path).read_text(encoding="utf-8")
+        assert "display.remove_question(" in text
+
+
+def test_relogin_confirmation_is_the_refusal_without_the_flag():
+    refusal = (
+        "#4 side needs re-login (its saved login was refused); not switched.\n"
+        "Log in to it in Claude Code (/login), then run: qswap add\n"
+        "To switch to it anyway: qswap switch 4 --anyway"
+    )
+    assert menubar.relogin_confirmation(refusal) == (
+        "#4 side needs re-login (its saved login was refused).\n"
+        "Log in to it in Claude Code (/login), then run: qswap add"
+    )
+
+
+def test_relogin_confirmation_matches_the_switchers_refusal(tmp_path, monkeypatch):
+    # The real Codex refusal, so a change to its wording shows up here.
+    from ai_quota_swap.codex.switcher import CodexSwitcher
+
+    switcher = CodexSwitcher(data_root=tmp_path, configure_logging=False)
+    monkeypatch.setattr(switcher, "set_aside_accounts", lambda: {"2": "invalid_grant"})
+    monkeypatch.setattr(switcher, "label", lambda number, email=None, long=True: "#2 work")
+    with pytest.raises(SwitchError) as caught:
+        switcher.check_switch_target("2")
+    text = menubar.relogin_confirmation(str(caught.value))
+    assert text == "#2 work needs re-login (its saved login was refused).\nLog in to it again: qswap codex login"
+    assert "--anyway" not in text and "--force" not in text
+
+
+def test_codex_toggle_says_a_switch_interrupts_work():
+    text = menubar.codex_toggle_message(99.0)
+    assert "99%" in text and "codex.threshold" in text
+    assert "restarts Codex's background server, which interrupts work in progress" in text
+    assert "restartDaemon is off" in menubar.codex_toggle_message(99.0, restart_daemon=False)
+
+
+def test_token_entry_follows_the_command_line_rules():
+    assert menubar.parse_token_entry("sk-ant-oat01-abc", "") == ("sk-ant-oat01-abc", None)
+    assert menubar.parse_token_entry(" sk-ant-api03-x ", "me@example.com") == ("sk-ant-api03-x", "me@example.com")
+    assert menubar.parse_token_entry("sk-ant-oat01-abc me@example.com") == ("sk-ant-oat01-abc", "me@example.com")
+    with pytest.raises(ValueError, match="Token cannot be empty"):
+        menubar.parse_token_entry("  ", "me@example.com")
+    with pytest.raises(ValueError, match="Invalid email format"):
+        menubar.parse_token_entry("sk-ant-oat01-abc", "not an email")
+    with pytest.raises(ValueError):
+        menubar.parse_token_entry("a b c")
+    assert "setup-token" in menubar.TOKEN_DIALOG_MESSAGE and "API key" in menubar.TOKEN_DIALOG_MESSAGE
+
+
+def test_codex_login_help_names_the_command():
+    assert "qswap codex login" in menubar.codex_login_help()
+
+
+def test_manual_switch_followup():
+    assert menubar.manual_switch_followup("claude", {}) == (
+        "Claude Code picks up the new account within 30 seconds; restart it to apply now."
+    )
+    assert menubar.manual_switch_followup("claude", {}, backend="file") == (
+        "Claude Code uses the new account from its next message."
+    )
+    restarted = {"backgroundServer": {"pid": 812, "restarted": True}}
+    assert menubar.manual_switch_followup("codex", restarted) == (
+        "Restarted Codex's background server (pid 812); new sessions use this account."
+    )
+    assert menubar.manual_switch_followup("codex", {}) == "New codex sessions use this account."
+
+
+# --- errors ----------------------------------------------------------------------------
+
+def test_error_text_uses_the_command_line_words():
+    assert menubar.error_text(ConfigError("No accounts are managed yet.")) == "No accounts are managed yet."
+    # The provider-neutral base, not only Claude Code's subclass.
+    assert not issubclass(CodexLoginError, ClaudeSwitchError)
+    assert menubar.error_text(CodexLoginError("Codex keeps this login in the OS keyring")) == (
+        "Codex keeps this login in the OS keyring"
+    )
+    text = menubar.error_text(RuntimeError("boom"))
+    assert text.startswith("Something went wrong: RuntimeError: boom.")
+
+
+def test_guarded_never_lets_an_error_out():
+    alerts, logged = [], []
+    assert menubar.guarded(lambda: None, alert=alerts.append, log=logged.append) is True
+
+    def provider_failure():
+        raise CodexLoginError("not a ChatGPT login")
+
+    def bug():
+        raise KeyError("x")
+
+    assert menubar.guarded(provider_failure, alert=alerts.append, log=logged.append) is False
+    assert alerts == ["not a ChatGPT login"] and logged == []
+    assert menubar.guarded(bug, alert=alerts.append, log=logged.append) is False
+    assert alerts[-1].startswith("Something went wrong: KeyError")
+    assert len(logged) == 1
+
+    def broken_alert(_text):
+        raise RuntimeError("no window server")
+
+    assert menubar.guarded(bug, alert=broken_alert) is False  # still nothing escapes
+
+
+def test_no_claude_only_catches_left():
+    root = Path(menubar.__file__).parent
+    for name in ("menubar.py", "menubar_app.py", "menubar_data.py", "menubar_engines.py",
+                 "menubar_notify.py", "update_check.py"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert "except ClaudeSwitchError" not in text and "(ClaudeSwitchError," not in text, name
+
+
+def test_run_keeps_the_app_out_of_the_dock():
+    # rumps sets no activation policy; without Accessory a framework Python
+    # parks a "Python" icon in the Dock. Lost once in a rewrite already.
+    import inspect
+
+    assert "NSApplicationActivationPolicyAccessory" in inspect.getsource(menubar.run)
+
+
+def test_run_without_rumps_raises_clean_error(monkeypatch):
+    """A missing menubar extra surfaces as a provider error with the install
+    hint, not a traceback."""
+    monkeypatch.setitem(sys.modules, "rumps", None)
+    with pytest.raises(ClaudeSwitchError, match=r"ai-quota-swap\[menubar\]"):
+        menubar.run(switcher=None)
+
+
+# --- notifications -----------------------------------------------------------------------
+
+_CTX = EventContext(provider="claude", names={"1": "personal", "2": "work", "4": "side", "5": "ci"})
+_CODEX_CTX = EventContext(provider="codex", names={"2": "work"})
+
+
+def _switch_event(context=_CTX, **kw):
+    return SwitchEvent(
+        trigger="proactive",
+        from_ref={"number": 1, "email": "maya@example.com"},
+        to_ref={"number": 2, "email": "maya@northwind.example.com"},
+        binding=BindingWindow("5h", 91.0, 90.0, None, 0.0), context=context, **kw,
+    )
+
+
+def test_switch_notification():
+    n = menubar_notify.Notifier()
+    assert n.event("claude", _switch_event(), both=False, now=0).body == (
+        "Switched #1 personal → #2 work · 5h reached 91%"
+    )
+    note = n.event("claude", _switch_event(), both=True, now=0)
+    assert note.body == "Switched Claude #1 personal → #2 work · 5h reached 91%"
+    assert note.title == "ai-quota-swap"
+
+
+def test_codex_switch_notification_names_codex():
+    event = SwitchEvent(trigger="at-limit", from_ref={"number": 1, "email": "maya@example.com"},
+                        to_ref={"number": 2, "email": "w@x.com"}, context=_CODEX_CTX)
+    note = menubar_notify.Notifier().event("codex", event, both=True, now=0)
+    assert note.body == "Switched Codex #1 maya@example.com → #2 work · limit reached"
+
+
+def test_dry_run_and_routine_events_never_notify():
+    n = menubar_notify.Notifier()
+    assert n.event("claude", _switch_event(dry_run=True), both=False, now=0) is None
+    poll = PollEvent(active=None, headroom={}, threshold=90.0)
+    assert n.event("claude", poll, both=False, now=0) is None
+
+
+def _reset_event(result="reset", number=1, **kw):
+    plan = {"reason": "last-resort", "window": "Fable", "pct": 100.0, "hoursLeft": 72.0,
+            "grantKind": "Fable", "scope": "model"}
+    return ResetEvent(account={"number": number, "email": "maya@example.com"}, plan=plan,
+                      result={"result": result, "resetsLeft": 0} if result else None, context=_CTX, **kw)
+
+
+def test_reset_used_notification_by_kind():
+    note = menubar_notify.Notifier().event("claude", _reset_event(), both=True, now=0)
+    assert note.body.startswith("Used a Fable reset on Claude #1 personal · Fable reached 100%")
+
+
+def test_reset_not_used_is_said_once_per_account_and_result():
+    n = menubar_notify.Notifier()
+    first = n.event("claude", _reset_event("refused"), both=False, now=0)
+    assert first.body.startswith("Did not use a Fable reset on #1 personal: refused")
+    assert n.event("claude", _reset_event("refused"), both=False, now=60) is None
+    assert n.event("claude", _reset_event("error"), both=False, now=60) is not None
+    # Codex account 1 is another account.
+    assert n.event("codex", _reset_event("refused"), both=True, now=60) is not None
+
+
+def test_needs_relogin_notification_once_with_the_next_step():
+    n = menubar_notify.Notifier()
+    event = QuarantineEvent(number="4", email="sam@example.org", reason="invalid_grant", context=_CTX)
+    note = n.event("claude", event, both=True, now=0)
+    assert note.body == (
+        "Claude #4 side needs re-login: its saved login was refused. "
+        "Log in to it in Claude Code (/login), then run: qswap add"
+    )
+    assert "quarantine" not in note.body
+    assert n.event("claude", event, both=True, now=10) is None
+    codex = QuarantineEvent(number="2", email="w@x.com", reason="invalid_grant",
+                            recover="Log in to it again: qswap codex login", context=_CODEX_CTX)
+    assert n.event("codex", codex, both=True, now=10).body == (
+        "Codex #2 work needs re-login: its saved login was refused. Log in to it again: qswap codex login"
+    )
+
+
+def test_all_exhausted_once_per_episode():
+    n = menubar_notify.Notifier()
+    event = AllExhaustedEvent(earliest_reset_at="2026-11-10T15:32:00Z", ts="2026-11-10T14:20:00Z")
+    note = n.event("claude", event, both=False, now=0)
+    assert note.body.startswith("All accounts are at their limit; the first resets ")
+    assert note.body.endswith("· in 1h 12m")
+    assert n.event("claude", event, both=False, now=600) is None
+    # A switch ends the episode; the next one is said again.
+    n.event("claude", _switch_event(), both=False, now=700)
+    assert n.event("claude", event, both=False, now=800) is not None
+    both = n.event("codex", event, both=True, now=800)
+    assert both.body.startswith("All Codex accounts are at their limit")
+
+
+def test_budget_warning_once_per_account_and_month():
+    n = menubar_notify.Notifier()
+    event = BudgetWarningEvent(account={"number": 5, "email": "ci@x.com"}, used=410.0, limit=500.0,
+                               month="2026-11", source="admin-api", context=_CTX)
+    assert n.event("claude", event, both=True, now=0).body == (
+        "Claude #5 ci has spent $410.00 of its $500.00 monthly budget (82%)"
+    )
+    assert n.event("claude", event, both=True, now=1) is None
+
+
+def test_no_duplicates_across_the_two_engines():
+    n = menubar_notify.Notifier()
+    warning = ConfigWarningEvent(message="autoswitch.model 'Fabel' matches no limit any account reports")
+    assert n.event("claude", warning, both=True, now=0) is not None
+    assert n.event("codex", warning, both=True, now=1) is None
+    error = ErrorEvent(message="network unreachable")
+    first = n.event("claude", error, both=True, now=0)
+    assert first.body == "Claude Code auto-switch error: network unreachable. It retries by itself."
+    assert n.event("codex", error, both=True, now=5) is None
+    assert n.event("codex", error, both=True, now=ENGINE_ERROR_REPEAT_S + 1) is not None
+
+
+def test_engine_lifecycle_notifications():
+    n = menubar_notify.Notifier()
+    assert n.engine_stopped("claude", "RuntimeError: boom", both=False).body == (
+        "Auto-switch stopped: RuntimeError: boom. Open the menu to restart it."
+    )
+    assert n.engine_failed("codex", "No Codex accounts are managed yet.", both=True).body == (
+        "Codex auto-switch did not start: No Codex accounts are managed yet."
+    )
+
+
+def test_manual_switch_text():
+    label = menubar_notify.ref_labeler({"1": {"alias": "personal"}, "2": {"alias": "work"}})
+    result = {"switched": True, "from": {"number": 1, "email": "a@x.com"},
+              "to": {"number": 2, "email": "b@x.com"}, "warnings": ["a warning"]}
+    assert menubar_notify.manual_switch_text(
+        "claude", result, both=False, label=label, followup="Claude Code uses the new account."
+    ) == "Switched #1 personal → #2 work. Claude Code uses the new account. a warning"
+    assert menubar_notify.manual_switch_text("codex", result, both=True, label=label).startswith(
+        "Switched Codex #1 personal → #2 work."
+    )
+    assert menubar_notify.manual_switch_text("claude", {"switched": False}, both=False, label=label) is None
+
+
+# engine errors must not vanish (field case: every tick's switch raised
+# "Current account credential is empty" for two days, the icon looking healthy).
+
+def test_engine_error_is_surfaced_once_then_limited():
+    ev = ErrorEvent(message="Current account credential is empty")
+    seen: dict = {}
+    assert should_surface_engine_error(ev, seen, now=1000.0) is True
+    assert should_surface_engine_error(ev, seen, now=1060.0) is False
+    assert should_surface_engine_error(ev, seen, now=1000.0 + ENGINE_ERROR_REPEAT_S) is True
+
+
+def test_two_alternating_engine_errors_are_each_limited():
+    a = ErrorEvent(message="Current account credential is empty")
+    b = ErrorEvent(message="Claude config file not found")
+    seen: dict = {}
+    surfaced = [should_surface_engine_error(ev, seen, now=1000.0 + 60 * i)
+                for i, ev in enumerate([a, b, a, b, a, b])]
+    assert surfaced == [True, True, False, False, False, False]
+
+
+def test_engine_errors_differing_only_in_numbers_are_one_error():
+    seen: dict = {}
+    assert should_surface_engine_error(ErrorEvent(message="lock held by pid 4242 for 31s"), seen, now=1000.0)
+    assert not should_surface_engine_error(ErrorEvent(message="lock held by pid 4243 for 92s"), seen, now=1060.0)
+
+
+def test_engine_error_table_is_pruned():
+    seen: dict = {}
+    for i in range(50):
+        should_surface_engine_error(ErrorEvent(message=f"error kind {chr(65 + i % 26)}{i}"), seen, now=0.0)
+    should_surface_engine_error(ErrorEvent(message="x"), seen, now=ENGINE_ERROR_REPEAT_S)
+    assert list(seen) == ["x"]
+
+
+# --- hosting engines ----------------------------------------------------------------------
+
+class FakeEngine:
+    def __init__(self, provider, emit, *, crash: Exception | None = None):
+        self.provider = provider
+        self.emit = emit
+        self.crash = crash
+        self._stop = threading.Event()
+        self.started = threading.Event()
+
+    def run_loop(self):
+        self.started.set()
+        if self.crash is not None:
+            raise self.crash
+        self._stop.wait(10)
+        return 0
+
+    def stop(self):
+        self._stop.set()
+
+
+class Host:
+    """A supervisor over fake engines, with the events it reported."""
+
+    def __init__(self, *, fail: dict | None = None, crash: dict | None = None):
+        self.built: list[FakeEngine] = []
+        self.events: list[tuple[str, object]] = []
+        self.fail = dict(fail or {})
+        self.crash = dict(crash or {})
+        self.lock = threading.Lock()
+        self.sup = menubar_engines.EngineSupervisor(self.factory, self.on_event)
+
+    def factory(self, provider, emit):
+        if provider in self.fail:
+            raise self.fail[provider]
+        engine = FakeEngine(provider, emit, crash=self.crash.get(provider))
+        self.built.append(engine)
+        return engine
+
+    def on_event(self, provider, event):
+        with self.lock:
+            self.events.append((provider, event))
+
+    def close(self):
+        self.sup.stop_all(join_timeout=5)
+        assert self.sup.join(5)
+
+
+@pytest.fixture
+def host():
+    h = Host()
+    yield h
+    h.close()
+
+
+def test_wanted_engines_per_toggle():
+    s = MenuBarSettings(auto_switch_enabled=True, codex_auto_switch_enabled=True)
+    assert menubar.wanted_engines(s, codex_accounts=2) == {"claude": True, "codex": True}
+    assert menubar.wanted_engines(s, codex_accounts=0) == {"claude": True, "codex": False}
+    assert menubar.wanted_engines(MenuBarSettings(), codex_accounts=2) == {"claude": False, "codex": False}
+    old_file = MenuBarSettings(auto_switch_enabled=True)
+    assert menubar.wanted_engines(old_file, codex_accounts=2) == {"claude": True, "codex": False}
+
+
+def test_each_enabled_toggle_hosts_its_engine_in_its_own_thread(host):
+    host.sup.apply({"claude": True, "codex": False})
+    assert host.sup.running("claude") and not host.sup.running("codex")
+    host.sup.apply({"claude": True, "codex": True})
+    assert host.sup.running("codex")
+    for engine in host.built:
+        assert engine.started.wait(5)
+    names = {t.name for t in threading.enumerate() if t.name.startswith("qswap-")}
+    assert names == {"qswap-claude-engine", "qswap-codex-engine"}
+    assert [e.provider for e in host.built] == ["claude", "codex"]
+    host.sup.apply({"claude": False, "codex": True})
+    assert not host.sup.running("claude") and host.sup.running("codex")
+    assert host.built[0]._stop.is_set()
+
+
+def test_applying_twice_starts_nothing_new(host):
+    host.sup.apply({"claude": True})
+    host.sup.apply({"claude": True})
+    assert len(host.built) == 1
+
+
+def test_a_failed_start_is_remembered_not_retried_until_asked():
+    h = Host(fail={"codex": ConfigError("No Codex accounts are managed yet.")})
+    try:
+        assert h.sup.apply({"claude": True, "codex": True}) == {"codex": "No Codex accounts are managed yet."}
+        assert h.sup.failure("codex") == "No Codex accounts are managed yet."
+        assert h.sup.apply({"claude": True, "codex": True}) == {}  # not retried every refresh
+        h.fail.clear()
+        assert h.sup.retry_failed() == {"codex": None}
+        assert h.sup.running("codex") and h.sup.failure("codex") is None
+    finally:
+        h.close()
+
+
+def test_turning_a_toggle_off_clears_its_failure():
+    h = Host(fail={"claude": RuntimeError("boom")})
+    try:
+        h.sup.apply({"claude": True})
+        assert h.sup.failure("claude").startswith("Something went wrong: RuntimeError: boom")
+        h.sup.apply({"claude": False})
+        assert h.sup.failure("claude") is None
+    finally:
+        h.close()
+
+
+def test_an_engine_that_dies_is_reported_and_remembered():
+    h = Host(crash={"claude": RuntimeError("tick blew up")})
+    try:
+        h.sup.start("claude")
+        assert h.sup.join(5)
+        (provider, event), = [e for e in h.events if e[1].kind == "engine-stopped"]
+        assert provider == "claude" and event.error == "RuntimeError: tick blew up"
+        assert h.sup.stopped("claude", event) is True
+        assert not h.sup.running("claude") and h.sup.failure("claude") == "RuntimeError: tick blew up"
+        state = menubar.engine_state("claude", enabled=True, running=False, failure=h.sup.failure("claude"))
+        assert state.state == "stopped"
+    finally:
+        h.close()
+
+
+def test_a_restarted_engine_is_not_cleared_by_its_predecessor_s_exit(host):
+    host.sup.start("claude")
+    old = host.sup.engine("claude")
+    host.sup.restart("claude")
+    new = host.sup.engine("claude")
+    assert new is not old and old._stop.is_set()
+    assert host.sup.stopped("claude", menubar_engines.EngineStoppedEvent(old)) is False
+    assert host.sup.running("claude")
+
+
+def test_engine_events_carry_their_provider(host):
+    host.sup.start("codex")
+    host.built[0].emit(ErrorEvent(message="x"))
+    assert host.events[0][0] == "codex"
 
 
 def test_engine_exit_applies_only_to_the_hosted_engine():
     old, new = object(), object()
     assert menubar.engine_exit_applies(old, old) is True
-    # Restart race: the predecessor's thread finishes after the replacement
-    # started; its exit must not clear the replacement.
     assert menubar.engine_exit_applies(new, old) is False
-    # Already let go through the app's own stop.
     assert menubar.engine_exit_applies(None, old) is False
 
 
@@ -959,11 +1626,239 @@ def test_engine_stopped_event_names_the_error_or_the_plain_end():
     engine = object()
     assert menubar.EngineStoppedEvent(engine, "RuntimeError: boom").human() == "RuntimeError: boom"
     assert menubar.EngineStoppedEvent(engine).human() == "the engine loop ended on its own"
-    assert menubar.EngineStoppedEvent.kind == "engine-stopped"
 
 
-def test_format_title_attention_prefix():
-    settings = menubar.MenuBarSettings()
-    assert menubar.format_title(None, None, settings, attention=True) == "⚠ ⇄"
-    assert menubar.format_title("loc@example.com", _USAGE, settings, attention=True).startswith("⚠ ⇄ ")
-    assert not menubar.format_title("loc@example.com", _USAGE, settings).startswith("⚠")
+# --- noticing changes made elsewhere -----------------------------------------------------
+
+class _Stat:
+    def __init__(self, mtime):
+        self.st_mtime = mtime
+
+
+class FakeFiles:
+    def __init__(self):
+        self.mtimes: dict[str, float] = {}
+        self.stats = 0
+
+    def stat(self, path):
+        self.stats += 1
+        if str(path) not in self.mtimes:
+            raise FileNotFoundError(path)
+        return _Stat(self.mtimes[str(path)])
+
+
+def _watcher(files, logins, reads):
+    def reader(provider):
+        def read():
+            reads.append(provider)
+            return logins.get(provider)
+        return read
+
+    return menubar_engines.ActiveChangeWatcher(
+        paths={"claude": lambda: Path("claude.json"), "codex": lambda: Path("auth.json")},
+        read_active={"claude": reader("claude"), "codex": reader("codex")},
+        stat=files.stat,
+    )
+
+
+def test_outside_change_is_noticed_for_both_providers():
+    files, reads = FakeFiles(), []
+    logins = {"claude": "a@x.com", "codex": "c@x.com"}
+    files.mtimes = {"claude.json": 1.0, "auth.json": 1.0}
+    w = _watcher(files, logins, reads)
+    shown = {"claude": "a@x.com", "codex": "c@x.com"}
+    assert w.poll(shown) == []           # first look: read, nothing changed
+    assert reads == ["claude", "codex"]
+    assert w.poll(shown) == []           # unchanged files are not read again
+    assert reads == ["claude", "codex"]
+    files.mtimes["auth.json"] = 2.0
+    logins["codex"] = "d@x.com"          # `qswap codex switch 2` in a terminal
+    assert w.poll(shown) == ["codex"]
+    files.mtimes["claude.json"] = 2.0    # Claude Code rewrote its config, same login
+    assert w.poll(shown) == []
+    files.mtimes["claude.json"] = 3.0
+    logins["claude"] = "b@x.com"
+    assert w.poll(shown) == ["claude"]
+
+
+def test_outside_change_tolerates_missing_files_and_failed_reads():
+    files, reads = FakeFiles(), []
+    w = _watcher(files, {"claude": "a@x.com"}, reads)
+    assert w.poll({"claude": None}) == []  # no files at all
+    assert reads == []
+    files.mtimes = {"claude.json": 1.0}
+
+    def broken():
+        raise OSError("unreadable")
+
+    w._read["claude"] = broken
+    assert w.poll({"claude": None}) == []
+
+
+# --- background reads --------------------------------------------------------------------
+
+class _Snap:
+    def __init__(self, accounts):
+        self.accounts = accounts
+
+
+def _snap_account(number, email, *, active=False, usage=None, **kw):
+    from ai_quota_swap.models import AccountSnapshot
+    from ai_quota_swap.usage_store import UsageEntry
+
+    return AccountSnapshot(
+        number=number, email=email, org_name=kw.pop("org_name", ""), org_uuid="",
+        is_active=active, kind=kw.pop("kind", "oauth"), switchable=True,
+        usage=usage or UsageEntry(), **kw,
+    )
+
+
+def test_account_states_from_a_snapshot():
+    from ai_quota_swap.usage_store import UsageEntry
+
+    entry = UsageEntry(last_good={"five_hour": {"pct": 10.0}}, fetched_at=123.0)
+    snap = _Snap([
+        _snap_account("1", "a@x.com", active=True, usage=entry, alias="dev", login_expires_at=456.0,
+                      org_name="Northwind"),
+        _snap_account("2", "b@x.com", disabled=True),
+    ])
+    states = menubar_data.account_states(snap, "claude", {"2": "invalid_grant"}, now=_NOW)
+    assert states[0] == AccountState("claude", "1", "a@x.com", alias="dev", active=True, entry=entry,
+                                     login_expires_at=456.0, org="Northwind")
+    assert states[1].disabled and states[1].set_aside == "invalid_grant" and states[1].needs_relogin
+
+
+class _FakeSource:
+    def __init__(self, snap=None, error=None):
+        self.calls = []
+        self.snap, self.error = snap, error
+
+    def take(self, *, full=False, store_only=False):
+        self.calls.append((full, store_only))
+        if self.error:
+            raise self.error
+        return self.snap
+
+
+class _FakeClaude:
+    def __init__(self, live="a@x.com", set_aside=None):
+        self.live, self.held = live, set_aside or {}
+
+    def live_login_email(self):
+        return self.live
+
+    def set_aside_accounts(self):
+        return self.held
+
+
+def test_claude_state_reads_store_only_while_an_engine_runs():
+    source = _FakeSource(_Snap([_snap_account("1", "a@x.com", active=True)]))
+    state = menubar_data.claude_state(_FakeClaude(set_aside={"1": "x"}), source, full=False,
+                                      store_only=True, now=_NOW)
+    assert source.calls == [(False, True)]
+    assert state.live_email == "a@x.com" and state.accounts[0].set_aside == "x"
+    assert state.cli_found is None  # only asked on a first run
+
+
+def test_claude_state_says_why_it_could_not_be_read():
+    source = _FakeSource(error=ConfigError("sequence.json could not be read"))
+    state = menubar_data.claude_state(_FakeClaude(), source, full=True, store_only=False, now=_NOW)
+    assert state.error == "sequence.json could not be read"
+
+
+def test_claude_state_first_run_asks_whether_claude_is_installed():
+    state = menubar_data.claude_state(_FakeClaude(live=None), _FakeSource(_Snap([])),
+                                      full=False, store_only=False, now=_NOW)
+    assert state.cli_found is True  # conftest: both CLIs found
+
+
+def test_codex_reader_without_codex_accounts(tmp_path):
+    state = menubar_data.CodexReader(tmp_path).state(full=False, store_only=False, now=_NOW)
+    assert state == ProviderState("codex", managed=0)
+    assert menubar_data.codex_registry_count(tmp_path) == 0
+    (tmp_path / "codex").mkdir()
+    (tmp_path / "codex" / "sequence.json").write_text(json.dumps({"accounts": {"1": {}, "2": {}}}))
+    assert menubar_data.codex_registry_count(tmp_path) == 2
+
+
+def test_read_history_reads_the_end_of_the_log(tmp_path):
+    log = tmp_path / "ai-quota-swap.log"
+    log.write_text("x" * (menubar_data.HISTORY_TAIL_BYTES + 10) + "\n" + _SWITCH_LOG)
+    assert menubar_data.read_history(log)[0] == SwitchRecord("claude", "3", "1", "2026-06-27 02:10")
+    assert menubar_data.read_history(tmp_path / "missing.log") == ()
+
+
+def _ledger(root: Path, rows):
+    from ai_quota_swap.ledger.store import LedgerStore
+
+    store = LedgerStore(root / "ledger.db")
+    try:
+        store.begin()
+        store.add_buckets(rows)
+        store.commit()
+    finally:
+        store.close()
+
+
+def _hour(day: _dt.date, h: int = 12) -> int:
+    local = _dt.datetime(day.year, day.month, day.day, h).astimezone()
+    return int(local.timestamp() // 3600)
+
+
+def test_read_cost_today_and_seven_days(tmp_path):
+    from ai_quota_swap.ledger.pricing import PriceTable
+
+    today = _dt.date(2026, 11, 10)
+    model = "claude-opus-5"
+    _ledger(tmp_path, [
+        ("claude", _hour(today), "a", model, "p", "s1", 1_000_000, 100_000, 0, 0, 0, 0, 3),
+        ("claude", _hour(today - _dt.timedelta(days=3)), "a", model, "p", "s2", 2_000_000, 0, 0, 0, 0, 0, 1),
+        ("codex", _hour(today - _dt.timedelta(days=9)), "a", model, "p", "s3", 9_000_000, 0, 0, 0, 0, 0, 1),
+    ])
+    price = PriceTable().lookup(model)[1]
+    cost = menubar_data.read_cost(tmp_path, today=today)
+    assert cost.today == pytest.approx(price.cost(1_000_000, 100_000, 0, 0, 0))
+    assert cost.week == pytest.approx(price.cost(1_000_000, 100_000, 0, 0, 0) + price.cost(2_000_000, 0, 0, 0, 0))
+    assert cost.week_unpriced == 0
+
+
+def test_read_cost_hidden_without_a_ledger_and_never_creates_one(tmp_path):
+    assert menubar_data.read_cost(tmp_path) is None
+    assert not (tmp_path / "ledger.db").exists()
+
+
+def test_read_cost_hidden_while_the_ledger_is_empty(tmp_path):
+    _ledger(tmp_path, [])
+    assert menubar_data.read_cost(tmp_path) is None
+
+
+def test_read_cost_counts_unpriced_tokens(tmp_path):
+    today = _dt.date(2026, 11, 10)
+    _ledger(tmp_path, [("claude", _hour(today), "a", "no-such-model", "p", "s", 50, 50, 0, 0, 0, 0, 1)])
+    cost = menubar_data.read_cost(tmp_path, today=today)
+    assert cost.today == 0.0 and cost.today_unpriced == 100
+    assert cost.text() == "Today n/a · 7 days n/a (estimated)"
+
+
+def test_read_cost_opens_the_ledger_read_only(tmp_path, monkeypatch):
+    _ledger(tmp_path, [("claude", _hour(_dt.date.today()), "a", "claude-opus-5", "p", "s", 1, 1, 0, 0, 0, 0, 1)])
+    uris = []
+    real = sqlite3.connect
+
+    def spy(target, *a, **kw):
+        uris.append(str(target))
+        return real(target, *a, **kw)
+
+    monkeypatch.setattr(menubar_data.sqlite3, "connect", spy)
+    assert menubar_data.read_cost(tmp_path) is not None
+    assert uris and all(u.endswith("?mode=ro") for u in uris)
+
+
+def test_ledger_stamp_changes_with_the_ledger(tmp_path):
+    before = menubar_data.ledger_stamp(tmp_path)
+    _ledger(tmp_path, [])
+    assert menubar_data.ledger_stamp(tmp_path) != before
+
+
+def test_scan_interval_is_modest():
+    assert 5 * 60 <= menubar_data.COST_SCAN_INTERVAL_S <= 60 * 60

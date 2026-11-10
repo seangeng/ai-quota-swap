@@ -538,15 +538,17 @@ class TestTuiAndMenuBar:
         assert "Admin key rejected; estimate from this machine's transcripts" in card
 
     def test_menu_bar_row(self, fleet, at_now):
-        from ai_quota_swap import menubar
+        # The menu bar says what qswap list says (docs/design/ux.md).
+        from ai_quota_swap import menubar, menubar_data
 
         snap, _ = self._snapshot(fleet)
-        rows = {r[0]: r for r in menubar._adapt_snapshot(snap)["accounts"]}
-        display = rows["3"][3]
-        assert display == "$10.00 today · $14.00/$20 (70%)"
-        assert menubar.usage_summary(display) == display  # fits the row, no cut
-        label = menubar.format_account_label("3", record(fleet, 3)["email"], display, now=NOW)
-        assert label.endswith("$10.00 today · $14.00/$20 (70%)")
+        accs = {a.number: a for a in menubar_data.account_states(snap, "claude", {}, now=NOW)}
+        row = menubar.account_row(accs["3"], now=NOW, stale_after_s=900)
+        # qswap list's words, cut to the row limit; the tooltip has them whole.
+        assert row.text.startswith("#3 api-key-3@token.local · API key · $10.00 today · $14.00")
+        assert len(row.text) <= menubar.ROW_LIMIT
+        assert "$10.00 today · $14.00 this month of $20 (70%)" in row.tooltip
+        assert not row.attention  # under budget
 
 
 class TestBudgetCommand:

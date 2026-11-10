@@ -146,6 +146,11 @@ Static.list-heading { color: $foreground; text-style: bold; }
     color: $warning;
 }
 
+.mode-badge.off {
+    background: $panel;
+    color: $secondary;
+}
+
 .mode-badge.live {
     background: $primary;
     color: $background;

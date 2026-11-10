@@ -16,7 +16,14 @@ Run everything from the repository root with the dev dependencies installed
     uv run python scripts/demo/run.py fleet -- list
     uv run python scripts/demo/run.py usage -- usage --by model
     uv run python scripts/demo/run.py fleet --serve            # the dashboard at http://127.0.0.1:8765/
+    uv run python scripts/demo/run.py fleet --menubar          # the menu bar's menu, as an outline
     uv run python scripts/demo/build.py                        # regenerate all shots
+
+`run.py <scenario> --menubar` prints the macOS menu bar's menu for the
+scenario as an indented outline: the menu bar cannot be drawn off macOS or
+inside the sandbox, but every row it shows comes from one pure function
+(`ai_quota_swap.menubar.build_menu`), which the outline prints after the same
+reads and ledger scan the app makes.
 
 `run.py <scenario> -- <qswap arguments>` runs the real CLI entry point
 (`ai_quota_swap.cli.main`) against a scenario. Separate several commands with
