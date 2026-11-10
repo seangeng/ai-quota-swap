@@ -14,7 +14,16 @@ import pytest
 from ai_quota_swap import paths
 from ai_quota_swap.codex import auth as codex_auth
 from ai_quota_swap.exceptions import CodexLoginError, LockError
-from tests.codex_helpers import AUTH, PROFILE, LOGIN_A, make_jwt, make_login, write_live
+from tests.codex_helpers import (
+    AUTH,
+    LOGIN_A,
+    PROFILE,
+    codex_could_lock,
+    codex_holds_lock,
+    make_jwt,
+    make_login,
+    write_live,
+)
 
 
 @pytest.fixture
@@ -249,6 +258,22 @@ class TestLocksAndWrite:
         (home / "auth.json").symlink_to("real.json")
         assert codex_auth.resolve_auth_file(home / "auth.json") == home / "real.json"
 
+    def test_a_relative_hop_after_an_absolute_one_reaches_the_file(self, home, tmp_path):
+        # auth.json -> <abs>/links/creds, then creds -> ../store/real.json:
+        # the ".." is joined onto the first hop's target.
+        store, links = tmp_path / "store", tmp_path / "links"
+        store.mkdir()
+        links.mkdir()
+        (store / "real.json").write_bytes(b"{}")
+        (links / "creds").symlink_to(Path("..") / "store" / "real.json")
+        (home / "auth.json").symlink_to(links / "creds")
+        resolved = codex_auth.resolve_auth_file(home / "auth.json")
+        assert os.path.samefile(resolved, store / "real.json")
+        codex_auth.check_replaceable(home / "auth.json")
+        with codex_auth.codex_auth_locks(home):
+            pass
+        assert (store / "real.json.lock").exists()
+
     def test_symlink_loops_are_refused(self, home):
         (home / "auth.json").symlink_to(home / "auth.json")
         with pytest.raises(CodexLoginError, match="too many symlinks"):
@@ -272,29 +297,30 @@ class TestLocksAndWrite:
 
     def test_a_held_auth_lock_is_a_retryable_lock_error(self, home, monkeypatch):
         """Another process (Codex) holding auth.lock: nothing changes."""
-        import fcntl
-
         monkeypatch.setattr(codex_auth, "AUTH_LOCK_TIMEOUT_S", 0.2)
         (home / "auth.lock").touch()
-        with open(home / "auth.lock", "r+") as holder:
-            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        with codex_holds_lock(home / "auth.lock"):
             with pytest.raises(LockError, match="auth.lock"):
                 with codex_auth.codex_auth_locks(home):
                     pytest.fail("entered while Codex held the lock")
 
     def test_a_held_commit_lock_releases_the_first_lock(self, home, monkeypatch):
-        import fcntl
-
         monkeypatch.setattr(codex_auth, "COMMIT_LOCK_TIMEOUT_S", 0.2)
         (home / "auth.json.lock").touch()
-        with open(home / "auth.json.lock", "r+") as holder:
-            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        with codex_holds_lock(home / "auth.json.lock"):
             with pytest.raises(LockError, match="auth.json.lock"):
                 with codex_auth.codex_auth_locks(home):
                     pass
         # auth.lock was released on the way out.
-        with open(home / "auth.lock", "r+") as probe:
-            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert codex_could_lock(home / "auth.lock")
+
+    def test_codex_cannot_take_either_lock_while_qswap_holds_them(self, home):
+        """The other direction: qswap's locks keep Codex out until released."""
+        with codex_auth.codex_auth_locks(home):
+            assert not codex_could_lock(home / "auth.lock")
+            assert not codex_could_lock(home / "auth.json.lock")
+        assert codex_could_lock(home / "auth.lock")
+        assert codex_could_lock(home / "auth.json.lock")
 
     def test_write_is_atomic_0600_and_keeps_a_symlink(self, home, tmp_path):
         target = tmp_path / "store" / "auth.json"
@@ -315,9 +341,11 @@ class TestLocksAndWrite:
         with pytest.raises(CodexLoginError, match="hard-linked"):
             codex_auth.check_replaceable(path)
         os.unlink(tmp_path / "second-name")
-        path.chmod(0o400)
+        path.chmod(0o400)  # on Windows: the read-only attribute
         try:
-            if os.geteuid() != 0:
+            # Root writes through a POSIX read-only mode; Windows' read-only
+            # attribute stops every account.
+            if sys.platform == "win32" or os.geteuid() != 0:
                 with pytest.raises(CodexLoginError, match="read-only"):
                     codex_auth.check_replaceable(path)
         finally:

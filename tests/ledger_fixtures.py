@@ -103,8 +103,11 @@ def owner_line(session: str, account_uuid: str, org: str = "") -> str:
 
 
 def write_lines(path: Path, lines: list[str], *, append: bool = False) -> Path:
+    """Write JSONL as Claude Code and Codex do on every platform: one ``\\n``
+    per line, never ``\\r\\n`` (``newline=""`` turns off Windows' text-mode
+    translation, so byte counts in the tests hold there too)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a" if append else "w", encoding="utf-8") as f:
+    with open(path, "a" if append else "w", encoding="utf-8", newline="") as f:
         for line in lines:
             f.write(line + "\n")
     return path
