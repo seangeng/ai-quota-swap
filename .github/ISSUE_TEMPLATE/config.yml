@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
-  - name: 📖 Tips & how it works
-    url: https://github.com/seangeng/ai-quota-swap#tips
-    about: Restart-after-switch behavior, macOS Keychain caching, and other common gotchas are covered in the README.
+  - name: Documentation
+    url: https://github.com/seangeng/ai-quota-swap#documentation
+    about: How auto-switch decides, usage resets, Codex accounts, the menu bar, JSON output, and common questions.
+  - name: Report a security vulnerability
+    url: https://github.com/seangeng/ai-quota-swap/security/advisories/new
+    about: Report it privately, not as an issue. See SECURITY.md.

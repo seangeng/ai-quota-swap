@@ -1,16 +1,21 @@
 name: Feature request
-description: Suggest an improvement or new capability
+description: Suggest an improvement or a new capability
 labels: [enhancement]
 body:
   - type: textarea
     id: problem
     attributes:
       label: What problem would this solve?
-      description: Describe the situation where you miss this feature — the workflow matters more than the mechanism.
+      description: The situation where you miss it. The workflow matters more than the mechanism.
     validations:
       required: true
   - type: textarea
-    id: solution
+    id: proposal
     attributes:
       label: What would you like to happen?
-      description: A rough sketch is fine — commands, flags, behavior.
+      description: A rough sketch is fine, such as the command, its flags and what it prints.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today instead?
+      description: A workaround, another tool, or nothing.
