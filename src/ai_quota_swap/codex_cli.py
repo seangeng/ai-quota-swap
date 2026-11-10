@@ -1,12 +1,15 @@
 """``qswap codex <verb>``: the Codex provider's command line, and its section
 in the unified ``qswap list``.
 
-The Claude handlers in ``cli.py`` are not reused: their help, examples and
-follow-up hints name Claude-only commands (``run``, ``map``, ``qswap auto``),
-and the main parser carries Claude-only flags. These handlers keep the Claude
-wording and layout wherever the behaviour is the same, and the same
+The Claude handlers in ``cli.py`` are mostly not reused: their help, examples
+and follow-up hints name Claude-only commands (``run``, ``map``, ``qswap
+auto``), and the main parser carries Claude-only flags. These handlers keep the
+Claude wording and layout wherever the behaviour is the same, and the same
 ``--json`` envelope and ``schemaVersion`` wherever the Claude equivalent has
-``--json`` (``list``, ``status``, ``switch``).
+``--json`` (``list``, ``status``, ``switch``). ``auto`` and ``reset`` are the
+exception: they run ``cli``'s own handlers under the codex provider, which
+branch on it only for wording, so the engine host, the reset bookkeeping and
+the output modes stay one implementation.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from ai_quota_swap.printer import accent, bolded, dimmed, error, muted, warning
 PROG = "qswap codex"
 
 #: Verbs of the next milestones: refused with "not available yet".
-NOT_YET = ("auto", "reset", "resets", "run")
+NOT_YET = ("run",)
 
 LOGOUT_WARNING = (
     "Never run `codex logout` on a login qswap has saved: it signs the login "
@@ -38,11 +41,14 @@ LOGOUT_WARNING = (
 )
 
 SECOND_ACCOUNT_STEPS = """\
-Adding a second account:
-  `codex login` signs the current login out at OpenAI before it logs in, which
-  kills qswap's saved copy of it too. Log the next account in under an empty,
-  throwaway Codex home instead:
+Adding another account:
+  qswap codex login
+  It logs the account in under a private, temporary Codex home, saves it, and
+  deletes that home; your current Codex login stays signed in and live.
+  (Plain `codex login` in your normal Codex home signs the current login out
+  at OpenAI first, which kills qswap's saved copy of it too.)
 
+  By hand, if qswap codex login cannot run codex:
     tmp="$(mktemp -d)"
     CODEX_HOME="$tmp" codex login        # log in with the other account
     CODEX_HOME="$tmp" qswap codex add
@@ -61,6 +67,7 @@ Commands:
   {PROG} switch                        rotate to the next account
   {PROG} switch <num|email>            switch to a specific account
   {PROG} add                           save the current Codex login
+  {PROG} login [-- args]               log in a further account and save it
   {PROG} remove <num|email>            stop managing an account
   {PROG} disable <num|email>           hold an account out of rotation
   {PROG} enable <num|email>            return a disabled account to rotation
@@ -71,10 +78,13 @@ Commands:
   {PROG} alias <num|email> <name>      set a short alias for an account
   {PROG} alias <num|email> --unset     remove an account's alias
   {PROG} alias                         list all aliases
+  {PROG} auto                          auto-switch when the active account runs out
+  {PROG} reset                         list Codex usage reset credits (+ the auto plan)
+  {PROG} reset <num|email>             spend one credit on that account
 
-Not available yet: auto, reset, run. Aliases: ls=list  rm=remove
+Not available yet: run. Aliases: ls=list  rm=remove
 
-Add --json to list, status or switch for machine-readable output.
+Add --json to list, status, switch, reset or auto for machine-readable output.
 
 {SECOND_ACCOUNT_STEPS}
 {LOGOUT_WARNING}
@@ -144,7 +154,8 @@ def _add(argv: list[str]) -> None:
         "add",
         "Save the login currently in Codex's auth.json ($CODEX_HOME/auth.json, "
         "default ~/.codex/auth.json) as a managed account. Run it again for a "
-        "login that is already managed to refresh its saved copy.",
+        "login that is already managed to refresh its saved copy. To add "
+        "another account, use qswap codex login instead.",
         epilog=f"{SECOND_ACCOUNT_STEPS}\n{LOGOUT_WARNING}",
     )
     parser.add_argument("--slot", type=int, metavar="NUM", help="Store the account in this slot")
@@ -275,7 +286,7 @@ def _alias(argv: list[str]) -> None:
     _run(args, action)
 
 
-_ENGINE_NOTE = "Used by qswap codex auto, which is not available yet."
+_ENGINE_NOTE = "Used by qswap codex auto."
 
 
 def _threshold(argv: list[str]) -> None:
@@ -360,8 +371,56 @@ def _priority(argv: list[str]) -> None:
     _run(args, action)
 
 
+def _login(argv: list[str]) -> None:
+    if "--" in argv:
+        split = argv.index("--")
+        head, tail = argv[:split], argv[split + 1:]
+    else:
+        head, tail = argv, []
+    parser = _parser(
+        "login",
+        "Log in a further Codex account and save it, without touching the "
+        "login you are on. Runs `codex login` under a private, temporary Codex "
+        "home (CODEX_HOME), saves the login it leaves the way qswap codex add "
+        "does (an account already saved gets its saved copy updated), and "
+        "deletes the temporary home. Your Codex home and the live account do "
+        "not change; switch with qswap codex switch.",
+        epilog=f"""Examples:
+  qswap codex login
+  qswap codex login --alias work
+  qswap codex login -- --device-auth     # arguments after -- go to codex login
+
+{LOGOUT_WARNING}
+""",
+    )
+    parser.add_argument("--slot", type=int, metavar="NUM", help="Store the account in this slot")
+    parser.add_argument("--alias", metavar="NAME", help="Set a short display alias for the account")
+    args = parser.parse_args(head)
+    _run(args, lambda s: s.login_new_account(tail, slot=args.slot, alias=args.alias))
+
+
+def _auto(argv: list[str]) -> None:
+    """``qswap codex auto``: ``cli``'s auto command over the Codex switcher."""
+    from ai_quota_swap import cli
+
+    with cli.selected_provider("codex"):
+        cli._auto_command(argv)
+
+
+def _reset(argv: list[str]) -> None:
+    """``qswap codex reset``: ``cli``'s reset command over the Codex switcher."""
+    from ai_quota_swap import cli
+
+    with cli.selected_provider("codex"):
+        cli._reset_command(argv)
+
+
 _VERBS: dict[str, Callable[[list[str]], None]] = {
     "add": _add,
+    "login": _login,
+    "auto": _auto,
+    "reset": _reset,
+    "resets": _reset,
     "list": _list,
     "ls": _list,
     "status": _status,
@@ -459,3 +518,80 @@ def extend_unified_list(payload, *, json_output: bool):
     if json_output and isinstance(payload, dict):
         payload = {**payload, "providers": {"codex": section}}
     return payload
+
+
+# -- reset credits: Codex wording for cli's reset command ---------------------------
+
+
+def describe_credit(
+    num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float
+) -> str:
+    """What spending one Codex usage reset credit would do, before asking."""
+    from ai_quota_swap import resets
+
+    lines = [bolded(f"Account-{num} ({email}) · Codex usage reset credit · {grant['id']}")]
+    if grant.get("label"):
+        lines.append(dimmed(f"  {grant['label']}"))
+    refills = []
+    for key in grant.get("clears") or ():
+        label = resets.WINDOW_LABELS.get(key) or key
+        window = (usage or {}).get(key)
+        pct = window.get("pct") if isinstance(window, dict) else None
+        refills.append(f"{label} (now {pct:.0f}%)" if isinstance(pct, (int, float)) else label)
+    if refills:
+        lines.append(f"  Resets {', '.join(refills)} to 0%")
+    end = resets.use_by(resets.parse_ts(grant.get("ends_at")), year=True)
+    lines.append(f"  Expires {end}" if end else "  Does not expire")
+    others = max(0, resets.total_left(status, now) - 1)
+    lines.append(dimmed(
+        f"  {others} other credit{'' if others == 1 else 's'} on this account · "
+        "a spent credit cannot be undone"
+    ))
+    return "\n".join(lines)
+
+
+def print_credit_used(switcher, num: str, email: str, grant: dict) -> None:
+    """The success line after a spent credit, then the account's fresh usage."""
+    import time
+
+    from ai_quota_swap import resets
+
+    cleared = ", ".join(
+        resets.WINDOW_LABELS.get(k) or k for k in grant.get("clears") or ()
+    ) or "usage"
+    fresh = switcher.usage_entries_by_account(fetch=set()).get(num)
+    status = (
+        fresh.last_good.get("resets")
+        if fresh is not None and isinstance(fresh.last_good, dict) else None
+    )
+    left = ""
+    if isinstance(status, dict):
+        count = resets.total_left(status, time.time())
+        left = f" · {count} credit{'' if count == 1 else 's'} left"
+    print(accent(
+        f"Used a Codex usage reset credit on Account-{num} ({email}): "
+        f"{cleared} reset{left}"
+    ))
+    if fresh is not None:
+        for line in switcher._entry_lines(fresh):
+            print(f"   {line}")
+
+
+# -- qswap usage ------------------------------------------------------------------
+
+
+def observe_codex_login() -> None:
+    """For ``qswap usage``: note the live Codex login in Codex's activation
+    log, so a login changed outside qswap is attributed from now on.
+
+    Nothing at all (one file check, no switcher, no Codex home read) when no
+    Codex account is managed. Never raises.
+    """
+    try:
+        if not codex_accounts_managed():
+            return
+        from ai_quota_swap.codex.switcher import CodexSwitcher
+
+        CodexSwitcher(configure_logging=False).observe_activation()
+    except Exception:
+        pass

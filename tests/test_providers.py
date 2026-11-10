@@ -172,9 +172,13 @@ class TestCodexSwitcherFitsTheContracts:
         CodexSwitcher()
         assert not (temp_home / ".ai-quota-swap" / "codex").exists()
 
-    def test_the_next_milestone_members_say_so(self, codex):
-        with pytest.raises(exceptions.FeatureUnavailableError, match="not available yet"):
-            codex.claim_usage_reset("1", "g", "r")
+    def test_claim_never_raises_and_run_sessions_are_the_next_milestone(self, codex):
+        # M2b: spending a credit is implemented; an unknown account is an
+        # auth_error with nothing sent (the network block would fail a send).
+        from ai_quota_swap.resets import ClaimResult
+
+        result = codex.claim_usage_reset("1", "g", "r")
+        assert isinstance(result, ClaimResult) and result.result == "auth_error"
         assert codex.live_session_pids_for("1", "a@example.com") == []
 
 

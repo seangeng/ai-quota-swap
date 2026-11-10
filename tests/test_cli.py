@@ -2534,9 +2534,13 @@ class TestCodexPrefix:
     @pytest.mark.parametrize(
         "argv, message",
         [
-            (["codex", "auto", "--once"], "qswap codex auto is not available yet"),
             (["codex", "run", "2"], "qswap codex run is not available yet"),
-            (["codex", "reset"], "qswap codex reset is not available yet"),
+            # auto and reset exist since M2b; with nothing managed they still
+            # stop in one line, before any engine or network work.
+            (["codex", "auto", "--once"],
+             "No Codex accounts are managed yet; log in with codex and run qswap codex add"),
+            (["codex", "reset"],
+             "No Codex accounts are managed yet; log in with codex and run qswap codex add"),
             # Verbs that never build a switcher must not act on Claude
             # Code's data under the codex prefix either.
             (["codex", "config", "set", "autoswitch.threshold", "50"],
@@ -2558,12 +2562,20 @@ class TestCodexPrefix:
         claude_cls.assert_not_called()
 
     def test_unsupported_verb_json_prints_the_error_envelope(self, capsys):
-        code, _ = self._run_main(["codex", "auto", "--json"])
+        code, _ = self._run_main(["codex", "run", "--json"])
         assert code == 1
         assert json.loads(capsys.readouterr().out) == {
             "schemaVersion": 1,
             "error": {"type": "FeatureUnavailableError",
-                      "message": "qswap codex auto is not available yet"},
+                      "message": "qswap codex run is not available yet"},
+        }
+
+    def test_codex_auto_json_with_nothing_managed_prints_the_error_envelope(self, capsys):
+        code, _ = self._run_main(["codex", "auto", "--json"])
+        assert code == 1
+        assert json.loads(capsys.readouterr().out)["error"] == {
+            "type": "ConfigError",
+            "message": "No Codex accounts are managed yet; log in with codex and run qswap codex add",
         }
 
     def test_bare_codex_is_a_usage_error(self, capsys):

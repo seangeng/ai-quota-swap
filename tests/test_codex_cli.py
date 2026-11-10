@@ -228,7 +228,7 @@ class TestVerbs:
             ["codex", "threshold", "1", "95"], capsys)[1]
         out = run(["codex", "threshold"], capsys)[1]
         assert "  Account-1  95%" in out
-        assert "not available yet" in out
+        assert "Used by qswap codex auto." in out
         code, _, err = run(["codex", "threshold", "1", "10"], capsys)
         assert code == 1 and err.startswith("Error: ") and "50" in err
 

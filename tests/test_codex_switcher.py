@@ -108,7 +108,7 @@ class TestAdd:
         capture(sw, env, raw)
         out = capsys.readouterr().out
         assert "Added Account 1: a@example.com" in out
-        assert "qswap codex add --help" in out  # how to add the next one safely
+        assert "qswap codex login" in out  # how to add the next one safely
         saved = sw.credentials_dir / "account-1.json"
         assert saved.read_bytes() == raw
         if sys.platform != "win32":
