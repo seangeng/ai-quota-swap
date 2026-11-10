@@ -18,13 +18,19 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+
+if sys.platform == "win32":
+    # The harness is a macOS/Linux development tool: its sandbox identifies the
+    # real home through the password database and blocks POSIX paths.
+    pytest.skip("the demo harness's sandbox guards are POSIX-only", allow_module_level=True)
+
+import pwd  # noqa: E402  (POSIX-only; imported after the platform check)
 
 REPO = Path(__file__).resolve().parents[1]
 DEMO = REPO / "scripts" / "demo"

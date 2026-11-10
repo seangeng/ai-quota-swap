@@ -6,6 +6,8 @@ invented accounts (`maya@example.com`, `Northwind Labs`), invented usage, a
 fixed clock. Nothing here reads a real login, and the harness refuses to run
 if it cannot prove that.
 
+The harness runs on macOS and Linux. Its sandbox guards are POSIX-only, so it does not run on Windows.
+
 Run everything from the repository root with the dev dependencies installed
 (`uv sync`).
 
