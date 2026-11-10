@@ -901,47 +901,45 @@ def _snap(**kw) -> AccountSnapshot:
     return AccountSnapshot(**base)
 
 
-class _Palette:
-    muted = "dim"
-    sev_warn = "yellow"
-
-
 class TestTuiMarker:
-    def _render(self, record) -> str:
-        from rich.text import Text
+    """The dashboard card's header carries the plan as `qswap list` does."""
 
-        from ai_quota_swap.tui.widgets import _append_plan
+    def _header(self, record):
+        from ai_quota_swap.models import AccountsSnapshot
+        from ai_quota_swap.tui import data
+        from ai_quota_swap.tui.theme import Palette
+        from ai_quota_swap.tui.widgets import header_text
 
-        text = Text()
-        _append_plan(text, _snap(subscription_plan=record), "  ", _Palette())
-        return text.plain
+        acc = _snap(subscription_plan=record)
+        view = data.ProviderView("claude", AccountsSnapshot("1", (acc,), time.time()))
+        return header_text(data.block_for(view, acc), 120, Palette.DARK)
 
     def test_label(self):
-        assert self._render({"plan": TEAM, "fetchedAt": time.time()}) == "  · Team"
+        assert self._header({"plan": TEAM, "fetchedAt": time.time()}).plain == "#1 a@x · active · Team"
 
     def test_lapsed_is_a_highlighted_free_with_no_extra_words(self):
-        from rich.text import Text
+        from ai_quota_swap.tui.theme import Palette
 
-        from ai_quota_swap.tui.widgets import _append_plan
-
-        text = Text()
-        record = {"plan": LAPSED, "fetchedAt": time.time()}
-        _append_plan(text, _snap(subscription_plan=record), "  ", _Palette())
-        assert text.plain == "  · Free"
+        text = self._header({"plan": LAPSED, "fetchedAt": time.time()})
+        assert text.plain == "#1 a@x · active · Free"
         assert any(
-            span.style == _Palette.sev_warn
+            str(span.style) == Palette.DARK.sev_warn
             and text.plain[span.start : span.end] == "Free"
             for span in text.spans
         )
 
     def test_stale_age_uses_the_same_wording_as_list(self):
-        """12h old is the first stale moment — it must not read as "0d ago"."""
+        """12h old is the first stale moment: the age reads as list says it."""
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
+
         old_at = time.time() - 2 * subscription.PLAN_TTL_S - 60
-        rendered = self._render({"plan": TEAM, "fetchedAt": old_at})
-        assert "(12h ago)" in rendered
+        record = {"plan": TEAM, "fetchedAt": old_at}
+        listed, _warn = ClaudeAccountSwitcher._plan_text(record, time.time())
+        assert listed.startswith("Team (as of 12h")
+        assert self._header(record).plain.endswith(f"· {listed}")
 
     def test_nothing_without_a_record(self):
-        assert self._render(None) == ""
+        assert self._header(None).plain == "#1 a@x · active"
 
 
 class TestSnapshotSourceRefresh:

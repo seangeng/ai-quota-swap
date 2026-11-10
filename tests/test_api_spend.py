@@ -502,29 +502,40 @@ class TestTuiAndMenuBar:
         snap = s.accounts_snapshot()
         return snap, {a.number: a for a in snap.accounts}
 
-    def test_card_and_mini_row(self, fleet, at_now):
-        from ai_quota_swap.tui.widgets import account_card_text, mini_account_text
+    @staticmethod
+    def _drawn(acc, *, row: bool = False) -> str:
+        """The dashboard's card (or one-line row) for one account."""
+        from ai_quota_swap.models import AccountsSnapshot
+        from ai_quota_swap.tui import data
+        from ai_quota_swap.tui.theme import Palette
+        from ai_quota_swap.tui.widgets import card_text, row_text
 
+        view = data.ProviderView("claude", AccountsSnapshot(None, (acc,), NOW))
+        block = data.block_for(view, acc, now=NOW)
+        if row:
+            return row_text(block, 110, Palette.DARK, over_budget=data.over_budget(acc)).plain
+        return card_text(block, 110, Palette.DARK).plain
+
+    def test_card_and_row(self, fleet, at_now):
         _snap, accs = self._snapshot(fleet)
-        card = account_card_text(accs["3"], 110, now=NOW).plain
-        assert "· API key · $10.00 today · $14.00 this month of $20 (70%)" in card
+        card = self._drawn(accs["3"])
+        assert "· API key" in card.splitlines()[0]
+        assert "$10.00 today · $14.00 this month of $20 (70%)" in card
         assert "API key (no quota)" not in card
-        assert "API key · $14.00 (70%)" in mini_account_text(accs["3"], NOW).plain
+        assert self._drawn(accs["3"], row=True).endswith("$10.00 today · $14.00 this month of $20 (70%)")
         # The subscription row renders as it did.
-        assert "API key" not in account_card_text(accs["1"], 110, now=NOW).plain
+        assert "API key" not in self._drawn(accs["1"])
 
     def test_card_shows_the_fallback_note(self, env, anthropic, at_now):
-        from ai_quota_swap.tui.widgets import account_card_text
-
         anthropic.routes["/v1/organizations/usage_report/messages"] = [error_response(401)]
         s = make_switcher()
         email = seed_api_key(s, 3, KEY_A)
         _register()
         _ledger(email, [(NOW - 60, OPUS, 1_000_000, 0)])
         acc = {a.number: a for a in s.accounts_snapshot().accounts}["3"]
-        card = account_card_text(acc, 110, now=NOW).plain
+        card = self._drawn(acc)
         assert "$4.00 this month · estimate" in card
-        assert "└ Admin key rejected; estimate from this machine's transcripts" in card
+        assert "Admin key rejected; estimate from this machine's transcripts" in card
 
     def test_menu_bar_row(self, fleet, at_now):
         from ai_quota_swap import menubar

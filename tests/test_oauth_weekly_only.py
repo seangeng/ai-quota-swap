@@ -23,9 +23,22 @@ from ai_quota_swap.autoswitch import TickOutcome
 from ai_quota_swap.json_output import usage_to_json
 from ai_quota_swap.menubar import usage_summary
 from ai_quota_swap.switcher import _format_usage_lines
-from ai_quota_swap.tui.widgets import usage_rows
 from ai_quota_swap.usage_store import FetchRecord, UsageStore
 from tests.test_autoswitch import EngineHarness, _usage
+
+def usage_rows(usage, now: float = 0) -> list[tuple[str, float | None]]:
+    """The dashboard's window rows: ``(label, pct)`` of the account block a
+    card draws (``display.block_from_entry``, the command line's words)."""
+    from ai_quota_swap import display
+
+    if not isinstance(usage, dict):
+        return []
+    block = display.block_from_entry(
+        1, display.Reading(last_good=usage, fetched_at=None, age_s=0.0),
+        now=now, stale_after_s=float("inf"),
+    )
+    return [(w.label, w.pct) for w in block.windows]
+
 
 _OMITTED = object()
 _LABELS = {"five_hour": "5h", "seven_day": "7d"}

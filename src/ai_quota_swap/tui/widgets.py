@@ -303,10 +303,33 @@ def card_text(block: display.AccountBlock, width: int, palette: Palette, **kwarg
 # -- a one-line row ------------------------------------------------------------------
 
 
-def summary_parts(block: display.AccountBlock, *, over_budget: bool = False) -> list[tuple[str, str]]:
+def _login_part(block: display.AccountBlock) -> tuple[str, str] | None:
+    """The login row (``login  expires Nov 14 03:00 · in 5d 12h``) in a few
+    words for a one-line row: ``login expires in 5d 12h``."""
+    row = next((w for w in block.windows if w.label == "login" and w.text), None)
+    if row is None:
+        return None
+    if row.text.startswith("expired"):
+        return ("login expired", "warn-text")
+    when = row.text.rsplit(" · ", 1)[-1]
+    return (f"login expires {when}" if when.startswith("in ") else "login expires soon", "dim")
+
+
+def summary_parts(
+    block: display.AccountBlock, *, over_budget: bool = False, login: bool = True,
+) -> list[tuple[str, str]]:
     """A row's usage at a glance, as ``(text, role)``: ``5h 12% · 7d 21%``
-    with each figure's severity, or the state in ``qswap list``'s words.
+    with each figure's severity, or the state in ``qswap list``'s words, then
+    ``login expires in 5d 12h`` while the saved login is due (``login``).
     Roles: ``ok``/``warn``/``limit`` (a figure), ``sep``, ``dim``, ``warn-text``."""
+    out = _summary_core(block, over_budget=over_budget)
+    extra = _login_part(block) if login and block.state != "needs-relogin" else None
+    if extra is not None:
+        out.extend([(" · ", "sep"), extra])
+    return out
+
+
+def _summary_core(block: display.AccountBlock, *, over_budget: bool) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     if block.state == "needs-relogin":
         return [(display.NEEDS_RELOGIN, "warn-text")]
@@ -376,6 +399,9 @@ def row_text(
     plan; the figures are kept. ``column`` lines the summaries of several rows
     up (``None``: right after the header)."""
     summary = summary_text(summary_parts(block, over_budget=over_budget), palette)
+    if cell_len(summary.plain) > width // 2:
+        # The login note goes before the header is cut to nothing.
+        summary = summary_text(summary_parts(block, over_budget=over_budget, login=False), palette)
     room = max(12, width - cell_len(summary.plain) - len(GAP))
     start = min(column, room) if column is not None else room
     head = Text()
@@ -538,8 +564,8 @@ def panel_pieces(fleet: data.Fleet, width: int, palette: Palette, app) -> list[_
     rows = [(blocks[(v.provider, a.number)], a) for v, a in fleet.rows()]
     widest = max((row_header_width(b, width, palette, account_extra(a)) for b, a in rows), default=0)
     figures = max(
-        (cell_len(summary_text(summary_parts(b), palette).plain) for b, _a in rows
-         if b.state == "ok"),
+        (cell_len(summary_text(summary_parts(b, login=False), palette).plain)
+         for b, _a in rows if b.state == "ok"),
         default=0,
     )
     column = max(16, min(widest, width - figures - len(GAP)))

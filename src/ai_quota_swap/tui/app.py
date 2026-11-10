@@ -16,6 +16,7 @@ import threading
 import time
 from dataclasses import replace
 from functools import partial
+from pathlib import Path
 
 from textual.app import App
 from textual.binding import Binding
@@ -54,7 +55,7 @@ class QswapApp(App):
     """ai-quota-swap interactive dashboard."""
 
     TITLE = "ai-quota-swap"
-    CSS_PATH = "qswap.tcss"
+    CSS_PATH = str(Path(__file__).with_name("qswap.tcss"))
     # No command palette: actions live in the dashboard's nested menu, in
     # their own context — not in a global searchable list.
     ENABLE_COMMAND_PALETTE = False
@@ -334,7 +335,10 @@ class QswapApp(App):
         )
 
     def _action_blocking(self, label: str, fn, done) -> None:
-        result = run_action(fn)
+        try:
+            result = run_action(fn)
+        except Exception as e:  # not a provider error: still a message, never a traceback
+            result = ActionResult(False, f"Error: {e}\n", error=str(e))
         self.call_from_thread(self._action_done, label, result, done)
 
     def _action_done(self, label: str, result: ActionResult, done) -> None:

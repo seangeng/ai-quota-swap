@@ -471,11 +471,13 @@ class TestHarnessPieces:
                 if kind == "type":
                     assert isinstance(value, str) and value, stop
         # The menu helper follows the dashboard's root menu order.
-        from ai_quota_swap.tui.dashboard import DashboardScreen
+        from ai_quota_swap.tui.dashboard import ROOT_MENU
 
-        root = [action for _label, action in DashboardScreen._root_entries(None)]
+        root = [action for _label, action in ROOT_MENU]
         assert [a.removesuffix("-menu") for a in root] == list(tour.MENU)
         assert tour.parse_size("100x30") == (100, 30)
+        for stop in tour.STOPS:
+            assert all(isinstance(z, tuple) and len(z) == 2 for z in stop.sizes), stop
 
     def test_littledemo_steps_are_valid_and_keyboard_only(self, tmp_path):
         import stories

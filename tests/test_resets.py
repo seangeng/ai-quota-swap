@@ -946,18 +946,16 @@ class TestListRow:
         assert "resets:" in text
         assert "2    Fable · use by" in text
 
-    def test_tui_badge(self):
+    def test_tui_card_says_it_as_a_sentence(self):
         import time
 
-        from ai_quota_swap.tui.widgets import _resets_badge
+        from ai_quota_swap import display
 
         far = time.time() + 120 * DAY
-        assert _resets_badge(_usage(grants=[_grant("a", ends=far)]), time.time()) == "1 reset"
-        two = _usage(grants=[_grant("a", ends=far), _grant("b", ends=far, left=2)])
-        assert _resets_badge(two, time.time()) == "3 resets"
-        assert _resets_badge(_usage(), time.time()) == ""
-        assert _resets_badge(None, time.time()) == ""
-
+        status = _usage(grants=[_grant("a", ends=far), _grant("b", ends=far, left=2)])["resets"]
+        line = display.held_line(status, time.time())
+        assert line.startswith("Holds 3 Fable resets")
+        assert display.held_line(None, time.time()) == ""
     def test_no_row_without_resets(self):
         from ai_quota_swap.switcher import _usage_entry_lines
 
