@@ -52,10 +52,10 @@ class _Response(io.BytesIO):
         return False
 
 
-def _http_error(code: int):
+def _http_error(code: int, body: bytes = b"{}"):
     import email.message
 
-    return urllib.error.HTTPError(codex_usage.CONSUME_URL, code, "x", email.message.Message(), io.BytesIO(b"{}"))
+    return urllib.error.HTTPError(codex_usage.CONSUME_URL, code, "x", email.message.Message(), io.BytesIO(body))
 
 
 def _consume(answer, *, credit_id=UUID_CREDIT, request_id=REQ):
@@ -125,6 +125,26 @@ class TestConsumeRequest:
         result, _ = _consume(exc)
         assert (result.result, result.detail) == (expected, detail)
         assert not result.settled
+
+    @pytest.mark.parametrize("status, code, expected", [
+        (400, "no_credit", "unavailable"),
+        (409, "already_redeemed", "already_used"),
+        (422, "nothing_to_reset", "ineligible"),
+    ])
+    def test_a_refusal_sent_with_a_4xx_is_read_from_the_body(self, status, code, expected):
+        body = json.dumps({"code": code}).encode()
+        result, _ = _consume(_http_error(status, body))
+        assert (result.result, result.reason, result.detail) == (expected, code, f"http-{status}")
+
+    @pytest.mark.parametrize("exc", [
+        _http_error(400, b'{"code": "reset", "windows_reset": 2}'),  # a 4xx is never a success
+        _http_error(500, b'{"code": "no_credit"}'),                  # a 5xx is never definite
+        _http_error(400, b"not json"),
+        _http_error(400, b'{"code": "something_new"}'),
+    ])
+    def test_other_http_errors_stay_unknown_outcomes(self, exc):
+        result, _ = _consume(exc)
+        assert result.result == "error" and not result.settled
 
     @pytest.mark.parametrize("credit_id, request_id", [
         ("", REQ),

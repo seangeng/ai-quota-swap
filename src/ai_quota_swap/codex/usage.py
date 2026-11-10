@@ -467,6 +467,18 @@ def credits_status(listing: object, usage: dict) -> dict:
 # -- spending a credit ------------------------------------------------------------
 
 
+def _refusal_code(error: urllib.error.HTTPError) -> str | None:
+    """The consume ``code`` in an HTTP error body, when it is a known refusal."""
+    try:
+        data = json.loads(error.read())
+    except Exception:
+        return None
+    code = data.get("code") if isinstance(data, dict) else None
+    if isinstance(code, str) and code in CONSUME_RESULTS and code != "reset":
+        return code
+    return None
+
+
 def consume_reset_credit(
     access_token: str,
     account_id: str,
@@ -508,6 +520,13 @@ def consume_reset_credit(
             return ClaimResult("rate_limited", detail="http-429")
         if e.code in (401, 403):
             return ClaimResult("auth_error", detail=f"http-{e.code}")
+        # The server may answer a refusal (no credit, nothing to reset, already
+        # redeemed) with a 4xx that still carries its ``code``. Read it, so a
+        # definite "no" is not retried as an unknown outcome. A 4xx never
+        # reports a successful reset.
+        refusal = _refusal_code(e) if 400 <= e.code < 500 else None
+        if refusal is not None:
+            return ClaimResult(CONSUME_RESULTS[refusal], reason=refusal, detail=f"http-{e.code}")
         return ClaimResult("error", detail=f"http-{e.code}")
     except (TimeoutError, urllib.error.URLError, OSError) as e:
         _logger.debug("Codex reset credit transport failure: %r", e)
