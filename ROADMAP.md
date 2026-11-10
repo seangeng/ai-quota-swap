@@ -47,19 +47,22 @@ Done when: the full test suite passes under the new name and an export written b
 
 ### M1. Provider seam
 
-Today every module assumes Claude Code (`switcher.py` alone is 8,300 lines). Introduce a
-`Provider` interface and move Claude behind it with no behavior change:
+Design: [docs/design/providers.md](docs/design/providers.md).
 
-- identity (who is logged in), capture and activate a login, backup refresh
-- usage read, normalized to windows
-- resets: list and claim
-- session isolation (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) and "is the CLI running" detection
+A provider is a switcher object with its own data root and its own engine instance. The Claude
+Code switcher stays as it is and becomes the Claude provider; Codex gets a second switcher with
+the same members. The engine, usage store, window math, reset planner, and renderers are shared.
 
-One registry, each account tagged with a provider. Numbers stay global; "active" is per
-provider. The auto-switch engine runs once per provider on shared code.
+- `providers.py`: the engine-host contract as a `Protocol`, plus `provider_id`, `display_name`,
+  and `cli_name` on the Claude switcher.
+- The engine stops calling Claude credential helpers directly and goes through the host.
+- One switcher factory in `cli.py`, and the `qswap codex <verb>` prefix.
+- A common `SwitchError` base for provider errors.
+- Tests: `CODEX_HOME` isolation, the real `~/.codex` under the store guard, and a global
+  network block.
 
-Done when: the existing 3,660 tests pass unchanged and a stub second provider shows up in
-`list`, `--json`, the TUI, and the menu bar.
+Done when: the existing tests pass unchanged and `qswap codex list` reports that no Codex
+accounts are managed yet.
 
 ### M2. Codex
 
@@ -79,6 +82,8 @@ To verify before building: whether a running Codex session adopts a swapped `aut
 whether OpenAI refresh tokens rotate on use; the endpoint that spends a reset credit.
 
 ### M3. Token and cost ledger
+
+Design: [docs/design/ledger.md](docs/design/ledger.md).
 
 `usage` command: tokens by day, account, model, and project, with an API-equivalent dollar
 figure.
