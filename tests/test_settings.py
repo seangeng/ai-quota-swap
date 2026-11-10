@@ -16,6 +16,7 @@ from ai_quota_swap.settings import (
     SETTING_SPECS,
     atomic_write_json,
     AutoSwitchSettings,
+    CodexSettings,
     RunSettings,
     UiSettings,
     UpdateSettings,
@@ -23,6 +24,7 @@ from ai_quota_swap.settings import (
     UsageSettings,
     effective_settings,
     explicit_share_history,
+    load_codex_settings,
     load_run_settings,
     load_settings,
     load_ui_settings,
@@ -267,6 +269,30 @@ class TestUsageSettings:
         assert load_usage_settings(tmp_path).header_probe is False
 
 
+class TestCodexSettings:
+    def test_restart_daemon_defaults_on(self, tmp_path: Path):
+        assert load_codex_settings(tmp_path).restart_daemon is True
+
+    def test_set_and_unset_round_trip(self, tmp_path: Path):
+        assert set_setting(tmp_path, "codex.restartDaemon", "false") is False
+        raw = json.loads(settings_path(tmp_path).read_text())
+        assert raw["codex"] == {"restartDaemon": False}
+        assert load_codex_settings(tmp_path).restart_daemon is False
+        assert unset_setting(tmp_path, "codex.restartDaemon") is True
+        assert load_codex_settings(tmp_path).restart_daemon is True
+
+    @pytest.mark.parametrize("value, expected", [
+        ("false", False), ("no", False), ("true", True), (0, True), (None, True), ("x", True),
+    ])
+    def test_hand_edited_values(self, tmp_path: Path, value, expected):
+        settings_path(tmp_path).write_text(json.dumps({"codex": {"restartDaemon": value}}))
+        assert load_codex_settings(tmp_path).restart_daemon is expected
+
+    def test_listed_by_effective_settings(self, tmp_path: Path):
+        keys = {spec.dotted: value for spec, value, _ in effective_settings(tmp_path)}
+        assert keys["codex.restartDaemon"] is True
+
+
 class TestSettingSpecs:
     def test_registry_covers_every_dataclass_field(self):
         by_section: dict[str, set[str]] = {}
@@ -287,6 +313,9 @@ class TestSettingSpecs:
         assert by_section["usage"] == {
             f.name for f in UsageSettings.__dataclass_fields__.values()
         }
+        assert by_section["codex"] == {
+            f.name for f in CodexSettings.__dataclass_fields__.values()
+        }
 
     def test_defaults_match_dataclass(self):
         sources = {
@@ -296,6 +325,7 @@ class TestSettingSpecs:
             "updates": UpdateSettings(),
             "usage": UsageSettings(),
             "resets": ResetSettings(),
+            "codex": CodexSettings(),
         }
         for spec in SETTING_SPECS.values():
             assert spec.default == getattr(sources[spec.section], spec.field)

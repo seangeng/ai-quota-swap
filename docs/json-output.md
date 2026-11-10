@@ -2,6 +2,8 @@
 
 `qswap list --json`, `qswap status --json` and `qswap switch --json` print a single JSON object on stdout; human-readable notices go to stderr. The commands and an example are in the [README](../README.md#json-output-for-scripting).
 
+The same three commands under `qswap codex` (`qswap codex list --json`, ...) print the same shapes for Codex accounts; the differences are listed under [Codex](#codex).
+
 ## Contract
 
 - Every payload carries a `schemaVersion` (currently `1`).
@@ -44,6 +46,38 @@ Weekly windows (`sevenDay` and per-model `scoped` entries, never `fiveHour`) add
 | `willLastToReset` | Whether the quota will last to the reset at the current rate. |
 
 The two projections stay `--json`-only, since a linear projection is too rough to present as fact in the UI.
+
+## Codex
+
+`qswap codex list --json`, `status --json` and `switch --json` use the envelopes above. In a Codex row:
+
+- `organizationUuid` is the ChatGPT account (or workspace) id and `organizationName` is empty. `isOrganization` is `true` only for a workspace plan (Team, Business, Enterprise, ...).
+- `usage` carries `fiveHour` and `sevenDay` when the account has those windows (a Pro account reports only `sevenDay`); any other window, and each model-specific limit, is a `scoped` entry with a `name`.
+- `plan` has `label` (`Plus`, `Pro`, `Team`, ...), `tier` (the raw `plan_type`), `planDisplayName`, `expired` (always `false`) and `fetchedAt`.
+- `usage.resets` lists the account's reset credits, one grant per credit (`resetsLeft` 1 while it is available, `endsAt` its expiry).
+- `usageStatus` can also be `unknown_until_used`: a saved login whose access token expired while unused (or was refused). Codex renews it the first time it runs on that account. `token_expired` is the live login's state: its token ran out while Codex was idle.
+
+A Codex `switch` result may add `backgroundServer`: `{"pid", "restarted": true}`, or `{"pid", "restarted": false, "reason"}` when the restart was turned off (`codex.restartDaemon`) or failed. A failed restart is also in `warnings`; the switch itself still happened.
+
+### Codex in `qswap list --json`
+
+When at least one Codex account is managed, `qswap list --json` adds a top-level `providers` object; every other top-level key keeps its meaning, so a script reading only Claude accounts sees no change, and `import-usage` ignores the new key.
+
+```json
+{
+  "schemaVersion": 1,
+  "activeAccountNumber": 2,
+  "accounts": [ … Claude rows … ],
+  "providers": {
+    "codex": {
+      "activeAccountNumber": 1,
+      "accounts": [ … Codex rows, as in qswap codex list --json … ]
+    }
+  }
+}
+```
+
+Account numbers are per provider: Claude account 1 and Codex account 1 are different accounts. If the Codex accounts cannot be read (for example, Codex keeps its login in the OS keyring), `providers.codex` is `{"activeAccountNumber": null, "accounts": [], "error": {"type", "message"}}` and the Claude part is unaffected.
 
 ## `qswap auto --json`
 

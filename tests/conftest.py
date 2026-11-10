@@ -684,6 +684,26 @@ def _isolate_codex_home(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fake_codex_processes(monkeypatch):
+    """Safety net: no test sees this machine's real Codex processes or runs ``codex``.
+
+    A developer's own Codex sessions, background server or desktop app would
+    otherwise steer a switch (near-expiry refusal, warnings), and an unfaked
+    restart would run the real ``codex app-server daemon restart``. Tests that
+    exercise these set their own fakes; the real functions stay importable
+    from ``ai_quota_swap.codex.processes`` before this fixture runs.
+    """
+    from ai_quota_swap.codex import processes
+
+    def _no_restart(home, timeout=processes.RESTART_TIMEOUT_S):
+        raise AssertionError("a test reached `codex app-server daemon restart` unfaked")
+
+    monkeypatch.setattr(processes, "list_codex_processes", lambda: [])
+    monkeypatch.setattr(processes, "background_server_pid", lambda home: None)
+    monkeypatch.setattr(processes, "restart_background_server", _no_restart)
+
+
+@pytest.fixture(autouse=True)
 def _block_network(request):
     """Safety net: no test may open a real outbound connection.
 

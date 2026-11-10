@@ -29,6 +29,7 @@ from ai_quota_swap.exceptions import (
 )
 from ai_quota_swap.json_output import error_envelope
 from ai_quota_swap.providers import EngineHost, SurfaceHost
+from ai_quota_swap.codex.switcher import CodexSwitcher
 from ai_quota_swap.switcher import ClaudeAccountSwitcher
 from tests.test_autoswitch import EngineHarness
 
@@ -133,6 +134,50 @@ class TestContracts:
         assert isinstance(switcher.backup_dir, Path)
 
 
+class TestCodexSwitcherFitsTheContracts:
+    """The Codex switcher is its own class; it must fit both Protocols with
+    the Claude switcher's exact signatures."""
+
+    @pytest.fixture
+    def codex(self, temp_home: Path) -> CodexSwitcher:
+        return CodexSwitcher()
+
+    def test_not_a_claude_subclass(self):
+        assert not issubclass(CodexSwitcher, ClaudeAccountSwitcher)
+
+    @pytest.mark.parametrize("name", ENGINE_HOST_MEMBERS + SURFACE_HOST_MEMBERS)
+    def test_has_every_member(self, codex, name):
+        assert hasattr(codex, name), f"CodexSwitcher lacks {name}"
+
+    @pytest.mark.parametrize(
+        "proto, name",
+        [(EngineHost, n) for n in ENGINE_HOST_MEMBERS if n not in _DATA_MEMBERS]
+        + [(SurfaceHost, n) for n in SURFACE_HOST_MEMBERS],
+    )
+    def test_method_signatures_match_the_protocol(self, proto, name):
+        assert _params(getattr(CodexSwitcher, name)) == _params(getattr(proto, name))
+
+    def test_is_both_hosts_at_runtime(self, codex):
+        assert isinstance(codex, EngineHost)
+        assert isinstance(codex, SurfaceHost)
+
+    def test_provider_identity_and_data_root(self, codex, temp_home):
+        assert (codex.provider_id, codex.display_name, codex.cli_name) == (
+            "codex", "Codex", "codex",
+        )
+        claude_root = ClaudeAccountSwitcher().backup_dir
+        assert codex.backup_dir == claude_root / "codex"
+
+    def test_construction_writes_nothing(self, temp_home):
+        CodexSwitcher()
+        assert not (temp_home / ".ai-quota-swap" / "codex").exists()
+
+    def test_the_next_milestone_members_say_so(self, codex):
+        with pytest.raises(exceptions.FeatureUnavailableError, match="not available yet"):
+            codex.claim_usage_reset("1", "g", "r")
+        assert codex.live_session_pids_for("1", "a@example.com") == []
+
+
 # -- the registry ------------------------------------------------------------------
 
 
@@ -146,11 +191,18 @@ class TestRegistry:
         assert type(built) is ClaudeAccountSwitcher
         assert type(providers.make_switcher("claude")) is ClaudeAccountSwitcher
 
-    def test_make_switcher_refuses_codex_before_constructing_anything(self):
+    def test_make_switcher_builds_the_codex_switcher(self, temp_home):
         with patch("ai_quota_swap.switcher.ClaudeAccountSwitcher") as cls:
+            built = providers.make_switcher("codex", debug=False)
+        assert type(built) is CodexSwitcher
+        cls.assert_not_called()
+
+    def test_an_unavailable_provider_is_refused_before_construction(self, monkeypatch):
+        monkeypatch.setitem(providers._UNAVAILABLE, "codex", "not in this build")
+        with patch("ai_quota_swap.codex.switcher.CodexSwitcher") as cls:
             with pytest.raises(ProviderUnavailableError) as exc:
                 providers.make_switcher("codex", debug=True)
-        assert str(exc.value) == "Codex support is not available yet"
+        assert str(exc.value) == "not in this build"
         assert isinstance(exc.value, ProviderError)
         cls.assert_not_called()
 
@@ -406,7 +458,10 @@ class TestProviderErrorBase:
         )
 
     def test_provider_errors_outside_claude(self):
-        for cls in (ProviderUnavailableError, CredentialFormatError):
+        for cls in (
+            ProviderUnavailableError, CredentialFormatError,
+            exceptions.FeatureUnavailableError, exceptions.CodexLoginError,
+        ):
             assert issubclass(cls, ProviderError)
             assert not issubclass(cls, ClaudeSwitchError)
 

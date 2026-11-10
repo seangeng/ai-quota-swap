@@ -2504,62 +2504,79 @@ class TestImportUsageCli:
 
 
 class TestCodexPrefix:
-    """`qswap codex <verb>` selects the Codex provider, which M1 does not
-    implement yet: every verb is refused, before anything is dispatched, with
-    one line (or the JSON error envelope)."""
-
-    MESSAGE = "Codex support is not available yet"
+    """`qswap codex <verb>` selects the Codex provider: its verbs go to
+    ``codex_cli.dispatch`` and nothing else, so no Claude command (config,
+    upgrade, the menu bar) acts under that prefix, and verbs Codex does not
+    support fail with one line naming the verb."""
 
     def _run_main(self, argv: list[str]):
         with patch.object(sys, "argv", ["qswap", *argv]), \
-             patch.object(cli, "_dispatch") as dispatch, \
              patch.object(cli, "ClaudeAccountSwitcher") as claude_cls:
             with pytest.raises(SystemExit) as exc:
                 cli.main()
-        return exc.value.code, dispatch, claude_cls
+        return exc.value.code, claude_cls
 
-    def test_codex_list_exits_non_zero_with_one_line(self, capsys):
-        code, dispatch, claude_cls = self._run_main(["codex", "list"])
-        out, err = capsys.readouterr()
-        assert code == 1
-        assert err.splitlines() == [f"Error: {self.MESSAGE}"]
-        assert out == ""
-        dispatch.assert_not_called()
+    def test_codex_list_with_nothing_managed(self, capsys):
+        with patch.object(sys, "argv", ["qswap", "codex", "list"]), \
+             patch.object(cli, "ClaudeAccountSwitcher") as claude_cls:
+            cli.main()
+        out = capsys.readouterr().out
+        assert "No Codex accounts are managed yet." in out
         claude_cls.assert_not_called()
 
-    def test_codex_list_json_prints_the_error_envelope(self, capsys):
-        code, dispatch, _ = self._run_main(["codex", "list", "--json"])
-        out, err = capsys.readouterr()
-        assert code == 1
-        assert json.loads(out) == {
-            "schemaVersion": 1,
-            "error": {"type": "ProviderUnavailableError", "message": self.MESSAGE},
+    def test_codex_list_json_with_nothing_managed(self, capsys):
+        with patch.object(sys, "argv", ["qswap", "codex", "list", "--json"]):
+            cli.main()
+        assert json.loads(capsys.readouterr().out) == {
+            "schemaVersion": 1, "activeAccountNumber": None, "accounts": [],
         }
-        assert err == ""
-        dispatch.assert_not_called()
 
     @pytest.mark.parametrize(
-        "argv",
+        "argv, message",
         [
-            ["codex"],
-            ["codex", "status"],
-            ["codex", "switch", "2"],
-            ["codex", "auto", "--once"],
-            ["codex", "run", "2"],
+            (["codex", "auto", "--once"], "qswap codex auto is not available yet"),
+            (["codex", "run", "2"], "qswap codex run is not available yet"),
+            (["codex", "reset"], "qswap codex reset is not available yet"),
             # Verbs that never build a switcher must not act on Claude
             # Code's data under the codex prefix either.
-            ["codex", "config", "set", "autoswitch.threshold", "50"],
-            ["codex", "upgrade"],
-            ["codex", "menubar", "--auto-switch"],
+            (["codex", "config", "set", "autoswitch.threshold", "50"],
+             "qswap codex config is not a Codex command (try 'qswap codex help')"),
+            (["codex", "upgrade"], "qswap codex upgrade is not a Codex command (try 'qswap codex help')"),
+            (["codex", "menubar", "--auto-switch"],
+             "qswap codex menubar is not a Codex command (try 'qswap codex help')"),
+            (["codex", "usage"],
+             "qswap codex usage is not a Codex command: run qswap usage --provider codex"),
         ],
-        ids=lambda argv: " ".join(argv),
+        ids=lambda v: " ".join(v) if isinstance(v, list) else "",
     )
-    def test_every_verb_is_refused_before_dispatch(self, argv, capsys):
-        code, dispatch, claude_cls = self._run_main(argv)
+    def test_unsupported_verbs_fail_with_one_line(self, argv, message, capsys):
+        code, claude_cls = self._run_main(argv)
+        out, err = capsys.readouterr()
         assert code == 1
-        assert capsys.readouterr().err.splitlines() == [f"Error: {self.MESSAGE}"]
-        dispatch.assert_not_called()
+        assert err.splitlines() == [f"Error: {message}"]
+        assert out == ""
         claude_cls.assert_not_called()
+
+    def test_unsupported_verb_json_prints_the_error_envelope(self, capsys):
+        code, _ = self._run_main(["codex", "auto", "--json"])
+        assert code == 1
+        assert json.loads(capsys.readouterr().out) == {
+            "schemaVersion": 1,
+            "error": {"type": "FeatureUnavailableError",
+                      "message": "qswap codex auto is not available yet"},
+        }
+
+    def test_bare_codex_is_a_usage_error(self, capsys):
+        code, _ = self._run_main(["codex"])
+        assert code == 2
+        assert "no command given" in capsys.readouterr().err
+
+    def test_codex_help(self, capsys):
+        with patch.object(sys, "argv", ["qswap", "codex", "help"]):
+            cli.main()
+        out = capsys.readouterr().out
+        assert "qswap codex switch <num|email>" in out
+        assert "codex logout" in out
 
     def test_codex_list_as_a_real_command(self):
         result = subprocess.run(
@@ -2568,9 +2585,8 @@ class TestCodexPrefix:
             text=True,
             env=_subprocess_env(),
         )
-        assert result.returncode == 1
-        assert result.stderr.splitlines() == [f"Error: {self.MESSAGE}"]
-        assert result.stdout == ""
+        assert result.returncode == 0, result.stderr
+        assert "No Codex accounts are managed yet." in result.stdout
 
     def test_codex_list_json_as_a_real_command(self):
         result = subprocess.run(
@@ -2579,10 +2595,8 @@ class TestCodexPrefix:
             text=True,
             env=_subprocess_env(),
         )
-        assert result.returncode == 1
-        assert json.loads(result.stdout)["error"] == {
-            "type": "ProviderUnavailableError", "message": self.MESSAGE,
-        }
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["accounts"] == []
 
     def _capture_dispatch(self, argv: list[str], *, raises: BaseException | None = None):
         seen: list[tuple[list[str], str]] = []
@@ -2592,10 +2606,8 @@ class TestCodexPrefix:
             if raises is not None:
                 raise raises
 
-        # Pretend Codex is implemented, to see what main hands the dispatch.
         with patch.object(sys, "argv", ["qswap", *argv]), \
-             patch.object(cli, "_dispatch", side_effect=fake_dispatch), \
-             patch("ai_quota_swap.providers.ensure_available"):
+             patch.object(cli, "_dispatch", side_effect=fake_dispatch):
             if raises is None:
                 cli.main()
             else:
@@ -2619,13 +2631,22 @@ class TestCodexPrefix:
     def test_without_the_prefix_the_dispatch_is_unchanged(self, argv):
         assert self._capture_dispatch(argv) == [(argv, "claude")]
 
+    def test_the_codex_prefix_routes_to_codex_cli(self):
+        with cli.selected_provider("codex"), \
+             patch("ai_quota_swap.codex_cli.dispatch") as codex_dispatch, \
+             patch.object(cli, "_config_command") as config:
+            cli._dispatch(["config", "show"])
+        codex_dispatch.assert_called_once_with(["config", "show"])
+        config.assert_not_called()
+
     def test_the_switcher_factory_follows_the_selection(self):
+        from ai_quota_swap.codex.switcher import CodexSwitcher
+
         with patch.object(cli, "ClaudeAccountSwitcher") as claude_cls:
             assert cli._switcher(debug=True) is claude_cls.return_value
             claude_cls.assert_called_once_with(debug=True)
             with cli.selected_provider("codex"):
-                with pytest.raises(ProviderUnavailableError, match=self.MESSAGE):
-                    cli._switcher(debug=True)
+                assert type(cli._switcher(debug=False)) is CodexSwitcher
             assert claude_cls.call_count == 1
             cli._switcher()
             assert claude_cls.call_count == 2
@@ -2644,14 +2665,18 @@ class TestCodexPrefix:
     def test_a_command_handler_reports_a_provider_error(self, capsys):
         """Each handler catches the base, so a provider's error raised while
         building its switcher prints like any other: one line, exit 1."""
-        with cli.selected_provider("codex"):
+        boom = ProviderUnavailableError("provider unavailable")
+        with cli.selected_provider("codex"), \
+             patch("ai_quota_swap.providers.make_switcher", side_effect=boom):
             with pytest.raises(SystemExit) as exc:
                 cli._map_command([])
         assert exc.value.code == 1
-        assert capsys.readouterr().err.splitlines() == [f"Error: {self.MESSAGE}"]
+        assert capsys.readouterr().err.splitlines() == ["Error: provider unavailable"]
 
     def test_a_json_command_handler_reports_a_provider_error(self, capsys):
-        with cli.selected_provider("codex"):
+        boom = ProviderUnavailableError("provider unavailable")
+        with cli.selected_provider("codex"), \
+             patch("ai_quota_swap.providers.make_switcher", side_effect=boom):
             with pytest.raises(SystemExit) as exc:
                 cli._auto_command(["--once", "--json"])
         assert exc.value.code == 1

@@ -72,9 +72,11 @@ two accounts and needs two logins.
 `qswap codex add | list | status | switch | remove | alias | disable | enable | threshold |
 priority | auto | reset`, plus the Codex section in `qswap list` and `list --json`.
 
-- `add` captures the login currently in `auth.json`. To add a second account: run
-  `codex login` again with the other account (not `codex logout`), then `qswap codex add`.
-  Verify in the Codex source that `codex login` over an existing login does not revoke it.
+- `add` captures the login currently in `auth.json`. `codex login` over an existing login
+  revokes it: every login flow first calls `clear_existing_auth_before_login`, which runs
+  `logout_with_revoke` (`cli/src/login.rs` at rust-v0.164.0 and rust-v0.167.0). So a second
+  account is logged in under an empty, throwaway home (`CODEX_HOME="$tmp" codex login`) and
+  added from there (`CODEX_HOME="$tmp" qswap codex add`); see [../codex.md](../codex.md).
 - `switch` follows the procedure below.
 
 Not in the first version: `run` (one `CODEX_HOME` per account), directory mappings, API-key

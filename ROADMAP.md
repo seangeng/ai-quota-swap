@@ -68,7 +68,7 @@ Done when: the existing tests pass unchanged and `qswap codex list` reports that
 accounts are managed yet.
 
 Result: the existing tests pass. Nine of them were reaching real endpoints (Anthropic usage and
-token refresh, PyPI) and now patch those calls. Until M2, `qswap codex <verb>` exits 1 with
+token refresh, PyPI) and now patch those calls. Until M2a, `qswap codex <verb>` exited 1 with
 "Codex support is not available yet".
 
 ### M2. Codex
@@ -76,8 +76,15 @@ token refresh, PyPI) and now patch those calls. Until M2, `qswap codex <verb>` e
 Design: [docs/design/codex.md](docs/design/codex.md). Experimental until it has been run with
 two Codex accounts.
 
-- M2a: capture, list, remove, and switch Codex logins (`qswap codex ...`); live usage in
+- [x] M2a: capture, list, remove, and switch Codex logins (`qswap codex ...`); live usage in
   `qswap list` and `--json`; plan label; warnings for the background server and desktop app.
+  Done: `qswap codex add | list | status | switch | remove | alias | disable | enable |
+  threshold | priority`, the Codex section in `qswap list` and `providers.codex` in
+  `list --json`, the reset-credit list (read only), the activation log for `qswap usage`, and
+  the `codex.restartDaemon` setting. User guide: [docs/codex.md](docs/codex.md). Not yet run
+  with two real accounts. `codex login` over an existing login revokes it (verified in the
+  CLI source at rust-v0.164.0 and rust-v0.167.0), so a second account is logged in under a
+  throwaway `CODEX_HOME`.
 - M2b: `qswap codex auto` on the shared engine; reset credits (list, manual spend, auto-spend
   under the shared `resets.*` policy).
 - M2c: `qswap codex run`, one `CODEX_HOME` per account, for parallel accounts.

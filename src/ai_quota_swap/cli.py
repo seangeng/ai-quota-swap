@@ -1907,6 +1907,14 @@ def _dispatch(argv: list[str]) -> None:
     except Exception:
         pass  # theme is cosmetic; never block the CLI on it
 
+    # `qswap codex <verb>` has its own verbs and parsers; none of the Claude
+    # commands below (config, upgrade, menubar, ...) runs under that prefix.
+    if _provider.get() == "codex":
+        from ai_quota_swap import codex_cli
+
+        codex_cli.dispatch(argv)
+        return
+
     # `run` and `auto` keep their dedicated pre-dispatch parsers.
     if argv and argv[0] == "run":
         _run_command(argv[1:])
@@ -2005,6 +2013,7 @@ Commands:
   %(prog)s menubar --service-status   is it running? does it start at login?
   %(prog)s upgrade                    self-upgrade to latest
   %(prog)s purge                      remove all ai-quota-swap data
+  %(prog)s codex help                 OpenAI Codex CLI accounts (experimental)
 
 Aliases: ls=list  rm=remove  update=upgrade""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2427,6 +2436,11 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
                 show_token_status=args.token_status,
                 json_output=args.json,
             )
+            # The Codex section (text) or `providers.codex` (JSON), only when
+            # Codex accounts are managed; never fails the Claude list.
+            from ai_quota_swap import codex_cli
+
+            payload = codex_cli.extend_unified_list(payload, json_output=args.json)
         elif args.switch:
             from ai_quota_swap.settings import load_settings, parse_model_names
 

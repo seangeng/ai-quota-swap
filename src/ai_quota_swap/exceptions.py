@@ -25,6 +25,22 @@ class CredentialFormatError(ProviderError):
     pass
 
 
+class FeatureUnavailableError(ProviderError):
+    """The provider implements this feature in a later version, not this one."""
+
+    pass
+
+
+class CodexLoginError(ProviderError):
+    """Codex's live login cannot be read or managed.
+
+    Missing or unreadable ``auth.json``, a login kept in the OS keyring, or a
+    login that is not a ChatGPT one (an API key). Nothing was changed.
+    """
+
+    pass
+
+
 class ClaudeSwitchError(ProviderError):
     """Base exception for Claude Switch errors."""
 
@@ -57,6 +73,12 @@ class ConfigError(ClaudeSwitchError):
 
 class SwitchError(ClaudeSwitchError):
     """Error during account switch operation."""
+
+    pass
+
+
+class RetryableSwitchError(SwitchError):
+    """A switch refused for now: nothing was changed and retrying later is safe."""
 
     pass
 

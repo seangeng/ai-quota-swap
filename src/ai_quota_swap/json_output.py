@@ -42,6 +42,11 @@ USAGE_RELOGIN_REQUIRED = "re-login needed"
 # (stash the foreign credential, restore the slot's backup), so autoswitch
 # should treat the active as unknown-headroom and fail over.
 USAGE_FOREIGN_CREDENTIAL = "foreign credential"
+# A saved Codex login whose access token expired while it sat unused, or that
+# the usage endpoint refused (401). qswap never refreshes a Codex login; Codex
+# renews it the first time it runs on it, so its usage is unknown until then.
+# Distinct from "token expired", which is the live login's state.
+USAGE_UNKNOWN_UNTIL_USED = "usage unknown until used"
 
 
 def _window_to_json(entry: dict) -> dict:
@@ -289,6 +294,8 @@ def usage_fields(
         return "relogin_required", None
     if entry == USAGE_FOREIGN_CREDENTIAL:
         return "foreign_credential", None
+    if entry == USAGE_UNKNOWN_UNTIL_USED:
+        return "unknown_until_used", None
     if isinstance(entry, str):
         return "no_credentials", None
     return "unavailable", None
