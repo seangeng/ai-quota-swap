@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import atexit
+import errno
 import gc
+import ipaddress
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
+import threading
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,6 +54,19 @@ class RealStoreWriteBlocked(Exception):
     stdlib or this codebase, so the refusal can no longer be absorbed by
     the very shape it is meant to guard.
     """
+
+
+def _real_codex_home() -> Path:
+    """Where Codex CLI keeps ``auth.json`` under the environment as it is now.
+
+    Codex's own rule: ``$CODEX_HOME`` when set and non-empty, else ``~/.codex``.
+    The package has no Codex path helper yet, so the rule is spelled out here;
+    it only computes a path and never touches the directory.
+    """
+    override = os.environ.get("CODEX_HOME")
+    if override:
+        return Path(os.path.abspath(os.path.expanduser(override)))
+    return Path.home() / ".codex"
 
 
 def _freeze_real_store_specs() -> tuple[tuple[Path, bool], ...]:
@@ -145,6 +163,14 @@ def _freeze_real_store_specs() -> tuple[tuple[Path, bool], ...]:
             # directory exists, so not one mkdir is attempted above them.
             (_paths.get_default_claude_config_home() / "projects", True),
             (_paths.get_claude_config_home() / "projects", True),
+            # CODEX CLI's HOME, for its live login `auth.json`. Non-recursive
+            # for the same reason as `~/.claude`: Codex keeps its own sessions,
+            # logs and app worktrees beneath it, and a checkout of this repo
+            # may live there. Direct children are exactly `auth.json`, its
+            # atomic-write siblings, and Codex's config files. Resolved like
+            # the roots above: `$CODEX_HOME` in the ambient pass, `~/.codex`
+            # in the passes that clear it.
+            (_real_codex_home(), False),
         )
 
     ambient_specs = _resolve()
@@ -163,7 +189,8 @@ def _freeze_real_store_specs() -> tuple[tuple[Path, bool], ...]:
                     os.environ[k] = v
 
     default_specs = _resolve_with_cleared(
-        "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "XDG_DATA_HOME"
+        "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "XDG_DATA_HOME",
+        "CODEX_HOME",
     )
     # C-0: a THIRD snapshot, additive to (not replacing) default_specs above.
     # The mandated review/CI isolation recipe sets HOME/USERPROFILE (and
@@ -183,7 +210,7 @@ def _freeze_real_store_specs() -> tuple[tuple[Path, bool], ...]:
     # used to protect.
     home_default_specs = _resolve_with_cleared(
         "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "XDG_DATA_HOME",
-        "HOME", "USERPROFILE",
+        "CODEX_HOME", "HOME", "USERPROFILE",
     )
 
     seen: set[Path] = set()
@@ -433,6 +460,150 @@ def _real_store_audit_hook(event: str, args: tuple) -> None:
 sys.addaudithook(_real_store_audit_hook)
 
 
+# -- global network block --------------------------------------------------------
+#
+# Every HTTP call in the package goes through `urllib.request.urlopen`, and
+# tests fake it by patching some function above it. A patch that misses (a
+# call site moved, a name imported directly, a new caller nobody patched)
+# used to reach the real endpoint. The block sits at the socket level so it
+# catches every caller, whichever module it lives in. Like the audit hook it
+# is installed once, at import, and never unwound: a thread that outlives its
+# own test is still blocked.
+
+
+class NetworkAccessBlocked(OSError):
+    """A test tried to open a real outbound connection.
+
+    An ``OSError`` on purpose, unlike ``RealStoreWriteBlocked``: the code under
+    test then takes the path it takes offline (fetch paths here catch network
+    errors and must never raise) rather than crashing a background thread.
+    What fails the test is the record each attempt leaves, checked after the
+    test body (``pytest_runtest_call``) and after teardown (``_block_network``).
+    """
+
+
+class _NetworkPolicy:
+    """Per-process state: whether the running test opted out, which test is
+    running, and the attempts not yet reported."""
+
+    def __init__(self) -> None:
+        self.allowed = False
+        self.current: str | None = None
+        self.attempts: list[tuple[str, object, str | None]] = []
+        self.lock = threading.Lock()
+
+    def drain(self) -> list[tuple[str, object, str | None]]:
+        with self.lock:
+            attempts, self.attempts = self.attempts, []
+        return attempts
+
+
+_NETWORK = _NetworkPolicy()
+
+
+def _is_loopback_host(host: object) -> bool:
+    """Whether a connect() host names this machine (loopback, unspecified, localhost)."""
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    if not isinstance(host, str):
+        return False
+    name = host.strip("[]").split("%", 1)[0].lower()  # IPv6 brackets, scope id
+    if name in ("", "localhost") or name.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        return False  # any other hostname is off the machine
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_unspecified
+
+
+def _destination_allowed(family: int | None, address: object) -> bool:
+    if _NETWORK.allowed:
+        return True
+    if family is not None and family not in (socket.AF_INET, socket.AF_INET6):
+        return True  # AF_UNIX and other non-IP sockets never leave the machine
+    host = address[0] if isinstance(address, tuple) and address else address
+    return _is_loopback_host(host)
+
+
+def _refuse_network(via: str, address: object) -> NetworkAccessBlocked:
+    with _NETWORK.lock:
+        _NETWORK.attempts.append((via, address, _NETWORK.current))
+    return NetworkAccessBlocked(
+        f"network access is blocked during tests: {via} to {address!r}"
+    )
+
+
+def _network_failure_message(attempts: list[tuple[str, object, str | None]]) -> str:
+    lines = []
+    for via, address, during in attempts:
+        where = during or "between tests (a thread left behind by an earlier test?)"
+        lines.append(f"  {via} to {address!r}, during {where}")
+    return (
+        "A test tried to open a real outbound connection, which the suite blocks:\n"
+        + "\n".join(lines)
+        + "\nPatch the HTTP call the way neighbouring tests do (for example "
+        "ai_quota_swap.oauth.try_fetch_usage_for_account or "
+        "ai_quota_swap.update_check.check_for_update), or mark the test "
+        "@pytest.mark.allow_network if it truly needs the network."
+    )
+
+
+_real_socket_connect = socket.socket.connect
+_real_socket_connect_ex = socket.socket.connect_ex
+_real_create_connection = socket.create_connection
+_real_getproxies = urllib.request.getproxies
+
+
+def _guarded_connect(self, address):
+    if not _destination_allowed(self.family, address):
+        raise _refuse_network("socket.connect", address)
+    return _real_socket_connect(self, address)
+
+
+def _guarded_connect_ex(self, address):
+    if not _destination_allowed(self.family, address):
+        _refuse_network("socket.connect_ex", address)
+        return errno.ECONNREFUSED  # connect_ex reports failure, it never raises
+    return _real_socket_connect_ex(self, address)
+
+
+def _guarded_create_connection(address, *args, **kwargs):
+    # Checked on the host as given, before create_connection resolves it, so
+    # a blocked call does not cost a DNS lookup either.
+    if not _destination_allowed(None, address):
+        raise _refuse_network("socket.create_connection", address)
+    return _real_create_connection(address, *args, **kwargs)
+
+
+def _guarded_getproxies():
+    # A proxy on loopback (a sandboxed shell exports one) would carry a request
+    # off the machine over a connection the block allows, so urllib sees no
+    # proxy while the block is on and connects to the real host, which is
+    # refused.
+    return _real_getproxies() if _NETWORK.allowed else {}
+
+
+socket.socket.connect = _guarded_connect
+socket.socket.connect_ex = _guarded_connect_ex
+socket.create_connection = _guarded_create_connection
+urllib.request.getproxies = _guarded_getproxies
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item):
+    """Fail the test itself when its body made a blocked network attempt,
+    even if the code under test swallowed the ``NetworkAccessBlocked``."""
+    try:
+        return (yield)
+    finally:
+        attempts = _NETWORK.drain()
+        if attempts:
+            pytest.fail(_network_failure_message(attempts), pytrace=False)
+
+
 class _KeychainStore:
     """In-memory ``(service, account) -> secret`` map standing in for the real
     macOS Keychain so unit tests never shell out to ``security``."""
@@ -497,6 +668,41 @@ def _isolate_real_home(request, tmp_path_factory, monkeypatch):
     monkeypatch.setenv("HOME", str(safe_home))
     monkeypatch.setenv("USERPROFILE", str(safe_home))
     monkeypatch.setattr("pathlib.Path.home", lambda: safe_home)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_codex_home(tmp_path_factory, monkeypatch):
+    """Safety net: Codex CLI's home is a fresh temp dir in every test.
+
+    ``CODEX_HOME`` beats ``$HOME`` in Codex's own path rule, so the isolated
+    ``$HOME`` above does not cover a developer who exports it, nor the
+    real-keychain tests that keep the real ``$HOME``. Child processes the
+    suite starts inherit it from the environment. Tests about the variable
+    set their own value, overriding this.
+    """
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path_factory.mktemp("codex_home")))
+
+
+@pytest.fixture(autouse=True)
+def _block_network(request):
+    """Safety net: no test may open a real outbound connection.
+
+    The block itself is installed at import (see ``NetworkAccessBlocked``).
+    This fixture names the running test in each record, lifts the block for a
+    test marked ``@pytest.mark.allow_network``, and fails the test at teardown
+    for attempts made after its body (fixture teardown, a lingering thread);
+    ``pytest_runtest_call`` reports the ones made before.
+    """
+    _NETWORK.allowed = request.node.get_closest_marker("allow_network") is not None
+    _NETWORK.current = request.node.nodeid
+    try:
+        yield
+    finally:
+        _NETWORK.allowed = False
+        _NETWORK.current = None
+    attempts = _NETWORK.drain()
+    if attempts:
+        pytest.fail(_network_failure_message(attempts), pytrace=False)
 
 
 @pytest.fixture(autouse=True)

@@ -19,6 +19,7 @@ from ai_quota_swap import macos_keychain
 from ai_quota_swap.exceptions import (
     AccountNotFoundError,
     ConfigError,
+    CredentialFormatError,
     CredentialReadError,
     LockError,
     SessionError,
@@ -424,6 +425,11 @@ def _same_directory(left: Path, right: Path) -> bool:
 
 class ClaudeAccountSwitcher:
     """Multi-account switcher for Claude Code."""
+
+    # Provider identity, part of the engine-host contract (providers.py).
+    provider_id = "claude"
+    display_name = "Claude Code"
+    cli_name = "claude"
 
     def __init__(self, debug: bool = False):
         self.home = Path.home()
@@ -1876,6 +1882,37 @@ class ClaudeAccountSwitcher:
         return self._read_account_config(account_num, email)
 
     # -- public accessors for the auto-switch engine -----------------------
+
+    def credential_expires_at_ms(self, credentials: str) -> int | float | None:
+        """Access-token expiry (epoch ms) of a stored login, None if it records none.
+
+        A login with no numeric ``expiresAt`` (setup-tokens store none) answers
+        None, which the engine reads as "not near expiry". A credential with no
+        ``claudeAiOauth`` object at all (garbage, a bare token, an empty
+        object) is not a login: that raises :class:`CredentialFormatError`,
+        which the engine reads as a dead lineage. The two cases must stay apart,
+        so neither is folded into the other's answer.
+        """
+        data = oauth.extract_oauth_data(credentials)
+        if not data:
+            raise CredentialFormatError(
+                "the stored credential has no Claude Code OAuth payload"
+            )
+        expires_at = data.get("expiresAt")
+        return expires_at if isinstance(expires_at, (int, float)) else None
+
+    def credential_fingerprint(self, credentials: str) -> str | None:
+        """Lineage identity of a stored login (:func:`oauth.credential_fingerprint`).
+
+        The engine persists this as a quarantine entry's
+        ``refreshTokenFingerprint``. Entries written before the shared helper
+        came from a refresh-token-only hash, which is identical for
+        refresh-token credentials. Setup-token entries stored None where this
+        now yields a full-content hash: those release once on the first recheck
+        and re-quarantine on the next dead freshen (one harmless extra cycle,
+        migration only).
+        """
+        return oauth.credential_fingerprint(credentials)
 
     def usage_by_account(self) -> dict[str, dict | str | None]:
         """Public wrapper: account number → decision-grade usage value.

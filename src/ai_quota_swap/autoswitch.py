@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from ai_quota_swap import oauth, poll_policy
-from ai_quota_swap.exceptions import ClaudeSwitchError
+from ai_quota_swap.exceptions import CredentialFormatError, ProviderError
 from ai_quota_swap.json_output import SCHEMA_VERSION, USAGE_TOKEN_EXPIRED
 from ai_quota_swap.lines import BindingWindow, binding_window, window_line
 from ai_quota_swap.locking import FileLock
@@ -721,14 +721,6 @@ class TickOutcome(enum.Enum):
     BLOCKED = 3  # wanted to switch but no viable target / all exhausted
 
 
-# Quarantine state persisted fingerprints from a local refresh-token-only
-# helper; oauth.credential_fingerprint is identical for refresh-token creds.
-# Setup-token quarantines stored None where the shared helper now yields a
-# full-content hash — those release once on first recheck and re-quarantine on
-# the next dead freshen (one harmless extra cycle, migration only).
-_refresh_fingerprint = oauth.credential_fingerprint
-
-
 def _window_pcts(
     usage: dict | None, models: tuple[str, ...] = ()
 ) -> dict[str, float]:
@@ -1131,7 +1123,7 @@ class AutoSwitchEngine:
 
     def _quarantine(self, number: str, email: str, reason: str) -> None:
         creds = self.switcher.read_account_credentials(number, email)
-        fingerprint = _refresh_fingerprint(creds) if creds else None
+        fingerprint = self.switcher.credential_fingerprint(creds) if creds else None
 
         def add(state: dict) -> None:
             state.setdefault("quarantine", {})[number] = {
@@ -1163,7 +1155,9 @@ class AutoSwitchEngine:
                 )
                 continue
             creds = self.switcher.read_account_credentials(number, email_now)
-            fingerprint = _refresh_fingerprint(creds) if creds else None
+            fingerprint = (
+                self.switcher.credential_fingerprint(creds) if creds else None
+            )
             if fingerprint != entry.get("refreshTokenFingerprint"):
                 to_release.append((number, email_now, "credentials-replaced"))
         if not to_release:
@@ -1206,10 +1200,10 @@ class AutoSwitchEngine:
         creds = self.switcher.read_account_credentials(number, email)
         if not creds:
             return "transient"
-        data = oauth.extract_oauth_data(creds)
-        if not data:
+        try:
+            expires_at = self.switcher.credential_expires_at_ms(creds)
+        except CredentialFormatError:
             return "invalid_grant"
-        expires_at = data.get("expiresAt")
         now_ms = self.clock() * 1000
         near_expiry = (
             isinstance(expires_at, (int, float))
@@ -1298,7 +1292,7 @@ class AutoSwitchEngine:
             outcome = self._tick_inner()
             self._persist_health_counters(self._health_account)
             return outcome
-        except ClaudeSwitchError as e:
+        except ProviderError as e:
             self._emit(ErrorEvent(message=str(e), transient=True))
             return TickOutcome.ERROR
         except Exception as e:  # pragma: no cover - safety net

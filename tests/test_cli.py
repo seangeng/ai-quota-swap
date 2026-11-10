@@ -11,9 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ai_quota_swap import __version__
+from ai_quota_swap import __version__, paths
 from ai_quota_swap import cli
 from ai_quota_swap.credentials import ActiveCredentials
+from ai_quota_swap.exceptions import ProviderUnavailableError
 from ai_quota_swap.settings import set_setting
 from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
@@ -62,6 +63,21 @@ def _subprocess_env(**extra: str) -> dict[str, str]:
         if var not in extra:
             env.pop(var, None)
     return env
+
+
+def _without_update_check(home: Path) -> Path:
+    """Turn the passive PyPI check off for a child CLI run under ``home``.
+
+    Every non-JSON command ends in that check, and a child process is outside
+    the suite's in-process network block, so it would reach pypi.org. Same
+    switch as ``TestUpdateCheckSetting``: ``updates.check`` in the data root
+    the child resolves under this HOME.
+    """
+    with patch("pathlib.Path.home", return_value=home):
+        root = paths.get_backup_root()
+    root.mkdir(parents=True, exist_ok=True)
+    set_setting(root, "updates.check", "false")
+    return home
 
 
 class TestCLI:
@@ -128,13 +144,13 @@ class TestCLI:
         assert result.returncode != 0
         assert "not allowed" in result.stderr.lower()
 
-    def test_debug_flag_accepted(self):
+    def test_debug_flag_accepted(self, tmp_path):
         """Test that --debug flag is accepted."""
         result = subprocess.run(
             [sys.executable, "-m", "ai_quota_swap", "--debug", "--status"],
             capture_output=True,
             text=True,
-            env=_subprocess_env(),
+            env=_subprocess_env(HOME=str(_without_update_check(tmp_path))),
         )
         # Should run (may fail due to no config, but flag should be accepted)
         assert "--debug" not in result.stderr or "unrecognized" not in result.stderr
@@ -1171,6 +1187,7 @@ class TestCLICommands:
 
     def test_status_no_account(self, temp_home: Path):
         """Test status command with no account."""
+        _without_update_check(temp_home)
         result = subprocess.run(
             [sys.executable, "-m", "ai_quota_swap", "--status"],
             capture_output=True,
@@ -1182,6 +1199,7 @@ class TestCLICommands:
 
     def test_list_no_accounts(self, temp_home: Path):
         """Test list command with no accounts."""
+        _without_update_check(temp_home)
         result = subprocess.run(
             [sys.executable, "-m", "ai_quota_swap", "--list"],
             capture_output=True,
@@ -1199,7 +1217,9 @@ class TestCLICommands:
             sys, "argv", ["ai-quota-swap", "--add-token", "sk-ant-oat01-abc"],
         ), patch.object(
             ClaudeAccountSwitcher, "add_account_from_token"
-        ) as mock_add:
+        ) as mock_add, patch(
+            "ai_quota_swap.update_check.check_for_update", return_value=None
+        ):
             cli.main()
 
         mock_add.assert_called_once_with(
@@ -1223,7 +1243,9 @@ class TestCLICommands:
             ["ai-quota-swap", "--add-token", "mytoken", "--email", "u@example.com"],
         ), patch.object(
             ClaudeAccountSwitcher, "add_account_from_token"
-        ) as mock_add:
+        ) as mock_add, patch(
+            "ai_quota_swap.update_check.check_for_update", return_value=None
+        ):
             cli.main()
 
         mock_add.assert_called_once_with(
@@ -1239,7 +1261,9 @@ class TestCLICommands:
             ["ai-quota-swap", "--add-token", "tok", "--email", "u@example.com", "--slot", "3"],
         ), patch.object(
             ClaudeAccountSwitcher, "add_account_from_token"
-        ) as mock_add:
+        ) as mock_add, patch(
+            "ai_quota_swap.update_check.check_for_update", return_value=None
+        ):
             cli.main()
 
         mock_add.assert_called_once_with(
@@ -2106,7 +2130,8 @@ class TestAliasCommand:
              patch.object(ClaudeAccountSwitcher, "_read_active_credentials",
                           return_value=ActiveCredentials(fake_creds, False)), \
              patch.object(ClaudeAccountSwitcher, "_write_account_credentials"), \
-             patch.object(sys, "argv", ["ai-quota-swap", "add", "--alias", "dev"]):
+             patch.object(sys, "argv", ["ai-quota-swap", "add", "--alias", "dev"]), \
+             patch("ai_quota_swap.update_check.check_for_update", return_value=None):
             cli.main()
 
         data = ClaudeAccountSwitcher()._get_sequence_data()
@@ -2476,3 +2501,160 @@ class TestImportUsageCli:
                 cli.main()
         assert exc.value.code == 2
         assert message in capsys.readouterr().err
+
+
+class TestCodexPrefix:
+    """`qswap codex <verb>` selects the Codex provider, which M1 does not
+    implement yet: every verb is refused, before anything is dispatched, with
+    one line (or the JSON error envelope)."""
+
+    MESSAGE = "Codex support is not available yet"
+
+    def _run_main(self, argv: list[str]):
+        with patch.object(sys, "argv", ["qswap", *argv]), \
+             patch.object(cli, "_dispatch") as dispatch, \
+             patch.object(cli, "ClaudeAccountSwitcher") as claude_cls:
+            with pytest.raises(SystemExit) as exc:
+                cli.main()
+        return exc.value.code, dispatch, claude_cls
+
+    def test_codex_list_exits_non_zero_with_one_line(self, capsys):
+        code, dispatch, claude_cls = self._run_main(["codex", "list"])
+        out, err = capsys.readouterr()
+        assert code == 1
+        assert err.splitlines() == [f"Error: {self.MESSAGE}"]
+        assert out == ""
+        dispatch.assert_not_called()
+        claude_cls.assert_not_called()
+
+    def test_codex_list_json_prints_the_error_envelope(self, capsys):
+        code, dispatch, _ = self._run_main(["codex", "list", "--json"])
+        out, err = capsys.readouterr()
+        assert code == 1
+        assert json.loads(out) == {
+            "schemaVersion": 1,
+            "error": {"type": "ProviderUnavailableError", "message": self.MESSAGE},
+        }
+        assert err == ""
+        dispatch.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["codex"],
+            ["codex", "status"],
+            ["codex", "switch", "2"],
+            ["codex", "auto", "--once"],
+            ["codex", "run", "2"],
+            # Verbs that never build a switcher must not act on Claude
+            # Code's data under the codex prefix either.
+            ["codex", "config", "set", "autoswitch.threshold", "50"],
+            ["codex", "upgrade"],
+            ["codex", "menubar", "--auto-switch"],
+        ],
+        ids=lambda argv: " ".join(argv),
+    )
+    def test_every_verb_is_refused_before_dispatch(self, argv, capsys):
+        code, dispatch, claude_cls = self._run_main(argv)
+        assert code == 1
+        assert capsys.readouterr().err.splitlines() == [f"Error: {self.MESSAGE}"]
+        dispatch.assert_not_called()
+        claude_cls.assert_not_called()
+
+    def test_codex_list_as_a_real_command(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "ai_quota_swap", "codex", "list"],
+            capture_output=True,
+            text=True,
+            env=_subprocess_env(),
+        )
+        assert result.returncode == 1
+        assert result.stderr.splitlines() == [f"Error: {self.MESSAGE}"]
+        assert result.stdout == ""
+
+    def test_codex_list_json_as_a_real_command(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "ai_quota_swap", "codex", "list", "--json"],
+            capture_output=True,
+            text=True,
+            env=_subprocess_env(),
+        )
+        assert result.returncode == 1
+        assert json.loads(result.stdout)["error"] == {
+            "type": "ProviderUnavailableError", "message": self.MESSAGE,
+        }
+
+    def _capture_dispatch(self, argv: list[str], *, raises: BaseException | None = None):
+        seen: list[tuple[list[str], str]] = []
+
+        def fake_dispatch(rest):
+            seen.append((rest, cli._provider.get()))
+            if raises is not None:
+                raise raises
+
+        # Pretend Codex is implemented, to see what main hands the dispatch.
+        with patch.object(sys, "argv", ["qswap", *argv]), \
+             patch.object(cli, "_dispatch", side_effect=fake_dispatch), \
+             patch("ai_quota_swap.providers.ensure_available"):
+            if raises is None:
+                cli.main()
+            else:
+                with pytest.raises(type(raises)):
+                    cli.main()
+        return seen
+
+    def test_the_prefix_is_dropped_and_selects_codex_for_the_dispatch(self):
+        assert self._capture_dispatch(["codex", "list", "--json"]) == [
+            (["list", "--json"], "codex")
+        ]
+        assert cli._provider.get() == "claude", "the selection leaked out of main"
+
+    def test_the_selection_is_reset_when_the_command_exits(self):
+        self._capture_dispatch(["codex", "auto", "--once"], raises=SystemExit(3))
+        assert cli._provider.get() == "claude"
+
+    @pytest.mark.parametrize(
+        "argv", [[], ["list"], ["config", "show"], ["claude", "list"], ["list", "codex"]]
+    )
+    def test_without_the_prefix_the_dispatch_is_unchanged(self, argv):
+        assert self._capture_dispatch(argv) == [(argv, "claude")]
+
+    def test_the_switcher_factory_follows_the_selection(self):
+        with patch.object(cli, "ClaudeAccountSwitcher") as claude_cls:
+            assert cli._switcher(debug=True) is claude_cls.return_value
+            claude_cls.assert_called_once_with(debug=True)
+            with cli.selected_provider("codex"):
+                with pytest.raises(ProviderUnavailableError, match=self.MESSAGE):
+                    cli._switcher(debug=True)
+            assert claude_cls.call_count == 1
+            cli._switcher()
+            assert claude_cls.call_count == 2
+
+    def test_every_command_builds_its_switcher_through_the_factory(self):
+        import inspect
+
+        source = inspect.getsource(cli)
+        assert source.count("ClaudeAccountSwitcher(") == 1, (
+            "a command constructs ClaudeAccountSwitcher directly instead of "
+            "through cli._switcher, so the provider prefix would not reach it"
+        )
+        assert "ClaudeAccountSwitcher(" in inspect.getsource(cli._switcher)
+        assert source.count("switcher = _switcher(debug=args.debug)") == 13
+
+    def test_a_command_handler_reports_a_provider_error(self, capsys):
+        """Each handler catches the base, so a provider's error raised while
+        building its switcher prints like any other: one line, exit 1."""
+        with cli.selected_provider("codex"):
+            with pytest.raises(SystemExit) as exc:
+                cli._map_command([])
+        assert exc.value.code == 1
+        assert capsys.readouterr().err.splitlines() == [f"Error: {self.MESSAGE}"]
+
+    def test_a_json_command_handler_reports_a_provider_error(self, capsys):
+        with cli.selected_provider("codex"):
+            with pytest.raises(SystemExit) as exc:
+                cli._auto_command(["--once", "--json"])
+        assert exc.value.code == 1
+        assert json.loads(capsys.readouterr().out)["error"]["type"] == (
+            "ProviderUnavailableError"
+        )

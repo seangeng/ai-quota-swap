@@ -45,7 +45,7 @@ reservation).
 Done when: the full test suite passes under the new name and an export written by claude-swap
 1.1.0b1 imports cleanly (`tests/test_transfer.py::TestImportClaudeSwapArchive`).
 
-### M1. Provider seam
+### M1. Provider seam (done)
 
 Design: [docs/design/providers.md](docs/design/providers.md).
 
@@ -53,16 +53,23 @@ A provider is a switcher object with its own data root and its own engine instan
 Code switcher stays as it is and becomes the Claude provider; Codex gets a second switcher with
 the same members. The engine, usage store, window math, reset planner, and renderers are shared.
 
-- `providers.py`: the engine-host contract as a `Protocol`, plus `provider_id`, `display_name`,
+- [x] `providers.py`: the engine-host contract (`EngineHost`) and the surface contract
+  (`SurfaceHost`) as Protocols, and the provider registry, plus `provider_id`, `display_name`,
   and `cli_name` on the Claude switcher.
-- The engine stops calling Claude credential helpers directly and goes through the host.
-- One switcher factory in `cli.py`, and the `qswap codex <verb>` prefix.
-- A common `SwitchError` base for provider errors.
-- Tests: `CODEX_HOME` isolation, the real `~/.codex` under the store guard, and a global
+- [x] The engine stops calling Claude credential helpers directly and goes through the host
+  (`credential_expires_at_ms`, `credential_fingerprint`).
+- [x] One switcher factory in `cli.py`, and the `qswap codex <verb>` prefix.
+- [x] A common base for provider errors. It is named `ProviderError`, because `SwitchError`
+  already names the switch-operation error.
+- [x] Tests: `CODEX_HOME` isolation, the real `~/.codex` under the store guard, and a global
   network block.
 
 Done when: the existing tests pass unchanged and `qswap codex list` reports that no Codex
 accounts are managed yet.
+
+Result: the existing tests pass. Nine of them were reaching real endpoints (Anthropic usage and
+token refresh, PyPI) and now patch those calls. Until M2, `qswap codex <verb>` exits 1 with
+"Codex support is not available yet".
 
 ### M2. Codex
 

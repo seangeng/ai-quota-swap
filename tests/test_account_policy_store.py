@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from ai_quota_swap import oauth
 from ai_quota_swap.exceptions import AccountNotFoundError, ConfigError
 from ai_quota_swap.models import AccountPolicy, Platform
 from ai_quota_swap.switcher import ClaudeAccountSwitcher
@@ -281,13 +283,21 @@ class TestSnapshotCarriesPolicy(PolicyStoreBase):
     def test_snapshot_row_carries_a_written_policy(self, temp_home: Path):
         s = self._fleet(temp_home)
         s.set_account_threshold("2", 85.0)
-        snapshot = s.accounts_snapshot()
+        with patch(
+            "ai_quota_swap.oauth.try_fetch_usage_for_account",
+            return_value=oauth.UsageOutcome(None),
+        ):
+            snapshot = s.accounts_snapshot()
         row = next(a for a in snapshot.accounts if a.number == "2")
         assert row.policy == AccountPolicy(threshold=85.0)
 
     def test_plain_account_row_carries_the_default(self, temp_home: Path):
         s = self._fleet(temp_home)
-        snapshot = s.accounts_snapshot()
+        with patch(
+            "ai_quota_swap.oauth.try_fetch_usage_for_account",
+            return_value=oauth.UsageOutcome(None),
+        ):
+            snapshot = s.accounts_snapshot()
         assert next(a for a in snapshot.accounts if a.number == "1").policy == AccountPolicy()
 
     def test_json_row_omits_policy_when_unset(self, temp_home: Path):

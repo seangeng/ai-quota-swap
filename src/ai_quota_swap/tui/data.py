@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from ai_quota_swap import oauth, printer, usage_store
-from ai_quota_swap.exceptions import ClaudeSwitchError
+from ai_quota_swap.exceptions import ProviderError
 from ai_quota_swap.snapshot_source import SnapshotSource
 from ai_quota_swap.switcher import SENTINEL_NOTES, last_seen_note
 
@@ -70,7 +70,7 @@ def run_action(fn: Callable[[], dict | None]) -> ActionResult:
         ), contextlib.redirect_stderr(buf):
             try:
                 payload = fn()
-            except ClaudeSwitchError as e:
+            except ProviderError as e:
                 print(f"Error: {e}")
                 return ActionResult(False, buf.getvalue())
             except EOFError:

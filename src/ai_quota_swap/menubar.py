@@ -30,7 +30,11 @@ from pathlib import Path
 from typing import ClassVar
 
 from ai_quota_swap import launch_agent, oauth, pace
-from ai_quota_swap.exceptions import ClaudeSwitchError, CredentialReadError
+from ai_quota_swap.exceptions import (
+    ClaudeSwitchError,
+    CredentialReadError,
+    ProviderError,
+)
 from ai_quota_swap.fsutil import atomic_write_text
 from ai_quota_swap.printer import warning
 from ai_quota_swap.switcher import SENTINEL_NOTES, USAGE_RELOGIN_REQUIRED
@@ -1239,11 +1243,11 @@ def run(switcher) -> int:
             self.rebuild_menu()
 
         def _guard(self, fn):
-            """Run a switcher action, surfacing ClaudeSwitchError via an alert."""
+            """Run a switcher action, surfacing ProviderError via an alert."""
             try:
                 fn()
                 return True
-            except ClaudeSwitchError as e:
+            except ProviderError as e:
                 rumps.alert(title="AI Quota Swap", message=str(e))
                 return False
 

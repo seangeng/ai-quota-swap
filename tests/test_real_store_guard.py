@@ -910,3 +910,117 @@ def test_c0_a_scratch_home_still_protects_the_os_account_home_store(monkeypatch,
     assert scratch_root in roots, (
         "the scratch HOME's own root must stay protected too"
     )
+
+
+# -- Codex CLI's home: its live login `auth.json` -----------------------------
+#
+# Codex keeps its login in `$CODEX_HOME/auth.json` (default `~/.codex`). The
+# real one is protected like `~/.claude`: a non-recursive root, so its direct
+# children (`auth.json`, atomic-write siblings, config) are refused while
+# Codex's own trees beneath it (sessions, logs, app worktrees) stay writable.
+# Behaviour is exercised on stand-in roots only; the real directory is never
+# opened, listed, read or written by these tests.
+
+
+def test_frozen_specs_include_the_default_codex_home_non_recursively(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+
+    specs = dict(conftest._freeze_real_store_specs())
+
+    assert specs.get(home / ".codex") is False
+
+
+def test_frozen_specs_include_an_exported_codex_home_and_the_default(monkeypatch, tmp_path):
+    """Same both-must-be-protected rule as CLAUDE_CONFIG_DIR: the override is
+    where an exporting developer's real login lives, and the default is
+    where everyone else's does."""
+    home = tmp_path / "home"
+    home.mkdir()
+    elsewhere = tmp_path / "codex-elsewhere"
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setenv("CODEX_HOME", str(elsewhere))
+
+    specs = dict(conftest._freeze_real_store_specs())
+
+    assert specs.get(elsewhere) is False
+    assert specs.get(home / ".codex") is False
+
+
+def test_the_real_codex_home_is_in_the_specs_the_hook_reads():
+    """Membership in the module global the audit hook branches on, not in a
+    fresh call (see test_the_legacy_backup_root_is_protected_recursively)."""
+    frozen = dict(conftest._REAL_STORE_SPECS)
+    real_default = conftest._HOME_AT_FREEZE_TIME / ".codex"
+    assert frozen.get(real_default) is False, (
+        f"{real_default} is not frozen as a protected root, so a test may "
+        "write the real Codex login"
+    )
+    assert ".codex" in conftest._REAL_STORE_HINTS
+
+
+def _arm_stand_in_codex_home(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    stand_in = tmp_path / ".codex"
+    stand_in.mkdir()
+    auth = stand_in / "auth.json"
+    auth.write_text('{"tokens": {"refresh_token": "stand-in"}}', encoding="utf-8")
+    (stand_in / "sessions").mkdir()
+    specs = ((stand_in, False),)
+    monkeypatch.setattr(conftest, "_REAL_STORE_SPECS", specs)
+    monkeypatch.setattr(
+        conftest, "_REAL_STORE_HINTS",
+        conftest._derive_real_store_hints(specs, conftest._HOME_AT_FREEZE_TIME),
+    )
+    return stand_in, auth
+
+
+def test_every_way_of_changing_auth_json_is_refused(tmp_path, monkeypatch):
+    stand_in, auth = _arm_stand_in_codex_home(tmp_path, monkeypatch)
+    before = (auth.read_bytes(), auth.stat().st_mtime_ns)
+
+    with pytest.raises(conftest.RealStoreWriteBlocked):
+        auth.write_text("{}", encoding="utf-8")
+    with pytest.raises(conftest.RealStoreWriteBlocked):
+        with open(auth, "a", encoding="utf-8") as handle:
+            handle.write("x")
+    with pytest.raises(conftest.RealStoreWriteBlocked):
+        os.truncate(auth, 0)
+    with pytest.raises(conftest.RealStoreWriteBlocked):
+        os.remove(auth)
+
+    # The atomic-write shape a switcher uses: temp sibling, then replace.
+    with pytest.raises(conftest.RealStoreWriteBlocked):
+        (stand_in / "auth.json.tmp").write_text("{}", encoding="utf-8")
+    outside = tmp_path / "new-auth.json"
+    outside.write_text("{}", encoding="utf-8")
+    with pytest.raises(conftest.RealStoreWriteBlocked):
+        os.replace(outside, auth)
+
+    assert (auth.read_bytes(), auth.stat().st_mtime_ns) == before
+    assert sorted(p.name for p in stand_in.iterdir()) == ["auth.json", "sessions"]
+
+
+def test_codex_trees_beneath_its_home_stay_writable(tmp_path, monkeypatch):
+    stand_in, _auth = _arm_stand_in_codex_home(tmp_path, monkeypatch)
+    nested = stand_in / "sessions" / "2026" / "rollout.jsonl"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("{}\n", encoding="utf-8")
+    assert nested.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_every_test_gets_its_own_codex_home(tmp_path_factory):
+    codex_home = Path(os.environ["CODEX_HOME"])
+    assert codex_home.is_dir()
+    assert list(codex_home.iterdir()) == []
+    assert tmp_path_factory.getbasetemp() in codex_home.parents
+    assert codex_home != conftest._HOME_AT_FREEZE_TIME / ".codex"
+
+
+def test_the_codex_home_a_test_sees_is_never_a_protected_root():
+    """The fixture wins over the developer's environment: conftest froze any
+    ambient CODEX_HOME as protected, and the test sees a temp dir instead."""
+    assert os.environ["CODEX_HOME"] not in {
+        str(root) for root, _recursive in conftest._REAL_STORE_SPECS
+    }

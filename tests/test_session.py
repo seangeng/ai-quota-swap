@@ -5152,6 +5152,12 @@ class TestAConsumedGrantIsNotSpentOnAProfileThatWonBootstrap:
             raise FileNotFoundError(2, "No such file or directory", "claude")
 
         monkeypatch.setattr(session_mod.subprocess, "run", unresolvable)
+        # The seeded login is expired, so setup pre-refreshes it; the probe
+        # verdict is what is under test, so the refresh just fails offline.
+        monkeypatch.setattr(
+            ClaudeAccountSwitcher, "consume_backup_grant",
+            lambda self, num, email, snap: oauth.RefreshOutcome(None, "transient"),
+        )
 
         with pytest.raises(SessionError, match="could not be verified"):
             manager.setup_session(ACCOUNT_NUM, share=False)
@@ -5177,6 +5183,12 @@ class TestAConsumedGrantIsNotSpentOnAProfileThatWonBootstrap:
             )
 
         monkeypatch.setattr(session_mod.subprocess, "run", not_logged_in)
+        # The seeded login is expired, so setup pre-refreshes it; the probe
+        # verdict is what is under test, so the refresh just fails offline.
+        monkeypatch.setattr(
+            ClaudeAccountSwitcher, "consume_backup_grant",
+            lambda self, num, email, snap: oauth.RefreshOutcome(None, "transient"),
+        )
 
         with pytest.raises(SessionError, match="failed validation"):
             manager.setup_session(ACCOUNT_NUM, share=False)

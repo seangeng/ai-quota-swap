@@ -49,15 +49,15 @@ them with the same shapes. They are declared as a `typing.Protocol` in
 | `current_account_number()` | number of the account whose login is live, or None |
 | `has_live_login()` | True when some login is live, managed or not |
 | `switchable_account_numbers()` | rotation order |
-| `disabled_account_numbers()` | set of numbers |
+| `disabled_account_numbers()` | ordered list of numbers |
 | `account_kind_for(n)` | `"oauth"` or `"api_key"` |
 | `account_email(n)` | str |
 | `account_identity(n)` | `{email, organizationUuid, uuid}`; a provider maps its own ids onto these keys |
 | `backfill_account_uuid(n, uuid)` | may be a no-op |
 | `account_policies()` | per-account threshold, priority, disabled |
-| `read_account_credentials(n)` | opaque stored login, only passed back to the two accessors below |
-| `credential_expires_at_ms(creds)` | access-token expiry in epoch ms, or None (new) |
-| `credential_fingerprint(creds)` | stable hash of the refresh token, or None (new) |
+| `read_account_credentials(n, email)` | opaque stored login, only passed back to the two accessors below |
+| `credential_expires_at_ms(creds)` | access-token expiry in epoch ms; None for a login that has no expiry; raises `CredentialFormatError` when `creds` is not a login (new) |
+| `credential_fingerprint(creds)` | stable hash that changes when the login is replaced (new) |
 | `live_session_pids_for(n)` | pids of `run` sessions using this account |
 | `consume_backup_grant(n)` | `RefreshOutcome{credentials, error, token_account}`; `error` uses the existing kinds |
 | `usage_entries_by_account(fetch, scheduled)` | `{number: UsageEntry}` in the reading shape below |
@@ -75,7 +75,7 @@ Rules for implementers:
 - No member may take the registry lock and then call the network. Fetch first, then re-check
   under the lock.
 - `consume_backup_grant` never refreshes the live login or a login a running session owns.
-- Every member that the engine calls must return or raise `SwitchError`; nothing else.
+- Every member that the engine calls must return or raise a `ProviderError`; nothing else.
 
 ## Contract 2: usage reading
 
@@ -103,8 +103,9 @@ knows is healthy.
 and `list` render from it. Actions the surfaces call: `switch_to`, `switch`, `add_account`,
 `remove_account`, `set_account_disabled`.
 
-Errors: every provider error derives from `SwitchError`. `ClaudeSwitchError` stays as a
-subclass so existing handlers and tests keep working.
+Errors: every provider error derives from `ProviderError`. `ClaudeSwitchError` is a subclass,
+so existing handlers and tests keep working. (`SwitchError` already names the switch-failure
+class that appears in JSON error output, so the base has its own name.)
 
 ## Command line
 

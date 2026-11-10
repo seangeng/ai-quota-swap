@@ -5268,7 +5268,9 @@ class TestUpgradeMigration:
                      "emailAddress": "other@example.com",
                      "accountUuid": "other-uuid-5678",
                  }
-             })):
+             })), \
+             patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
+                   return_value=oauth.UsageOutcome(None)):
             switcher.switch()
 
         data = switcher._get_sequence_data()

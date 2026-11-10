@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import contextvars
 import json
 import math
 import os
 import sys
+from collections.abc import Iterator
 
-from ai_quota_swap import __version__, paths, printer
-from ai_quota_swap.exceptions import ClaudeSwitchError
+from ai_quota_swap import __version__, paths, printer, providers
+from ai_quota_swap.exceptions import ProviderError
 from ai_quota_swap.json_output import error_envelope
 from ai_quota_swap.models import (
     ACCOUNT_PRIORITY_MAX,
@@ -32,6 +35,37 @@ from ai_quota_swap.settings import (
     load_update_settings,
 )
 from ai_quota_swap.switcher import ClaudeAccountSwitcher
+
+# The provider the command line selected (`qswap codex <verb>`). Only `main`
+# sets it, for the length of one dispatch, and always resets it, so nothing
+# carries over into the next in-process call; tests use `selected_provider`.
+_provider: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "qswap_provider", default=providers.DEFAULT_PROVIDER
+)
+
+
+@contextlib.contextmanager
+def selected_provider(provider_id: str) -> Iterator[None]:
+    """Select ``provider_id`` for every switcher built inside the block."""
+    token = _provider.set(provider_id)
+    try:
+        yield
+    finally:
+        _provider.reset(token)
+
+
+def _switcher(debug: bool = False):
+    """The switcher for the selected provider; every command builds its own here.
+
+    Claude Code's switcher is built through this module's own
+    ``ClaudeAccountSwitcher`` name rather than ``providers.make_switcher``, so
+    tests that patch ``ai_quota_swap.cli.ClaudeAccountSwitcher`` still
+    intercept the construction.
+    """
+    provider_id = _provider.get()
+    if provider_id == providers.DEFAULT_PROVIDER:
+        return ClaudeAccountSwitcher(debug=debug)
+    return providers.make_switcher(provider_id, debug=debug)
 
 
 def _prog_name() -> str:
@@ -197,7 +231,7 @@ Examples:
     args = parser.parse_args(head)
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
 
         from ai_quota_swap.session import SessionManager
@@ -240,7 +274,7 @@ Examples:
                 )
             )
         manager.exec_default(tail)
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
@@ -295,7 +329,7 @@ Examples:
     args = parser.parse_args(argv)
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
 
         if args.account is None:
@@ -321,7 +355,7 @@ Examples:
             )
         else:
             print(f"{accent('Mapped')} {shown} → Account-{account_num} ({email})")
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
@@ -345,7 +379,7 @@ def _unmap_command(argv: list[str]) -> None:
     args = parser.parse_args(argv)
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
 
         from ai_quota_swap.mappings import MappingStore, normalize_path
@@ -357,7 +391,7 @@ def _unmap_command(argv: list[str]) -> None:
             print(f"{accent('Unmapped')} {shown}")
         else:
             print(dimmed(f"No mapping for {shown}"))
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
@@ -392,7 +426,7 @@ def _unclaimed_command(argv: list[str]) -> None:
     args = parser.parse_args(argv)
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
         entries = switcher.list_unclaimed_credentials()
 
@@ -411,7 +445,7 @@ def _unclaimed_command(argv: list[str]) -> None:
             slot = meta.get("configSlot") or "?"
             reason = meta.get("reason") or "orphaned (no manifest row)"
             print(f"{entry_id}  slot {slot}  {reason}")
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
@@ -447,7 +481,7 @@ Examples:
     args = parser.parse_args(argv)
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
         num_a, num_b = switcher.swap_accounts(args.first, args.second)
         print(f"{accent('Swapped')} Account {num_a} and Account {num_b}:")
@@ -456,7 +490,7 @@ Examples:
         for num in sorted((num_a, num_b), key=int):
             email = accounts.get(num, {}).get("email", "")
             print(f"  {num}: {email}")
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
@@ -493,7 +527,7 @@ Examples:
     args = parser.parse_args(argv)
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
         num_src, num_target, swapped = switcher.move_account(args.account, args.slot)
         data = switcher._get_sequence_data() or {}
@@ -509,7 +543,7 @@ Examples:
         else:
             email = accounts.get(num_target, {}).get("email", "")
             print(f"{accent('Moved')} {email} to slot {num_target}")
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
@@ -565,7 +599,7 @@ Examples:
         parser.error("NAME is required (or pass --unset to remove the alias)")
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
 
         if args.account is None:
@@ -584,7 +618,7 @@ Examples:
         else:
             account_num, normalized = switcher.set_alias(args.account, args.alias_name)
             print(f"{accent('Set alias')} '{normalized}' for Account {account_num}")
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
@@ -652,7 +686,7 @@ Valid range: {ACCOUNT_THRESHOLD_MIN:g}-{ACCOUNT_THRESHOLD_MAX:g} (percent used).
         parser.error("PCT is required (or pass --unset to remove the override)")
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
 
         if args.account is None:
@@ -666,7 +700,7 @@ Valid range: {ACCOUNT_THRESHOLD_MIN:g}-{ACCOUNT_THRESHOLD_MAX:g} (percent used).
         # normalize_account_threshold's message; it always names the range.
         error(f"Error: {e}")
         sys.exit(1)
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
@@ -726,7 +760,7 @@ def _priority_command(argv: list[str]) -> None:
     if args.account is not None and args.priority is None and not args.unset:
         parser.error("TIER is required (or pass --unset)")
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
         if args.account is None:
             print(bolded("Account priorities (higher first; default 0):"))
@@ -735,7 +769,7 @@ def _priority_command(argv: list[str]) -> None:
             print(dimmed("Used only by: qswap auto --strategy priority-consume-first"))
             return
         switcher.set_account_priority(args.account, None if args.unset else args.priority)
-    except (ValueError, ClaudeSwitchError) as e:
+    except (ValueError, ProviderError) as e:
         error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
@@ -791,7 +825,7 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
 
     in_flight = False
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
         rs = switcher.reset_settings()
         if not rs.enabled:
@@ -900,7 +934,7 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
             )
         if not result.ok:
             sys.exit(1)
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
@@ -1216,7 +1250,7 @@ Defaults live in settings.json in the backup root; flags override them.
         print(f"{stamp}  {line}", flush=True)
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         if sys.platform != "win32":
             if os.geteuid() == 0 and not switcher._is_running_in_container():
                 error("Error: Do not run this script as root (unless running in a container)")
@@ -1249,7 +1283,7 @@ Defaults live in settings.json in the backup root; flags override them.
                 )
             )
         sys.exit(engine.run_loop())
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         if args.json:
             print(json.dumps(error_envelope(e)))
         else:
@@ -1344,7 +1378,7 @@ Examples:
         parser.error("--json can only be used with list or get")
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
         if sys.platform != "win32":
             if os.geteuid() == 0 and not switcher._is_running_in_container():
                 error("Error: Do not run this script as root (unless running in a container)")
@@ -1395,7 +1429,7 @@ Examples:
                 print(f"{args.key} unset (default: {format_setting_value(default)})")
             else:
                 print(muted(f"{args.key} is not set; nothing to do"), file=sys.stderr)
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         if json_mode:
             print(json.dumps(error_envelope(e), indent=2))
         else:
@@ -1703,7 +1737,26 @@ def main() -> None:
     """Main entry point for the CLI."""
     force_utf8_output()
     _use_native_tls()
-    argv = sys.argv[1:]
+    # `qswap codex <verb>`: the prefix goes before the dispatch below, whose
+    # pre-dispatched verbs must be argv[0].
+    provider_id, argv = providers.split_provider_prefix(sys.argv[1:])
+    try:
+        providers.ensure_available(provider_id)
+    except ProviderError as e:
+        # Refused before dispatch, so that verbs which never build a switcher
+        # (config, upgrade, menu bar settings) cannot act on Claude Code's data
+        # under another provider's prefix.
+        if "--json" in argv:
+            print(json.dumps(error_envelope(e), indent=2))
+        else:
+            error(f"Error: {e}")
+        sys.exit(1)
+    with selected_provider(provider_id):
+        _dispatch(argv)
+
+
+def _dispatch(argv: list[str]) -> None:
+    """Run one command line whose provider prefix, if any, is already removed."""
     try:
         from ai_quota_swap.appearance import cli_should_probe, cli_theme
         # `run` execs a child that takes over the terminal, and `--json`
@@ -1722,8 +1775,8 @@ def main() -> None:
     if argv and argv[0] == "auto":
         _auto_command(argv[1:])
         return  # only reachable in tests where sys.exit is mocked
-    if len(sys.argv) > 1 and sys.argv[1] == "config":
-        _config_command(sys.argv[2:])
+    if argv and argv[0] == "config":
+        _config_command(argv[1:])
         return
     if argv and argv[0] == "map":
         _map_command(argv[1:])
@@ -2198,13 +2251,13 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
 
     # Initialize switcher and dispatch under a single error handler so
     # init-time failures (e.g. MigrationError on a backup-dir collision)
-    # are presented like every other ClaudeSwitchError: clean stderr line,
+    # are presented like every other ProviderError: clean stderr line,
     # exit 1, no traceback.
     # JSON-capable commands return a payload; the CLI is the single point that
     # serializes it (so no command writes JSON to stdout itself).
     payload: dict | None = None
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = _switcher(debug=args.debug)
 
         # Check for root (unless in container) - POSIX only
         if sys.platform != "win32":
@@ -2269,7 +2322,7 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
 
                 try:
                     gone = launch_agent.uninstall(backup_dir=switcher.backup_dir)
-                except ClaudeSwitchError as e:
+                except ProviderError as e:
                     warning(f"Menu bar service not removed: {e}", file=sys.stderr)
                 else:
                     if gone["was_loaded"] or gone["removed"]:
@@ -2310,7 +2363,7 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
             if args.foreground or worker:
                 sys.exit(_menubar_foreground(switcher, service_pid, worker=worker))
             sys.exit(_menubar_start(args))
-    except ClaudeSwitchError as e:
+    except ProviderError as e:
         # In JSON mode keep stdout pure JSON: emit the structured error envelope
         # there (exit 1) instead of a red stderr line.
         if args.json:

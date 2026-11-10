@@ -1,7 +1,31 @@
 """Custom exceptions for Claude Switch."""
 
 
-class ClaudeSwitchError(Exception):
+class ProviderError(Exception):
+    """Base for every provider's errors; surfaces and the engine catch this.
+
+    The provider design (docs/design/providers.md) calls this base
+    ``SwitchError``, but that name already belongs to the switch-operation
+    failure below, which is raised, asserted and shown by class name in the
+    JSON error envelope, so the base has its own name.
+    """
+
+    pass
+
+
+class ProviderUnavailableError(ProviderError):
+    """The selected provider has no implementation in this version."""
+
+    pass
+
+
+class CredentialFormatError(ProviderError):
+    """A stored credential is not a login in the provider's format."""
+
+    pass
+
+
+class ClaudeSwitchError(ProviderError):
     """Base exception for Claude Switch errors."""
 
     pass
