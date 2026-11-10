@@ -107,6 +107,9 @@ class Page:
         await self.send("Emulation.setDeviceMetricsOverride", {
             "width": width, "height": height, "deviceScaleFactor": 0, "mobile": False,
         })
+        # Every page acts as the focused one, as a terminal being typed in
+        # is: the dashboard redraws its footer keys only while focused.
+        await self.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
         if transparent:
             await self.send("Emulation.setDefaultBackgroundColorOverride", {
                 "color": {"r": 0, "g": 0, "b": 0, "a": 0},

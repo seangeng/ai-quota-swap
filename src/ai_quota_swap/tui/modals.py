@@ -27,17 +27,24 @@ class ConfirmModal(ModalScreen[bool]):
     ]
 
     def __init__(
-        self, message: str, *, title: str = "Confirm", yes_label: str = "Yes"
+        self,
+        message: str,
+        *,
+        title: str = "Confirm",
+        yes_label: str = "Yes",
+        default_no: bool = False,
     ) -> None:
         super().__init__()
         self._title = title
         self._message = message
         self._yes_label = yes_label
+        # A choice that leaves the user worse off starts on Cancel.
+        self._default_no = default_no
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal-box"):
             yield Label(self._title, classes="modal-title")
-            yield Static(self._message, classes="modal-body")
+            yield Static(self._message, classes="modal-body", markup=False)
             with Horizontal(classes="modal-buttons"):
                 yield Button(self._yes_label, id="yes")
                 yield Button("Cancel", id="no")
@@ -45,6 +52,10 @@ class ConfirmModal(ModalScreen[bool]):
                 f"← → · enter  ·  y {self._yes_label.lower()}  ·  n / esc cancel",
                 classes="modal-hint",
             )
+
+    def on_mount(self) -> None:
+        if self._default_no:
+            self.query_one("#no", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "yes")
@@ -81,11 +92,11 @@ class AddTokenModal(ModalScreen["TokenForm | None"]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal-box"):
-            yield Label("Add account from token", classes="modal-title")
+            yield Label("Add a Claude Code account from a token", classes="modal-title")
             yield Static(
-                "OAuth setup-token (sk-ant-oat…) or Console API key "
-                "(sk-ant-api…, sk-ant-usr…); the type is auto-detected.",
-                classes="modal-body",
+                "A setup-token (sk-ant-oat…, from claude setup-token) or a Console "
+                "API key (sk-ant-api…, sk-ant-usr…); qswap tells them apart.",
+                classes="modal-body", markup=False,
             )
             yield Input(password=True, placeholder="token (required)", id="token")
             yield Input(placeholder="email label (optional)", id="email")
@@ -125,11 +136,38 @@ class AddTokenModal(ModalScreen["TokenForm | None"]):
                 )
                 return
             if slot < 1:
-                self.query_one("#form-error", Static).update("Slot must be >= 1.")
+                self.query_one("#form-error", Static).update("Slot must be 1 or more.")
                 return
         self.dismiss(TokenForm(token=token, email=email, slot=slot))
 
     def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class CommandModal(ModalScreen[None]):
+    """A step the dashboard cannot take for the user: what to run, and where."""
+
+    BINDINGS = [Binding("escape,enter", "dismiss_modal", "Close", show=False)]
+
+    def __init__(self, title: str, message: str, command: str) -> None:
+        super().__init__()
+        self._title = title
+        self._message = message
+        self._command = command
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal-box"):
+            yield Label(self._title, classes="modal-title")
+            yield Static(self._message, classes="modal-body", markup=False)
+            yield Static(self._command, classes="modal-command", markup=False)
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Close", id="close")
+            yield Static("esc close", classes="modal-hint")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(None)
+
+    def action_dismiss_modal(self) -> None:
         self.dismiss(None)
 
 
