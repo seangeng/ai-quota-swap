@@ -163,6 +163,7 @@ Static.list-heading { color: $foreground; text-style: bold; }
 }
 
 #event-log {
+    overflow-x: hidden;
     background: $background;
     border-top: solid $panel;
     padding: 0 1;

@@ -42,7 +42,7 @@ from ai_quota_swap.lines import binding_window
 from ai_quota_swap.settings import SETTING_SPECS, load_engine_settings, parse_model_names
 from ai_quota_swap.tui import data
 from ai_quota_swap.tui.modals import ConfirmModal
-from ai_quota_swap.tui.theme import Palette
+from ai_quota_swap.tui.theme import Palette, from_printer
 from ai_quota_swap.tui.widgets import AccountsPanel, header_text, level_colour
 
 if TYPE_CHECKING:
@@ -180,9 +180,9 @@ class EnginePanel(Vertical):
 
 class AutoScreen(Screen):
     BINDINGS = [
-        Binding("l", "toggle_live", "Go live / dry run"),
+        Binding("tab", "next_panel", "Next provider"),
+        Binding("l", "toggle_live", "Live / dry run"),
         Binding("t", "adjust_threshold", "Threshold"),
-        Binding("tab", "next_panel", "Other provider"),
         Binding("left", "threshold_step(-1)", "-1%"),
         Binding("right", "threshold_step(1)", "+1%"),
         Binding("enter", "adjust_done", "Done"),
@@ -209,7 +209,7 @@ class AutoScreen(Screen):
         with Horizontal(id="auto-panels"):
             for provider in self._providers:
                 yield EnginePanel(provider)
-        yield RichLog(id="event-log", highlight=False, markup=False, wrap=False)
+        yield RichLog(id="event-log", highlight=False, markup=False, wrap=False, min_width=20)
         yield Footer()
 
     @property
@@ -425,6 +425,9 @@ class AutoScreen(Screen):
         if self.both:
             text.append(f"{PROVIDER_SHORT.get(provider, provider):<{TAG_WIDTH}}", style=palette.muted)
         text.append(f"{data.clock_stamp()}  — {message} —", style=palette.muted)
+        width = self._log_width() + (TAG_WIDTH if self.both else 0)
+        if len(text.plain) > width:
+            text.truncate(width, overflow="ellipsis")
         self.query_one("#event-log", RichLog).write(text)
 
     def _emit_from_thread(self, provider: str, log: AutoLog, buffer: list[str],
@@ -450,7 +453,7 @@ class AutoScreen(Screen):
             text = Text(no_wrap=True)
             if tag:
                 text.append(" " * TAG_WIDTH if line.startswith(" ") else tag, style=palette.muted)
-            text.append_text(Text.from_ansi(line))
+            text.append_text(from_printer(line, palette))
             log.write(text)
         if event is not None and event.kind in ("switch", "limit-reset"):
             self.app.request_refresh()

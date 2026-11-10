@@ -91,7 +91,7 @@ class UsageScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.watch(self.app, "theme", lambda _t: self._render())
+        self.watch(self.app, "theme", lambda _t: self._draw())
         self._load()
 
     # -- keys --------------------------------------------------------------------
@@ -125,7 +125,7 @@ class UsageScreen(Screen):
         by, days = self.by, self.days
         scan = days not in self._scanned
         self.scanning = scan
-        self._render()
+        self._draw()
 
         def work() -> None:
             first = self.app.read_ledger(days=days, by=by, scan=False)
@@ -143,7 +143,7 @@ class UsageScreen(Screen):
             self.scanning = False
             self._result = None
             self._error = f"Error: the usage ledger could not be read: {event.worker.error}"
-            self._render()
+            self._draw()
 
     def _show(self, generation: int, result, scanning: bool, scanned_days: int | None = None) -> None:
         if generation != self._generation:
@@ -154,9 +154,9 @@ class UsageScreen(Screen):
         self.scanning = scanning
         if result is not None or not scanning:
             self._result = result
-        self._render()
+        self._draw()
 
-    def _render(self) -> None:
+    def _draw(self) -> None:
         if not self.is_mounted:
             return
         palette = Palette.from_theme(self.app.current_theme)

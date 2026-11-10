@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
+
+from ai_quota_swap.tui.theme import Palette, from_printer
 
 
 class ConfirmModal(ModalScreen[bool]):
@@ -185,7 +186,8 @@ class OutputModal(ModalScreen[None]):
         with Vertical(classes="modal-box modal-box-wide"):
             yield Label(self._title, classes="modal-title")
             with VerticalScroll(classes="modal-output"):
-                yield Static(Text.from_ansi(self._output.rstrip() or "(no output)"))
+                yield Static(from_printer(self._output.rstrip() or "(no output)",
+                                          Palette.from_theme(self.app.current_theme)))
             with Horizontal(classes="modal-buttons"):
                 yield Button("Close", id="close")
             yield Static("esc close", classes="modal-hint")

@@ -515,7 +515,7 @@ class WatchScreen(AccountListScreen):
 
     def __init__(self) -> None:
         super().__init__()
-        self._selecting = False
+        self._armed = False
 
     def on_mount(self) -> None:
         self.watch(self.app, "refresh_status", self._on_refresh_status)
@@ -523,31 +523,31 @@ class WatchScreen(AccountListScreen):
         super().on_mount()
 
     def _title_text(self) -> str:
-        if self._selecting:
+        if self._armed:
             return self._SELECT_TITLE
         status = self.app.refresh_status
         return f"{self._WATCH_TITLE} · {status}" if status else self._WATCH_TITLE
 
     def _on_refresh_status(self, status: str) -> None:
-        if not self._selecting:
+        if not self._armed:
             self.query_one("#list-title", Static).update(self._title_text())
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        if action == "select_highlighted" and not self._selecting:
+        if action == "select_highlighted" and not self._armed:
             return False  # hidden and inert until selection is armed
-        if action == "toggle_select" and self._selecting:
+        if action == "toggle_select" and self._armed:
             return False
         return True
 
     def _index_after_build(
         self, fleet: Fleet, first_build: bool, previous: tuple[str, str] | None
     ) -> int | None:
-        if not self._selecting:
+        if not self._armed:
             return None  # monitor mode: no cursor at all
         return super()._index_after_build(fleet, first_build, previous)
 
     def _set_selecting(self, on: bool) -> None:
-        self._selecting = on
+        self._armed = on
         listview = self.query_one("#accounts", ListView)
         title = self.query_one("#list-title", Static)
         if on:
@@ -563,10 +563,10 @@ class WatchScreen(AccountListScreen):
         self.refresh_bindings()
 
     def action_toggle_select(self) -> None:
-        self._set_selecting(not self._selecting)
+        self._set_selecting(not self._armed)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        if not self._selecting:
+        if not self._armed:
             return  # e.g. a stray click while just watching
         item = event.item
         if isinstance(item, AccountItem):
@@ -574,25 +574,25 @@ class WatchScreen(AccountListScreen):
             self._set_selecting(False)  # stay here, keep watching
 
     def action_select_highlighted(self) -> None:
-        if self._selecting:
+        if self._armed:
             self.query_one("#accounts", ListView).action_select_cursor()
 
     def action_back(self) -> None:
-        if self._selecting:
+        if self._armed:
             self._set_selecting(False)
         else:
             self.app.pop_screen()
 
     def action_nav_down(self) -> None:
         listview = self.query_one("#accounts", ListView)
-        if self._selecting:
+        if self._armed:
             listview.action_cursor_down()
         else:
             listview.scroll_down(animate=False)
 
     def action_nav_up(self) -> None:
         listview = self.query_one("#accounts", ListView)
-        if self._selecting:
+        if self._armed:
             listview.action_cursor_up()
         else:
             listview.scroll_up(animate=False)
