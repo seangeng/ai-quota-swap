@@ -29,8 +29,9 @@ The scenarios are data in `scripts/demo/scenarios.py`:
 
 - `fleet`: four Claude accounts on different plans, an API-key account and two Codex accounts.
 - `autoswitch`: the active account climbs past its line and the engine switches.
-- `reset` and `reset-after`: an account at its Fable limit holding a Fable reset, before and after spending it.
+- `reset` and `reset-after`: an account at its Fable limit holding a Fable reset and a weekly reset, before and after spending the Fable one.
 - `usage`: the fleet plus two weeks of sessions, for `qswap usage`.
+- `showcase`: the README's hero: the fleet with a budget on the API-key account and two weeks of sessions already in the ledger.
 - `empty`, `empty-claude`, `empty-claude-codex`: first runs.
 - `trouble`: failure states, such as a dead login, a failing endpoint and a stale reading.
 
@@ -85,11 +86,11 @@ CI runs the same command. The rule selection, and the rules left out until the c
 3. Anything that changes behaviour gets a design doc in `docs/design/`, or an update to an existing one, before or with the code. The existing ones show the format.
 4. JSON output is a contract that only grows. Add fields; never rename, remove or retype one. Document new fields in [docs/json-output.md](docs/json-output.md).
 5. Text output follows [docs/design/ux.md](docs/design/ux.md): one word per thing, 80 columns, the next command to run on every dead end.
-6. Update the user docs your change affects, and add a line to the Unreleased section of [CHANGELOG.md](CHANGELOG.md).
+6. Update the user docs your change affects, and add a line to the Unreleased section of [CHANGELOG.md](CHANGELOG.md). A new setting also needs its meaning and an example value in `scripts/settings_doc.py`; run it to regenerate [docs/settings.md](docs/settings.md). `tests/test_docs.py` fails while the page is stale or a link in any Markdown file is broken.
 
 ## Regenerate screenshots
 
-The README's screenshots and recordings come from the demo harness:
+The screenshots and recordings in the README and `docs/` come from the demo harness:
 
 ```bash
 uv run python scripts/demo/build.py                  # every shot
@@ -97,7 +98,7 @@ uv run python scripts/demo/build.py --only list      # one shot
 uv run python scripts/demo/tour.py /tmp/qswap-tour   # every dashboard screen, for review
 ```
 
-Shots need a local Chrome (`CHROME_PATH` if it is not in `/Applications`), recordings need ffmpeg, and framing needs a ScreenFramed login, which `build.py` skips with a message when it is missing. If your change alters what a shot shows, regenerate that shot in the same pull request. The steps are in [scripts/demo/README.md](scripts/demo/README.md).
+Shots need a local Chrome (`CHROME_PATH` if it is not in `/Applications`), recordings need ffmpeg (and a LittleDemo login, except with `--record local`), and framing needs a ScreenFramed login, which `build.py` skips with a message when it is missing. The README and the docs use the unframed PNGs in `assets/screenshots/raw/`. If your change alters what a shot shows, regenerate that shot in the same pull request. The steps are in [scripts/demo/README.md](scripts/demo/README.md).
 
 ## Releases (maintainer)
 

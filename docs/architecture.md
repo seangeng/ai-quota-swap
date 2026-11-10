@@ -20,13 +20,13 @@ Sizes are rounded and move with every change; they are here so you know what you
 
 | Module | Lines | What it does |
 |---|---|---|
-| `cli.py` | 2,800 | `main`, the verb dispatch, and the handlers for most Claude verbs |
-| `codex_cli.py` | 600 | `qswap codex <verb>`, and the Codex section of `qswap list` |
+| `cli.py` | 3,000 | `main`, the verb dispatch, and the handlers for most Claude verbs |
+| `codex_cli.py` | 700 | `qswap codex <verb>`, and the Codex section of `qswap list` |
 | `api_cli.py` | 800 | `qswap api org`, `qswap budget`, and the `usage --billed` section |
-| `printer.py` | 200 | Terminal colours and the accent, muted and warning styles |
+| `printer.py` | 300 | Terminal colours and the accent, muted and warning styles |
 | `appearance.py` | 200 | Light or dark terminal detection (OSC 11) and theme choice |
 | `labels.py` | <100 | The one spelling of an account in messages (`#2 work`) |
-| `display.py` | 700 | The shared state phrases (needs re-login, usage unavailable, as of, nothing managed) and the account block `list` and `status` print; pure functions the dashboard and menu bar can import |
+| `display.py` | 800 | The shared state phrases (needs re-login, usage unavailable, as of, nothing managed) and the account block `list` and `status` print; pure functions the dashboard and menu bar can import |
 | `prompts.py` | 100 | The one place a question is asked: never off a terminal, a no on cancel |
 | `argparsing.py` | 100 | The `ArgumentParser` every verb uses: exit 64, the JSON envelope under `--json`, help at 80 columns |
 | `helptext.py` | 300 | `qswap --help` (the map), the bare-`qswap` hint, and the help of the verbs rewritten to legacy flags |
@@ -39,7 +39,7 @@ Sizes are rounded and move with every change; they are here so you know what you
 
 | Module | Lines | What it does |
 |---|---|---|
-| `switcher.py` | 8,500 | `ClaudeAccountSwitcher`: the registry, add, remove, switch, list and status output, usage collection, purge |
+| `switcher.py` | 8,800 | `ClaudeAccountSwitcher`: the registry, add, remove, switch, list and status output, usage collection, purge |
 | `credentials.py` | 2,100 | Where saved logins live: Keychain or `.enc` files, fallbacks, reconciliation |
 | `macos_keychain.py` | 200 | Keychain access through the `security` CLI |
 | `oauth.py` | 1,300 | Token parsing and refresh, the usage request and its normalization, window math |
@@ -56,7 +56,7 @@ Sizes are rounded and move with every change; they are here so you know what you
 
 | Module | Lines | What it does |
 |---|---|---|
-| `codex/switcher.py` | 1,900 | `CodexSwitcher`: registry, capture, switch, list, `qswap codex login` |
+| `codex/switcher.py` | 2,000 | `CodexSwitcher`: registry, capture, switch, list, `qswap codex login` |
 | `codex/auth.py` | 500 | Codex's `auth.json`: locate, read, decode, lock, replace |
 | `codex/usage.py` | 600 | The `/wham/usage` read and reset credits, in qswap's reading shape |
 | `codex/processes.py` | 200 | Which Codex processes hold a login, and the background-server restart |
@@ -66,7 +66,7 @@ Sizes are rounded and move with every change; they are here so you know what you
 | Module | Lines | What it does |
 |---|---|---|
 | `providers.py` | 300 | The `EngineHost` and `SurfaceHost` Protocols, the provider registry and factory |
-| `autoswitch.py` | 3,300 | `AutoSwitchEngine`: each tick polls, decides, switches and spends resets; typed events |
+| `autoswitch.py` | 3,700 | `AutoSwitchEngine`: each tick polls, decides, switches and spends resets; typed events |
 | `lines.py` | 100 | A switch line per usage window (5-hour and weekly thresholds) |
 | `pace.py` | 200 | Whether a weekly window is ahead of pace |
 | `resets.py` | 1,300 | Usage resets: status parsing, kinds, the claim request, `plan_reset` |
@@ -75,17 +75,17 @@ Sizes are rounded and move with every change; they are here so you know what you
 | `snapshot_source.py` | 100 | The read path the dashboard and menu bar use |
 | `settings.py` | 800 | `settings.json`: sections, defaults, validation, `SETTING_SPECS` |
 | `models.py` | 300 | Data classes: `AccountSnapshot`, `AccountsSnapshot`, `AccountPolicy`, `Platform` |
-| `exceptions.py` | 100 | `ProviderError` and its subclasses |
+| `exceptions.py` | 200 | `ProviderError` and its subclasses |
 
 ### Ledger and API accounts
 
 | Module | Lines | What it does |
 |---|---|---|
-| `ledger/usage.py` | 100 | `run_usage`: scan, then report; the CLI's one entry into the ledger |
+| `ledger/usage.py` | 200 | `run_usage`: scan, then report; the CLI's one entry into the ledger |
 | `ledger/scanner.py` | 700 | The incremental, resumable scan of session files |
 | `ledger/readers.py` | 400 | Claude Code and Codex transcript lines into token events |
 | `ledger/store.py` | 300 | The SQLite store, `ledger.db` |
-| `ledger/report.py` | 500 | Grouping, attribution fix-ups, prices, rendering |
+| `ledger/report.py` | 600 | Grouping, attribution fix-ups, prices, rendering |
 | `ledger/pricing.py` | 300 | The bundled price table and `pricing.json` overrides |
 | `ledger/activations.py` | 300 | `activations.jsonl`: which account was live when |
 | `ledger/spend.py` | 200 | Today's and this month's spend for one account, read without scanning |
@@ -99,14 +99,14 @@ Sizes are rounded and move with every change; they are here so you know what you
 |---|---|---|
 | `tui/app.py` | 700 | `QswapApp`: both providers' switchers, the snapshot poll loop, every action (switch, add, remove), the cost line |
 | `tui/dashboard.py` | 600 | The main screen and its menus, the switch picker and the watch screen |
-| `tui/autoview.py` | 500 | The live auto-switch screen: one real engine per provider, and "Next best" |
+| `tui/autoview.py` | 600 | The live auto-switch screen: one real engine per provider, and "Next best" |
 | `tui/usageview.py` | 200 | The usage screen, over `ledger.usage.run_usage` and `ledger.report.render_text` |
 | `tui/widgets.py` | 800 | Usage bars; cards and one-line rows drawn from `display.AccountBlock`; the accounts panel and how it fits |
 | `tui/data.py` | 500 | `FleetSource` (each provider's snapshot and the facts around it), `block_for`, blocking actions, the ledger reads |
 | `tui/modals.py` | 200 | Confirmations, token entry, a command to run elsewhere |
-| `tui/theme.py` | 100 | The Textual themes and shared colours |
-| `menubar.py` | 1,600 | The menu bar's settings, its typed menu description and `build_menu`, the one pure function that turns both providers' state into the whole menu; the title, the health row, the dialogs' words |
-| `menubar_app.py` | 700 | The rumps glue: draws a `Menu`, maps each `Action` to a handler; only loaded with rumps |
+| `tui/theme.py` | 200 | The Textual themes and shared colours |
+| `menubar.py` | 1,700 | The menu bar's settings, its typed menu description and `build_menu`, the one pure function that turns both providers' state into the whole menu; the title, the health row, the dialogs' words |
+| `menubar_app.py` | 800 | The rumps glue: draws a `Menu`, maps each `Action` to a handler; only loaded with rumps |
 | `menubar_data.py` | 300 | The menu bar's blocking reads (both providers, the ledger's cost totals, the log, heartbeats), always off the main thread |
 | `menubar_engines.py` | 300 | One auto-switch engine per provider, each in its own thread; noticing switches made outside the menu bar |
 | `menubar_notify.py` | 300 | Notification texts and their de-duplication across the two engines |
@@ -118,7 +118,7 @@ Sizes are rounded and move with every change; they are here so you know what you
 | Module | Lines | What it does |
 |---|---|---|
 | `fsutil.py` | 400 | Atomic writes (0600 by default), links and junctions, retries on Windows |
-| `locking.py` | 100 | `FileLock` |
+| `locking.py` | <100 | `FileLock` |
 | `cache.py` | <100 | Small JSON caches with a time to live, under `cache/` |
 | `logging_config.py` | <100 | The rotating log file in the data directory |
 | `spawn.py` | 100 | Running `ps`, `security` and `claude` without `fork()` on macOS |
@@ -163,11 +163,11 @@ On macOS the saved logins and Admin keys are Keychain items under the service `a
 |---|---|---|
 | What `qswap list` prints | `display.render_block` and `block_from_entry` (one account's block, both providers), `ClaudeAccountSwitcher._account_block` and `list_accounts`, `CodexSwitcher.account_block`, `cli._list_accounts` (both providers and the first run) | [design/ux.md](design/ux.md); `json_output.account_row` if `--json` changes too |
 | A message's words | `display.py` for any account state; `labels.account_label` for an account's name; `prompts.confirm` for a question | [design/ux.md](design/ux.md) |
-| A new setting | A field on the section's dataclass in `settings.py` (`ResetSettings`, `AutoSwitchSettings`, ...), its `load_*_settings` function, and a `SettingSpec` in `SETTING_SPECS`, which `qswap config` validates and lists | The Configuration section of the README |
+| A new setting | A field on the section's dataclass in `settings.py` (`ResetSettings`, `AutoSwitchSettings`, ...), its `load_*_settings` function, and a `SettingSpec` in `SETTING_SPECS`, which `qswap config` validates and lists; then add its meaning and an example value to `scripts/settings_doc.py` and run it to regenerate [settings.md](settings.md) (`tests/test_docs.py` fails until you do) | [settings.md](settings.md) |
 | A new verb | `cli._dispatch`: a verb with its own parser gets a `_<verb>_command(argv)` handler built on `argparsing.ArgumentParser` and listed in `_OWN_PARSER_VERBS`; a verb that maps to a legacy flag goes in `_SUBCOMMAND_FLAGS` and gets a help page in `helptext.LEGACY_VERB_HELP`. Add it to `helptext.MAIN_HELP`. Codex verbs: `codex_cli.dispatch` and `codex_cli.HELP` | The Commands section of [design/ux.md](design/ux.md) |
 | How usage is fetched | `ClaudeAccountSwitcher._collect_usage_entries`, `UsageStore.reserve` and `record`, `oauth.try_fetch_usage_for_account`, `oauth.build_usage_result`; for Codex, `codex/usage.py` | `poll_policy.py`, Contract 2 in [design/providers.md](design/providers.md) |
 | The auto-switch decision | `AutoSwitchEngine._tick_inner` and `_rank_candidates`; the lines in `lines.py` | [auto-switch.md](auto-switch.md) |
-| Reset planning | `resets.plan_reset` and `grant_scope`; the engine's call in `AutoSwitchEngine._maybe_use_reset`; the manual path in `cli._reset_command` | The Usage resets section of the README |
+| Reset planning | `resets.plan_reset` and `grant_scope`; the engine's call in `AutoSwitchEngine._maybe_use_reset`; the manual path in `cli._reset_command` | [resets.md](resets.md) |
 | A Codex behaviour | `CodexSwitcher` (`switch_to`, `_handle_holders`, `login_new_account`), `codex/auth.py`, `codex/processes.py` | [design/codex.md](design/codex.md), [codex.md](codex.md) |
 | The ledger and prices | `ledger/readers.py` (what counts), `ledger/report.py` (grouping and attribution), the tables in `ledger/pricing.py` | [design/ledger.md](design/ledger.md), [usage.md](usage.md) |
 | The dashboard | `tui/dashboard.py` (screens), `tui/widgets.py` (cards and bars), `tui/data.py` (`block_for`: a snapshot row in `display`'s words), `tui/app.py` (actions) | `scripts/demo/tour.py` screenshots every screen |
