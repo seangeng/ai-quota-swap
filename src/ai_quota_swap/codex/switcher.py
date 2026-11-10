@@ -85,11 +85,8 @@ from ai_quota_swap.paths import (
 from ai_quota_swap.printer import (
     say,
     accent,
-    bold_accent,
     bolded,
     dimmed,
-    format_age,
-    muted,
     warning,
 )
 from ai_quota_swap.settings import (

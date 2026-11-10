@@ -4312,7 +4312,6 @@ class ClaudeAccountSwitcher:
         if slot is None and self._account_exists(current_email, current_org_uuid):
             seq = self._get_sequence_data()
             account_num = self._find_account_slot(seq, current_email, current_org_uuid)
-            matched_org_name = seq["accounts"][account_num].get("organizationName", "") if account_num else ""
 
             if alias is not None:
                 conflict = self._alias_in_use(alias, exclude_num=account_num)
@@ -4367,7 +4366,6 @@ class ClaudeAccountSwitcher:
             seq["lastUpdated"] = get_timestamp()
             self._write_json(self.sequence_file, seq)
 
-            tag = self._get_display_tag(current_email, matched_org_name, current_org_uuid)
             self._logger.info(f"Updated credentials for account {account_num}: {current_email}")
             print(
                 f"{accent('Updated')} the saved login of {self.label(account_num)}"
