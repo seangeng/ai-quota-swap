@@ -247,15 +247,13 @@ def _policy_badges(acc: AccountSnapshot, gap: str) -> list[str]:
 
 
 def _resets_badge(last_good: dict | None, now: float) -> str:
-    """``3 resets`` in a card header while the account holds usage resets
-    (``qswap reset`` lists them), else ``""``."""
+    """``3 resets`` in a card header while the account holds usage resets of
+    one kind, counts by kind (``resets: 2 Fable · 1 weekly``) once kinds
+    differ (``qswap reset`` lists them), else ``""``."""
     from ai_quota_swap import resets
 
     status = last_good.get("resets") if isinstance(last_good, dict) else None
-    n = resets.total_left(status, now)
-    if not n:
-        return ""
-    return f"{n} reset{'s' if n != 1 else ''}"
+    return resets.badge(status, now)
 
 
 def account_card_text(

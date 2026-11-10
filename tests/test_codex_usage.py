@@ -272,8 +272,21 @@ class TestCredits:
         reading = normalize_usage(usage_payload(window(604_800, 99, now=NOW)), now=NOW)
         status = codex_usage.credits_status(self.LISTING, reading)
         assert status["grants"][0]["clears"] == ["seven_day"]
-        assert status["grants"][0]["type"] == "weekly"
+        # Every credit is a "Full reset (Weekly + 5 hr)"; on a weekly-only
+        # plan it can clear only the weekly window, so it acts as weekly.
+        assert status["grants"][0]["type"] == "full"
+        assert resets.grant_scope(status["grants"][0]) == "weekly"
         assert status["weekly_resets_at"] == reading["seven_day"]["resets_at"]
+
+    def test_both_windows_make_every_credit_a_full_reset(self):
+        reading = normalize_usage(usage_payload(
+            window(18_000, 10, now=NOW), window(604_800, 70, now=NOW)
+        ), now=NOW)
+        status = codex_usage.credits_status(self.LISTING, reading)
+        assert {g["type"] for g in status["grants"]} == {"full"}
+        assert {resets.grant_scope(g) for g in status["grants"]} == {"full"}
+        assert resets.reset_name(status["grants"][0]) == "full reset"
+        assert resets.clears_phrase(status["grants"][0]) == "clears all usage"
 
     def test_zero_credits_is_an_empty_status_without_a_request(self):
         reading = normalize_usage(usage_payload(window(604_800, 10, now=NOW), credits=0), now=NOW)

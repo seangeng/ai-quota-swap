@@ -435,14 +435,22 @@ def format_account_label(
 ) -> str:
     """Build one account row's menu label.
 
-    Ends with ``· re-login in 5d 12h`` while the slot's stored login is due
-    (:func:`oauth.format_login_expiry`, the same judgement the CLI/TUI views
-    use), last so its position is what stays constant in a proportional-font
-    NSMenu row.
+    Usage resets the account holds follow the usage (``· 3 resets``, or
+    ``· resets: 2 Fable · 1 weekly`` once kinds differ, as the dashboard card
+    says). Ends with ``· re-login in 5d 12h`` while the slot's stored login is
+    due (:func:`oauth.format_login_expiry`, the same judgement the CLI/TUI
+    views use), last so its position is what stays constant in a
+    proportional-font NSMenu row.
     """
+    from ai_quota_swap import resets
+
     label = f"{alias}  ({email})" if alias else email
     marker = "  (disabled)" if disabled else ""
     row = f"{num}  {label}{marker}  {usage_summary(usage, now, fetched_at)}"
+    if isinstance(usage, dict):
+        held = resets.badge(usage.get("resets"), time.time() if now is None else now)
+        if held:
+            row += f" · {held}"
     note = oauth.format_login_expiry(login_expires_at, quarantined, now)
     return f"{row} · {note}" if note else row
 

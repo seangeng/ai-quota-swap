@@ -22,6 +22,31 @@ Wire protocol, as Claude Code 2.1.321 speaks it:
   ``unavailable`` (an unknown grant id answers ``ineligible``/
   ``unknown_grant`` and spends nothing).
 
+Resets are not interchangeable. Every grant has a *scope* (:func:`grant_scope`),
+derived from the windows it ``clears`` and cross-checked against what the
+server declares (``gives_back_weekly``, ``type``):
+
+* ``model``: per-model weekly windows only, not the all-models weekly window
+  (a Fable reset). Claude Code calls a grant with ``gives_back_weekly`` a
+  "Fable reset" whatever else it says.
+* ``session``: the 5-hour window only.
+* ``weekly``: the all-models weekly window (and whatever else it lists).
+* ``full``: both the 5-hour and the all-models weekly windows.
+* ``unknown``: anything else; shown as "reset" with its listed windows and
+  never spent automatically.
+
+The planner spends the narrowest reset that does the job, and spends a
+``weekly`` or ``full`` reset by itself only for an all-usage window (5h or 7d)
+unless ``resets.weeklyForModelLimit`` allows it.
+
+What Claude Code (2.1.322) does with kinds: it knows four ("session",
+"weekly", "fable", "full"); a grant with ``gives_back_weekly`` is "fable",
+otherwise the server's ``type``, otherwise read from ``clears``. The user
+picks a kind (``/limit-reset fable|full|5-hour|weekly``, or a chooser), and
+the client claims that kind's first usable grant, which need not be
+``next_grant_id`` (used only for telemetry). After a successful claim it
+marks exactly the windows the answer's ``cleared`` lists as reset.
+
 Everything here is pure or a single network call; when to claim is decided by
 :func:`plan_reset` (pure, unit-tested) and executed by the auto engine or
 ``qswap reset``.
@@ -78,6 +103,20 @@ WINDOW_LABELS: dict[str, str | None] = {
     "seven_day_omelette": None,
     "seven_day_oauth_apps": None,
 }
+# The all-usage windows: every model's use counts toward them.
+ALL_USAGE_KEYS = ("five_hour", "seven_day")
+# Per-model weekly windows (Claude Code's own class for these is "model").
+MODEL_KEYS = frozenset({"seven_day_overage_included", "seven_day_opus", "seven_day_sonnet"})
+
+# What a grant is for (:func:`grant_scope`), narrowest first. Breadth orders
+# the planner's choice: a model or session reset before a weekly one, a
+# weekly one before a full one; an unknown shape is never auto-spent.
+SCOPES = ("model", "session", "weekly", "full", "unknown")
+SCOPE_BREADTH = {"model": 0, "session": 0, "weekly": 1, "full": 2, "unknown": 3}
+BROAD_SCOPES = frozenset({"weekly", "full"})
+# A window key the server sends that qswap does not know is kept, for display,
+# when it is a plain identifier; anything else is shown as "?".
+_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 AUTO_MODES = ("off", "active", "last-resort", "on-limit")
 
@@ -159,6 +198,24 @@ def _window_keys(value: object) -> list[str]:
     return [k for k in value if isinstance(k, str) and k in WINDOW_LABELS]
 
 
+def _unknown_window_keys(value: object) -> list[str]:
+    """Entries of a ``clears`` list that are not windows qswap knows.
+
+    Claude Code drops them silently; qswap keeps them so a grant that claims
+    to clear something unknown is shown as such and never spent automatically
+    on the strength of only the part qswap understands."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    for k in value:
+        if isinstance(k, str) and k in WINDOW_LABELS:
+            continue
+        name = k if isinstance(k, str) and _SAFE_KEY_RE.match(k) else "?"
+        if name not in out:
+            out.append(name)
+    return out[:8]
+
+
 def _int_at_least_zero(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -194,6 +251,7 @@ def _parse_grant(raw: object) -> dict | None:
         "starts_at": _str_or_none(raw.get("starts_at")),
         "ends_at": _str_or_none(raw.get("ends_at")),
         "clears": _window_keys(raw.get("clears")),
+        "clears_unknown": _unknown_window_keys(raw.get("clears")),
         "blocking": _window_keys(raw.get("blocking")),
         "paused": raw.get("paused") is True,
         "usable_now": raw.get("usable_now") is True,
@@ -294,20 +352,145 @@ def grant_unusable_reason(grant: dict, now: float) -> str | None:
     return None
 
 
-def grant_kind(grant: dict) -> str:
-    """Short name of what a grant refills: "Fable", "session", "weekly", "full"."""
-    clears = set(grant.get("clears") or ())
-    if {"five_hour", "seven_day"} <= clears:
+def _scope_from_clears(clears: Iterable[str]) -> str:
+    """The scope a ``clears`` list (known window keys) describes on its own."""
+    keys = set(clears)
+    has_5h = "five_hour" in keys
+    has_7d = "seven_day" in keys
+    models = keys & MODEL_KEYS
+    others = keys - set(ALL_USAGE_KEYS) - MODEL_KEYS  # Cowork, OAuth apps, ...
+    if has_5h and has_7d:
         return "full"
-    if clears == {"five_hour"}:
-        return "session"
-    if clears == {"seven_day"}:
+    if has_7d:
         return "weekly"
-    names = [WINDOW_LABELS.get(k) for k in grant.get("clears") or ()]
-    names = [n for n in names if n]
-    if names:
-        return "+".join(dict.fromkeys(names))
-    return grant.get("type") or "reset"
+    if has_5h:
+        return "unknown" if models or others else "session"
+    return "model" if models else "unknown"
+
+
+def grant_scope(grant: dict) -> str:
+    """What spending ``grant`` is for: ``model``, ``session``, ``weekly``,
+    ``full`` or ``unknown`` (see the module docstring).
+
+    The windows a grant ``clears`` decide it, because they are what the claim
+    sets to zero. What the server declares is a cross-check:
+
+    * ``gives_back_weekly`` marks a Fable reset (Claude Code calls such a
+      grant a "Fable reset" before looking at anything else); it agrees with
+      a grant that clears per-model windows only.
+    * ``type: "full"`` is no evidence of breadth: the live server sends it on
+      a Fable reset that clears only the Fable window, and a Codex credit
+      ("Full reset (Weekly + 5 hr)") on a plan with only a weekly window can
+      clear only that window. The windows decide.
+    * ``type: "weekly"`` on a grant that lists only per-model windows reads
+      as weekly (the broader reading keeps it from being spent on a narrow
+      limit); one that lists both 5h and 7d is full. A declared type the
+      windows contradict any other way makes the grant ``unknown``.
+    """
+    derived = _scope_from_clears(grant.get("clears") or ())
+    if derived == "unknown":
+        return "unknown"
+    if derived == "model" and grant.get("gives_back_weekly"):
+        return "model"
+    declared = grant.get("type")
+    if declared not in ("session", "weekly") or declared == derived:
+        return derived
+    if declared == "weekly" and derived == "model":
+        return "weekly"
+    if derived == "full":
+        return "full"
+    return "unknown"
+
+
+def _model_names(grant: dict) -> list[str]:
+    """Display names of the per-model windows ``grant`` clears, in order."""
+    names = [WINDOW_LABELS.get(k) for k in grant.get("clears") or () if k in MODEL_KEYS]
+    return list(dict.fromkeys(n for n in names if n))
+
+
+def grant_kind(grant: dict) -> str:
+    """Short name of what a grant refills: "Fable" (the model it is for),
+    "session", "weekly", "full", or "reset" for a shape qswap cannot name.
+    The ``kind`` of ``--json`` output and :class:`ResetPlan`."""
+    scope = grant_scope(grant)
+    if scope == "model":
+        return "+".join(_model_names(grant)) or "model"
+    if scope == "unknown":
+        return "reset"
+    return scope
+
+
+def scope_noun(scope: str | None, kind: str | None = None) -> str:
+    """"Fable reset", "5-hour reset", "weekly reset", "full reset" or "reset",
+    the way Claude Code's /limit-reset names them. ``kind`` names a model
+    reset; without a ``scope`` (a plan written before scopes existed) the
+    ``kind`` alone is used."""
+    if scope == "model":
+        return f"{kind} reset" if kind and kind != "model" else "model reset"
+    if scope == "session":
+        return "5-hour reset"
+    if scope in ("weekly", "full"):
+        return f"{scope} reset"
+    if scope is None and kind and kind != "reset":
+        return f"{kind} reset" if kind != "session" else "5-hour reset"
+    return "reset"
+
+
+def reset_name(grant: dict) -> str:
+    """What one of ``grant``'s resets is called: "Fable reset", "weekly reset", ..."""
+    return scope_noun(grant_scope(grant), grant_kind(grant))
+
+
+def scope_phrase(scope: str | None, models: Sequence[str] = ()) -> str:
+    """What a reset of ``scope`` clears, in plain words."""
+    if scope == "model":
+        return f"clears {_and(models) or 'one model'} usage only"
+    if scope == "session":
+        return "clears 5-hour usage only"
+    if scope == "weekly":
+        return "clears all weekly usage"
+    if scope == "full":
+        return "clears all usage"
+    return "clears windows qswap cannot name"
+
+
+def clears_phrase(grant: dict) -> str:
+    """What ``grant`` clears, for a newcomer: "clears Fable usage only",
+    "clears all weekly usage", ... An unknown shape lists its windows; a
+    window key qswap does not know is named as the server sent it."""
+    scope = grant_scope(grant)
+    unknown = list(grant.get("clears_unknown") or ())
+    if scope == "unknown":
+        listed = [WINDOW_LABELS.get(k) or k for k in grant.get("clears") or ()] + unknown
+        return f"clears {', '.join(listed)}" if listed else "clears nothing qswap can name"
+    phrase = scope_phrase(scope, _model_names(grant))
+    if unknown:
+        phrase += f" (also lists {', '.join(unknown)})"
+    return phrase
+
+
+def _and(names: Sequence[str]) -> str:
+    names = list(names)
+    if len(names) <= 1:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def primary_window_keys(grant: dict, scope: str | None = None) -> list[str]:
+    """The windows ``grant`` is *for*, in its ``clears`` order: the one a
+    session or weekly reset is named after, both all-usage windows for a full
+    reset, the model windows for a model reset; none for an unknown shape.
+    The planner spends a reset only for one of these (unless
+    ``resets.weeklyForModelLimit`` widens a weekly or full reset to its model
+    windows too)."""
+    scope = scope or grant_scope(grant)
+    wanted = {
+        "session": {"five_hour"},
+        "weekly": {"seven_day"},
+        "full": {"five_hour", "seven_day"},
+        "model": MODEL_KEYS,
+    }.get(scope, set())
+    return [k for k in grant.get("clears") or () if k in wanted]
 
 
 def unused_grants(status: dict | None, now: float) -> list[dict]:
@@ -325,24 +508,64 @@ def unused_grants(status: dict | None, now: float) -> list[dict]:
     return out
 
 
+def _count_label(grant: dict) -> str:
+    """A grant's kind as a count reads: "2 Fable", "1 weekly", "1 five-hour"."""
+    scope = grant_scope(grant)
+    if scope == "model":
+        return grant_kind(grant)
+    return {"session": "five-hour", "weekly": "weekly", "full": "full"}.get(scope, "other")
+
+
+def counts_by_kind(status: dict | None, now: float) -> list[tuple[str, int]]:
+    """Unused resets held, counted per kind, narrowest kind first:
+    ``[("Fable", 2), ("weekly", 1)]``."""
+    counts: dict[str, int] = {}
+    order: dict[str, tuple[int, int]] = {}
+    for i, g in enumerate(unused_grants(status, now)):
+        label = _count_label(g)
+        counts[label] = counts.get(label, 0) + g["resets_left"]
+        order.setdefault(label, (SCOPE_BREADTH[grant_scope(g)], i))
+    return [(label, counts[label]) for label in sorted(counts, key=order.__getitem__)]
+
+
+def held_by_kind(status: dict | None, now: float) -> str | None:
+    """"2 Fable · 1 weekly", or None when none are held."""
+    counts = counts_by_kind(status, now)
+    if not counts:
+        return None
+    return " · ".join(f"{n} {label}" for label, n in counts)
+
+
+def badge(status: dict | None, now: float) -> str:
+    """What a compact view (the dashboard card, the menu bar row) says about
+    the resets an account holds: "3 resets" while they are all of one kind,
+    counts by kind ("resets: 2 Fable · 1 weekly") once kinds differ, since
+    one kind cannot stand in for another; "" when none are held."""
+    counts = counts_by_kind(status, now)
+    if not counts:
+        return ""
+    if len(counts) == 1:
+        n = counts[0][1]
+        return f"{n} reset{'s' if n != 1 else ''}"
+    return f"resets: {held_by_kind(status, now)}"
+
+
 def summary(status: dict | None, now: float, *, counted: bool = True) -> str | None:
     """One-line holding: "3 Fable · use by Mar 9", or None when none are held.
 
-    Counts resets (not grants), grouped by kind in first-seen order, with the
-    earliest expiry. ``counted=False`` drops the count when every reset is of
-    one kind ("Fable · use by Mar 9"), for a row that prints the total in its
-    own column.
+    Counts resets (not grants) per kind, narrowest kind first ("2 Fable ·
+    1 weekly · use by Mar 9"), with the earliest expiry. ``counted=False``
+    drops the count when every reset is of one kind ("Fable · use by Mar 9"),
+    for a row that prints the total in its own column.
     """
     grants = unused_grants(status, now)
     if not grants:
         return None
-    counts: dict[str, int] = {}
-    for g in grants:
-        counts[grant_kind(g)] = counts.get(grant_kind(g), 0) + g["resets_left"]
+    counts = counts_by_kind(status, now)
     if not counted and len(counts) == 1:
-        held = next(iter(counts))
+        held = counts[0][0]
     else:
-        held = ", ".join(f"{n} {kind}" for kind, n in counts.items())
+        held = " · ".join(f"{n} {label}" for label, n in counts)
     ends = [t for t in (parse_ts(g.get("ends_at")) for g in grants) if t is not None]
     first = use_by(min(ends)) if ends else None
     if first:
@@ -358,7 +581,8 @@ def total_left(status: dict | None, now: float) -> int:
 
 def status_to_json(status: dict, now: float) -> dict:
     """camelCase projection for ``--json`` output, with derived fields
-    (``kind``, ``unusableReason``, the total ``resetsLeft``) spelled out."""
+    (``kind``, ``scope``, ``unusableReason``, the total ``resetsLeft``)
+    spelled out. ``clearsUnknown`` lists window keys qswap does not know."""
     return {
         "eligible": status.get("eligible", False),
         "ineligibleReason": status.get("ineligible_reason"),
@@ -372,11 +596,13 @@ def status_to_json(status: dict, now: float) -> dict:
                 "id": g["id"],
                 "label": g.get("label", ""),
                 "kind": grant_kind(g),
+                "scope": grant_scope(g),
                 "resetsLeft": g["resets_left"],
                 "resetsTotal": g.get("resets_total"),
                 "startsAt": g.get("starts_at"),
                 "endsAt": g.get("ends_at"),
                 "clears": list(g.get("clears") or ()),
+                "clearsUnknown": list(g.get("clears_unknown") or ()),
                 "blocking": list(g.get("blocking") or ()),
                 "usableNow": g.get("usable_now", False),
                 "useRequiresLimit": g.get("use_requires_limit", True),
@@ -532,12 +758,24 @@ class ResetPlan:
     hours_left: float | None
     grant_ends_at: str | None
     projected: dict[str, float] = field(default_factory=dict)
+    scope: str | None = None  # grant_scope of the grant
+
+    @property
+    def noun(self) -> str:
+        """"Fable reset", "weekly reset", ..."""
+        return scope_noun(self.scope, self.grant_kind)
+
+    @property
+    def for_model_window(self) -> bool:
+        """Whether the motivating window is a per-model one (not 5h/7d)."""
+        return self.window not in ("5h", "7d")
 
     def to_json(self) -> dict:
         return {
             "account": self.account,
             "grantId": self.grant_id,
             "grantKind": self.grant_kind,
+            "scope": self.scope,
             "reason": self.reason,
             "window": self.window,
             "pct": self.pct,
@@ -559,6 +797,15 @@ class _Candidate:
     trigger: float
     projected: dict[str, float]
     rank: tuple
+    scope: str = "unknown"
+
+    @property
+    def breadth(self) -> int:
+        return SCOPE_BREADTH[self.scope]
+
+    @property
+    def ends(self) -> float:
+        return self.rank[2]
 
 
 def _windows(usage: dict) -> list[tuple[str, float, str | None]]:
@@ -589,15 +836,24 @@ def _expiry_runway_s(grants: Sequence[dict], grant: dict, days: float) -> float:
 def _evaluate(view: AccountView, settings, now: float) -> list[_Candidate]:
     """Every grant this account could usefully spend now, best first.
 
-    Useful means: a window the grant clears is at/over the trigger line
-    (``settings.threshold``, or ``expiry_threshold`` for a grant inside its
-    expiry runway), that window is not about to refill on its own
-    (``min_hours_left``), and after the claim no window of the account would
-    still sit at/over ``settings.threshold`` — a Fable reset on an account
-    whose all-models weekly window stays at 98% buys nothing. A grant that
+    Useful means: a window the grant is *for* (:func:`primary_window_keys`:
+    the model window of a model reset, 7d for a weekly reset, 5h or 7d for a
+    full one; ``settings.weekly_for_model_limit`` adds a weekly or full
+    reset's model windows) is at/over the trigger line (``settings.threshold``,
+    or ``expiry_threshold`` for a grant inside its expiry runway), that window
+    is not about to refill on its own (``min_hours_left``), and after the
+    claim no window of the account would still sit at/over
+    ``settings.threshold``: a Fable reset on an account whose all-models
+    weekly window stays at 98% buys nothing, and neither does a weekly reset
+    that leaves the Fable window it does not list at 100%. The projection
+    zeroes exactly the windows the grant clears; a grant that
     ``gives_back_weekly`` is credited with the cleared model's share of the
     weekly window (``share_of_weekly``) when the response reported one, and
-    with nothing otherwise.
+    with nothing otherwise. A grant of unknown scope, or one that lists a
+    window qswap does not know, is never a candidate.
+
+    Best first: narrowest scope, then the server's next pick, then the
+    soonest to expire, then the fewest windows cleared.
     """
     usage = view.usage
     if not isinstance(usage, dict):
@@ -617,25 +873,39 @@ def _evaluate(view: AccountView, settings, now: float) -> list[_Candidate]:
     }
     grants = unused_grants(status, now)
     next_id = status.get("next_grant_id")
+    widen = bool(getattr(settings, "weekly_for_model_limit", False))
     out: list[_Candidate] = []
     for g in grants:
         if grant_unusable_reason(g, now) is not None:
             continue
+        scope = grant_scope(g)
+        if scope == "unknown" or g.get("clears_unknown"):
+            continue  # what it would clear is not fully known: never automatic
         cleared_keys = [k for k in g["clears"] if WINDOW_LABELS.get(k)]
         cleared = {WINDOW_LABELS[k].lower() for k in cleared_keys}
         if not cleared:
             continue
+        # The windows that may justify spending it: what it is for. A weekly
+        # or full reset clears all weekly usage, so a per-model limit alone
+        # is no reason to spend one unless the user said so.
+        reason_keys = set(primary_window_keys(g, scope))
+        if widen and scope in BROAD_SCOPES:
+            reason_keys |= set(cleared_keys)
         expiring = False
         ends = parse_ts(g.get("ends_at"))
         if ends is not None and settings.expiry_days > 0:
             expiring = ends - now <= _expiry_runway_s(grants, g, settings.expiry_days)
         trigger = min(settings.threshold, settings.expiry_threshold) if expiring else settings.threshold
-        # The motivating window: the fullest cleared window that is at the
+        # The motivating window: the fullest window it is for that is at the
         # trigger AND not about to refill on its own (min_hours_left) — judged
         # per window, so a full grant whose 5h window refills in 3h can still
-        # be justified by its 7d window.
+        # be justified by its 7d window. Under the expiry guard the trigger is
+        # expiry_threshold, still measured on those windows: the all-models
+        # weekly for a weekly reset, the model window for a model reset.
         best: tuple[str, float, str | None, float | None] | None = None
         for key in cleared_keys:
+            if key not in reason_keys:
+                continue
             label = WINDOW_LABELS[key]
             window = by_label.get(label.lower())
             server_pct = g["percent_used"].get(key)
@@ -674,13 +944,21 @@ def _evaluate(view: AccountView, settings, now: float) -> list[_Candidate]:
                 useful = False
         if not useful:
             continue
+        # Narrowest scope first (a Fable reset before a weekly one that would
+        # also clear the window). Claude Code claims whichever grant of the
+        # chosen kind is first, not only next_grant_id, so the server's pick
+        # orders grants of one breadth rather than overriding scope.
         rank = (
+            SCOPE_BREADTH[scope],
             g["id"] != next_id,  # the server's own next pick first
             ends if ends is not None else math.inf,  # then the soonest to expire
-            len(g["clears"]),  # then the narrowest that still helps
+            len(g["clears"]),  # then the fewest windows that still helps
         )
         out.append(
-            _Candidate(g, best[0], best[1], best[2], hours_left, expiring, trigger, projected, rank)
+            _Candidate(
+                g, best[0], best[1], best[2], hours_left, expiring, trigger, projected,
+                rank, scope,
+            )
         )
     out.sort(key=lambda c: c.rank)
     return out
@@ -757,13 +1035,24 @@ def _switch_could_help(
     return _someone_else_lands(views, current, watched)
 
 
-def _choose(cands: list[tuple[AccountView, _Candidate]], current: str | None):
-    """Active account first (no switch needed), then the most time left in
-    the refilled window (the most of the refill that can actually be used)."""
+def _choose(
+    cands: list[tuple[AccountView, _Candidate]],
+    current: str | None,
+    *,
+    expiring: bool = False,
+):
+    """Active account first (no switch needed), then the narrowest scope (a
+    Fable reset before a weekly one, whatever their windows' clocks say),
+    then the most time left in the refilled window (the most of the refill
+    that can actually be used). For the expiry guard (``expiring``) the
+    soonest deadline comes before scope: a reset about to be lost is spent
+    before a narrower one that will keep."""
     def key(item):
         view, cand = item
         hours = cand.hours_left if cand.hours_left is not None else -1.0
-        return (view.num != current, -hours, cand.rank, view.num)
+        if expiring:
+            return (view.num != current, cand.ends, cand.breadth, -hours, cand.rank, view.num)
+        return (view.num != current, cand.breadth, -hours, cand.rank, view.num)
 
     return min(cands, key=key) if cands else None
 
@@ -796,6 +1085,11 @@ def plan_reset(
     Every auto mode also spends grants inside their expiry runway (see
     :func:`_expiry_runway_s`) from ``expiry_threshold``, so banked resets are
     not lost to their deadline.
+
+    Kinds (:func:`grant_scope`): a reset is only spent for a window it is
+    for, the narrowest that does the job first, and a weekly or full reset
+    only for an all-usage window (5h or 7d) unless
+    ``settings.weekly_for_model_limit``; see :func:`_evaluate`.
     """
     if settings.auto not in ("active", "on-limit", "last-resort"):
         return None
@@ -820,6 +1114,7 @@ def plan_reset(
             hours_left=cand.hours_left,
             grant_ends_at=cand.grant.get("ends_at"),
             projected=cand.projected,
+            scope=cand.scope,
         )
 
     # The normal trigger first: a grant inside its expiry runway that is also
@@ -867,10 +1162,98 @@ def plan_reset(
                 return plan(*chosen, "last-resort")
 
     expiring = [(v, c) for v, c in evaluated if c.expiring]
-    chosen = _choose(expiring, current)
+    chosen = _choose(expiring, current, expiring=True)
     if chosen is not None:
         return plan(*chosen, "expiring")
     return None
+
+
+def kept_by_scope(real: ResetPlan | None, widened: ResetPlan | None) -> ResetPlan | None:
+    """The reset auto mode keeps only because of its kind, or None.
+
+    ``real`` is the plan under the user's settings, ``widened`` the plan with
+    ``weekly_for_model_limit`` on. When the real policy spends nothing and
+    the widened one would spend a weekly or full reset on a per-model window,
+    that is a reset kept because it is broader than the limit reached: worth
+    one line of explanation (``qswap reset``)."""
+    if real is not None or widened is None:
+        return None
+    if widened.scope not in BROAD_SCOPES or not widened.for_model_window:
+        return None
+    return widened
+
+
+def kept_note(plan: ResetPlan) -> str:
+    """One line on why auto mode keeps ``plan``'s broad reset (see
+    :func:`kept_by_scope`)."""
+    noun = plan.noun
+    return (
+        f"Auto keeps the {noun} on Account-{plan.account}: only {plan.window} is at its "
+        f"limit ({plan.pct:.0f}%), and a {noun} {scope_phrase(plan.scope)} "
+        "(resets.weeklyForModelLimit true would spend it)."
+    )
+
+
+def _over_the_line(usage: object, threshold: float) -> list[tuple[str, float]]:
+    if not isinstance(usage, dict):
+        return []
+    return [(label, pct) for label, pct, _ in _windows(usage) if pct >= threshold]
+
+
+def trade_note(grant: dict, usage: object, threshold: float) -> str | None:
+    """What spending a broad ``grant`` by hand trades, when that is more than
+    the limit reached: "This weekly reset clears all weekly usage; only Fable
+    is at its limit (7d is at 31%)." None for a narrow reset, or when an
+    all-usage window (or nothing) is at/over ``threshold``."""
+    scope = grant_scope(grant)
+    if scope not in BROAD_SCOPES:
+        return None
+    over = _over_the_line(usage, threshold)
+    if not over or any(label in ("5h", "7d") or label.lower() == "rejected" for label, _ in over):
+        return None
+    models = [label for label, _ in over]
+    one = len(models) == 1
+    all_usage = [
+        f"{label} is at {pct:.0f}%"
+        for label, pct, _ in _windows(usage)  # type: ignore[arg-type]
+        if label in ("5h", "7d")
+    ]
+    tail = f" ({', '.join(all_usage)})" if all_usage else ""
+    return (
+        f"This {reset_name(grant)} {clears_phrase(grant)}; only {_and(models)} "
+        f"{'is' if one else 'are'} at {'its' if one else 'their'} limit{tail}."
+    )
+
+
+def manual_order(status: dict, usage: object, threshold: float, now: float) -> list[dict]:
+    """Usable grants in the order ``qswap reset N`` picks from without
+    ``--grant``: one that clears a window at/over ``threshold`` first, then
+    the narrowest scope, the server's next pick, the soonest expiry. So with
+    only Fable at its limit a Fable reset is offered before a weekly one."""
+    windows = {
+        label.lower(): pct for label, pct, _ in _windows(usage)
+    } if isinstance(usage, dict) else {}
+    next_id = status.get("next_grant_id")
+
+    def helps(g: dict) -> bool:
+        for key in g.get("clears") or ():
+            label = WINDOW_LABELS.get(key)
+            if not label:
+                continue
+            pct = (g.get("percent_used") or {}).get(key)
+            if pct is None:
+                pct = windows.get(label.lower())
+            if pct is not None and pct >= threshold:
+                return True
+        return False
+
+    usable = [g for g in status.get("grants") or () if grant_unusable_reason(g, now) is None]
+    return sorted(usable, key=lambda g: (
+        not helps(g),
+        SCOPE_BREADTH[grant_scope(g)],
+        g["id"] != next_id,
+        parse_ts(g.get("ends_at")) or math.inf,
+    ))
 
 
 def _active_stuck_window(
