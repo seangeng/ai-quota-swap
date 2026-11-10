@@ -287,12 +287,24 @@ def card_lines(
         return out
     out.extend(windows())
     for sentence, role in display.state_parts(block):
+        if role == "muted":
+            # The held resets: whole facts give way rather than wrap.
+            sentence = fit_facts(sentence, width - len(BODY_INDENT))
         for line in display.wrap(sentence, width, BODY_INDENT):
             out.append(CardLine(
                 Text(line, style=_role_style(role, palette), no_wrap=True),
                 optional=role == "muted",
             ))
     return out
+
+
+def fit_facts(text: str, room: int) -> str:
+    """``a · b · c`` within ``room`` columns: the last facts go first, and
+    the first is cut with an ellipsis only when it alone does not fit."""
+    facts = text.split(" · ")
+    while len(facts) > 1 and len(" · ".join(facts)) > room:
+        facts.pop()
+    return display.fit(" · ".join(facts), room)
 
 
 def card_text(block: display.AccountBlock, width: int, palette: Palette, **kwargs) -> Text:

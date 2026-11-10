@@ -171,14 +171,17 @@ limit it to some shots.
 ## Review tour
 
 `tour.py OUT_DIR` screenshots every dashboard screen and modal it knows
-(`tour.py --list` prints them: main, watch, the auto view dry-run and live,
-the switch picker, the add, disable and remove menus and their confirmations,
-the theme menu, the first-run and failure states) in dark and light, at exact
-terminal sizes in cells (`--sizes 100x30,80x24`, the default). It is a review
-aid, not part of `build.py`: each stop is a scenario plus a key sequence from
-the dashboard's first frame, every stop gets a fresh guarded app process, and
-files are named `<stop>--<theme>--<cols>x<rows>.png`. `--only` and
-`--skip-existing` limit a run.
+(`tour.py --list` prints them: main and the cost line, watch, the auto view
+for each provider, dry run and live, the usage screen, the switch picker and
+its re-login refusal, the add, disable and remove menus and their
+confirmations, the Codex login, the theme menu, the first-run and failure
+states) in dark and light, at exact terminal sizes in cells (`--sizes
+100x30,80x24`, the default; a stop may name its own, as the wide auto view
+does). It is a review aid, not part of `build.py`: each stop is a scenario
+plus a key sequence from the dashboard's first frame, every stop gets a fresh
+guarded app process, and files are named `<stop>--<theme>--<cols>x<rows>.png`.
+`--only` and `--skip-existing` limit a run. Pages act as focused (the
+dashboard redraws its footer keys only while its terminal is focused).
 
 ## Keys in recordings
 
