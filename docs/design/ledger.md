@@ -71,6 +71,16 @@ applies to old usage too.
 The first scan of a large history must stream, commit in batches, show progress on a TTY, and
 be safe to interrupt and resume.
 
+Scan window: a line is written when its event happens, so a file's mtime (the symlink target's)
+is at or after every event in it, and a report scans only files changed at most one day before
+its first hour (the margin absorbs clock skew against a share's server); the rest are not opened
+and get no cursor, so a wider request, `--all` or `--rescan` reads them later. Files are read
+newest first, so an interrupted first scan keeps the most recent usage, and a narrow scan reads
+exactly the newest part of what a wider one reads, in the same order, so the two end with the
+same totals. The report counts older files whose cursor does not show them fully read
+(`scan.olderFilesNotInLedger`); an mtime set back over newer content (a tool copying times from
+an older copy) hides those events until `--all`, and such a file is counted there.
+
 ## Attribution to accounts
 
 Transcripts do not say which account served a request.
@@ -119,12 +129,13 @@ instead of a wrong price. User entries ending in `*` match any suffix.
 ```
 qswap usage [--days N | --since DATE [--until DATE]]
             [--by day|model|account|project|provider|session]
-            [--provider claude|codex] [--json] [--no-scan] [--rescan]
+            [--provider claude|codex] [--json] [--no-scan | --rescan | --all]
 ```
 
 Default: the last 7 days by day, one row per day with input, output, cache read, cache write,
 and estimated cost, then a total. `--json` returns the same data with `schemaVersion: 1`.
-`--no-scan` reports from the database as it is. `--rescan` rebuilds it.
+`--no-scan` reports from the database as it is. `--rescan` rebuilds it. `--all` scans every
+file, outside the window too, without rebuilding.
 
 ## Not in the first version
 

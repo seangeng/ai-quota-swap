@@ -410,7 +410,11 @@ _BY_TITLES = {
 }
 
 
-def render_text(report: Report, *, notes: list[str] | None = None) -> str:
+def render_text(
+    report: Report, *, notes: list[str] | None = None, last_line: str | None = None
+) -> str:
+    """The report as text. ``last_line`` (such as what the scan left out) ends
+    it, muted."""
     from ai_quota_swap.printer import bolded, dimmed, muted
 
     lines: list[str] = []
@@ -480,4 +484,6 @@ def render_text(report: Report, *, notes: list[str] | None = None) -> str:
         footer.append(f"Pricing override: {w}")
     footer.extend(notes or [])
     lines.extend(dimmed(f) for f in footer)
+    if last_line:
+        lines.append(muted(last_line))
     return "\n".join(lines)

@@ -13,7 +13,8 @@ claude-code does. Key rules (from claude-code source):
 
 Also resolves the qswap backup root, which on Linux/WSL follows the XDG Base
 Directory Specification (``$XDG_DATA_HOME/ai-quota-swap``) and falls back to the
-legacy ``~/.ai-quota-swap`` on macOS/Windows.
+legacy ``~/.ai-quota-swap`` on macOS/Windows, and Codex CLI's home
+(``$CODEX_HOME`` or ``~/.codex``) for the Codex provider.
 
 References:
 - claude-code utils/env.ts getGlobalClaudeFile
@@ -107,6 +108,21 @@ def get_codex_home() -> Path:
     if env:
         return Path(os.path.expanduser(env))
     return Path.home() / ".codex"
+
+
+def get_default_codex_home() -> Path:
+    """Return ``~/.codex``, the home the ChatGPT desktop app always uses."""
+    return Path.home() / ".codex"
+
+
+def get_codex_auth_path() -> Path:
+    """Return Codex's login file, ``<codex home>/auth.json``."""
+    return get_codex_home() / "auth.json"
+
+
+def get_codex_data_dir(backup_root: Path | None = None) -> Path:
+    """Return qswap's Codex data root, ``<backup root>/codex``."""
+    return (backup_root if backup_root is not None else get_backup_root()) / "codex"
 
 
 def get_legacy_backup_root() -> Path:

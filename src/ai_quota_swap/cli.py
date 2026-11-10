@@ -282,6 +282,19 @@ Examples:
         sys.exit(130)
 
 
+def _settings_root(switcher):
+    """Where ``settings.json`` lives: the data root, shared by every provider.
+
+    Claude Code's switcher keeps its data in the data root itself
+    (``backup_dir``); Codex's keeps its own one level down and names the
+    shared root ``data_root``.
+    """
+    from pathlib import Path
+
+    root = getattr(switcher, "data_root", None)
+    return root if isinstance(root, Path) else switcher.backup_dir
+
+
 def _guard_root(switcher: ClaudeAccountSwitcher) -> None:
     """Refuse to run as root outside a container (shared by run/map/unmap)."""
     if sys.platform != "win32":
@@ -776,25 +789,53 @@ def _priority_command(argv: list[str]) -> None:
         sys.exit(130)
 
 
+_CODEX_RESET_DESCRIPTION = (
+    "List or spend Codex usage reset credits: credits OpenAI gives some "
+    "accounts that reset the account's Codex usage windows to 0% (Codex's "
+    "/usage, Redeem reset). Each credit is used up when spent, and a spent "
+    "credit cannot be undone."
+)
+
+_CODEX_RESET_EPILOG = """
+Examples:
+  qswap codex reset               # every account's credits + the auto plan
+  qswap codex reset 2             # spend one credit on account 2 (asks first)
+  qswap codex reset 2 --grant <credit id> --yes
+  qswap codex reset --json
+
+Automatic use (qswap codex auto) follows the same resets.* settings as
+Claude Code's resets, with a daily cap of 3 automatic spends for Codex:
+  qswap config set resets.auto last-resort   # default
+  qswap config set resets.auto active        # the account in use, at its limit
+  qswap config set resets.auto on-limit
+  qswap config set resets.auto off
+        """
+
+
 def _reset_command(argv: list[str]) -> None:
     """Handle `qswap reset [NUM|EMAIL|ALIAS] [--grant ID] [--yes] [--json]`.
 
     Bare: list every account's usage-reset grants, the auto policy, and what
     the engine would spend right now. With an account: spend one reset there
     (asks first unless --yes). Exit 1 when nothing was spent.
+
+    Under the codex prefix (`qswap codex reset`) the same flow lists and
+    spends Codex usage reset credits; only the wording differs (OpenAI's
+    credits are single-use and are not "grants" of several resets).
     """
     import time as _time
 
+    codex = _provider.get() == "codex"
     parser = argparse.ArgumentParser(
-        prog="qswap reset",
-        description=(
+        prog="qswap codex reset" if codex else "qswap reset",
+        description=_CODEX_RESET_DESCRIPTION if codex else (
             "List or use usage resets: banked refills of a usage window that "
             "Anthropic grants eligible plans (Claude Code's /limit-reset). A "
             "reset sets the windows it clears back to 0%; the weekly reset "
             "day stays where it was."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=_CODEX_RESET_EPILOG if codex else """
 Examples:
   qswap reset                     # every account's resets + the auto plan
   qswap reset 2                   # use one reset on account 2 (asks first)
@@ -809,7 +850,11 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
         """,
     )
     parser.add_argument("account", nargs="?", metavar="NUM|EMAIL|ALIAS")
-    parser.add_argument("--grant", metavar="ID", help="Which grant to spend (default: the best usable one)")
+    parser.add_argument(
+        "--grant", metavar="ID",
+        help=("Which credit to spend (default: the one expiring first)" if codex
+              else "Which grant to spend (default: the best usable one)"),
+    )
     parser.add_argument("-y", "--yes", action="store_true", help="Do not ask before spending")
     parser.add_argument("--json", action="store_true", help="Machine-readable output")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
@@ -823,10 +868,16 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
         reset_request_id,
     )
 
+    # What the messages call one reset, and the command that lists them.
+    noun = "Codex usage reset credit" if codex else "reset"
+    command = "qswap codex reset" if codex else "qswap reset"
     in_flight = False
     try:
         switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
+        if codex:
+            # A keyring-mode home or nothing managed: one line, as every codex verb.
+            switcher.require_accounts()
         rs = switcher.reset_settings()
         if not rs.enabled:
             error(
@@ -844,8 +895,11 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
         status = last_good.get("resets") if isinstance(last_good, dict) else None
         now = _time.time()
         if status is None:
-            why = entry.last_error if entry is not None and entry.last_error else "no reading"
-            error(f"Error: no usage-reset status for Account-{num} ({why})")
+            why = entry.last_error if entry is not None and entry.last_error else (
+                entry.sentinel if codex and entry is not None and entry.sentinel else "no reading"
+            )
+            what = "Codex usage reset credit status" if codex else "usage-reset status"
+            error(f"Error: no {what} for Account-{num} ({why})")
             sys.exit(1)
         if not status.get("eligible"):
             reason = status.get("ineligible_reason") or "unknown"
@@ -855,7 +909,8 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
         if args.grant:
             grant = next((g for g in grants if g["id"] == args.grant), None)
             if grant is None:
-                error(f"Error: Account-{num} has no grant '{args.grant}' (`qswap reset` lists them)")
+                what = "credit" if codex else "grant"
+                error(f"Error: Account-{num} has no {what} '{args.grant}' (`{command}` lists them)")
                 sys.exit(1)
         else:
             usable = sorted(
@@ -866,7 +921,7 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
                 ),
             )
             if not usable:
-                error(f"Error: Account-{num} has no reset it can use right now")
+                error(f"Error: Account-{num} has no {noun} it can use right now")
                 for g in resets.unused_grants(status, now):
                     print(dimmed(
                         f"  {resets.grant_kind(g)} ({g['id']}): "
@@ -876,23 +931,29 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
             grant = usable[0]
         unusable = resets.grant_unusable_reason(grant, now)
         if unusable:
-            error(f"Error: that reset can't be used right now ({unusable})")
+            error(f"Error: that {'credit' if codex else 'reset'} can't be used right now ({unusable})")
             sys.exit(1)
 
         kind = resets.grant_kind(grant)
         if not args.yes:
             if not sys.stdin.isatty():
-                error("Error: refusing to spend a reset without --yes in a non-interactive shell")
+                error(f"Error: refusing to spend a {noun} without --yes in a non-interactive shell")
                 sys.exit(1)
-            print(_describe_reset(num, email, grant, last_good, status, now))
-            answer = input(f"Use this {kind} reset? [y/N] ")
+            if codex:
+                from ai_quota_swap import codex_cli
+
+                print(codex_cli.describe_credit(num, email, grant, last_good, status, now))
+                answer = input(f"Use this {noun}? [y/N] ")
+            else:
+                print(_describe_reset(num, email, grant, last_good, status, now))
+                answer = input(f"Use this {kind} reset? [y/N] ")
             if answer.strip().lower() not in ("y", "yes"):
                 print(dimmed("Kept — nothing was spent."))
                 return
 
         state = _read_state_file(switcher.backup_dir / STATE_FILENAME)
         claims = state.get("resetClaims") if isinstance(state.get("resetClaims"), dict) else {}
-        request_id = reset_request_id(claims.get(num), grant["id"])
+        request_id = reset_request_id(claims.get(num), grant["id"], switcher)
         base = {
             "at": _time.time(),
             "grantId": grant["id"],
@@ -915,6 +976,10 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
                 "grantId": grant["id"],
                 "result": result.to_json(),
             }))
+        elif result.ok and codex:
+            from ai_quota_swap import codex_cli
+
+            codex_cli.print_credit_used(switcher, num, email, grant)
         elif result.ok:
             left = f" · {result.resets_left} left on this grant" if result.resets_left is not None else ""
             cleared = ", ".join(
@@ -930,7 +995,8 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
         else:
             detail = (result.reason or result.detail or "").replace("_", " ")
             error(
-                f"Reset not used: {result.result}" + (f" ({detail})" if detail else "")
+                f"{'Credit' if codex else 'Reset'} not used: {result.result}"
+                + (f" ({detail})" if detail else "")
             )
         if not result.ok:
             sys.exit(1)
@@ -942,7 +1008,8 @@ Automatic use (qswap auto, the TUI, the menu bar) follows resets.auto:
             # The POST may have reached the server; the pending record keeps
             # its request id, so a retry (`qswap reset N` or the engine)
             # cannot spend a second one.
-            print(f"\n{yellowed('Interrupted mid-claim — the reset may have been used; `qswap reset` shows where things stand')}")
+            what = "credit" if codex else "reset"
+            print(f"\n{yellowed(f'Interrupted mid-claim — the {what} may have been used; `{command}` shows where things stand')}")
         else:
             print(f"\n{dimmed('Operation cancelled — nothing was spent')}")
         sys.exit(130)
@@ -1012,8 +1079,9 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
         preview_reset_plan,
         reset_claims_today,
     )
-    from ai_quota_swap.settings import load_settings
+    from ai_quota_swap.settings import load_engine_settings
 
+    codex = _provider.get() == "codex"
     entries = switcher.usage_entries_by_account()
     # Readings taken before reset grants were read (an older qswap, or
     # resets.enabled off at the time) carry no status: read those now.
@@ -1028,7 +1096,7 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
         entries = switcher.refresh_usage(missing)
     now = _time.time()
     rs = switcher.reset_settings()
-    settings = load_settings(switcher.backup_dir)
+    settings = load_engine_settings(_settings_root(switcher), _provider.get())
     plan = preview_reset_plan(switcher, settings, entries, now=now)
     state = _read_state_file(switcher.backup_dir / STATE_FILENAME)
     used_today = reset_claims_today(state, now)
@@ -1061,12 +1129,12 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
         return
 
     mode = {
-        "off": "off (only `qswap reset N` spends)",
+        "off": f"off (only `{'qswap codex reset' if codex else 'qswap reset'} N` spends)",
         "active": f"active — when the account in use reaches {rs.threshold:g}% on a window its reset clears",
         "last-resort": f"last-resort — when the active account is at {rs.threshold:g}% and no switch helps",
         "on-limit": f"on-limit — when any account reaches {rs.threshold:g}%",
     }[rs.auto]
-    print(bolded("Usage resets") + dimmed(f"   auto: {mode}"))
+    print(bolded("Codex usage reset credits" if codex else "Usage resets") + dimmed(f"   auto: {mode}"))
     for num, entry in entries.items():
         email = switcher.account_email(num)
         marker = f" {accent('(active)')}" if num == current else ""
@@ -1074,6 +1142,10 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
         status = entry.last_good.get("resets") if isinstance(entry.last_good, dict) else None
         if status is None:
             why = entry.last_error or entry.sentinel or "no reading"
+            if codex and not entry.last_error and not entry.sentinel and isinstance(entry.last_good, dict):
+                # Read fine, but the usage answer carried no credit summary.
+                print(f"     {dimmed('└')} {dimmed('no reset credits reported')}")
+                continue
             print(f"     {dimmed('└')} {dimmed(f'reset status unavailable ({why})')}")
             continue
         grants = resets.unused_grants(status, now)
@@ -1095,14 +1167,18 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
             print(f"     {branch} {muted(line)}  {dimmed(g['id'] + tag)}")
     if rs.auto != "off":
         if plan is not None:
+            what = "a Codex usage reset credit" if codex else f"a {plan.grant_kind} reset"
             hours = f", {plan.hours_left / 24:.1f}d before it resets on its own" if plan.hours_left else ""
             print(accent(
-                f"Auto would now use a {plan.grant_kind} reset on Account-{plan.account} "
+                f"Auto would now use {what} on Account-{plan.account} "
                 f"({plan.reason}: {plan.window} {plan.pct:.0f}%{hours})"
             ))
         else:
-            print(dimmed("Auto would not use a reset right now."))
-        print(dimmed(f"Auto resets in the last 24h: {used_today}/{MAX_AUTO_RESETS_PER_DAY}"))
+            print(dimmed(f"Auto would not use a {'credit' if codex else 'reset'} right now."))
+        print(dimmed(
+            f"Auto {'credits spent' if codex else 'resets'} in the last 24h: "
+            f"{used_today}/{MAX_AUTO_RESETS_PER_DAY}"
+        ))
 
 
 def _usage_date(value: str):
@@ -1140,9 +1216,10 @@ Examples:
   qswap usage --since 2026-11-01 --until 2026-11-07 --by account
   qswap usage --provider codex --by project
   qswap usage --json
+  qswap usage --all                  # read your whole history into the ledger
 
-The first run reads your whole history and can take a while; later runs
-read only what was added. See docs/usage.md for what the numbers mean.
+A run reads only the session files its dates need, newest first, and only
+what was added since the last run. See docs/usage.md for what the numbers mean.
         """,
     )
     span = parser.add_mutually_exclusive_group()
@@ -1169,6 +1246,10 @@ read only what was added. See docs/usage.md for what the numbers mean.
     scan.add_argument(
         "--rescan", action="store_true",
         help="Rebuild the ledger from the session files (slow on a large history)",
+    )
+    scan.add_argument(
+        "--all", action="store_true", dest="scan_all",
+        help="Read every session file, not only those the dates need (no rebuild)",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args(argv)
@@ -1203,8 +1284,12 @@ read only what was added. See docs/usage.md for what the numbers mean.
         switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
         # Note the live login first, so usage from a login made outside
-        # qswap since its last run is attributed from now on.
+        # qswap since its last run is attributed from now on. Codex's too,
+        # when any Codex account is managed (a file check otherwise).
         switcher.observe_activation()
+        from ai_quota_swap import codex_cli
+
+        codex_cli.observe_codex_login()
         try:
             registry = switcher._get_sequence_data()
         except ProviderError:
@@ -1217,6 +1302,7 @@ read only what was added. See docs/usage.md for what the numbers mean.
             provider=args.provider,
             scan=not args.no_scan,
             rescan=args.rescan,
+            scan_all=args.scan_all,
             registry=registry,
             progress=not args.json,
         )
@@ -1241,7 +1327,36 @@ read only what was added. See docs/usage.md for what the numbers mean.
             payload["notes"] = result.notes
         print(json.dumps(payload, indent=2))
         return
-    print(render_text(result.report, notes=result.notes))
+    print(render_text(result.report, notes=result.notes, last_line=result.older_history))
+
+
+_CODEX_AUTO_DESCRIPTION = (
+    "Automatically switch Codex accounts when the active one runs out, and "
+    "spend Codex usage reset credits under resets.auto. A switch restarts "
+    "Codex's background server, which interrupts work in progress, so the "
+    "default line is 99% (codex.threshold). Runs a foreground polling loop; "
+    "use --once for a single tick (cron-friendly)."
+)
+
+_CODEX_AUTO_EPILOG = """
+Exit codes with --once:
+  0  switched to another account
+  1  error (network trouble, lock contention, ...)
+  2  no action needed (including: a switch was deferred, try again)
+  3  blocked: wanted to switch but no viable target / all exhausted
+
+Examples:
+  qswap codex auto                  # foreground loop, switch when the active account is out
+  qswap codex auto --threshold 90   # switch earlier (each switch interrupts Codex)
+  qswap codex auto --json           # one JSON event per line (for scripts)
+  qswap codex auto --once; echo $?  # single tick, outcome in exit code
+  qswap codex auto --dry-run        # log decisions, never switch or spend a credit
+
+Defaults live in settings.json in the data directory: codex.threshold for the
+line, autoswitch.* for the rest (shared with qswap auto); flags override them.
+A saved login whose access token has expired ("usage unknown until used") is
+never picked: switch to it by hand and Codex renews it.
+        """
 
 
 def _auto_command(argv: list[str]) -> None:
@@ -1253,19 +1368,24 @@ def _auto_command(argv: list[str]) -> None:
     switch tick with --once whose exit code reports the outcome (for cron/
     systemd timers): 0 switched, 1 error, 2 no action needed, 3 blocked
     (no viable target / all accounts exhausted).
+
+    Under the codex prefix (`qswap codex auto`) the same engine runs over the
+    Codex switcher, with Codex's own threshold (`codex.threshold`) and its own
+    wording; everything else is shared.
     """
     import signal
     import time as _time
 
+    codex = _provider.get() == "codex"
     parser = argparse.ArgumentParser(
-        prog="qswap auto",
-        description=(
+        prog="qswap codex auto" if codex else "qswap auto",
+        description=_CODEX_AUTO_DESCRIPTION if codex else (
             "Automatically switch accounts when the active one nears its "
             "5h/7d rate limit. Runs a foreground polling loop; use --once "
             "for a single tick (cron-friendly)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=_CODEX_AUTO_EPILOG if codex else """
 Exit codes with --once:
   0  switched to another account
   1  error (network trouble, lock contention, ...)
@@ -1307,7 +1427,7 @@ Defaults live in settings.json in the backup root; flags override them.
         help=(
             "Switch when the active account's 5h window (or any window, "
             "without a weekly line) reaches this utilization (50-99.9; "
-            "default 90)"
+            + ("default: codex.threshold, 99)" if codex else "default 90)")
         ),
     )
     parser.add_argument(
@@ -1330,6 +1450,10 @@ Defaults live in settings.json in the backup root; flags override them.
         "--model",
         metavar="NAMES",
         help=(
+            "Also switch when one of these additional limits is hit, not just "
+            "the 5h/weekly windows: their names as qswap codex list shows them, "
+            "comma-separated, or 'all' for every additional limit"
+        ) if codex else (
             "Also switch when a per-model weekly limit is hit, not just the "
             "account-wide 5h/7d windows. One name or a comma-separated list "
             "(e.g. Fable, Opus, Sonnet, Haiku, or 'Fable,Opus'), or 'all' "
@@ -1340,7 +1464,8 @@ Defaults live in settings.json in the backup root; flags override them.
         "--include-api-key-accounts",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=(
+        # Codex manages ChatGPT logins only; accepted there, not advertised.
+        help=argparse.SUPPRESS if codex else (
             "Allow switching onto managed API-key accounts as a last resort "
             "(they bill per token; default: excluded)"
         ),
@@ -1372,7 +1497,7 @@ Defaults live in settings.json in the backup root; flags override them.
 
     from ai_quota_swap.autoswitch import AutoSwitchEngine, AutoSwitchEvent, pct_label
     from ai_quota_swap.printer import accent, yellowed
-    from ai_quota_swap.settings import load_settings, merged_with_cli
+    from ai_quota_swap.settings import load_engine_settings, merged_with_cli
 
     def jsonl_emit(event: AutoSwitchEvent) -> None:
         print(json.dumps(event.to_json()), flush=True)
@@ -1395,7 +1520,12 @@ Defaults live in settings.json in the backup root; flags override them.
                 error("Error: Do not run this script as root (unless running in a container)")
                 sys.exit(1)
 
-        settings = merged_with_cli(load_settings(switcher.backup_dir), args)
+        if codex:
+            # One clear line instead of an engine with nothing to watch.
+            switcher.require_accounts()
+        settings = merged_with_cli(
+            load_engine_settings(_settings_root(switcher), _provider.get()), args
+        )
         engine = AutoSwitchEngine(
             switcher,
             settings,
@@ -1416,7 +1546,8 @@ Defaults live in settings.json in the backup root; flags override them.
             )
             print(
                 dimmed(
-                    f"Auto-switch running: threshold {pct_label(settings.threshold)}%"
+                    f"{'Codex auto-switch' if codex else 'Auto-switch'} running: "
+                    f"threshold {pct_label(settings.threshold)}%"
                     f"{weekly}, every {settings.interval_seconds:.0f}s"
                     f"{' (dry-run)' if args.dry_run else ''} — Ctrl-C to stop"
                 )
@@ -1907,6 +2038,14 @@ def _dispatch(argv: list[str]) -> None:
     except Exception:
         pass  # theme is cosmetic; never block the CLI on it
 
+    # `qswap codex <verb>` has its own verbs and parsers; none of the Claude
+    # commands below (config, upgrade, menubar, ...) runs under that prefix.
+    if _provider.get() == "codex":
+        from ai_quota_swap import codex_cli
+
+        codex_cli.dispatch(argv)
+        return
+
     # `run` and `auto` keep their dedicated pre-dispatch parsers.
     if argv and argv[0] == "run":
         _run_command(argv[1:])
@@ -2005,6 +2144,7 @@ Commands:
   %(prog)s menubar --service-status   is it running? does it start at login?
   %(prog)s upgrade                    self-upgrade to latest
   %(prog)s purge                      remove all ai-quota-swap data
+  %(prog)s codex help                 OpenAI Codex CLI accounts (experimental)
 
 Aliases: ls=list  rm=remove  update=upgrade""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2427,6 +2567,11 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
                 show_token_status=args.token_status,
                 json_output=args.json,
             )
+            # The Codex section (text) or `providers.codex` (JSON), only when
+            # Codex accounts are managed; never fails the Claude list.
+            from ai_quota_swap import codex_cli
+
+            payload = codex_cli.extend_unified_list(payload, json_output=args.json)
         elif args.switch:
             from ai_quota_swap.settings import load_settings, parse_model_names
 

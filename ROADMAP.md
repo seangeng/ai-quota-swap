@@ -68,7 +68,7 @@ Done when: the existing tests pass unchanged and `qswap codex list` reports that
 accounts are managed yet.
 
 Result: the existing tests pass. Nine of them were reaching real endpoints (Anthropic usage and
-token refresh, PyPI) and now patch those calls. Until M2, `qswap codex <verb>` exits 1 with
+token refresh, PyPI) and now patch those calls. Until M2a, `qswap codex <verb>` exited 1 with
 "Codex support is not available yet".
 
 ### M2. Codex
@@ -76,10 +76,24 @@ token refresh, PyPI) and now patch those calls. Until M2, `qswap codex <verb>` e
 Design: [docs/design/codex.md](docs/design/codex.md). Experimental until it has been run with
 two Codex accounts.
 
-- M2a: capture, list, remove, and switch Codex logins (`qswap codex ...`); live usage in
+- [x] M2a: capture, list, remove, and switch Codex logins (`qswap codex ...`); live usage in
   `qswap list` and `--json`; plan label; warnings for the background server and desktop app.
-- M2b: `qswap codex auto` on the shared engine; reset credits (list, manual spend, auto-spend
-  under the shared `resets.*` policy).
+  Done: `qswap codex add | list | status | switch | remove | alias | disable | enable |
+  threshold | priority`, the Codex section in `qswap list` and `providers.codex` in
+  `list --json`, the reset-credit list (read only), the activation log for `qswap usage`, and
+  the `codex.restartDaemon` setting. User guide: [docs/codex.md](docs/codex.md). Not yet run
+  with two real accounts. `codex login` over an existing login revokes it (verified in the
+  CLI source at rust-v0.164.0 and rust-v0.167.0), so a second account is logged in under a
+  throwaway `CODEX_HOME`.
+- [x] M2b: `qswap codex auto` on the shared engine; reset credits (list, manual spend,
+  auto-spend under the shared `resets.*` policy). Done: `qswap codex auto` (the shared engine
+  over the Codex switcher, with its own state and the `codex.threshold` setting, default 99,
+  since a switch interrupts Codex), `qswap codex reset` (list and spend, with the same
+  bookkeeping, daily cap and request-id reuse as `qswap reset`; request ids are UUID v4), and
+  `qswap codex login` (logs a further account in under a private temporary `CODEX_HOME` and
+  saves it, so the live login is never signed out). `qswap usage` also notices a Codex login
+  changed outside qswap. Spending a credit is tested against a fake server only; the first
+  real spend is the maintainer's to make.
 - M2c: `qswap codex run`, one `CODEX_HOME` per account, for parallel accounts.
 
 Rules: qswap never refreshes a Codex login, never runs `codex logout`, and copies login
@@ -103,14 +117,18 @@ figure.
 
 ### M4. API accounts
 
+Design: [docs/design/api-accounts.md](docs/design/api-accounts.md).
+
 API-key accounts currently read "API key (no quota)".
 
-- With an Anthropic Admin key: real usage and cost from `GET /v1/organizations/usage_report/messages`
-  and `/v1/organizations/cost_report`, plus org rate limits.
-- Without one: spend estimated from the M3 ledger.
-- A monthly budget per API account. The engine stops routing to an account at its budget.
-- Opt-in overflow: when every subscription is exhausted, fall back to an API account with a cap.
-- OpenAI API keys for Codex, same shape (endpoints to verify).
+- Spend today and this month on every API-key account row: exact per key from Anthropic's
+  Admin API when an organization's Admin key is registered, otherwise estimated from the
+  local ledger.
+- `qswap api org add|list|remove` for Admin keys; qswap only sends GET requests with them.
+- `qswap budget`: a monthly budget per API account. The engine stops routing to an account
+  at its budget.
+- `qswap usage --billed`: an organization's actual usage and cost as Anthropic reports it.
+- Later: OpenAI organization usage.
 
 ### M5. Engine
 

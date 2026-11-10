@@ -673,6 +673,37 @@ class TestLinkPointsAt:
         assert not link_points_at(Path("link"), Path("/target"))
 
 
+class TestReadlink:
+    @pytest.mark.parametrize(
+        ("stored", "expected"),
+        [
+            ("\\\\?\\C:\\Users\\me\\store\\creds", "C:\\Users\\me\\store\\creds"),
+            ("\\\\?\\UNC\\server\\share\\creds", "\\\\server\\share\\creds"),
+            # No ordinary spelling: kept as stored.
+            ("\\\\?\\Volume{0000-1111}\\creds", "\\\\?\\Volume{0000-1111}\\creds"),
+            ("..\\store\\creds", "..\\store\\creds"),
+        ],
+    )
+    def test_windows_targets_lose_only_a_drive_or_unc_prefix(
+        self, monkeypatch, stored, expected
+    ):
+        monkeypatch.setattr(fsutil.os, "readlink", lambda _p: stored)
+        monkeypatch.setattr(fsutil.sys, "platform", "win32")
+        assert fsutil.readlink("link") == expected
+
+    def test_posix_targets_come_back_as_stored(self, monkeypatch):
+        monkeypatch.setattr(fsutil.os, "readlink", lambda _p: "\\\\?\\C:\\odd-but-legal")
+        monkeypatch.setattr(fsutil.sys, "platform", "linux")
+        assert fsutil.readlink("link") == "\\\\?\\C:\\odd-but-legal"
+
+    def test_a_real_link(self, tmp_path):
+        # A junction on Windows, which stores its target with the prefix.
+        target = tmp_path / "target"
+        target.mkdir()
+        make_dir_link(target, tmp_path / "link")
+        assert Path(fsutil.readlink(tmp_path / "link")) == target
+
+
 class TestRemoveLink:
     def test_removes_a_directory_link_and_keeps_its_target(self, tmp_path):
         target = tmp_path / "target"

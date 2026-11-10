@@ -2,11 +2,25 @@
 
 A provider is a switcher object with its own data root and its own engine
 instance (docs/design/providers.md). ``ClaudeAccountSwitcher`` is the Claude
-Code provider as it stands; a Codex switcher will expose the same members.
+Code provider as it stands; ``codex.switcher.CodexSwitcher`` is the Codex one
+and exposes the same members.
 
 The two Protocols below are written against the members' real signatures, so
 a type checker, or ``tests/test_providers.py``, can tell when a switcher stops
 fitting them.
+
+Optional engine-host members, outside the Protocol: the engine reads them with
+``getattr`` and falls back to Claude Code's behaviour when a switcher lacks
+them, so the Claude switcher defines none.
+
+- ``new_reset_request_id() -> str`` and ``is_reset_request_id(value) -> bool``:
+  the format of the idempotency key a reset claim carries
+  (``autoswitch.reset_request_id``). Default: 32 hex digits, any stored string
+  reused. Codex: a UUID v4.
+- ``add_command: str``: the qswap command that captures the live login, quoted
+  in ``no-switch`` details. Default ``qswap --add-account``.
+- ``recover_hint: str``: the sentence that tells a quarantined account's owner
+  how to recover it. Default: re-add it with ``qswap --add-account --slot N``.
 """
 
 from __future__ import annotations
@@ -207,7 +221,7 @@ DEFAULT_PROVIDER = "claude"
 """The provider a bare ``qswap <verb>`` acts on."""
 
 # Providers with no switcher in this version, and what to tell the user.
-_UNAVAILABLE = {"codex": "Codex support is not available yet"}
+_UNAVAILABLE: dict[str, str] = {}
 
 
 def split_provider_prefix(argv: Sequence[str]) -> tuple[str, list[str]]:
@@ -234,11 +248,15 @@ def make_switcher(provider_id: str = DEFAULT_PROVIDER, *, debug: bool = False) -
     """A new switcher for ``provider_id``.
 
     Raises :class:`ProviderUnavailableError` for a provider this version does
-    not implement (Codex, for now) before constructing anything.
+    not implement before constructing anything.
     """
     ensure_available(provider_id)
     # Imported here, not at module level: switcher.py imports most of the
     # package, and this module must stay importable from any of it.
+    if provider_id == "codex":
+        from ai_quota_swap.codex.switcher import CodexSwitcher
+
+        return CodexSwitcher(debug=debug)
     from ai_quota_swap.switcher import ClaudeAccountSwitcher
 
     return ClaudeAccountSwitcher(debug=debug)

@@ -287,6 +287,28 @@ def _without_extended_prefix(path: str) -> str:
     return path
 
 
+def readlink(link: os.PathLike | str) -> str:
+    """``os.readlink``, without the extended-length prefix Windows puts on an
+    absolute target.
+
+    A ``\\\\?\\`` path is exempt from Windows path normalization, so a relative
+    hop joined onto it later keeps its ``..`` as a literal name, and it never
+    compares equal to the ordinary spelling of the same file. Only drive and
+    UNC targets lose the prefix, as ``os.path.realpath`` does. Anything else,
+    such as a volume GUID path, has no ordinary spelling and comes back as
+    stored.
+    """
+    stored = os.fspath(os.readlink(link))
+    if sys.platform != "win32":
+        return stored
+    if stored.startswith(_EXTENDED_UNC_PREFIX):
+        return "\\\\" + stored[len(_EXTENDED_UNC_PREFIX):]
+    rest = stored[len(_EXTENDED_PREFIX):]
+    if stored.startswith(_EXTENDED_PREFIX) and rest[1:2] == ":" and rest[:1].isalpha():
+        return rest
+    return stored
+
+
 def link_points_at(link: os.PathLike | str, target: os.PathLike | str) -> bool:
     """Whether the link at ``link`` stores ``target`` as its destination.
 
