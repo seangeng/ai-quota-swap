@@ -1097,6 +1097,20 @@ class TestFirstRun:
             await pilot.pause()
             assert isinstance(app.screen, DashboardScreen)
 
+    async def test_a_command_is_never_split_at_80_columns(self, tmp_path):
+        fake = FakeSwitcher([], tmp_path)
+        app = make_app(fake)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await settle(pilot)
+            from ai_quota_swap.tui.widgets import AccountsPanel
+
+            panel = app.screen.query_one("#accounts-panel", AccountsPanel)
+            lines = panel.render().plain.splitlines()
+            assert all(len(ln) <= panel.content_size.width for ln in lines)
+            assert any(ln.endswith("qswap add") and "run:" in ln for ln in lines) or \
+                any(ln.strip() == "qswap add" for ln in lines)
+            assert not any(ln.rstrip().endswith("run: qswap") for ln in lines)
+
     async def test_both_live_logins_offered_by_provider(self, tmp_path):
         claude = FakeSwitcher([], tmp_path)
         claude.live_email = "maya@example.com"

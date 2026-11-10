@@ -501,14 +501,22 @@ class AccountsPanel(Static):
                 return []
             acc = view.account(view.active_number) if view.active_number else None
             if acc is None:
-                return [_Piece([Text(t, style=palette.muted) for t in _no_active_lines(view)], "note")]
+                return [_Piece(sentences(_no_active_lines(view), width, palette.muted), "note")]
             block = data.block_for(view, acc, threshold=app.session_threshold(view.provider))
             return _card_pieces(block, width, palette, extra=account_extra(acc),
                                 label_width=label_width_for(fleet))
         if not fleet.managed:
-            return [_Piece([Text(t, style=palette.foreground if i == 0 else palette.muted)
-                            for i, t in enumerate(first_run_lines(fleet))], "note")]
+            lines = first_run_lines(fleet)
+            return [_Piece(sentences(lines[:1], width, palette.foreground)
+                           + sentences(lines[1:], width, palette.muted), "note")]
         return panel_pieces(fleet, width, palette, app)
+
+
+def sentences(texts: Sequence[str], width: int, style: str) -> list[Text]:
+    """Sentences wrapped to ``width`` as the command line wraps them: a
+    command after "run: " or "with: " is never split."""
+    return [Text(line, style=style, no_wrap=True)
+            for text in texts for line in display.wrap(text, width)]
 
 
 def label_width_for(fleet: data.Fleet) -> int:
@@ -588,11 +596,9 @@ def panel_pieces(fleet: data.Fleet, width: int, palette: Palette, app) -> list[_
             # Accounts in one provider and a live, unmanaged login in the
             # other: the sentence ``qswap list`` prints for it.
             pieces.append(_Piece([Text("")], "blank", section))
-            pieces.append(_Piece([
-                Text(t, style=palette.muted) for t in display.nothing_managed_lines(
-                    view.provider, live_email=view.live_email, sentence=False,
-                )
-            ], "note", section))
+            pieces.append(_Piece(sentences(display.nothing_managed_lines(
+                view.provider, live_email=view.live_email, sentence=False,
+            ), width, palette.muted), "note", section))
             continue
         if pieces:
             pieces.append(_Piece([Text("")], "blank", section))
@@ -603,8 +609,8 @@ def panel_pieces(fleet: data.Fleet, width: int, palette: Palette, app) -> list[_
                 "heading", section,
             ))
         if view.error:
-            pieces.append(_Piece([Text(f"{view.name} accounts unavailable: {view.error}",
-                                       style=palette.sev_warn)], "note", section))
+            pieces.append(_Piece(sentences([f"{view.name} accounts unavailable: {view.error}"],
+                                           width, palette.sev_warn), "note", section))
             continue
         for acc in view.accounts:
             block = blocks[(view.provider, acc.number)]
