@@ -8,13 +8,12 @@ names; the key line's command is fixed as in test_key_helper_live.py.
 
 from __future__ import annotations
 
-import json
 import time
 
 import pytest
 
 from ai_quota_swap import claude_settings
-from tests.test_key_helper_live import QSWAP, _fleet, _settings, pin_key_helper_platform
+from tests.test_key_helper_live import QSWAP, _fleet, pin_key_helper_platform
 from tests.test_key_switch_round3 import _age_tombstone, _key_record, _write_line
 
 
@@ -129,3 +128,64 @@ class TestStatusJsonForAKeyActiveTheOlderWay:
         assert "qswap budget 2 AMOUNT" in _flat(capsys.readouterr().out)
         entry = {"code": "limit-latched", "account": 2, "fix": "qswap budget 2 AMOUNT"}
         assert entry in h.switcher.status(json_output=True).get("keyNotes", [])
+
+
+# == DS17: add-token without --slot while the settings cannot be read =========================
+
+
+from tests import test_key_switch_round3 as _r3  # noqa: E402
+from tests.test_key_switch_round3 import NEW_KEY, WHERE  # noqa: E402
+
+
+@pytest.fixture
+def run(monkeypatch, capsys):
+    """``qswap ARGS`` through cli.main on a switcher: (exit, out, err)."""
+    from unittest.mock import patch
+
+    from ai_quota_swap import cli, display
+    from tests.test_key_helper_live import _main
+
+    monkeypatch.setattr("ai_quota_swap.update_check.check_for_update", lambda v: None)
+    monkeypatch.setattr("os.geteuid", lambda: 1000, raising=False)
+    for name in display.OVERRIDE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    def go(switcher, *argv: str) -> tuple[int, str, str]:
+        capsys.readouterr()
+        with patch.object(cli, "ClaudeAccountSwitcher", return_value=switcher), \
+             patch.object(switcher, "list_accounts"), \
+             patch.object(switcher, "target_readiness", return_value=(None, "")):
+            code = _main(list(argv))
+        out, err = capsys.readouterr()
+        return code, out, err
+
+    return go
+
+
+class TestAddTokenByLabelWhileTheSettingsCannotBeRead:
+    """DS17's refusal when the key is replaced by the label its account
+    already has, as a user rotating a key types it (no --slot)."""
+
+    _base = _r3.TestAddTokenWhileTheSettingsCannotBeRead()
+
+    def test_it_stops_with_the_shared_sentence_and_writes_nothing(self, temp_home, run):
+        s, key = self._base._unreadable(temp_home)
+        before = self._base._written(s, temp_home)
+        code, out, err = run(s, "add-token", NEW_KEY, "--email", s.account_email("5"), "--yes")
+        assert code == 1
+        text = " ".join((out + err).split())
+        assert f"{WHERE} cannot be read (line 1: " in text
+        assert (
+            "); qswap last made #5 ci the active API key there, and its key line "
+            f"may still be in it. Fix the JSON in {WHERE}, then retry."
+        ) in text
+        assert "Added" not in text and "Updated" not in text
+        assert self._base._written(s, temp_home) == before
+        assert s._read_account_credentials("5", s.account_email("5")) == key
+
+    def test_with_readable_settings_the_key_is_replaced_as_before(self, temp_home, run):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        code, out, err = run(s, "add-token", NEW_KEY, "--email", s.account_email("5"), "--yes")
+        assert code == 0, err
+        assert s._read_account_credentials("5", s.account_email("5")) == NEW_KEY

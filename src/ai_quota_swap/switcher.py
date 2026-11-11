@@ -4777,6 +4777,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 raise ConfigError(
                     f"Existing account metadata for {email} is inconsistent"
                 )
+            if self.key_line_number() == account_num and self.key_line_unreadable() is not None:
+                # As with --slot (decision DS17): while the settings that may
+                # hold the key line cannot be read, nothing is written.
+                self._refuse_over_the_key(account_num, "key" if is_api_key else "token")
             # The account lock, like every other writer of a slot: the API-key
             # heal re-reads under it, so it can never put an old key back over
             # this one.
