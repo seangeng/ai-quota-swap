@@ -29,15 +29,24 @@ Reading gives a :class:`HelperState`:
     The file is not a JSON object (a parse error, or another JSON value).
 
 Writing changes that one key and keeps everything else as it was: the other
-keys and their order, the indentation, the trailing newline and the file
-mode. The change is made in the text itself (one member added, replaced or
-removed), and the result is checked by parsing it; only if the text edit does
-not give the expected object is the file written again in its own indentation.
-A write is atomic (a temporary file renamed over the target), goes through a
-symbolic link rather than over it, and re-reads the file immediately before
-the rename: Claude Code writes this file too, so when the file changed since
-it was read the edit starts again from the new contents. Nothing is ever
-written to a file that cannot be parsed or holds another helper.
+keys and their order, the indentation, the trailing newline, a byte order
+mark and the file mode. The change is made in the text itself (one member
+added, replaced or removed), and the result is checked by parsing it; only if
+the text edit does not give the expected object is the file written again in
+its own indentation. qswap's member goes in first, so in a file with one
+member per line deleting that line by hand leaves the file as it was, and
+taking it out again gives back the same bytes (an empty object keeps its own
+spelling). A write is atomic (a temporary file renamed over the target), goes
+through a symbolic link rather than over it, and re-reads the file
+immediately before the rename: Claude Code writes this file too, so when the
+file changed since it was read the edit starts again from the new contents.
+Nothing is ever written to a file that cannot be parsed or holds another
+helper.
+
+Whether the line can give Claude Code the key is :func:`check_command`: the
+line's own command, run with ``--check`` the way Claude Code runs it. Doctor
+reports it, and a switch to the active key writes the line again when it
+does not answer (:func:`line_answers`).
 """
 
 from __future__ import annotations
@@ -64,8 +73,9 @@ NO_FILE, NONE, OURS, FOREIGN, INVALID = "no-file", "none", "ours", "foreign", "i
 
 class SettingsError(Exception):
     """qswap did not change the settings file. ``reason`` is what follows the
-    file's path in a message ("is not valid JSON (...)"); ``kind`` is the state that stopped
-    it (``invalid``, ``foreign``, ``write``, ``changing``)."""
+    file's path in a message ("is not valid JSON (...)"); ``kind`` is the state
+    that stopped it (``invalid``, ``foreign``, ``write``, ``changing``, or
+    ``command``: the line would not read back as qswap's)."""
 
     def __init__(self, reason: str, *, kind: str, path: Path | None = None):
         super().__init__(reason)
@@ -316,7 +326,10 @@ def _run_check(command: str, *, cwd: str, timeout: float) -> tuple[int, str]:
                 os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
-        proc.communicate()
+        try:
+            proc.communicate(timeout=5)  # a child that left the group may hold the pipe
+        except subprocess.TimeoutExpired:
+            pass
         raise
     return proc.returncode, (err or b"").decode("utf-8", "replace")
 
@@ -372,7 +385,6 @@ def _quote(path: str) -> str:
     if "'" not in path:
         return "'" + path + "'"
     return '"' + re.sub(r'([\\"$`])', r"\\\1", path) + '"'
-
 
 
 def qswap_executable() -> list[str]:

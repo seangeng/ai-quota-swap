@@ -503,7 +503,7 @@ class TestSettingsStates:
         ("/home/u/.local/bin/ai-quota-swap key-helper 4", "4"),
         ("/usr/bin/python3 -m ai_quota_swap key-helper 6", "6"),
         ("/usr/bin/python3 -P -m ai_quota_swap key-helper 6", "6"),
-        ("'/a b/python3.12' -P -m ai_quota_swap key-helper 6 --data-dir /d", "6"),
+        ('"/a b/python3.12" -P -m ai_quota_swap key-helper 6 --data-dir /d', "6"),
         ("qswap key-helper 05", "5"),
     ])
     def test_qswaps_line_by_its_structure(self, tmp_path, line, number):
@@ -1787,7 +1787,10 @@ class TestRunProfiles:
         assert "apiKeyHelper" not in dest.read_bytes().decode("utf-8")
         assert json.loads(dest.read_bytes().decode("utf-8-sig")) == {"model": "opus"}
         dest.unlink()
-        dest.symlink_to(_settings(temp_home))
+        try:
+            dest.symlink_to(_settings(temp_home))
+        except (OSError, NotImplementedError):
+            pytest.skip("symbolic links are not available here")
         assert s.isolate_run_profiles() == []
         assert "apiKeyHelper" not in dest.read_bytes().decode("utf-8")
 
