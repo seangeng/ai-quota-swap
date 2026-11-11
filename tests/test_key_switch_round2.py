@@ -1059,6 +1059,47 @@ class TestDoctorReadsTheOtherLayers:
         assert "ANTHROPIC_AUTH_TOKEN" in found[0].summary
         assert SECRET not in json.dumps(doctor.to_json(checks, online=False))
 
+    def test_the_path_is_never_broken_or_cut(self, temp_home, tmp_path):
+        """The re-check's case: the managed file's path split at its space,
+        and two long project paths cut to the same "…/billing-api/.claude…"
+        so neither file was named in full (ux.md: a single path is never
+        broken, and goes on a line of its own)."""
+        from ai_quota_swap import doctor
+
+        _fleet()
+        deep = tmp_path / "dev" / "clients" / "northwind-labs" / "platform" / "services"
+        project = deep / "billing-api" / ".claude"
+        project.mkdir(parents=True)
+        managed = tmp_path / "Library" / "Application Support" / "ClaudeCode" / (
+            "managed-settings.json"
+        )
+        managed.parent.mkdir(parents=True)
+        managed.write_text(json.dumps({"apiKeyHelper": "/opt/x"}), encoding="utf-8")
+        (project / "settings.json").write_text(json.dumps({"apiKeyHelper": "/opt/x"}),
+                                               encoding="utf-8")
+        (project / "settings.local.json").write_text(
+            json.dumps({"env": {"ANTHROPIC_API_KEY": SECRET}}), encoding="utf-8")
+        from dataclasses import replace as with_probe
+
+        probes = with_probe(doctor.default_probes(), cwd=lambda: deep / "billing-api",
+                            managed_settings_path=lambda: managed)
+        checks = [c for c in doctor.run_checks(probes) if c.id == "claude.other_settings"]
+        assert len(checks) == 3
+        lines = [line for c in checks for line in doctor._check_lines(c, 80)]
+        for path in (managed, project / "settings.json", project / "settings.local.json"):
+            shown = doctor._abbr(path, temp_home)
+            assert any(line.strip() == shown for line in lines), (shown, lines)
+        for line in lines:
+            assert "…" not in line, line
+            if not line.strip().startswith(("/", "~")):
+                assert len(line) <= 80, line
+        summaries = " ".join(c.summary for c in checks)
+        assert "managed settings" in summaries and "local settings" in summaries
+        assert {c.to_json()["path"] for c in checks} == {
+            doctor._abbr(p, temp_home)
+            for p in (managed, project / "settings.json", project / "settings.local.json")
+        }
+
     def test_the_user_settings_env_block_is_reported(self, temp_home):
         _fleet()
         _settings_with(temp_home, {"env": {"ANTHROPIC_API_KEY": SECRET}})

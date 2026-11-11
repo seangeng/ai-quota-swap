@@ -105,7 +105,9 @@ class Check:
 
     ``fix`` is the command (or short instruction) that clears a ``warn`` or
     ``fail``; ``hint`` is a dim line for a passing check that has a next step
-    anyway ("start one with qswap auto").
+    anyway ("start one with qswap auto"). ``path``: the file the check is
+    about, when the summary names it in words; printed whole on a line of
+    its own (ux.md: a single path is never broken or cut).
     """
 
     id: str
@@ -114,15 +116,19 @@ class Check:
     summary: str
     fix: str | None = None
     hint: str | None = None
+    path: str | None = None
 
     def to_json(self) -> dict:
-        return {
+        out = {
             "id": self.id,
             "group": self.group,
             "status": self.status,
             "summary": self.summary,
             "fix": self.fix,
         }
+        if self.path is not None:
+            out["path"] = self.path
+        return out
 
 
 # -- probes ------------------------------------------------------------------------
@@ -967,6 +973,14 @@ def _other_settings_checks(p: Probes, f: _Facts) -> list[Check]:
     if err is None and cwd is not None:
         places.append(("project", Path(cwd) / ".claude" / "settings.json"))
         places.append(("local", Path(cwd) / ".claude" / "settings.local.json"))
+    # The layer in words; its path goes on a line of its own (Check.path).
+    # (One apostrophe at most in the sentence: two would read as a quoted
+    # argument to the wrapper, which never breaks one.)
+    layer = {
+        "managed": "The managed settings of this machine",
+        "project": "The shared settings of this project",
+        "local": "The local settings of this project",
+    }
     for kind, path in places:
         try:
             if user_real is not None and os.path.realpath(path) == user_real:
@@ -984,14 +998,15 @@ def _other_settings_checks(p: Probes, f: _Facts) -> list[Check]:
             continue
         where = _abbr(path, f.home)
         fix = (
-            f"ask whoever manages this machine about {where}" if kind == "managed"
-            else f"remove {' and '.join(what)} from {where}"
+            "ask whoever manages this machine about the file above" if kind == "managed"
+            else f"remove {' and '.join(what)} from the file above"
         )
         checks.append(Check(
             "claude.other_settings", "claude", WARN,
-            f"{where} sets {' and '.join(what)}; Claude Code reads it before your "
-            "user settings, so sessions that read it do not follow qswap's key line",
-            fix=fix,
+            f"{layer[kind]} set {' and '.join(what)}; Claude Code reads them before "
+            "your user settings, so sessions that read them do not follow qswap's "
+            "key line:",
+            fix=fix, path=where,
         ))
     return checks
 
@@ -1807,6 +1822,8 @@ def _check_lines(check: Check, width: int) -> list[str]:
     first = f"  {_mark_style(check.status)(mark.ljust(4))}  "
     rest_style = dimmed if check.status == SKIP else (lambda s: s)
     out = [first + rest_style(lines[0][8:])] + [rest_style(line) for line in lines[1:]]
+    if check.path:
+        out.append(body + rest_style(check.path))  # whole, even past the width
     if check.fix and check.status in (WARN, FAIL):
         fix_lines = [fit(line, width) for line in wrap(f"fix: {check.fix}", width, body, " " * 13)]
         out.append(body + muted("fix:") + fix_lines[0][8 + 4:])
