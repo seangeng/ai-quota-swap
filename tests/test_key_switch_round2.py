@@ -1196,3 +1196,14 @@ class TestWords:
         capsys.readouterr()
         assert _main(["help", "key-helper"]) == 0
         assert capsys.readouterr().out == key_helper.HELP
+
+
+class TestStatusNotesFit:
+    def test_an_indented_note_still_fits_80_columns(self, temp_home):
+        s = _fleet()
+        s.set_alias("5", "xxx")  # wrapped at 80, its first line is 79 wide
+        _activate(s, entered_by="engine")
+        lines = s.status_lines()
+        assert "nothing watches its limit" in " ".join(" ".join(lines).split())
+        for line in lines:
+            assert len(line) <= 80, line

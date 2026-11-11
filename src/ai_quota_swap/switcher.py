@@ -6913,41 +6913,51 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             under = None
         return key, under
 
-    def key_helper_notes(self) -> list[str]:
+    def key_helper_notes(self, width: int | None = None) -> list[str]:
         """The lines every surface (list, status, the snapshot behind the
         dashboard and the menu bar) shows when the key line, key_helper.json
         and the run profiles do not agree (decision B5,
-        :meth:`key_findings`); ``[]`` when all is well."""
+        :meth:`key_findings`); ``[]`` when all is well. Each note is wrapped
+        to ``width`` (80 columns by default; status indents its notes)."""
+        from ai_quota_swap import display
+
+        notes = self._key_notes()
+        if width is None or width == display.WIDTH:
+            return [line for note in notes for line in note]
+        return [line for note in notes for line in display.wrap(" ".join(note), width)]
+
+    def _key_notes(self) -> list[list[str]]:
+        """:meth:`key_helper_notes`, one list of lines per note."""
         from ai_quota_swap import display
 
         unreadable = self.key_line_unreadable()
         if unreadable is not None:
-            return unreadable
+            return [unreadable]
         f = self.key_findings()
         if f.unknown is not None:
             return []
-        out: list[str] = []
+        out: list[list[str]] = []
         fix = self.helper_fix_command()
         if f.problem is not None:
-            out.extend(display.key_helper_problem(f.problem["number"], f.problem["why"], fix))
+            out.append(display.key_helper_problem(f.problem["number"], f.problem["why"], fix))
         if f.key is not None:
             label = self.label(f.key, long=False)
             if f.entered_by == "engine" and not self.engine_watching():
-                out.extend(display.key_unwatched(label, fix))
+                out.append(display.key_unwatched(label, fix))
             if f.state.stale_command:
-                out.extend(display.key_helper_moved(f.key, f"qswap switch {f.key}"))
+                out.append(display.key_helper_moved(f.key, f"qswap switch {f.key}"))
             if f.came_back:
-                out.extend(display.key_line_came_back(label, fix))
+                out.append(display.key_line_came_back(label, fix))
             if f.linked:
-                out.extend(display.profiles_still_linked_line(
+                out.append(display.profiles_still_linked_line(
                     len(f.linked), label, f"qswap switch {f.key}"
                 ))
         if f.lost is not None and f.lost in ((self._get_sequence_data() or {}).get("accounts") or {}):
-            out.extend(display.key_line_lost(
+            out.append(display.key_line_lost(
                 self.label(f.lost, long=False), f.state.shown_path(), f.lost,
             ))
         if f.copies:
-            out.extend(display.stale_copies_line(len(f.copies), fix))
+            out.append(display.stale_copies_line(len(f.copies), fix))
         return out
 
     def _print_nothing_managed(self) -> None:
@@ -7152,7 +7162,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         identity = self._get_current_account()
         data = (self._get_sequence_data_migrated() or {}) if self.sequence_file.exists() else {}
         accounts = data.get("accounts") or {}
-        notes = [f"  {line}" for line in self.key_helper_notes()] if accounts else []
+        notes = (
+            [f"  {line}" for line in self.key_helper_notes(width=display.WIDTH - 2)]
+            if accounts else []
+        )
         out.extend(yellowed(line) for line in notes)
         view = self.active_view() if accounts else (None, None)
         if view[0] is not None:
