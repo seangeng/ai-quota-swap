@@ -245,10 +245,17 @@ def read_history(log_path: Path) -> tuple[SwitchRecord, ...]:
 # -- cost --------------------------------------------------------------------------
 
 
+#: The files the cost read depends on: the ledger, and the two registries
+#: whose numbers the chart's legend names accounts by (``qswap swap`` and
+#: ``qswap move`` renumber accounts without touching the ledger).
+STAMPED_FILES = ("ledger.db", "ledger.db-wal", "sequence.json", "codex/sequence.json")
+
+
 def ledger_stamp(data_root: Path) -> tuple:
-    """Changes whenever the ledger does (a scan here or by ``qswap usage``)."""
+    """Changes whenever the ledger does (a scan here or by ``qswap usage``),
+    and whenever an account's number does."""
     out = []
-    for name in ("ledger.db", "ledger.db-wal"):
+    for name in STAMPED_FILES:
         try:
             st = os.stat(Path(data_root) / name)
             out.append((st.st_size, st.st_mtime_ns))
@@ -335,6 +342,7 @@ def cost_days(store, data_root: Path, *, today: date, prices) -> tuple[CostDay, 
     logs, registries = report_inputs(data_root, _read_json(Path(data_root) / "sequence.json"))
     accounts = Accounts(registries, logs)
     since_hour, until_hour = day_bounds(first, today)
+    today_hour = day_bounds(today, today)[0]
     attributed = attribute(
         store, since_hour=since_hour, until_hour=until_hour, provider=None,
         accounts=accounts, logs=logs,
@@ -345,7 +353,12 @@ def cost_days(store, data_root: Path, *, today: date, prices) -> tuple[CostDay, 
         if found is None:
             continue  # unpriced: in the caption's "+", not in a column
         group = account_group(prov, account)
-        day = per_day.setdefault(local_day(hour), {})
+        # A bucket is an hour of UTC. Where midnight falls inside one (a
+        # zone half an hour off UTC), the caption counts the bucket from
+        # today's midnight as today's and the one from the first day's
+        # midnight in the week: the columns count them the same way.
+        when = today if hour >= today_hour else max(local_day(hour), first)
+        day = per_day.setdefault(when, {})
         day[group] = day.get(group, 0.0) + found[1].cost(*toks[:5])
     who: dict[tuple, CostAccount] = {}
     for group in {g for day in per_day.values() for g in day}:

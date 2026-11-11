@@ -471,6 +471,90 @@ def test_read_cost_attributes_days_as_qswap_usage_by_account_does(tmp_path):
     assert usage == today
 
 
+def test_a_swap_changes_the_stamp_and_the_legend_follows(temp_home):
+    # The app reads the cost again only when ledger_stamp changes. `qswap
+    # swap` renumbers accounts without touching the ledger; the legend's
+    # names come from the rows, by number, so the read must follow the
+    # swap or the menu names #2's row against #1's amount.
+    from ai_quota_swap.menubar import AccountState
+    from ai_quota_swap.models import Platform
+    from ai_quota_swap.switcher import ClaudeAccountSwitcher
+    from tests.test_account_policy_store import PolicyStoreBase
+
+    s = ClaudeAccountSwitcher()
+    s.platform = Platform.LINUX
+    s._setup_directories()
+    s._init_sequence_file()
+    seed = PolicyStoreBase()
+    seed._seed(s, 1, "account1@example.com")
+    seed._seed(s, 2, "account2@example.com")
+    root = s.backup_dir
+    _write_ledger(root, [
+        ("claude", _hour(TODAY), "account1@example.com|", MODEL, "p", "s1", *_toks(10_000_000)),
+        ("claude", _hour(TODAY), "account2@example.com|", MODEL, "p", "s2", *_toks(1_000_000)),
+    ])
+
+    def legend(cost):
+        rows = [AccountState("claude", str(n), a["email"]) for n, a in s._get_sequence_data()["accounts"].items()]
+        chart = menubar.build_menu(_inp(_claude(*rows), cost=cost)).section("cost").rows[0].chart
+        return [(e.name, e.amount_text) for e in chart.legend]
+
+    stamp, cost = menubar_data.ledger_stamp(root), menubar_data.read_cost(root, today=TODAY)
+    big, small = menubar_chart.whole_dollars(_price(10_000_000)), menubar_chart.whole_dollars(_price(1_000_000))
+    assert legend(cost) == [("#1 account1@example.com", big), ("#2 account2@example.com", small)]
+    s.swap_accounts("1", "2")
+    assert menubar_data.ledger_stamp(root) != stamp  # so the app reads again
+    cost = menubar_data.read_cost(root, today=TODAY)
+    assert legend(cost) == [("#2 account1@example.com", big), ("#1 account2@example.com", small)]
+    # Codex's registry counts too.
+    stamp = menubar_data.ledger_stamp(root)
+    (root / "codex").mkdir(exist_ok=True)
+    (root / "codex" / "sequence.json").write_text(json.dumps({"accounts": {}}))
+    assert menubar_data.ledger_stamp(root) != stamp
+
+
+@pytest.fixture
+def local_zone(monkeypatch):
+    """Run in another local time zone: ``set_zone("Asia/Kolkata")``."""
+    import time
+
+    def set_zone(name: str) -> None:
+        monkeypatch.setenv("TZ", name)
+        time.tzset()
+
+    yield set_zone
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="time.tzset is POSIX-only")
+@pytest.mark.parametrize("zone, today, week_hours, today_hours", [
+    # Half an hour off UTC: the hour buckets straddle midnight.
+    ("Asia/Kolkata", _dt.date(2026, 11, 10), 169, 25),
+    # A whole-hour zone across a change: 1 November 2026 is 25 hours long.
+    ("America/New_York", _dt.date(2026, 11, 3), 169, 24),
+])
+def test_the_columns_count_what_the_caption_counts(tmp_path, local_zone, zone, today, week_hours, today_hours):
+    from ai_quota_swap.ledger.report import day_bounds
+
+    local_zone(zone)
+    since_hour, until_hour = day_bounds(today - _dt.timedelta(days=6), today)
+    _write_ledger(tmp_path, [
+        ("claude", h, "a@example.com|", MODEL, "p", f"s{h}", *_toks(1_000_000))
+        for h in range(since_hour - 3, until_hour + 3)  # and a few hours either side
+    ])
+    cost = menubar_data.read_cost(tmp_path, today=today)
+    hour = _price(1_000_000)
+    assert cost.week == pytest.approx(week_hours * hour)
+    assert cost.today == pytest.approx(today_hours * hour)
+    columns = [sum(c for _a, c in d.costs) for d in cost.days]
+    assert sum(columns) == pytest.approx(cost.week)
+    assert columns[-1] == pytest.approx(cost.today)
+    chart = build_chart(cost)
+    assert chart.columns[-1].total == pytest.approx(cost.today)
+    assert sum(c.total for c in chart.columns) == pytest.approx(cost.week)
+
+
 def test_read_cost_keeps_the_totals_when_the_days_cannot_be_read(tmp_path, monkeypatch, caplog):
     _write_ledger(tmp_path, [("claude", _hour(TODAY), "a@example.com|", MODEL, "p", "s", *_toks(1_000))])
 
