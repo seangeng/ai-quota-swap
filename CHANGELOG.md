@@ -47,7 +47,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `menubar_settings.json` gains `codex_auto_switch_enabled` and `title_follows`; an older file loads as before, and keys a build does not know are kept.
 - The menu is described by one pure function (`menubar.build_menu`) and drawn by a thin rumps layer; `scripts/demo/run.py SCENARIO --menubar` prints it.
 - First-day polish: an unused API-key account reads `no usage recorded` (`$0 of $500 this month` with a budget) the same before and after the ledger's first scan; placeholder names show as `#5 api-key-5` wherever an account is named; held resets of several kinds read `resets: 3 Fable, 1 weekly`; `qswap import` over the active login says nothing needs doing; *Settings → Use resets automatically* sets `resets.auto`, `resets.weeklyForModelLimit` and `resets.beforeSwitch`; *Use a reset* spends one by hand through the same sequence as `qswap reset N --grant ID`, reserved under the state lock like the engine's claims. A reset whose outcome is unknown is reported as possibly used, and one the server had already counted as used, never as not used, in the menu bar and by `qswap reset`; an API-key account whose usage ledger cannot be read shows `spend unknown`, never $0, and `qswap usage` rebuilds a ledger file that is not a database.
-- The menu bar is tested through `build_menu` and unit tests, and has been in daily use on the author's Mac since 2026-11-10.
+- The menu bar is tested through `build_menu` and unit tests.
 
 ### Usage and cost
 

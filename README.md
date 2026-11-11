@@ -140,7 +140,7 @@ To let qswap switch for you, run `qswap auto`. The menu bar's auto-switch is off
 
 ## What is new or experimental
 
-- The menu bar is macOS only. It has been in daily use on the author's Mac since 2026-11-10.
+- The menu bar is new, and macOS only.
 - Codex support is experimental. It has been tested against fakes and with one real account; switching between two real Codex accounts has not been tried yet. Read [docs/codex.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/codex.md) before your first Codex switch.
 - `qswap run` is experimental, and covers Claude Code only.
 - Switching to an API key is new. It moves every running Claude Code session onto the key and keeps the subscription logged in underneath:
