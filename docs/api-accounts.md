@@ -386,5 +386,4 @@ Change one with `qswap config set usage.headerProbe true`. The full list is in [
 - A budget is enforced by qswap's auto-switch only, and only while a spend figure no older than 20 minutes exists; without one auto-switch keeps off the key.
 - Anthropic's figure needs an Admin key, which can do far more than read reports.
 - The local estimate sees only this machine's Claude Code usage while the account was active.
-- The menu bar's new build, which shows the budget notification, has not been run by hand yet ([menubar.md](menubar.md)).
 - Budgets and the Admin API apply to Claude Code API-key accounts. Codex accounts are covered in [codex.md](codex.md).

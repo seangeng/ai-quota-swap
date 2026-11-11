@@ -34,6 +34,7 @@ The scenarios are data in `scripts/demo/scenarios.py`:
 - `showcase`: the README's hero: the fleet with a budget on the API-key account and two weeks of sessions already in the ledger.
 - `last-resort`: every subscription at its limit and auto-switch allowed to use the API-key account, which has a budget: `auto --once` moves to the key.
 - `empty`, `empty-claude`, `empty-claude-codex`: first runs.
+- `quickstart`: `#1 personal` saved and Claude Code logged in to a second account, for the quick start recording (`qswap add --alias work`, then `qswap switch 1`).
 - `trouble`: failure states, such as a dead login, a failing endpoint and a stale reading.
 
 The harness runs on macOS and Linux. [scripts/demo/README.md](scripts/demo/README.md) explains the guards and how to add a scenario.

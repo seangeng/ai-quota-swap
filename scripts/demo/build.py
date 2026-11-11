@@ -8,7 +8,7 @@
 Steps: CLI shots to HTML (docs/shots/), raw PNGs (assets/screenshots/raw/),
 ScreenFramed framing (assets/screenshots/, skipped with a message unless a
 public base URL and a login are configured), the index page, and with
-``--record`` the dashboard recordings (assets/demos/). Recordings are opt-in
+``--record`` the recordings (assets/demos/). Recordings are opt-in
 because LittleDemo ones use the maintainer's account.
 """
 
@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-frame", action="store_true", help="skip the ScreenFramed step")
     p.add_argument("--base-url", help="public URL serving docs/shots/, for ScreenFramed")
     p.add_argument("--record", choices=("littledemo", "local"),
-                   help="also record the dashboard storyboards this way")
+                   help="also make the recordings this way")
     p.add_argument("--upload", action="store_true", help="host LittleDemo recordings (with --record littledemo)")
     args = p.parse_args(argv)
     only = set(args.only.split(",")) if args.only else None

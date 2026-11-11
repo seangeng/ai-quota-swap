@@ -78,6 +78,10 @@ Every auto-switch engine can spend resets: `qswap auto`, `qswap codex auto`, the
 - `on-limit`: spends on any account in rotation whose window reaches `resets.threshold`, the active account first. Against the switch line it keeps the same order as `active`: above the line, auto-switch moves first, unless `resets.beforeSwitch` is on.
 - `off`: never spends automatically. `qswap reset N` still works.
 
+Here the dashboard's auto view goes live, and the engine spends the narrowest reset that helps:
+
+<img src="../assets/demos/reset.gif" alt="Recording: #1 personal is at 100% of its Fable window and holds a Fable reset and a weekly reset; the auto engine spends the Fable reset and Fable drops to 0%, keeping the weekly one" width="800">
+
 A dry run says what it would spend and ends the check there, without also reporting a switch the refill would make unnecessary:
 
 ```

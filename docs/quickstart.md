@@ -2,6 +2,10 @@
 
 After this page you will have qswap installed, two accounts saved, their usage on screen, and a switch behind you. It takes about five minutes and two logins.
 
+The recording runs steps 3 to 5 against made-up accounts, with `#1 personal` saved in step 2:
+
+<img src="../assets/demos/quickstart.gif" alt="Recording: a terminal typing qswap add --alias work, qswap list, qswap switch 1 and qswap status, each answered with its output" width="800">
+
 ## 1. Install
 
 ai-quota-swap is not on PyPI yet, so install it from the repository with uv or pipx:
@@ -12,14 +16,18 @@ uv tool install git+https://github.com/seangeng/ai-quota-swap
 pipx install git+https://github.com/seangeng/ai-quota-swap
 ```
 
+On a Mac, install it with the `menubar` extra instead, for the menu bar app ([menubar.md](menubar.md)):
+
+```bash
+uv tool install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
+```
+
 It needs Python 3.12 or newer and runs on macOS, Linux (WSL included) and Windows. Check that it is on your PATH:
 
 ```text
 $ qswap --version
 qswap 0.1.0
 ```
-
-For the macOS menu bar app, install the `menubar` extra instead; [menubar.md](menubar.md) has the command.
 
 ## 2. Save your first account
 
@@ -79,11 +87,11 @@ Each account shows its plan and its windows: `5h` (the 5-hour window), `7d` (the
 
 ## 5. Switch
 
-Name the account by number, email or alias:
+The account you added last is the one Claude Code is logged in to, so it is the active one. Switch back to the first, naming it by number, email or alias:
 
 ```text
-$ qswap switch work
-Switched #1 personal → #2 work (maya@northwind.example.com)
+$ qswap switch 1
+Switched #2 work → #1 personal (maya@example.com)
 ...
 Claude Code picks up the new account within 30 seconds; restart it to apply now.
 ```
@@ -108,7 +116,7 @@ Then run it for real. It checks every minute, switches when the active account r
 qswap auto
 ```
 
-The dashboard's auto view (`qswap`, then `g`) and the macOS menu bar run the same engine. [auto-switch.md](auto-switch.md) covers the strategies, the lines and running it unattended.
+The dashboard's auto view (`qswap`, then `g`) and the macOS menu bar run the same engine; the menu bar's is off until you turn it on with `qswap menubar --auto-switch` or from its menu. [auto-switch.md](auto-switch.md) covers the strategies, the lines and running it unattended.
 
 ## When something looks wrong
 

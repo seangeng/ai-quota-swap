@@ -35,8 +35,10 @@
       :root.stage.light body { background: radial-gradient(ellipse at 50% 40%, #fffaf2 0%, #e9e3d8 75%); }
       :root.stage .window { box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3); }
       /* Recordings are keyboard-only: LittleDemo's pointer overlay would sit
-         idle mid-frame, so the stage hides it. */
-      :root.stage #__ld_cursor { display: none !important; }
+         idle mid-frame, and its key overlay shows only some keys (Escape,
+         not the letters typed), so the stage hides both. */
+      :root.stage #__ld_cursor, :root.stage #__demo-cursor,
+      :root.stage #__demo-keys { display: none !important; }
       .window {
         box-sizing: border-box; overflow: hidden; background: var(--bg);
         border: 1px solid var(--border); border-radius: 12px; width: 1200px;
