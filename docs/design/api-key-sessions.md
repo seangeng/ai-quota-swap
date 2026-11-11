@@ -312,7 +312,10 @@ What the code does where this part leaves room, or where it had to differ:
 - **The engine.** The thresholds are named constants in `autoswitch.py`: a spend figure is
   fresh for 20 minutes (`api_spend.SPEND_FRESH_S`); while a key with a budget or credit is
   active the engine scans the ledger every 5 minutes (`SPEND_SCAN_INTERVAL_S`), and before it
-  enters a key; the way back needs 5 points of room in every window
+  enters a key. For a key linked to an organization only Anthropic's figure counts: the
+  ledger's is shown (`this machine only`) but never fresh, and with each of those scans the
+  engine reads Anthropic's figure again, accepting an answer at most a minute old
+  (`ADMIN_REFRESH_S`) whatever `admin_api.CACHE_TTL_S` says for the other readers; the way back needs 5 points of room in every window
   (`RETURN_ROOM_PCT`). A key judged at its budget or credit stays at it in the engine's
   state file, one latch per kind (`limitLatch[N]` holds `budget` and `credit` apart): the
   budget latch until the month rolls over or `qswap budget` sets it again, the credit latch

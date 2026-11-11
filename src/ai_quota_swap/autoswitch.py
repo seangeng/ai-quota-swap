@@ -163,6 +163,12 @@ SPENT_HEADROOM_PCT = 3.0
 SPEND_SCAN_INTERVAL_S = 5 * 60.0
 # Before entering a key it scans again unless a scan ran this recently.
 SPEND_SCAN_MIN_GAP_S = 60.0
+# With each of those scans the engine reads a key's spend again, and for a key
+# linked to an organization it accepts Anthropic's answer only this fresh
+# (admin_api.CACHE_TTL_S applies to the other readers): so while such a key
+# is active or about to be entered its figure is read at least every
+# SPEND_SCAN_INTERVAL_S (decision EM2).
+ADMIN_REFRESH_S = SPEND_SCAN_MIN_GAP_S
 # The way back from a key the engine entered: a subscription is a target
 # only with at least this many points of room in every window it is judged
 # by (and under its own lines), and only once the engine's cooldown has run
@@ -4090,6 +4096,7 @@ class AutoSwitchEngine:
         scans = (
             not self.dry_run and self._scans_ledger()
             and self._spend_source(num, {num: entry}) != api_spend.SOURCE_ADMIN
+            and not api_spend.machine_only(reading)  # a scan never makes it fresh
         )
         if not scans and api_spend.engine_limit_reason(
             reading, now=self.clock(), limited=True
@@ -4466,8 +4473,15 @@ class AutoSwitchEngine:
             self._mutate_state(remember)
         except Exception as e:
             _logger.debug("Could not record the ledger scan: %r", e)
+        from ai_quota_swap import api_spend
+
         try:
-            fresh = self.switcher.usage_entries_by_account(fetch=set(nums))
+            # A key linked to an organization is held to Anthropic's figure
+            # only (EM2): ask for it again here, whatever the cache time of
+            # the other readers, so a healthy Admin API never ages into
+            # spend-unknown.
+            with api_spend.admin_max_age(ADMIN_REFRESH_S):
+                fresh = self.switcher.usage_entries_by_account(fetch=set(nums))
         except Exception as e:
             _logger.debug("Could not re-read API-key spend after a scan: %r", e)
             return entries

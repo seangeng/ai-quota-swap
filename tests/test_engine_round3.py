@@ -475,3 +475,216 @@ class TestTheLoginUnderneathIsNoRunProfile:
         assert log.helper_underneath(t + 300) is None  # a login, no key
         assert log.helper_underneath(t + 4000) is None
         assert log.helper_underneath(t - 10) is None
+
+
+# == EM2: a key linked to an organization is held to Anthropic's figure only ==================
+
+from datetime import datetime, timezone  # noqa: E402
+
+from tests.admin_fakes import (  # noqa: E402
+    ADMIN_KEY,
+    FakeAnthropic,
+    bucket,
+    error_response,
+    json_response,
+    key_item,
+    keys_page,
+    report,
+    usage_result,
+)
+
+ORG_NOW = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc).timestamp()
+OPUS = "claude-opus-5-5"  # $4 per million input tokens (pricing.py)
+FLEET_KEY = "sk-ant-api03-" + "kk" * 20  # #2's key in test_engine_money's fleet
+
+
+@pytest.fixture
+def org(monkeypatch):
+    """Anthropic's Admin API, faked: #2's key is listed as apikey_K in
+    "acme", and the usage report gives it $19 this month while ``healthy``
+    holds; otherwise it answers 500."""
+    from ai_quota_swap import admin_api
+
+    admin_api._memory.clear()
+    monkeypatch.delenv("ANTHROPIC_ADMIN_KEY", raising=False)
+    state = {"healthy": True, "reports": 0}
+
+    def usage(query):
+        state["reports"] += 1
+        if not state["healthy"]:
+            return error_response(500, "api_error")
+        return json_response(report([
+            bucket("2026-11-03", [usage_result("apikey_K", OPUS, inp=4_750_000)]),
+        ]))
+
+    fake = FakeAnthropic({
+        "/v1/organizations/api_keys": [json_response(keys_page([
+            key_item("apikey_K", "CI", FLEET_KEY),
+        ]))],
+        "/v1/organizations/usage_report/messages": usage,
+    })
+    monkeypatch.setattr(admin_api, "send", fake)
+    fake.state = state
+    return fake
+
+
+def _link(h) -> None:
+    from ai_quota_swap.admin_orgs import OrgRegistry
+    from ai_quota_swap.models import Platform
+
+    OrgRegistry(h.switcher.backup_dir, platform=Platform.LINUX).add(
+        "acme", ADMIN_KEY, "org-1", "Acme",
+    )
+
+
+def _ledger_spend(h, used_usd: float, *, scanned_at: float) -> None:
+    """This machine's ledger: ``used_usd`` of Opus input on #2 this month."""
+    from ai_quota_swap.ledger.activations import identity_key
+    from ai_quota_swap.ledger.store import DB_FILENAME, LAST_SCAN_META, LedgerStore
+
+    store = LedgerStore(h.switcher.backup_dir / DB_FILENAME)
+    store.add_buckets([(
+        "claude", int((ORG_NOW - 7200) // 3600), identity_key("key2@token.local", ""), OPUS,
+        "/p", "s-led", int(used_usd / 4 * 1_000_000), 0, 0, 0, 0, 0, 1,
+    )])
+    store.set_meta(LAST_SCAN_META, str(scanned_at))
+    store.close()
+
+
+def _org_reading(h, *, now: float, fetch: set | None = None) -> dict:
+    infos = {
+        str(i[0]): i for i in h.switcher._build_accounts_info() if str(i[0]) == "2"
+    }
+    return api_spend.readings(h.switcher, infos, fetch=fetch, now=now, env={})["2"]
+
+
+def _org_case(h, org, case: str) -> dict:
+    """#2 linked to acme with a $20 budget; this machine's ledger holds $4
+    of it, scanned just now. The reading at ORG_NOW when Anthropic's figure
+    is ``missing`` (never answered), ``stale`` (last answer 25 minutes old),
+    ``degraded`` ($19 an hour and five minutes ago, the ledger's $4 since)
+    or ``older`` (never answered, and the ledger holds none of the key's
+    usage: it is in session files older than any scan)."""
+    _link(h)
+    api_spend.set_budget(h.switcher, "2", 20)
+    if case != "older":
+        _ledger_spend(h, 4.0, scanned_at=ORG_NOW)
+    ages = {"stale": 25 * 60, "degraded": 65 * 60}
+    if case in ages:
+        _org_reading(h, now=ORG_NOW - ages[case])  # Anthropic answered then
+    org.state["healthy"] = False
+    return _org_reading(h, now=ORG_NOW)
+
+
+ORG_CASES = ["missing", "stale", "degraded", "older"]
+
+
+class TestAnOrganizationKey:
+    @pytest.mark.parametrize("case", ORG_CASES)
+    def test_this_machines_figure_never_holds_it_to_its_limit(self, temp_home, org, case):
+        h = _fleet(temp_home)
+        reading = _org_case(h, org, case)
+        assert reading["org"] == "acme"
+        assert not api_spend.figure_fresh(reading, ORG_NOW)
+        assert api_spend.engine_limit_reason(reading, now=ORG_NOW, limited=True) == (
+            api_spend.SPEND_UNKNOWN
+        )
+        assert api_spend.limit_not_enforced(reading, ORG_NOW)
+        text = api_spend.spend_text(reading, now=ORG_NOW)
+        assert text.endswith("· limit not enforced: no spend figure"), text
+        if reading["source"] == api_spend.SOURCE_LEDGER:
+            assert "this machine only" in text and "estimate" not in text
+
+    def test_the_degraded_row_in_words(self, temp_home, org):
+        h = _fleet(temp_home)
+        reading = _org_case(h, org, "degraded")
+        assert api_spend.spend_text(reading, now=ORG_NOW) == (
+            "API key · $4.00 today · $4.00 this month of $20 (20%) · this machine only · "
+            "limit not enforced: no spend figure"
+        )
+        assert api_spend.detail_text(reading, ORG_NOW) == (
+            "Admin API error (HTTP 500); estimate from this machine's transcripts only; "
+            "auto-switch reads Anthropic's figure for this key before it moves to it: "
+            "qswap budget"
+        )
+
+    def test_a_fresh_figure_from_anthropic_still_holds_it(self, temp_home, org):
+        h = _fleet(temp_home)
+        _link(h)
+        api_spend.set_budget(h.switcher, "2", 20)
+        _ledger_spend(h, 4.0, scanned_at=ORG_NOW)
+        reading = _org_reading(h, now=ORG_NOW)
+        assert reading["source"] == api_spend.SOURCE_ADMIN
+        assert api_spend.figure_fresh(reading, ORG_NOW)
+        assert api_spend.engine_limit_reason(reading, now=ORG_NOW, limited=True) is None
+
+    @pytest.mark.parametrize("case", ORG_CASES)
+    def test_the_engine_does_not_enter_it(self, temp_home, org, case):
+        h = _fleet(temp_home)
+        reading = _org_case(h, org, case)
+        h.clock.now = ORG_NOW
+        assert _tick(h, EXHAUSTED, {"2": reading}) is TickOutcome.BLOCKED
+        assert h.switcher.current_account_number() == "1"
+        assert _settings_line(temp_home) is None
+        assert [e.reason for e in _holds(h)][-1] == "spend-unknown"
+
+    @pytest.mark.parametrize("case", ORG_CASES)
+    def test_the_engine_leaves_it(self, temp_home, org, case):
+        h = _fleet(temp_home, cooldown_seconds=3600)
+        h.clock.now = ORG_NOW - 120
+        _enter(h)
+        reading = _org_case(h, org, case)
+        h.clock.now = ORG_NOW
+        assert _tick(h, EXHAUSTED, {"2": reading}) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        assert _settings_line(temp_home) is None
+        assert _switches(h)[-1].limit_reason == api_spend.SPEND_UNKNOWN
+
+    def test_a_healthy_admin_api_never_trips_it(self, temp_home, org, monkeypatch):
+        """An hour on a linked key, one check a minute, the real spend
+        reading on a healthy Admin API: the engine reads Anthropic's figure
+        itself at least every 5 minutes, whatever the other readers' cache
+        time (here an hour), so the figure never ages into spend-unknown."""
+        from types import SimpleNamespace
+
+        from ai_quota_swap import admin_api
+        from tests.test_autoswitch import _entry_for
+
+        monkeypatch.setattr(admin_api, "CACHE_TTL_S", 3600.0)
+        h = _fleet(temp_home, cooldown_seconds=3600)
+        _link(h)
+        api_spend.set_budget(h.switcher, "2", 500)
+        h.clock.now = ORG_NOW
+        monkeypatch.setattr(api_spend, "time", SimpleNamespace(time=h.clock))
+        real = h.switcher.usage_entries_by_account
+
+        def collect(fetch=None, scheduled=False):
+            # The key's real reading; Anthropic may be asked only when the
+            # pass may fetch the key. The subscriptions stay at 100%.
+            allowed = {"2"} if fetch is None else set(fetch) & {"2"}
+            entries = real(fetch=allowed)
+            entries.update({"1": _entry_for(_usage(100), h.clock.now),
+                            "3": _entry_for(_usage(100), h.clock.now)})
+            return entries
+
+        monkeypatch.setattr(h.switcher, "usage_entries_by_account", collect)
+        outcomes = []
+        for _ in range(60):
+            outcomes.append(h.engine.tick())
+            h.clock.advance(60)
+        assert outcomes[0] is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+        assert not [e for e in _holds(h) if e.reason == "spend-unknown"]
+        assert not [s for s in _switches(h) if s.limit_reason == api_spend.SPEND_UNKNOWN]
+        assert org.state["reports"] >= 12
+
+    def test_the_auto_log_row_says_so(self, temp_home, org):
+        from ai_quota_swap import autolog
+
+        h = _fleet(temp_home)
+        reading = _org_case(h, org, "degraded")
+        h.clock.now = ORG_NOW
+        _tick(h, EXHAUSTED, {"2": reading})
+        views = {v.number: v for v in h.events[0].context.accounts}
+        assert views["2"].key_hold == "spend-unknown"
+        assert "API key, limit not enforced: no spend figure" in autolog.poll_sentence(h.events[0])

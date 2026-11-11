@@ -34,8 +34,10 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import threading
 import time
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -411,9 +413,24 @@ def figure_age(reading: object, now: float) -> float | None:
 
 
 def figure_fresh(reading: object, now: float) -> bool:
-    """Whether the reading has a spend figure no older than :data:`SPEND_FRESH_S`."""
+    """Whether the reading has a spend figure no older than :data:`SPEND_FRESH_S`.
+    For a key linked to an organization only Anthropic's figure counts
+    (decision EM2): this machine's ledger misses the other machines on the
+    key, so its figure is never fresh for one (:func:`machine_only`)."""
+    if machine_only(reading):
+        return False
     age = figure_age(reading, now)
     return age is not None and age <= SPEND_FRESH_S
+
+
+def machine_only(reading: object) -> bool:
+    """Whether the reading is for a key linked to an organization but its
+    figure is not Anthropic's: this machine's ledger (or none), shown but
+    never held against the key's limit."""
+    return (
+        isinstance(reading, dict) and bool(reading.get("org"))
+        and reading.get("source") != SOURCE_ADMIN
+    )
 
 
 def engine_limit_reason(reading: object, *, now: float, limited: bool) -> str | None:
@@ -791,6 +808,24 @@ def _price_admin(
     return p.month, p.today, p.unpriced, p.since
 
 
+_fresher = threading.local()
+
+
+@contextmanager
+def admin_max_age(seconds: float):
+    """Within this block, this thread's :func:`readings` that may use the
+    network ask Anthropic again for any answer older than ``seconds``,
+    whatever :data:`admin_api.CACHE_TTL_S` says for the other readers: the
+    auto-switch engine reads a linked key's figure itself this way, before it
+    enters the key and every 5 minutes while it is on one (decision EM2)."""
+    previous = getattr(_fresher, "seconds", None)
+    _fresher.seconds = float(seconds)
+    try:
+        yield
+    finally:
+        _fresher.seconds = previous
+
+
 def readings(
     switcher,
     infos: dict[str, tuple],
@@ -850,10 +885,12 @@ def readings(
             credits[n]["since"] for n in nums
             if credits.get(n) is not None and credits[n]["since"] < month.timestamp()
         ]
+        fresher = getattr(_fresher, "seconds", None)
         res = admin_api.month_usage_by_key(
             org_by_name[org_name], [links[n].key_id for n in nums],
             now=now, network=network, cache=cache,
             start=min(starts) if starts else None,
+            ttl=None if fresher is None else min(admin_api.CACHE_TTL_S, fresher),
         )
         parsed = None
         if res.buckets is not None:
@@ -921,6 +958,10 @@ def readings(
             if budget is None and credit is None and not orgs and not note:
                 continue
             reading = _blank(None, None, None, 0, None)
+        if link is not None and reading.get("source") != SOURCE_ADMIN:
+            # Linked, but Anthropic's figure is missing or past STALE_MAX_S:
+            # this machine's figure is shown, never held to the limit (EM2).
+            reading["org"] = link.org
         if credit is not None:
             reading["credit"] = credit_reading(
                 credit, credit_used, reading.get("source"), now,
@@ -1092,7 +1133,7 @@ def spend_text(reading: dict, now: float | None = None) -> str:
             tag = f"{pct:.0f}%" + (", over budget" if pct >= 100 else "")
             parts.append(f"{money(used)} of {budget_money(limit)} this month ({tag})")
         if reading.get("source") == SOURCE_LEDGER and credit.get("left") is not None:
-            parts.append("estimate")
+            parts.append(_estimate_word(reading))
         return " · ".join(parts + tail)
 
     spend = reading.get("spend") or {}
@@ -1130,12 +1171,22 @@ def spend_text(reading: dict, now: float | None = None) -> str:
         month += f" of {budget_money(limit)} ({tag})"
     parts.append(month)
     if reading.get("source") == SOURCE_LEDGER:
-        parts.append("estimate")
+        parts.append(_estimate_word(reading))
     return " · ".join(parts + tail)
+
+
+def _estimate_word(reading: dict) -> str:
+    """How a row marks this machine's figure: ``estimate``, or ``this
+    machine only`` for a key linked to an organization (:func:`machine_only`)."""
+    return "this machine only" if machine_only(reading) else "estimate"
 
 
 #: The detail line's next step while the limit is not enforced.
 UNENFORCED_NEXT = "auto-switch stays off this key until its spend is measured: qswap usage"
+#: The same for a key linked to an organization, held to Anthropic's figure only.
+ORG_UNENFORCED_NEXT = (
+    "auto-switch reads Anthropic's figure for this key before it moves to it: qswap budget"
+)
 
 
 def credit_counted_from(credit: dict, source: str | None) -> str:
@@ -1173,14 +1224,18 @@ def detail_text(
     if limit_not_enforced(reading, now) and not spend_unknown(reading):
         age = figure_age(reading, now) if _has_figure(reading) else None
         as_of = reading.get("as_of")
-        if reading.get("source") == SOURCE_LEDGER and isinstance(as_of, (int, float)) and (
-            base is None or not base.startswith(("estimate as of", "as of"))
+        org = machine_only(reading)  # why: Anthropic's figure, not the ledger's age
+        if (
+            not org and reading.get("source") == SOURCE_LEDGER
+            and isinstance(as_of, (int, float))
+            and (base is None or not base.startswith(("estimate as of", "as of")))
         ):
             what = "as of" if nothing_recorded(reading) else "estimate as of"
             base = f"{what} the last qswap usage, {_age(now - as_of)}"
-        elif age is None and reading.get("source") != SOURCE_ADMIN:
+        elif not org and age is None and reading.get("source") != SOURCE_ADMIN:
             base = None  # the row says there is no figure; the next step follows
-        base = f"{base}; {UNENFORCED_NEXT}" if base else UNENFORCED_NEXT
+        step = ORG_UNENFORCED_NEXT if org else UNENFORCED_NEXT
+        base = f"{base}; {step}" if base else step
     credit = reading.get("credit")
     if not with_credit or not isinstance(credit, dict) or credit.get("expired"):
         return base
@@ -1231,7 +1286,8 @@ def _detail_text(reading: dict, now: float) -> str | None:
         old = isinstance(as_of, (int, float)) and now - as_of > LEDGER_STALE_S
         if note:
             # "no usage recorded on this machine" already says where from.
-            return note if empty else f"{note}; estimate from this machine's transcripts"
+            only = " only" if machine_only(reading) else ""
+            return note if empty else f"{note}; estimate from this machine's transcripts{only}"
         if old:
             what = "as of" if empty else "estimate as of"
             return f"{what} the last qswap usage, {_age(now - as_of)}"

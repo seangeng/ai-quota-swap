@@ -265,9 +265,11 @@ class TestAdminSource:
         assert reading["source"] == "ledger"
         assert reading["spend"]["used"] == 4.0
         assert reading["note"] == "Admin API rate limited"
-        assert api_spend.spend_text(reading).endswith("· estimate")
+        # Linked to an organization: this machine's figure only (decision EM2).
+        assert reading["org"] == "acme"
+        assert api_spend.spend_text(reading).endswith("· this machine only")
         assert api_spend.detail_text(reading, NOW) == (
-            "Admin API rate limited; estimate from this machine's transcripts"
+            "Admin API rate limited; estimate from this machine's transcripts only"
         )
 
     def test_no_network_pass_never_requests(self, env, anthropic):
@@ -771,8 +773,8 @@ class TestTuiAndMenuBar:
         _ledger(email, [(NOW - 60, OPUS, 1_000_000, 0)])
         acc = {a.number: a for a in s.accounts_snapshot().accounts}["3"]
         card = self._drawn(acc)
-        assert "$4.00 this month · estimate" in card
-        assert "Admin key rejected; estimate from this machine's transcripts" in card
+        assert "$4.00 this month · this machine only" in card
+        assert "Admin key rejected; estimate from this machine's transcripts only" in card
 
     def test_menu_bar_row(self, fleet, at_now):
         # The menu bar says what qswap list says (docs/design/ux.md).
