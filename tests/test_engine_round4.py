@@ -270,7 +270,7 @@ from unittest.mock import patch  # noqa: E402
 from ai_quota_swap import resets  # noqa: E402
 from ai_quota_swap.settings import ResetSettings  # noqa: E402
 from tests.test_autoswitch import _entry_for  # noqa: E402
-from tests.test_engine_money import _key  # noqa: E402
+from tests.test_engine_money import _key, _tick_resets  # noqa: E402
 from tests.test_resets import _grant, _usage as _rusage  # noqa: E402
 
 
@@ -342,3 +342,82 @@ class TestKeptResetWhileAClaimSettles:
         assert (kept.reason, kept.words) == (
             "settling", "auto mode waits for the active account's last reset claim to settle"
         )
+
+
+# == resets.auto active: the account's own reset before its switch line =======================
+
+
+def _active_mode(h, *, threshold: str = "100") -> None:
+    from ai_quota_swap.settings import set_setting
+
+    set_setting(h.switcher.backup_dir, "resets.auto", "active")
+    set_setting(h.switcher.backup_dir, "resets.threshold", threshold)
+
+
+class TestActiveModeSpendsRatherThanSwitchingAway:
+    """resets.md: `active` spends the active account's own reset "rather
+    than switching away", paired with resets.threshold 100. With a switch
+    line of 98 the engine left at 98 and the reset was not spent until the
+    rotation came back to #1 at its limit, hours and switches later."""
+
+    def _usage(self, d7: float, *, grants=True, h5: float = 10.0) -> dict:
+        return {"1": _rusage(h5=h5, d7=d7, reset_in=3 * 86400,
+                             grants=[_week()] if grants else None),
+                "2": "api key", "3": _rusage(h5=10, d7=30)}
+
+    def test_it_stays_at_the_line_and_spends_the_reset_at_100(self, temp_home):
+        h = _fleet(temp_home, threshold=98.0)
+        _active_mode(h)
+        for d7 in (98.0, 99.0, 99.5):
+            outcome, claims = _tick_resets(h, self._usage(d7))
+            assert outcome is TickOutcome.NO_ACTION and claims == []
+            h.clock.advance(60)
+        assert h.switcher.current_account_number() == "1"
+        assert not _switches(h)
+        held = [e for e in h.events if isinstance(e, NoSwitchEvent) and e.reason == "reset-ahead"]
+        assert held and held[0].human() == (
+            "No switch yet: auto mode spends #1 a@example.com's own weekly reset when 7d "
+            "reaches 100%, rather than switching away (resets.auto active)"
+        )
+        from ai_quota_swap import autolog
+
+        lines: list[str] = []
+        log = autolog.AutoLog(lines.append, clock=lambda: "12:00:00", width=80)
+        for event in h.events:
+            log(event)
+        log.flush()
+        text = [line for chunk in lines for line in chunk.splitlines()]
+        assert "its own weekly reset comes first, at 7d 100%" in " ".join(
+            " ".join(text).split()
+        ), text
+        assert all(len(line) <= 80 for line in text), text
+        after = self._usage(0.0)
+        outcome, claims = _tick_resets(h, self._usage(100.0), after=after)
+        assert claims == ["1"] and h.switcher.current_account_number() == "1"
+        assert not _switches(h)
+
+    def test_a_window_its_reset_does_not_clear_still_switches(self, temp_home):
+        h = _fleet(temp_home, threshold=98.0)
+        _active_mode(h)
+        outcome, _ = _tick_resets(h, self._usage(50.0, h5=98.0))
+        assert outcome is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "3"
+
+    def test_another_mode_still_switches_at_the_line(self, temp_home):
+        from ai_quota_swap.settings import set_setting
+
+        h = _fleet(temp_home, threshold=98.0)
+        set_setting(h.switcher.backup_dir, "resets.threshold", "100")
+        outcome, _ = _tick_resets(h, self._usage(98.0))
+        assert outcome is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "3"
+
+    def test_a_reset_its_settings_keep_does_not_hold_it(self, temp_home):
+        """Its 7d window refills in 10 hours (under resets.minHoursLeft):
+        auto mode would not spend it, so the line stands."""
+        h = _fleet(temp_home, threshold=98.0)
+        _active_mode(h)
+        usage = self._usage(98.0)
+        usage["1"] = _rusage(h5=10, d7=98.0, reset_in=10 * 3600, grants=[_week()])
+        outcome, _ = _tick_resets(h, usage)
+        assert outcome is TickOutcome.SWITCHED

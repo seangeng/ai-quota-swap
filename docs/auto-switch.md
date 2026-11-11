@@ -79,7 +79,7 @@ Four rules keep the engine from bouncing between accounts.
 
 When every account is at its limit, the log says `All accounts are at their limit; the first resets 15:32 · in 1h 12m`, and the engine sleeps until that reset, checking at least every 10 minutes because quota can come back early.
 
-If an account holds a usage reset, the engine may spend it instead of switching, under the `resets.*` settings ([resets.md](resets.md)).
+If an account holds a usage reset, the engine may spend it instead of switching, under the `resets.*` settings ([resets.md](resets.md)). With `resets.auto active`, the active account's own reset for the window over the line comes first: the engine stays past the line until that window reaches `resets.threshold` and spends the reset there (`its own weekly reset comes first, at 7d 100%`).
 
 ## Holding accounts out
 

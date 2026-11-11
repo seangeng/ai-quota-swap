@@ -692,6 +692,13 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         return "not moving to an API key, its key line cannot be added", "wait"
     if reason == "reset-pending":
         return "a usage reset comes before an API key", "wait"
+    if reason == "reset-ahead":
+        binding = getattr(event, "binding", None)
+        line = getattr(event, "reset_line", None)
+        noun = getattr(event, "reset_noun", None) or "reset"
+        if binding is not None and isinstance(line, (int, float)):
+            return f"its own {noun} comes first, at {binding.label} {pct_text(line)}%", "routine"
+        return f"its own {noun} comes first", "routine"
     if reason == "usage-unreadable-hold":
         account = getattr(event, "account", None)
         who = context_label(account, context) if account else "a subscription"
@@ -779,6 +786,19 @@ def no_switch_sentence(event: object) -> str:
         return (
             f"Not switching to {who}: qswap cannot add its key line to Claude "
             "Code's settings; see why with: qswap doctor"
+        )
+    if reason == "reset-ahead":
+        account = getattr(event, "account", None)
+        who = context_label(account, context) if account else "the active account"
+        noun = getattr(event, "reset_noun", None) or "reset"
+        line = getattr(event, "reset_line", None)
+        when = (
+            f" when {binding.label} reaches {pct_text(line)}%"
+            if binding is not None and isinstance(line, (int, float)) else ""
+        )
+        return (
+            f"No switch yet: auto mode spends {who}'s own {noun}{when}, rather than "
+            "switching away (resets.auto active)"
         )
     if reason == "reset-pending":
         account = getattr(event, "account", None)
