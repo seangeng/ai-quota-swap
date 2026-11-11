@@ -852,6 +852,9 @@ def engine_running(beat: dict | None, now: float, *, grace_s: float = HEARTBEAT_
 #: How long a ``qswap auto --once`` tick counts as watching a key auto-switch
 #: entered: the documented cron runs one every few minutes (decision DS4).
 ONCE_WATCH_S = 15 * 60.0
+#: A record of checks that wanted an API key (``keyWanted``) whose last check
+#: is older than this is another episode, whatever its shape (EM9).
+KEY_WAIT_STALE_S = 6 * 3600.0
 
 
 @dataclass(frozen=True)
@@ -1779,6 +1782,10 @@ class AutoSwitchEngine:
         self._wanted_key = False
         self._dry_key_wanted: dict | None = None
         self._key_wait_recorded = False
+        # Whether this tick could not tell if a key was wanted (the active
+        # account unread, the settings unreadable, no managed active
+        # account): such a check does not end the wait.
+        self._key_wait_undecided = False
         # The state file as this tick read it (the rows quote ``keyLeft``).
         self._tick_state: dict = {}
         # The settings file's stamp and what it said, for the settings a
@@ -2199,9 +2206,12 @@ class AutoSwitchEngine:
         """Evaluate once: poll usage, maybe switch. Never raises."""
         try:
             self._wanted_key = False
+            self._key_wait_undecided = True
             outcome = self._tick_inner()
             self._persist_health_counters(self._health_account)
-            if not self._wanted_key:
+            if not self._wanted_key and not self._key_wait_undecided:
+                # Only a check that read the active account and found no key
+                # wanted ends the wait; one that could not tell keeps it.
                 self._end_key_wait()
             return outcome
         except ProviderError as e:
@@ -2530,6 +2540,7 @@ class AutoSwitchEngine:
         # when its credit is spent or expired.
         key_mode = self._helper_key_mode(current)
         if key_mode is not None:
+            self._key_wait_undecided = False
             return self._leave_key_tick(
                 current, key_mode, entries, usage, headroom, thresholds, settings,
                 quarantined, policies, state=state,
@@ -2550,6 +2561,7 @@ class AutoSwitchEngine:
 
         active_headroom = headroom.get(current)
         active_binding: BindingWindow | None = None
+        self._key_wait_undecided = not active_over_budget and active_headroom is None
         if active_over_budget:
             # The budget is this account's limit: leave it like an exhausted
             # one (at-limit skips the cooldown and the landing hysteresis).
@@ -4727,12 +4739,23 @@ class AutoSwitchEngine:
     def _key_wanted_since(self, state: dict, now: float) -> float:
         """When the checks that want a key began: ``keyWanted`` in the state
         file (``{"since", "at"}``: the first and the last such check; a dry
-        run keeps it in memory), carried on while the last one is no older
-        than :data:`ONCE_WATCH_S` (a gap that long is another episode)."""
+        run keeps it in memory). It carries on while the last one is no older
+        than the larger of :data:`ONCE_WATCH_S` and two check intervals. A
+        longer gap is another episode (an engine that stopped), unless the
+        episode before it was a single check no older than
+        :data:`KEY_WAIT_STALE_S`: checks that far apart (a cron ``--once``
+        every 30 minutes) then go ahead on the second one, so the wait is
+        never longer than one check after its cooldown."""
         stored = self._dry_key_wanted if self.dry_run else state.get("keyWanted")
         since = _number(stored.get("since")) if isinstance(stored, dict) else None
         last = _number(stored.get("at")) if isinstance(stored, dict) else None
-        if since is None or last is None or not (0 <= now - last <= ONCE_WATCH_S):
+        gap_ok = max(ONCE_WATCH_S, 2 * self.settings.interval_seconds)
+        if (
+            since is None or last is None or now < last or since > last
+            or now - last > KEY_WAIT_STALE_S
+        ):
+            since = now
+        elif now - last > gap_ok and since != last:
             since = now
         record = {"since": since, "at": now}
         if self.dry_run:

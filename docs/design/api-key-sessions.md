@@ -349,7 +349,11 @@ What the code does where this part leaves room, or where it had to differ:
   strategy, and the switch line says so (`taken over its switch line (5h 95%) before an API
   key`). While another subscription's usage is unreadable, key entry waits at most one
   cooldown from the first check that wanted the key (`keyWanted`;
-  `usage-unreadable-hold`, said once). A key left at its limit (`keyLeft` in the state file:
+  `usage-unreadable-hold`, said once). The wait carries on across checks up to 15 minutes or
+  two check intervals apart; after a longer gap it starts again (an engine that stopped),
+  unless the wait so far was one check under 6 hours old, so that checks far apart (a cron
+  `--once`) go ahead on the second. Only a check that read the active account and wanted no
+  key ends it. A key left at its limit (`keyLeft` in the state file:
   account, reason, when) means no other key until a check reads a subscription in the
   rotation with room (`key-left`, said once); the key left may come back once its own figure
   allows it, as a fresh figure after `spend-unknown` does. Among keys that qualify the engine

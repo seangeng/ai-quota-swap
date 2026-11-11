@@ -1335,7 +1335,9 @@ class TestTheUnreadableHoldOverALongWait:
     def test_after_a_long_gap_it_is_a_new_episode(self, temp_home):
         h = _fleet(temp_home, cooldown_seconds=300)
         readings = {"1": _u(100), "2": "api key", "3": None}
-        _tick(h, readings)
+        for _ in range(3):  # a loop's checks (one check alone, then a gap, is a
+            _tick(h, readings)  # cron's first: the second goes ahead, round 4)
+            h.clock.advance(60)
         h.clock.advance(2 * 3600)  # the engine was not running
         h.engine = h._make_engine()
         assert _tick(h, readings) is TickOutcome.BLOCKED

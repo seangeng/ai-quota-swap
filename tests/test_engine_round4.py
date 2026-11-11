@@ -216,3 +216,47 @@ class TestKeysTurnedOffWhileTheEngineRuns:
         h.clock.advance(60)
         assert _tick(h, EXHAUSTED) is TickOutcome.SWITCHED
         assert h.switcher.current_account_number() == "2"
+
+
+# == EM9: the wait for an unreadable subscription ends ======================================
+
+
+UNREADABLE_3 = {"1": _usage(100), "2": "api key", "3": None}
+
+
+class TestTheUnreadableHoldEnds:
+    """A gap longer than ONCE_WATCH_S between checks that want the key
+    started a new episode each time, so with checks over 15 minutes apart
+    the key was never entered; and a check that could not read the active
+    account ended the episode."""
+
+    @pytest.mark.parametrize("gap", [901, 1200, 1800, 3600])
+    def test_checks_far_apart_go_ahead_on_the_second(self, temp_home, gap):
+        h = _fleet(temp_home, cooldown_seconds=300)
+        h.engine = h._make_engine()  # qswap auto --once from cron
+        assert _tick(h, UNREADABLE_3) is TickOutcome.BLOCKED
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)][-1] == (
+            "usage-unreadable-hold"
+        )
+        h.clock.advance(gap)
+        h.engine = h._make_engine()
+        assert _tick(h, UNREADABLE_3) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+
+    def test_one_loop_engine_with_an_hour_between_checks(self, temp_home):
+        h = _fleet(temp_home, cooldown_seconds=300, interval_seconds=3600)
+        assert _tick(h, UNREADABLE_3) is TickOutcome.BLOCKED
+        h.clock.advance(3600)
+        assert _tick(h, UNREADABLE_3) is TickOutcome.SWITCHED
+
+    def test_a_check_that_cannot_read_the_active_account_does_not_restart_it(self, temp_home):
+        h = _fleet(temp_home, cooldown_seconds=300)
+        unknown = {"1": None, "2": "api key", "3": None}
+        entered_at = None
+        for i in range(12):
+            _tick(h, unknown if i % 3 == 2 else UNREADABLE_3)
+            if h.switcher.current_account_number() == "2":
+                entered_at = i
+                break
+            h.clock.advance(60)
+        assert entered_at is not None and entered_at <= 6, entered_at
