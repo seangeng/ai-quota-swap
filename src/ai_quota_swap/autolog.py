@@ -480,6 +480,16 @@ def switch_sentence(event: object, *, src: str | None = None, dst: str | None = 
 # -- no switch, in words ---------------------------------------------------------------
 
 
+#: A key's limit as "past ..." reads it (stuck-on-key).
+_LIMIT_WORDS = {
+    "budget": "its monthly budget",
+    "credit-spent": "its credit",
+    "credit-expired": "its credit's expiry",
+    "spend-unknown": "its limit (its spend could not be measured)",
+    "no-limit": "its limit (it has no budget or credit)",
+}
+
+
 def _relogin_views(views: Iterable) -> list:
     return [v for v in views if getattr(v, "state", "") in ("needs-relogin", "no-login")]
 
@@ -619,12 +629,10 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         return "on the API key until a subscription has room", "routine"
     if reason == "key-helper-unavailable":
         return "not moving to an API key, its helper cannot be added", "wait"
-    if reason == "key-no-limit":
-        return "not moving to an API key, it has no budget or credit", "wait"
     if reason == "reset-pending":
         return "a usage reset comes before an API key", "wait"
-    if reason == "spend-unknown":
-        return "not moving to an API key, its spend is not measured", "wait"
+    # key-no-limit, spend-unknown, key-unusable and stuck-on-key need the
+    # user: the line is the whole sentence, with its command.
     if reason == "api-key-sessions":
         running = getattr(event, "sessions", None)
         if running and running > 0:
@@ -711,6 +719,20 @@ def no_switch_sentence(event: object) -> str:
             "Not switching to an API key yet: a usage reset was claimed, and its "
             "refill comes first"
         )
+    if reason == "key-unusable":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "an API-key account"
+        return f"Not switching to {who}: {detail}" if detail else f"Not switching to {who}"
+    if reason == "stuck-on-key":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "the API key"
+        limit = _LIMIT_WORDS.get(getattr(event, "limit_reason", None) or "", "its limit")
+        way_off = getattr(event, "way_off", None)
+        step = (
+            f"Leave it with: qswap switch {way_off}" if way_off
+            else "Log in to Claude Code (claude, then /login), then run: qswap add"
+        )
+        return f"Staying on {who} past {limit}: no login is under the key to go back to. {step}"
     if reason == "key-no-limit":
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "the API-key account"

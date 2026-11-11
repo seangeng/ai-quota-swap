@@ -58,6 +58,7 @@ from ai_quota_swap.exceptions import (
     ProviderError,
     RetryableSwitchError,
     SessionsRunningError,
+    SwitchError,
 )
 from ai_quota_swap.json_output import (
     SCHEMA_VERSION,
@@ -447,6 +448,10 @@ class NoSwitchEvent(AutoSwitchEvent):
     # and the session records that could not be read.
     sessions: int | None = _human_only()
     records: tuple[str, ...] = _human_only(default=())
+    # stuck-on-key: why the key is at its limit, and a subscription the user
+    # can leave it for by hand.
+    limit_reason: str | None = _human_only()
+    way_off: str | None = _human_only()
 
     def _fields(self) -> dict:
         return {"reason": self.reason, "detail": self.detail}
@@ -1319,6 +1324,9 @@ def rotation_candidates(
 
 # `_maybe_use_reset`'s answer in a dry run that planned a reset: the tick ends.
 _RESET_PLANNED = object()
+# `_perform`'s answer for a target that turned out unusable (an API-key slot
+# that cannot give a key): nothing changed, try the next candidate.
+_SKIPPED = object()
 
 
 def _headroom_by_account(
@@ -2581,6 +2589,7 @@ class AutoSwitchEngine:
             ),
         )
         transient_failure = False
+        skipped_keys = False
         systemic = ""
         for num in ordered:
             email = self.switcher.account_email(num)
@@ -2643,8 +2652,21 @@ class AutoSwitchEngine:
                 continue
             if status == "skip-live-session":
                 continue
-            return self._perform(num, email, trigger, left_snapshot)
+            outcome = self._perform(num, email, trigger, left_snapshot)
+            if outcome is _SKIPPED:
+                skipped_keys = True
+                continue
+            return outcome
 
+        if skipped_keys and not (systemic or transient_failure):
+            # Every key left was turned down: the same hold as no key at all
+            # (said by the refusal above, once per episode), not an error.
+            candidate_headrooms = [headroom.get(n) for n in oauth_candidates]
+            if bool(candidate_headrooms) and all(
+                h is not None and h <= 0 for h in candidate_headrooms
+            ):
+                return self._all_exhausted(usage)
+            return TickOutcome.BLOCKED
         if systemic or transient_failure:
             self._emit(
                 ErrorEvent(
@@ -3548,6 +3570,17 @@ class AutoSwitchEngine:
                 # and the next tick asks again. Claude Code never raises it.
                 self._emit(NoSwitchEvent(reason="switch-deferred", detail=str(e)))
                 return TickOutcome.NO_ACTION
+            except SwitchError as e:
+                if self.switcher.account_kind_for(number) != "api_key":
+                    raise
+                # A slot that cannot give a key (its saved credential is not
+                # a key, or none is saved): nothing changed. Like any
+                # unavailable candidate, the next one is tried; said once
+                # per episode.
+                self._emit(NoSwitchEvent(
+                    reason="key-unusable", detail=str(e), account=str(number),
+                ))
+                return _SKIPPED
             if not result or not result.get("switched"):
                 self._emit(
                     NoSwitchEvent(
@@ -4187,6 +4220,21 @@ class AutoSwitchEngine:
                 ),
             ))
             return TickOutcome.NO_ACTION
+        if self._unmanaged_login_underneath():
+            # A live login qswap does not manage is under the key (a /login
+            # not yet added): a login switch would overwrite it. At the
+            # key's limit only the line comes out; otherwise the engine
+            # stays, as it does on such a login without a key.
+            if reason is not None:
+                left_for_login = self._leave_key_for_unmanaged_login(current, reason)
+                if left_for_login is not None:
+                    return left_for_login
+                return self._stuck_on_key(current, reason)
+            self._emit(NoSwitchEvent(
+                reason="unmanaged-active-account",
+                detail=f"run '{self._add_command()}' to include it in rotation",
+            ))
+            return TickOutcome.NO_ACTION
         switchable = self.switcher.switchable_account_numbers()
         picked = rotation_candidates(
             switchable, current, set_aside=quarantined,
@@ -4214,42 +4262,30 @@ class AutoSwitchEngine:
             if self._in_cooldown(state):
                 self._emit(NoSwitchEvent(reason="cooldown", wait_s=self._cooldown_left(state)))
                 return TickOutcome.NO_ACTION
-        back_underneath = False
         underneath_of = getattr(self.switcher, "underneath_account_number", None)
         under = underneath_of() if callable(underneath_of) else None
-        if not ordered:
-            if reason is None:
-                self._emit(NoSwitchEvent(
-                    reason="no-subscription-room",
-                    detail="staying on the API key until a subscription has room",
-                ))
-                return TickOutcome.NO_ACTION
-            if under is None:
-                # At its limit the key is left all the same when the login
-                # underneath is one qswap does not manage: removing the line
-                # returns the sessions to it.
-                left_for_login = self._leave_key_for_unmanaged_login(current, reason)
-                if left_for_login is not None:
-                    return left_for_login
-                self._emit(NoSwitchEvent(
-                    reason="no-candidates",
-                    detail="no subscription to return to from the API key",
-                ))
-                return TickOutcome.BLOCKED
-            ordered = [under]
-            back_underneath = True
-        self._tick_cause = {
-            "binding": None,
-            "over_budget": reason is not None,
-            "policies": policies,
-            "limit_reason": reason,
-            "back_underneath": back_underneath,
-        }
+        if not ordered and reason is None:
+            self._emit(NoSwitchEvent(
+                reason="no-subscription-room",
+                detail="staying on the API key until a subscription has room",
+            ))
+            return TickOutcome.NO_ACTION
         trigger = "at-limit" if reason is not None else "key-return"
         left = (None, float("inf"))
+
+        def cause(back: bool) -> dict:
+            return {
+                "binding": None,
+                "over_budget": reason is not None,
+                "policies": policies,
+                "limit_reason": reason,
+                "back_underneath": back,
+            }
+
+        self._tick_cause = cause(False)
         for num in ordered:
             email = self.switcher.account_email(num)
-            if self.dry_run or back_underneath or num == under:
+            if self.dry_run or num == under:
                 # The account underneath is the live login: leaving for it
                 # only removes the line, and nothing copies a freshened
                 # backup into the live login, so its refresh token is never
@@ -4265,7 +4301,50 @@ class AutoSwitchEngine:
             if status in ("transient", "skip-live-session") or status in _SYSTEMIC_STATUSES:
                 continue
             return self._perform(num, email, trigger, left)
-        self._emit(NoSwitchEvent(reason="no-viable-target"))
+        if reason is None:
+            self._emit(NoSwitchEvent(reason="no-viable-target"))
+            return TickOutcome.BLOCKED
+        # At its limit the engine never stays on the key while a login is
+        # underneath: no subscription has room, or none could be activated,
+        # so back to the account underneath (the line only).
+        if under is not None:
+            self._tick_cause = cause(True)
+            return self._perform(under, self.switcher.account_email(under), trigger, left)
+        left_for_login = self._leave_key_for_unmanaged_login(current, reason)
+        if left_for_login is not None:
+            return left_for_login
+        return self._stuck_on_key(current, reason)
+
+    def _unmanaged_login_underneath(self) -> bool:
+        """Whether the live login under the active key is one qswap does not
+        manage (``login_account_number`` None while a login is live)."""
+        login_of = getattr(self.switcher, "login_account_number", None)
+        live = getattr(self.switcher, "has_live_login", None)
+        if not callable(login_of) or not callable(live):
+            return False
+        try:
+            return login_of() is None and bool(live())
+        except Exception:
+            return False
+
+    def _stuck_on_key(self, current: str, reason: str) -> TickOutcome:
+        """At its limit with no login at all to go back to: removing the line
+        would leave every session with nothing, so the engine stays, and
+        says so once per episode (the notifier) with the way off."""
+        way_off = next(
+            (
+                n for n in self.switcher.switchable_account_numbers()
+                if self.switcher.account_kind_for(n) != "api_key"
+            ),
+            None,
+        )
+        self._emit(NoSwitchEvent(
+            reason="stuck-on-key",
+            detail=f"account {current} is at its limit ({reason}) with no login underneath",
+            account=str(current),
+            limit_reason=reason,
+            way_off=way_off,
+        ))
         return TickOutcome.BLOCKED
 
     def _leave_key_for_unmanaged_login(

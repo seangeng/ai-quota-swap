@@ -838,3 +838,135 @@ class TestNoFlapping:
         }, ticks=60)
         returns = [m for m in moves if m != "2"]
         assert len(returns) <= 60 * 60 / h.settings.cooldown_seconds, moves
+
+
+# == A9: at the limit the engine always gets off the key ===================================
+
+
+class TestOffTheKeyAtItsLimit:
+    @pytest.mark.parametrize("status", ["skip-live-session", "transient", "store-unmirrored"])
+    def test_a_subscription_that_cannot_be_activated_sends_it_back_underneath(
+        self, temp_home, monkeypatch, status
+    ):
+        h = _fleet(temp_home)
+        h.switcher.switch_to("2", json_output=True)
+        monkeypatch.setattr(h.engine, "_freshen_target", lambda num, email: status)
+        over = _reading(h, used=600.0)
+        assert _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(10)}, {"2": over}) is (
+            TickOutcome.SWITCHED
+        )
+        assert h.switcher.current_account_number() == "1"
+        assert _settings_line(temp_home) is None
+        assert _switches(h)[-1].human() == (
+            "Switched #2 ci → #1 a@example.com · monthly budget reached; no subscription "
+            "has room, so back to the account underneath"
+        )
+
+    def test_with_no_login_at_all_it_stays_and_says_so_once(self, temp_home):
+        h = _fleet(temp_home)
+        h.switcher.switch_to("2", json_output=True)
+        (temp_home / ".claude.json").write_text("{}", encoding="utf-8")
+        over = _reading(h, used=600.0)
+        for _ in range(3):
+            assert _tick(h, EXHAUSTED, {"2": over}) is TickOutcome.BLOCKED
+            h.clock.advance(60)
+        assert h.switcher.helper_account() == "2"
+        held = [e for e in _holds(h) if e.reason == "stuck-on-key"]
+        assert len(held) == 3
+        assert held[0].human() == (
+            "Staying on #2 ci past its monthly budget: no login is under the key to "
+            "go back to. Leave it with: qswap switch 1"
+        )
+        assert len([n for n in _notes(h) if n.startswith("Staying on #2 ci")]) == 1
+
+
+# == A11: an unmanaged login underneath is never overwritten ==============================
+
+
+class TestAnUnmanagedLoginUnderneath:
+    def test_an_engine_key_stays_and_says_so(self, temp_home):
+        h = _fleet(temp_home)
+        _enter(h)
+        h.make_live("new@example.com", 9)  # /login as an account qswap does not manage
+        h.clock.advance(600)
+        live = (temp_home / ".claude.json").read_bytes()
+        assert _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(10)}) is (
+            TickOutcome.NO_ACTION
+        )
+        assert h.switcher.helper_account() == "2"
+        assert (temp_home / ".claude.json").read_bytes() == live
+        assert _holds(h)[-1].reason == "unmanaged-active-account"
+
+    def test_at_the_limit_only_the_line_comes_out(self, temp_home):
+        h = _fleet(temp_home)
+        _enter(h)
+        h.make_live("new@example.com", 9)
+        live = (temp_home / ".claude.json").read_bytes()
+        over = _reading(h, used=600.0)
+        assert _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(10)}, {"2": over}) is (
+            TickOutcome.SWITCHED
+        )
+        assert h.switcher.helper_account() is None
+        assert (temp_home / ".claude.json").read_bytes() == live
+        assert _switches(h)[-1].to_ref == {"number": None, "email": "new@example.com"}
+
+
+# == A12: a slot that cannot give a key is skipped =========================================
+
+
+class TestASlotWithoutAKey:
+    def _fleet(self, temp_home):
+        h = _fleet(temp_home, keys=(2, 4))
+        blob = json.dumps({"mcpOAuth": {"x": {"accessToken": "m"}}})
+        # No key in the previous copy either, so nothing heals the slot.
+        h.switcher._write_account_credentials("2", "key2@token.local", blob, retain=False)
+        return h
+
+    def test_the_next_key_is_tried(self, temp_home):
+        h = self._fleet(temp_home)
+        usage = {"1": _usage(100), "2": "api key", "3": _usage(100), "4": "api key"}
+        assert _tick(h, usage) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "4"
+        skipped = [e for e in _holds(h) if e.reason == "key-unusable"]
+        assert skipped and skipped[0].account == "2"
+        assert "is not an API key" in skipped[0].human()
+
+    def test_with_no_other_key_it_holds_and_says_so_once(self, temp_home):
+        h = self._fleet(temp_home)
+        usage = {"1": _usage(100), "2": "api key", "3": _usage(100)}
+        for _ in range(3):
+            assert _tick(h, usage) is TickOutcome.BLOCKED
+            h.clock.advance(60)
+        assert h.switcher.current_account_number() == "1"
+        assert not [e for e in h.events if getattr(e, "kind", "") == "error"]
+        assert len([n for n in _notes(h) if "is not an API key" in n]) == 1
+
+
+class TestTheAutoLogFits:
+    """Every new line of the auto log fits 80 columns."""
+
+    def _lines(self, h) -> list[str]:
+        from ai_quota_swap import autolog
+
+        lines: list[str] = []
+        log = autolog.AutoLog(lines.append, clock=lambda: "12:00:00", width=80)
+        for event in h.events:
+            log(event)
+        log.flush()
+        return [line for text in lines for line in text.splitlines()]
+
+    def test_the_holds_and_the_switches(self, temp_home):
+        h = _fleet(temp_home, limit=None)
+        _tick(h, EXHAUSTED, {"2": _reading(h, limit=None)})          # key-no-limit
+        h2 = _fleet(temp_home / "x" if False else temp_home)
+        _tick(h2, EXHAUSTED, {"2": _reading(h2, age=3600)})          # spend-unknown
+        _tick(h2, EXHAUSTED)                                         # enter
+        (temp_home / ".claude.json").write_text("{}", encoding="utf-8")
+        _tick(h2, EXHAUSTED, {"2": _reading(h2, used=600.0)})        # stuck-on-key
+        for h_ in (h, h2):
+            lines = self._lines(h_)
+            assert lines
+            for line in lines:
+                if line.strip().startswith("qswap "):
+                    continue
+                assert len(line) <= 80, line

@@ -35,6 +35,7 @@ ENGINE_ERROR_REPEAT_S = 3600.0
 #: because the key helper cannot be added (docs/design/api-key-sessions.md).
 _KEY_HOLDS = (
     "api-key-sessions", "key-helper-unavailable", "key-no-limit", "spend-unknown",
+    "key-unusable", "stuck-on-key",
 )
 
 

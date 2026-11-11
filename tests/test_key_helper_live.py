@@ -1795,7 +1795,7 @@ class TestEngine:
         assert h.tick_with_entries(entries) is TickOutcome.BLOCKED
         assert h.switcher.helper_account() == "2"
         held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
-        assert held.reason == "no-candidates"
+        assert held.reason == "stuck-on-key"  # said once per episode (the notifier)
 
     def test_will_not_move_to_a_key_whose_credit_is_spent(self, temp_home):
         h = _harness(temp_home)
