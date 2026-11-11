@@ -108,6 +108,8 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
                 "--frames go with --menubar")
     if args.frames is not None and not args.auto_switch:
         p.error("--frames draws one picture per engine check: add --auto-switch")
+    if args.ticks < 1:
+        p.error("--ticks takes a number of engine checks, 1 or more")
     if args.size is not None:
         try:
             w, h = (int(x) for x in args.size.lower().split("x"))
@@ -407,15 +409,13 @@ class MenuBarHost:
 
         @contextlib.contextmanager
         def held():
-            if self._held:  # the first checks, held by start()
-                pass
-            else:
-                while True:
-                    p, drawn = self._ticks.get(timeout=120)
+            # The first time, start() already holds the first checks.
+            while not self._held:
+                p, drawn = self._ticks.get(timeout=120)
+                if p == provider:
                     self._held.append(drawn)
-                    if p == provider:
-                        break
-                    self._release()  # another provider's check: let it go on
+                else:
+                    drawn.set()  # another provider's check: let it go on
             try:
                 yield
             finally:
