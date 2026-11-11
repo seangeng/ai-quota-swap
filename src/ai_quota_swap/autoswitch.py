@@ -678,6 +678,31 @@ def _mutate_state_file(state_path: Path, mutator: Callable[[dict], None]) -> dic
         return state
 
 
+# -- API keys: limits reached stay reached ----------------------------------------
+
+#: The limits the engine latches once reached (``limitLatch``); an expired
+#: credit is decided by its date and needs no latch.
+LATCHED_REASONS = frozenset({"budget", "credit-spent"})
+
+
+def clear_limit_latch(backup_dir: Path, number: str, *, state_path: Path | None = None) -> bool:
+    """Forget that the API-key account ``number`` reached its budget or
+    credit: ``qswap budget`` and ``qswap credit`` call this when either is set
+    again. Returns whether there was one. Never called with another lock held."""
+    path = state_path or (Path(backup_dir) / STATE_FILENAME)
+    latches = _read_state_file(path).get("limitLatch")
+    if not isinstance(latches, dict) or str(number) not in latches:
+        return False
+
+    def drop(state: dict) -> None:
+        stored = state.get("limitLatch")
+        if isinstance(stored, dict):
+            stored.pop(str(number), None)
+
+    _mutate_state_file(path, drop)
+    return True
+
+
 # -- heartbeat ------------------------------------------------------------------
 #
 # Where a running engine says it is alive, for `qswap status` and `qswap
@@ -1367,6 +1392,10 @@ class AutoSwitchEngine:
         self._tick_cause: dict = {}
         # The account records as this tick read them (budgets, credits).
         self._tick_records: dict = {}
+        # Limits reached and latched (``limitLatch``), as this tick read them;
+        # a dry run keeps its own in memory.
+        self._latches: dict = {}
+        self._dry_latches: dict = {}
 
     # -- state file ---------------------------------------------------------
 
@@ -1976,11 +2005,14 @@ class AutoSwitchEngine:
         # with no fresh figure for either, is at its limit. While such a key
         # is active the engine keeps its figure fresh itself.
         self._tick_records = self._read_account_records()
+        latches = state.get("limitLatch")
+        self._latches = {**(latches if isinstance(latches, dict) else {}), **self._dry_latches}
         current_is_key = self.switcher.account_kind_for(current) == "api_key"
         if current_is_key and self._key_limited(current, entries):
             entries = self._keep_spend_fresh(
                 state, dict(entries), {current}, every=SPEND_SCAN_INTERVAL_S
             )
+        self._note_reached_limits(entries)
         self._warn_budgets(state, entries)
         active_limit = self._key_brake(current, entries) if current_is_key else None
         active_over_budget = active_limit is not None
@@ -3796,14 +3828,107 @@ class AutoSwitchEngine:
 
     def _key_brake(self, num: str, entries: Mapping[str, object]) -> str | None:
         """Why the engine treats the API key ``num`` as at its limit, or None:
-        its budget or credit reached, or ``spend-unknown`` (a budget or credit
-        with no fresh figure)."""
+        its budget or credit reached (now, or earlier and still latched), or
+        ``spend-unknown`` (a budget or credit with no fresh figure)."""
         from ai_quota_swap import api_spend
 
         reading = getattr(entries.get(num), "api_spend", None)
+        reason = api_spend.limit_reason(reading)
+        if reason in LATCHED_REASONS:
+            self._remember_latch(num, reason, reading)
+        elif reason is None:
+            reason = self._latched_reason(num, reading)
+        if reason is not None:
+            return reason
         return api_spend.engine_limit_reason(
             reading, now=self.clock(), limited=self._key_limited(num, entries)
         )
+
+    # A limit that was reached stays reached: a later reading under it whose
+    # source got worse (the Admin API's figure replaced by the ledger's lower
+    # estimate, a rescan that attributes less) does not let the key back in.
+    # ``limitLatch`` in the state file: account number -> what was reached
+    # (the budget's month and amount, or the credit's identity). It lapses
+    # when the month rolls over, when the budget changes or the credit is
+    # recorded again, and ``qswap budget`` / ``qswap credit`` clear it.
+
+    def _latch_identity(self, num: str, reason: str, reading: object) -> dict | None:
+        from ai_quota_swap import api_spend
+        from ai_quota_swap.ledger.activations import parse_ts
+
+        record = self._account_record(num)
+        reading = reading if isinstance(reading, dict) else {}
+        if reason == "budget":
+            month = reading.get("month")
+            if not isinstance(month, str) or not month:
+                month = datetime.fromtimestamp(self.clock(), tz=timezone.utc).strftime("%Y-%m")
+            limit = api_spend.budget_from_record(record)
+            if limit is None:
+                spend = reading.get("spend") if isinstance(reading.get("spend"), dict) else {}
+                limit = spend.get("limit")
+            if not isinstance(limit, (int, float)) or isinstance(limit, bool):
+                return None
+            return {"reason": reason, "month": month, "limit": float(limit)}
+        if reason == "credit-spent":
+            credit = api_spend.credit_from_record(record)
+            if credit is not None:
+                since, amount = credit["since"], credit["amount"]
+            else:
+                shown = reading.get("credit") if isinstance(reading.get("credit"), dict) else {}
+                since, amount = parse_ts(shown.get("since")), shown.get("amount")
+            if since is None or not isinstance(amount, (int, float)):
+                return None
+            return {"reason": reason, "credit": f"{int(since)}|{float(amount)}"}
+        return None
+
+    def _note_reached_limits(self, entries: Mapping[str, object]) -> None:
+        """Latch every API key this tick's readings show at its budget or
+        credit, candidates included (the census drops those unasked)."""
+        from ai_quota_swap import api_spend
+
+        for num, entry in entries.items():
+            reading = getattr(entry, "api_spend", None)
+            reason = api_spend.limit_reason(reading)
+            if reason in LATCHED_REASONS:
+                self._remember_latch(str(num), reason, reading)
+
+    def _remember_latch(self, num: str, reason: str, reading: object) -> None:
+        ident = self._latch_identity(num, reason, reading)
+        if ident is None or self._latches.get(num) == ident:
+            return
+        self._latches[num] = ident
+        if self.dry_run:
+            self._dry_latches[num] = ident
+            return
+
+        def store(state: dict) -> None:
+            latches = state.get("limitLatch")
+            if not isinstance(latches, dict):
+                latches = state["limitLatch"] = {}
+            latches[num] = ident
+
+        try:
+            self._mutate_state(store)
+        except Exception as e:  # held in memory for this engine all the same
+            _logger.warning("Could not record that account %s reached its limit: %r", num, e)
+
+    def _latched_reason(self, num: str, reading: object) -> str | None:
+        stored = self._latches.get(num)
+        if not isinstance(stored, dict) or stored.get("reason") not in LATCHED_REASONS:
+            return None
+        if not isinstance(reading, dict):
+            return stored["reason"]  # nothing new to judge it by: it stands
+        if self._latch_identity(num, stored["reason"], reading) == stored:
+            return stored["reason"]
+        # Another month, another budget, another credit: it no longer applies.
+        self._latches.pop(num, None)
+        self._dry_latches.pop(num, None)
+        if not self.dry_run:
+            try:
+                clear_limit_latch(Path(self.switcher.backup_dir), num, state_path=self.state_path)
+            except Exception as e:
+                _logger.debug("Could not clear a lapsed limit latch: %r", e)
+        return None
 
     def _enterable_keys(
         self, state: dict, entries: Mapping[str, object], candidates: Sequence[str],
@@ -3816,13 +3941,18 @@ class AutoSwitchEngine:
         entries = self._keep_spend_fresh(
             state, dict(entries), set(candidates), every=SPEND_SCAN_MIN_GAP_S
         )
+        from ai_quota_swap import api_spend
+
         ok: list[str] = []
         first: tuple[str, str] | None = None
         for num in candidates:
+            brake = self._key_brake(num, entries)
             if not self._key_limited(num, entries):
                 why = "key-no-limit"
-            elif self._key_brake(num, entries) is not None:
+            elif brake == api_spend.SPEND_UNKNOWN:
                 why = "spend-unknown"
+            elif brake is not None:
+                continue  # at its limit, as one the census already left out
             else:
                 ok.append(num)
                 continue

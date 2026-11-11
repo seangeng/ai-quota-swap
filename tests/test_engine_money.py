@@ -481,3 +481,84 @@ class TestRowsSayTheLimitIsNotEnforced:
         reading = _row(limit=None)
         assert not api_spend.limit_not_enforced(reading, NOW + 86400)
         assert "limit not enforced" not in api_spend.spend_text(reading, now=NOW + 86400)
+
+
+# == A5: a limit that was reached stays reached ==============================================
+
+
+def _over(h, **kw):
+    return _reading(h, used=600.0, source="admin-api", **kw)
+
+
+def _lower(h, **kw):
+    return _reading(h, used=300.0, source="ledger", **kw)
+
+
+class TestTheLatch:
+    def test_a_lower_figure_from_a_worse_source_does_not_let_it_in(self, temp_home):
+        h = _fleet(temp_home)
+        assert _tick(h, EXHAUSTED, {"2": _over(h)}) is TickOutcome.BLOCKED
+        h.clock.advance(60)
+        for _ in range(3):
+            assert _tick(h, EXHAUSTED, {"2": _lower(h)}) is TickOutcome.BLOCKED
+            h.clock.advance(60)
+        assert h.switcher.current_account_number() == "1"
+        assert h.state()["limitLatch"]["2"]["reason"] == "budget"
+
+    def test_an_active_key_is_left_and_stays_left(self, temp_home):
+        h = _fleet(temp_home)
+        _enter(h)
+        h.clock.advance(60)
+        assert _tick(h, EXHAUSTED, {"2": _over(h)}) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        h.clock.advance(3600)
+        assert _tick(h, EXHAUSTED, {"2": _lower(h)}) is TickOutcome.BLOCKED
+        assert h.switcher.current_account_number() == "1"
+
+    def test_a_fresh_engine_reads_the_latch(self, temp_home):
+        h = _fleet(temp_home)
+        _tick(h, EXHAUSTED, {"2": _over(h)})
+        h.engine = h._make_engine()
+        assert _tick(h, EXHAUSTED, {"2": _lower(h)}) is TickOutcome.BLOCKED
+
+    def test_the_next_month_clears_it(self, temp_home):
+        h = _fleet(temp_home)
+        _tick(h, EXHAUSTED, {"2": _over(h)})
+        assert _tick(h, EXHAUSTED, {"2": _lower(h, month="2026-12")}) is TickOutcome.SWITCHED
+
+    @pytest.mark.parametrize("amount", [500, 800])
+    def test_setting_the_budget_again_clears_it(self, temp_home, amount):
+        h = _fleet(temp_home)
+        _tick(h, EXHAUSTED, {"2": _over(h)})
+        api_spend.set_budget(h.switcher, "2", amount)
+        assert "2" not in h.state().get("limitLatch", {})
+        assert _tick(h, EXHAUSTED, {"2": _lower(h, limit=float(amount))}) is (
+            TickOutcome.SWITCHED
+        )
+
+    def test_a_spent_credit_stays_spent(self, temp_home):
+        h = _fleet(temp_home, limit="credit")
+        since = "2026-11-01T00:00:00Z"
+
+        def credit(left):
+            return {"amount": 100.0, "used": 100.0 - left, "left": left,
+                    "spent": left <= 0, "expired": False, "since": since,
+                    "expires": None, "source": "admin-api"}
+
+        spent = _reading(h, limit=None, source="admin-api", credit=credit(-5.0))
+        assert _tick(h, EXHAUSTED, {"2": spent}) is TickOutcome.BLOCKED
+        lower = _reading(h, limit=None, credit=credit(60.0))
+        assert _tick(h, EXHAUSTED, {"2": lower}) is TickOutcome.BLOCKED
+        # A credit recorded again is another credit.
+        since = "2026-11-12T00:00:00Z"
+        api_spend.set_credit(h.switcher, "2", 100)
+        assert _tick(h, EXHAUSTED, {"2": _reading(h, limit=None, credit=credit(60.0))}) is (
+            TickOutcome.SWITCHED
+        )
+
+    def test_a_dry_run_latches_in_memory_only(self, temp_home):
+        h = _fleet(temp_home)
+        h.engine = h._make_engine(dry_run=True)
+        _tick(h, EXHAUSTED, {"2": _over(h)})
+        assert _tick(h, EXHAUSTED, {"2": _lower(h)}) is TickOutcome.BLOCKED
+        assert "limitLatch" not in h.state()

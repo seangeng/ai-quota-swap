@@ -330,7 +330,19 @@ def set_credit(
         record["credit"] = value
     data["lastUpdated"] = get_timestamp()
     switcher._write_json(switcher.sequence_file, data)
+    _clear_latch(switcher, num)
     return num, email, credit_from_record(record), True
+
+
+def _clear_latch(switcher, number: str) -> None:
+    """A budget or credit set again: auto-switch forgets that the old one
+    was reached (autoswitch.clear_limit_latch). Best-effort."""
+    try:
+        from ai_quota_swap.autoswitch import clear_limit_latch
+
+        clear_limit_latch(Path(switcher.backup_dir), number)
+    except Exception:
+        pass
 
 
 # -- linking --------------------------------------------------------------------
@@ -1063,6 +1075,8 @@ def set_budget(switcher, identifier: str, amount: object | None) -> tuple[str, s
         )
     current = budget_from_record(record)
     if normalized == current and (normalized is not None or "budget" not in record):
+        if normalized is not None:
+            _clear_latch(switcher, num)  # set again: the old one is forgotten
         return num, email, normalized, False
     if normalized is None:
         record.pop("budget", None)
@@ -1070,4 +1084,5 @@ def set_budget(switcher, identifier: str, amount: object | None) -> tuple[str, s
         record["budget"] = normalized
     data["lastUpdated"] = get_timestamp()
     switcher._write_json(switcher.sequence_file, data)
+    _clear_latch(switcher, num)
     return num, email, normalized, True
