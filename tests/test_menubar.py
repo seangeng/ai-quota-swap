@@ -2027,6 +2027,22 @@ def test_resets_submenu_greys_the_before_switch_toggle_where_it_does_nothing(
     )
 
 
+@pytest.mark.parametrize("auto", list(RESET_AUTO_MODES))
+@pytest.mark.parametrize("before_switch", [False, True])
+def test_resets_submenu_greys_the_before_switch_toggle_while_resets_are_off(
+    auto, before_switch
+):
+    """With resets.enabled off the submenu says so first; the toggle is
+    greyed, keeps its check mark, and names resets.enabled, the outer
+    switch, whatever resets.auto is (as qswap config set does)."""
+    sub = _resets_submenu(enabled=False, auto=auto, before_switch=before_switch)
+    assert sub.children[0].text == "Usage resets are not read (resets.enabled is off)"
+    toggle = sub.children[-1]
+    assert toggle.text == "Use the active account's reset before switching"
+    assert toggle.disabled and toggle.checked is before_switch
+    assert toggle.tooltip == f"{BEFORE_SWITCH_TOOLTIP}; no effect while resets.enabled is false"
+
+
 def test_the_before_switch_toggle_writes_without_asking(tmp_path: Path):
     changed, asked, wrote = _change(Action("toggle-before-switch"), ResetSettings(auto="active"))
     assert changed and asked == [] and wrote == [("resets.beforeSwitch", "true")]

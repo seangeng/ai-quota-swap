@@ -554,11 +554,18 @@ class TestConfig:
         code, out, err = self._run(["set", "resets.beforeSwitch", "false"], capsys)
         assert (code, out, err) == (0, "resets.beforeSwitch = false\n", "")
 
-    def test_list_and_get_show_it(self, temp_home, capsys):
-        code, out, _ = self._run([], capsys)
-        line = next(ln for ln in out.splitlines() if ln.startswith("resets.beforeSwitch"))
-        assert line.split()[1] == "false" and "(default)" in line
-        assert self._run(["get", "resets.beforeSwitch"], capsys)[1] == "false\n"
+    @pytest.mark.parametrize("auto", ["active", "on-limit", "last-resort", "off"])
+    def test_with_resets_off_it_names_resets_enabled_first(self, temp_home, capsys, auto):
+        """resets.enabled is the outer switch: it is the one to name, also
+        where resets.auto would stop the setting too."""
+        assert self._run(["set", "resets.auto", auto], capsys)[2] == ""
+        assert self._run(["set", "resets.enabled", "false"], capsys)[2] == ""
+        code, out, err = self._run(["set", "resets.beforeSwitch", "true"], capsys)
+        assert (code, out) == (0, "resets.beforeSwitch = true\n")
+        assert err == (
+            "No effect while resets.enabled is false: qswap config set resets.enabled true\n"
+        )
+        assert all(len(line) <= 80 for line in err.splitlines())
 
 
 # -- the documents quote what the code prints ------------------------------------------

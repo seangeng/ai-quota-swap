@@ -112,7 +112,7 @@ It changes when auto-switch moves, not the rules for spending: the reset is spen
 
 The cost: the active account runs past its switch line, up to `resets.threshold`. With `resets.threshold` 100 the account is at its limit until a check reads it there and spends the reset. That check needs a reading from the last two minutes, as every automatic spend does. Setting `resets.threshold` at or below the switch line avoids that, and then the reset comes first without this setting.
 
-To turn it on, `qswap config set resets.beforeSwitch true`, or *Use the active account's reset before switching* in the menu bar. Under `off` and `last-resort` it has no effect, and `qswap config` says so:
+To turn it on, `qswap config set resets.beforeSwitch true`, or *Use the active account's reset before switching* in the menu bar. It has no effect under `off` and `last-resort`, or while `resets.enabled` is false. `qswap config` says so, and names `resets.enabled` first when both apply:
 
 ```text
 $ qswap config set resets.beforeSwitch true

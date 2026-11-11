@@ -1378,9 +1378,10 @@ def _resets_menu(inp: MenuInput) -> Row:
     """*Use resets automatically*: one checked choice per ``resets.auto``
     mode, then the ``resets.weeklyForModelLimit`` and ``resets.beforeSwitch``
     toggles. Each choice's tooltip is ``qswap reset``'s ``Auto:`` line for
-    it. ``resets.beforeSwitch`` does nothing under ``off`` and
-    ``last-resort``: there its row is greyed, keeps its check mark, and its
-    tooltip says so."""
+    it. ``resets.beforeSwitch`` does nothing while ``resets.enabled`` is off
+    and under ``off`` and ``last-resort``: there its row is greyed, keeps its
+    check mark, and its tooltip says why, ``resets.enabled`` first, as
+    ``qswap config set`` does."""
     rs = inp.resets
     # Shared by both providers; said only where Codex is part of the menu.
     rows: list[Row] = [Row(RESETS_APPLY_TO)] if inp.codex_shown else []
@@ -1398,13 +1399,18 @@ def _resets_menu(inp: MenuInput) -> Row:
         tooltip="resets.weeklyForModelLimit: automatic use may spend a weekly or full "
                 "reset when only a per-model limit such as Fable's is reached",
     ))
-    applies = rs.auto in RESET_BEFORE_SWITCH_MODES
+    if not rs.enabled:
+        idle = "resets.enabled is false"
+    elif rs.auto not in RESET_BEFORE_SWITCH_MODES:
+        idle = f"resets.auto is {rs.auto}"
+    else:
+        idle = None
     rows.append(Row(
         BEFORE_SWITCH_LABEL,
-        action=Action("toggle-before-switch") if applies else None,
+        action=Action("toggle-before-switch") if idle is None else None,
         checked=rs.before_switch,
-        tooltip=BEFORE_SWITCH_TOOLTIP if applies else (
-            f"{BEFORE_SWITCH_TOOLTIP}; no effect while resets.auto is {rs.auto}"
+        tooltip=BEFORE_SWITCH_TOOLTIP if idle is None else (
+            f"{BEFORE_SWITCH_TOOLTIP}; no effect while {idle}"
         ),
     ))
     return Row("Use resets automatically", children=tuple(rows))

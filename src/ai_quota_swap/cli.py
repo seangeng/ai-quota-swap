@@ -1571,13 +1571,17 @@ def _say_unwatched_key(switcher, as_json: bool) -> None:
 
 def _config_set_note(root, spec, value) -> str | None:
     """One line after ``qswap config set`` when the value it saved does
-    nothing as the other settings stand, with the command that changes that."""
+    nothing as the other settings stand, with the command that changes that.
+    ``resets.enabled`` is named before ``resets.auto``: it is the outer
+    switch."""
     from ai_quota_swap.settings import RESET_BEFORE_SWITCH_MODES, load_reset_settings
 
     if spec.dotted == "resets.beforeSwitch" and value is True:
-        auto = load_reset_settings(root).auto
-        if auto not in RESET_BEFORE_SWITCH_MODES:
-            return f"No effect while resets.auto is {auto}: qswap config set resets.auto active"
+        rs = load_reset_settings(root)
+        if not rs.enabled:
+            return "No effect while resets.enabled is false: qswap config set resets.enabled true"
+        if rs.auto not in RESET_BEFORE_SWITCH_MODES:
+            return f"No effect while resets.auto is {rs.auto}: qswap config set resets.auto active"
     return None
 
 
