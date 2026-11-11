@@ -90,7 +90,7 @@ Claude Code picks up the new account within 30 seconds; restart it to apply now.
 
 You do not have to restart Claude Code. On macOS it reads the login from the Keychain and picks up the new one within about 30 seconds; on Linux and Windows it reads a file and uses the new account from its next message. The first message on the new account may cost extra usage while its conversation cache is rebuilt.
 
-An API-key account moves running sessions faster: `qswap switch 5` adds one line to Claude Code's settings, and every session uses the key within a few seconds, while the subscription stays logged in underneath. `qswap switch 1` takes the line out and the sessions are back on the subscription ([api-accounts.md](api-accounts.md#switch-to-an-api-key)). This has been tested on Claude Code 2.1.322 with sessions in print mode, not yet with interactive ones.
+An API-key account moves running sessions faster: `qswap switch 5` adds one line to Claude Code's settings, and every session uses the key within a few seconds, while the subscription stays logged in underneath. `qswap switch 1` takes the line out and the sessions are back on the subscription ([api-accounts.md](api-accounts.md#switch-to-an-api-key)). This has been tested on Claude Code 2.1.322 with sessions in print mode, not yet with interactive ones, nor with a claude.ai login underneath on the user settings file ([Limits](api-accounts.md#limits)).
 
 `qswap switch` with no account moves to the next subscription, and `qswap switch --strategy best` to the one with the most quota left. Both skip accounts you disabled and accounts that need re-login. They never land on an API-key account, which you switch to by name; on a key they go back to the account underneath.
 

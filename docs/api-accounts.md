@@ -61,7 +61,7 @@ The command is the `qswap` of this install, by absolute path, so a session with 
 Claude Code watches that file. About a second after the write (measured on Claude Code 2.1.322), every session that reads it, running or new, sends its requests with the key that `qswap key-helper 5` prints, instead of the claude.ai login. Nothing else changes: not the login, not the saved key, not `~/.claude.json`. Running sessions keep their conversation. Some things do change for them:
 
 - Claude Code does not load claude.ai connectors (the MCP servers that come with the claude.ai login) while a key is in use, and Remote Control does not work with an API key, so a session you drive from your phone loses that link (Anthropic's documentation). Neither has been tested here, nor whether a running session gets them back after you leave the key.
-- The first request on the key cannot reuse the login's prompt cache, so it pays for the cache again, at the key's price.
+- The first request on the key is expected not to reuse the login's prompt cache (a cache belongs to the account that wrote it; not measured here), so it would pay for the cache again, at the key's price.
 - Claude Code keeps the key it read for 5 minutes, and reads it again sooner after any change to the settings or a rejected request (Claude Code 2.1.322; `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` changes the 5 minutes).
 
 ### Which sessions follow the line

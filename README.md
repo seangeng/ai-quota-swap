@@ -10,7 +10,7 @@
 - Switches accounts without logging out, by hand or automatically at a line you set: `qswap switch`, `qswap auto`.
 - Spends usage resets of the right kind when they help most: `qswap reset`.
 - Runs Claude Code as a different account in one terminal while the others keep theirs: `qswap run`.
-- Moves running Claude Code sessions onto a Console API key (account 5 here) and back, without logging anyone out: `qswap switch 5`. Tested on Claude Code 2.1.322 with print-mode sessions; not yet with interactive ones.
+- Moves running Claude Code sessions onto a Console API key (account 5 here) and back, without logging anyone out: `qswap switch 5`. Tested on Claude Code 2.1.322 with print-mode sessions; not yet with interactive ones, nor with a claude.ai login underneath on the user settings file ([what has not been tested](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#limits)).
 - Counts tokens and their estimated API cost per account, model and project, and holds API keys to a monthly budget or a prepaid credit: `qswap usage`, `qswap budget`, `qswap credit`.
 - Puts all of it in a terminal dashboard (`qswap`) and a macOS menu bar app (`qswap menubar`).
 
@@ -59,7 +59,7 @@ Switched #1 personal → #2 work (maya@northwind.example.com)
 Claude Code picks up the new account within 30 seconds; restart it to apply now.
 ```
 
-A running Claude Code session keeps working and moves to the new account on its own: within about 30 seconds on macOS, where the login is in the Keychain, and from its next message on Linux and Windows. A switch to an API-key account moves running sessions to the key within a few seconds and keeps the subscription logged in underneath ([switching to an API key](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#switch-to-an-api-key); tested on Claude Code 2.1.322 in print mode, not yet with interactive sessions).
+A running Claude Code session keeps working and moves to the new account on its own: within about 30 seconds on macOS, where the login is in the Keychain, and from its next message on Linux and Windows. A switch to an API-key account moves running sessions to the key within a few seconds and keeps the subscription logged in underneath ([switching to an API key](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#switch-to-an-api-key); tested on Claude Code 2.1.322 in print mode, not yet with interactive sessions or with a claude.ai login underneath on the user settings file).
 
 When something looks wrong, run `qswap doctor` first. It checks Claude Code, Codex, the data directory, the menu bar and auto-switch, and prints the command that fixes each problem. The [quick start guide](https://github.com/seangeng/ai-quota-swap/blob/main/docs/quickstart.md) walks through all of this in more detail.
 
@@ -120,7 +120,7 @@ Group by day, account, model, project, provider or session with `--by`. A subscr
 
 ## API accounts and budgets
 
-Add a Console API key as an account with `qswap add-token sk-ant-api03-...`. `qswap switch 5` makes it the active account: qswap adds one line to Claude Code's settings (`"apiKeyHelper": ".../qswap key-helper 5"`), and every running and new Claude Code session uses the key within a few seconds. The subscription stays logged in underneath, and `qswap switch 1` takes the line out again. This has been tested on Claude Code 2.1.322 with sessions in print mode (`claude -p`); interactive sessions and Remote Control have not been tried yet.
+Add a Console API key as an account with `qswap add-token sk-ant-api03-...`. `qswap switch 5` makes it the active account: qswap adds one line to Claude Code's settings (`"apiKeyHelper": ".../qswap key-helper 5"`), and every running and new Claude Code session uses the key within a few seconds. The subscription stays logged in underneath, and `qswap switch 1` takes the line out again. This has been tested on Claude Code 2.1.322 with sessions in print mode (`claude -p`); interactive sessions, a claude.ai login underneath on the user settings file, and Remote Control have not been tried yet ([Limits](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#limits)).
 
 ```text
 $ qswap switch 5
