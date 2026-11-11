@@ -123,6 +123,39 @@ Unified views show both: `qswap list` prints a Codex section after the Claude ac
 Codex accounts exist, and `list --json` adds a top-level `providers.codex` object. The existing
 top-level keys keep their meaning, so the JSON contract is only extended.
 
+## Before switching
+
+Added 2026-11-11. The user's side is in [../resets.md](../resets.md#before-switching).
+
+`resets.beforeSwitch` is off by default. Off, auto-switch moves at the switch line, and auto
+mode spends the active account's reset only if that account reaches `resets.threshold` anyway.
+On, under `resets.auto active` and `on-limit`, auto-switch stays past the line while the
+active account holds a reset of its own that auto mode would spend once the window over the
+line reaches `resets.threshold`. The reset is spent there (`reset-ahead`). Under `off` and
+`last-resort`, or with `resets.enabled false`, the setting does nothing.
+
+It changes when auto-switch moves, never what the planner spends. The hold asks the same
+planner, with every guard, and the reset is spent at `resets.threshold` as with the setting
+off. A reset auto mode would keep, and one whose last claim failed or was refused, never hold.
+
+Two more cases never hold:
+
+- A reset usable only once a limit is reached. Nothing can spend it below the limit, and the
+  server may still refuse it there. It stays banked, as with the setting off.
+- An active account with no reading from the last five minutes, or with a failed read since
+  its last one. Auto mode spends a reset only on a reading from the last two minutes. A stored
+  reading stays trusted for switching long after the account stops answering, so a hold on it
+  would keep the engine on an account nothing can spend the reset on.
+
+The cost: the active account runs past its switch line, up to `resets.threshold`. With
+`resets.threshold` 100 it sits at its limit until the next check reads it there and spends
+the reset. A `resets.threshold` at or below the switch line avoids that, and then the reset
+comes first without this setting.
+
+The hold is part of the engine tick that `qswap auto` and `qswap codex auto` share, and it
+reads the setting through `reset_settings()`. So it holds for a Codex reset credit as it does
+for a Claude Code reset.
+
 ## Tests
 
 - `CODEX_HOME` points at a temp dir in every test, and the real `~/.codex/auth.json` is covered

@@ -101,6 +101,7 @@ markers = [
     "no_keychain_fake: opt out of the autouse in-memory Keychain guard (test mocks subprocess itself, or runs against a temp keychain on GitHub Actions)",
     "no_oauth_profile_fake: opt out of the autouse fetch_oauth_profile stub (test exercises fetch_oauth_profile itself against a mocked urlopen)",
     "allow_network: lift the global network block for this test (it truly needs a real outbound connection)",
+    "launchctl_subprocess_fake: the test fakes subprocess.run, the layer launch_agent._launchctl calls, so the launchd guard leaves _launchctl real; the audit hook still refuses to start launchctl (see tests/conftest.py)",
 ]
 
 # `uv run ruff check` lints; CI runs it. Formatting (`ruff format`) and import

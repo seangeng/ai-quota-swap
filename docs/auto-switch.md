@@ -18,10 +18,14 @@ Auto-switch running: switch at 90% · checks every 60s · Ctrl-C to stop
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/screenshots/raw/auto.png">
-  <img src="../assets/screenshots/raw/auto-light.png" alt="qswap auto: two checks of #1 personal below its 90% line, then a switch to #2 work when its 5h window reaches 91%" width="800">
+  <img src="../assets/screenshots/raw/auto-light.png" alt="qswap auto: two checks of #1 personal below its 90% line, then, when #1 personal's 5-hour window reaches 91%, a switch to #2 work" width="800">
 </picture>
 
-It runs in the foreground until you press Ctrl-C. Other ways to run it:
+The dashboard's auto view (`qswap`, then `g`) runs the same engine. Here it goes live, and the active account climbs past its 90% line:
+
+<img src="../assets/demos/autoswitch.gif" alt="Recording: the dashboard's auto view goes live; #1 personal climbs past its 90% line on the 5-hour window and the engine switches to #2 work" width="800">
+
+`qswap auto` runs in the foreground until you press Ctrl-C. Other ways to run it:
 
 ```bash
 qswap auto --dry-run --verbose   # say what it would do; never switch or spend a reset
@@ -79,7 +83,7 @@ Four rules keep the engine from bouncing between accounts.
 
 When every account is at its limit, the log says `All accounts are at their limit; the first resets 15:32 · in 1h 12m`, and the engine sleeps until that reset, checking at least every 10 minutes because quota can come back early.
 
-If an account holds a usage reset, the engine may spend it instead of switching, under the `resets.*` settings ([resets.md](resets.md)). It spends before it decides whether to switch, so the order depends on `resets.threshold`. With `resets.auto active` and `resets.threshold` above the switch line (100 against 98, say), auto-switch moves at the line to another account with room, and the reset stays banked. It is spent when the active account reaches `resets.threshold` anyway: when there is nowhere to move, or when its usage passes the line between two checks. To spend the reset before moving, set `resets.threshold` at or below the switch line; with a switch line of 98: `qswap config set resets.threshold 98`.
+If an account holds a usage reset, the engine may spend it instead of switching, under the `resets.*` settings ([resets.md](resets.md)). It spends before it decides whether to switch, so the order depends on `resets.threshold`. With `resets.auto active` and `resets.threshold` above the switch line (100 against 98, say), auto-switch moves at the line to another account with room, and the reset stays banked. It is spent when the active account reaches `resets.threshold` anyway: when there is nowhere to move, or when its usage passes the line between two checks. To spend the reset before moving, set `resets.threshold` at or below the switch line; with a switch line of 98: `qswap config set resets.threshold 98`. Or keep `resets.threshold` above the line and turn on `resets.beforeSwitch` (`qswap config set resets.beforeSwitch true`): under `active` and `on-limit`, auto-switch then stays past the line while the active account holds a reset auto mode will spend there, and the log says `its own weekly reset comes first, at 7d 100%` (`reset-ahead`). With `resets.threshold` 100 the account is at its limit until a check reads it there and spends the reset, which needs a reading from the last two minutes. A reset auto mode would keep, one whose claim failed or was refused, and one usable only once a limit is reached never hold the switch; nor does an active account qswap cannot read again ([resets.md](resets.md#before-switching)).
 
 ## Holding accounts out
 
@@ -270,6 +274,5 @@ Change one with `qswap config set autoswitch.cooldownSeconds 600`; remove it wit
 ## Limits
 
 - A check every 60 seconds is not a usage request every 60 seconds. A check reads the active account and at most one other account when they are due, and reads every account only when the active one is within 15 points of a line or unreadable. A reading younger than 3 minutes is reused; the active account is read once a minute while it climbs within 15 points of its line; idle accounts and accounts at their limit are read about every 10 minutes. Request volume stays about flat however many accounts you manage.
-- Codex switching has been tested only against fakes, never with two real Codex accounts.
-- The latest menu bar build (both providers, auto-switch per provider) has not yet been run by hand.
+- Codex switching has been tested against fakes and with one real account, not yet with two real Codex accounts.
 - The systemd unit above has not been run against real accounts, and cron on macOS has not been tested.

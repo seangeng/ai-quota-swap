@@ -494,6 +494,10 @@ class NoSwitchEvent(AutoSwitchEvent):
     # spend-unknown because the ledger scan could not cover the period: that
     # scan's ``spendScan`` record (decision EM3).
     scan_failure: dict | None = _human_only()
+    # reset-ahead (resets.beforeSwitch): the kind of the active account's own
+    # reset ("weekly reset") and the resets.threshold it is spent at.
+    reset_noun: str | None = _human_only()
+    reset_line: float | None = _human_only()
 
     def _fields(self) -> dict:
         return {"reason": self.reason, "detail": self.detail}
@@ -714,6 +718,25 @@ RESET_FRESH_READ_S = 120.0
 _BRAKE_RESULTS = frozenset({"reset", "already_used", "unavailable", "error", "pending"})
 # Runaway brake across the fleet: banked resets cannot be bought back.
 MAX_AUTO_RESETS_PER_DAY = 3
+
+
+def _reading_holds(entry: object, now: float) -> bool:
+    """Whether the active account's stored reading can hold the switch for
+    its own reset (``resets.beforeSwitch``): one taken in the last
+    ``STALE_OK_S``, with no failed read since. The reset is spent only on a
+    reading from the last ``RESET_FRESH_READ_S``, which the engine takes
+    first; an account that no longer answers cannot give one, though its last
+    reading stays trusted for the switch (an hour after a failure, up to two
+    after a 429). Held on that, the engine would stay on an account nothing
+    can spend the reset on. Over its line, the active account is read again
+    each check once its reading is older than ``SERVE_TTL_S``, so a healthy
+    one stays inside this."""
+    fetched = getattr(entry, "fetched_at", None)
+    return (
+        isinstance(fetched, (int, float))
+        and now - fetched <= STALE_OK_S
+        and not getattr(entry, "consecutive_failures", 0)
+    )
 
 
 def _state_lock_for(state_path: Path) -> FileLock:
@@ -2003,6 +2026,93 @@ class AutoSwitchEngine:
         usage = {num: entry.decision_value() for num, entry in entries.items()}
         return entries, usage, _headroom_by_account(usage, self._models)
 
+    def _own_reset_ahead(
+        self,
+        state: dict,
+        current: str,
+        entries: Mapping[str, object],
+        usage: Mapping[str, object],
+        thresholds: "ThresholdMap",
+        quarantined: set[str],
+        binding: BindingWindow | None,
+    ) -> tuple[str, float] | None:
+        """``(noun, line)`` when ``resets.beforeSwitch`` holds the switch:
+        under ``resets.auto`` ``active`` or ``on-limit``, the active account,
+        over its switch line on ``binding``, holds a reset of its own that
+        auto mode spends once that window reaches ``resets.threshold``,
+        leaving every window under its line (docs/resets.md, "Before
+        switching"). None otherwise, and always with the setting off, which
+        reads nothing else. Asks the planner with the window's own figure as
+        its line, so every other guard (the time left, the kind, the daily
+        cap, a claim settling) still applies; a reset whose last claim failed
+        or was refused never holds. Neither does a reading the account no
+        longer gives (``_reading_holds``). Never raises."""
+        from ai_quota_swap import resets
+        from ai_quota_swap.settings import RESET_BEFORE_SWITCH_MODES
+
+        try:
+            own = usage.get(current)
+            if binding is None or not (
+                isinstance(own, dict)
+                and isinstance(own.get("resets"), dict)
+                and own["resets"].get("grants")
+            ):
+                return None
+            rs = self.switcher.reset_settings()
+            if (
+                not rs.before_switch
+                or not rs.enabled
+                or rs.auto not in RESET_BEFORE_SWITCH_MODES
+                or binding.pct >= rs.threshold
+            ):
+                return None
+            now = self.clock()
+            if not _reading_holds(entries.get(current), now):
+                return None
+            if reset_claims_today(state, now) >= MAX_AUTO_RESETS_PER_DAY:
+                return None
+            rotation = [
+                n for n in self.switcher.switchable_account_numbers()
+                if n not in quarantined and self.switcher.account_kind_for(n) != "api_key"
+            ]
+            if current not in rotation:
+                return None
+            claims = state.get("resetClaims")
+            claims = claims if isinstance(claims, dict) else {}
+            last = claims.get(current)
+            # As _maybe_use_reset plans: every account whose last claim has
+            # not been followed by a fresh reading is held out.
+            settling = [
+                n for n in rotation
+                if not reset_claim_settled(
+                    claims.get(n), getattr(entries.get(n), "fetched_at", None), now
+                )
+            ]
+            views = resets.views_from(
+                usage, claimable=rotation, thresholds=thresholds,
+                weekly_threshold=self.settings.weekly_threshold,
+                accounts=rotation, settling=settling,
+            )
+            plan = resets.plan_reset(
+                views, current=current, settings=replace(rs, threshold=binding.pct),
+                watched=self._models, now=now,
+            )
+            if plan is None or plan.account != current or plan.window != binding.label:
+                return None
+            for label, pct in plan.projected.items():
+                if pct >= window_line(label, thresholds[current], self.settings.weekly_threshold):
+                    return None
+            if (
+                isinstance(last, dict)
+                and last.get("result") != "reset"
+                and last.get("grantId") in (None, plan.grant_id)
+            ):
+                return None  # its claim failed or was refused: the line stands
+            return plan.noun, float(rs.threshold)
+        except Exception as e:  # the line stands; never cost the tick
+            _logger.debug("could not tell whether the active account's reset comes first: %r", e)
+            return None
+
     def _reset_planning_account(self, current: str, rotation: Sequence[str]) -> str:
         """The account the reset planner treats as active: the subscription
         underneath a key the engine entered, else ``current``. On a key the
@@ -2667,6 +2777,30 @@ class AutoSwitchEngine:
             else:
                 # Exhaustion is physical: at-limit reads the raw headroom.
                 trigger = "at-limit" if active_headroom <= 0 else "proactive"
+                ahead = (
+                    self._own_reset_ahead(
+                        state, current, entries, usage, thresholds, quarantined,
+                        active_binding,
+                    )
+                    if trigger == "proactive" else None
+                )
+                if ahead is not None:
+                    # resets.beforeSwitch: the account's own reset is spent at
+                    # resets.threshold, rather than switching away at its line
+                    # (docs/resets.md, "Before switching").
+                    self._emit(NoSwitchEvent(
+                        reason="reset-ahead",
+                        detail=(
+                            f"account {current}'s own {ahead[0]} is spent when "
+                            f"{active_binding.label} reaches {pct_label(ahead[1])}% "
+                            "(resets.beforeSwitch)"
+                        ),
+                        binding=active_binding,
+                        account=str(current),
+                        reset_noun=ahead[0],
+                        reset_line=ahead[1],
+                    ))
+                    return TickOutcome.NO_ACTION
         else:
             if usage.get(current) == USAGE_TOKEN_EXPIRED:
                 # Expired and the refresh could not complete this pass (lock

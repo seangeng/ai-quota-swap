@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<meta name="color-scheme" content="dark">
+<title>qswap menu bar</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { display: flex; justify-content: center; align-items: center; min-height: 100vh;
+          background: radial-gradient(ellipse at 50% 40%, #26211d 0%, #0d0d0e 70%); }
+  #frame { padding: 8px; }
+  #view { position: relative; overflow: hidden; width: 1440px;
+           height: 896.424px; border-radius: 22.8874px; }
+  #fit { position: absolute; left: 0; top: 0; width: 755px; height: 470px;
+          transform: scale(1.90728); transform-origin: 0 0; --zoom: 1; }
+  .shot { position: absolute; left: 0; top: 0; border: 0; opacity: 0; display: block;
+           background: transparent; }
+  .shot.on { opacity: 1; }
+  .shot.zoomed { transform: scale(var(--zoom)); transform-origin: 100% 0; }
+  /* A recording is keyboard-only: the recorder's pointer and key overlays
+     would sit over the drawing, so the page hides them. */
+  #__ld_cursor, #__demo-cursor, #__demo-keys { display: none !important; }
+</style>
+</head>
+<body>
+<div id="frame"><div id="view"><div id="fit"><iframe class="shot on" title="menu bar, shot 1" width="755" height="470" scrolling="no" srcdoc="&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width&quot;&gt;
+&lt;meta name=&quot;color-scheme&quot; content=&quot;dark&quot;&gt;
+&lt;title&gt;⇄ personal · 86% · 38%&lt;/title&gt;
+&lt;style&gt;
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { display: flex; justify-content: center; align-items: flex-start; }
+  .stage {
+    position: relative; display: inline-flex; flex-direction: column; box-sizing: border-box;
+    overflow: hidden; border-radius: 12px; background: radial-gradient(120% 90% at 8% 0%, #3d4a8a 0%, rgba(61,74,138,0) 55%),radial-gradient(90% 80% at 100% 18%, #6b3f6e 0%, rgba(107,63,110,0) 60%),radial-gradient(110% 90% at 60% 110%, #1f5a63 0%, rgba(31,90,99,0) 60%),linear-gradient(160deg, #1b1f33 0%, #141622 100%);
+    font-family: -apple-system, BlinkMacSystemFont, &quot;SF Pro Text&quot;, &quot;Helvetica Neue&quot;,
+      system-ui, sans-serif;
+    font-size: 13px; -webkit-font-smoothing: antialiased; width:755px;height:470px;
+  }
+  .bar {
+    height: 24px; flex: none; display: flex; align-items: center; justify-content: flex-end;
+    padding: 0 10px 0 0; background: rgba(16, 17, 26, 0.34); color: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(24px) saturate(170%); -webkit-backdrop-filter: blur(24px) saturate(170%);
+    font-weight: 500; white-space: nowrap;
+  }
+  .bar .glyph { width: 32px; height: 24px; display: flex; align-items: center;
+                 justify-content: center; }
+  .bar .glyph svg { height: 14px; width: auto; }
+  .bar .glyph.battery svg { height: 13px; }
+  .bar .glyph.other { opacity: .9; }
+  .bar .status { height: 22px; line-height: 22px; padding: 0 8px; margin: 0 2px;
+                  border-radius: 5px; }
+  .bar .status.open { background: rgba(255, 255, 255, 0.22); }
+  .bar .clock { padding: 0 2px 0 10px; font-variant-numeric: tabular-nums; }
+  .desk {
+    flex: 1; display: flex; flex-direction: row; justify-content: flex-end;
+    align-items: flex-start; padding: 0 8px 34px 96px;
+  }
+  .window { display: block; flex: none; border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(0, 0, 0, 0.6);
+             position: relative; z-index: 1; }
+  .menu {
+    position: relative; flex: none; box-sizing: border-box; min-width: 160px;
+    padding: 5px 0; border-radius: 10px; background: rgba(36, 36, 40, 0.74);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    white-space: nowrap; cursor: default;
+  }
+  .menu + .menu { margin-left: -4px; }
+  .closed .menu { visibility: hidden; }
+  .item {
+    position: relative; height: 22px; line-height: 22px; margin: 0 5px;
+    padding: 0 18px 0 17px; border-radius: 5px; letter-spacing: -0.08px;
+  }
+  .item.submenu { padding-right: 34px; }
+  .item.disabled, .item.heading { color: rgba(255, 255, 255, 0.36); }
+  .item.attention { color: #ff9f0a; }
+  .item.selected { background: #0a6ad8; color: #ffffff; }
+  .check { position: absolute; left: 4px; top: 6px; width: 10px; height: 10px; }
+  .chevron { position: absolute; right: 9px; top: 5px; width: 6px; height: 12px; }
+  .sep { height: 11px; margin: 0 10px; position: relative; }
+  .sep::after { content: &quot;&quot;; position: absolute; left: 0; right: 0; top: 5px; height: 1px;
+                 background: rgba(255, 255, 255, 0.13); }
+  .note {
+    position: absolute; z-index: 40; top: 30px; right: 10px;
+    width: 344px; box-sizing: border-box; display: flex; gap: 10px; align-items: flex-start;
+    padding: 11px 14px 12px 11px; border-radius: 18px; background: rgba(44, 44, 48, 0.80);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    line-height: 16px; letter-spacing: -0.08px;
+  }
+  .note-icon { flex: none; width: 32px; height: 32px; margin-top: 1px; border-radius: 8px;
+                background: linear-gradient(180deg, #8a8a90 0%, #5e5e64 100%); }
+  .note-title { font-weight: 600; }
+&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div class=&quot;stage dark&quot; id=&quot;stage&quot;&gt;
+  &lt;div class=&quot;bar&quot;&gt;
+    &lt;span class=&quot;glyph other&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;rect x=&quot;2.5&quot; y=&quot;3&quot; width=&quot;11&quot; height=&quot;10&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.3&quot;/&gt;&lt;path d=&quot;M5 8h6&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.3&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;status open&quot; id=&quot;status&quot;&gt;⇄ personal · 86% · 38%&lt;/span&gt;
+    &lt;span class=&quot;glyph battery&quot;&gt;&lt;svg viewBox=&quot;0 0 26 14&quot;&gt;&lt;rect x=&quot;1&quot; y=&quot;2&quot; width=&quot;21&quot; height=&quot;10&quot; rx=&quot;3&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.1&quot; opacity=&quot;.55&quot;/&gt;&lt;rect x=&quot;2.8&quot; y=&quot;3.8&quot; width=&quot;14&quot; height=&quot;6.4&quot; rx=&quot;1.6&quot; fill=&quot;currentColor&quot;/&gt;&lt;path d=&quot;M23.6 5.5v3&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.4&quot; stroke-linecap=&quot;round&quot; opacity=&quot;.55&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 18 14&quot;&gt;&lt;path d=&quot;M1.6 5.2a10.8 10.8 0 0 1 14.8 0M4.2 8a7 7 0 0 1 9.6 0M6.8 10.7a3.2 3.2 0 0 1 4.4 0&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;circle cx=&quot;9&quot; cy=&quot;12.6&quot; r=&quot;0.9&quot; fill=&quot;currentColor&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;circle cx=&quot;6.8&quot; cy=&quot;6.8&quot; r=&quot;4.6&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.5&quot;/&gt;&lt;path d=&quot;m10.3 10.3 3.8 3.8&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.7&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 18 16&quot;&gt;&lt;rect x=&quot;1.5&quot; y=&quot;2&quot; width=&quot;15&quot; height=&quot;5&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.2&quot;/&gt;&lt;circle cx=&quot;12.5&quot; cy=&quot;4.5&quot; r=&quot;1.5&quot; fill=&quot;currentColor&quot;/&gt;&lt;rect x=&quot;1.5&quot; y=&quot;9&quot; width=&quot;15&quot; height=&quot;5&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.2&quot;/&gt;&lt;circle cx=&quot;5.5&quot; cy=&quot;11.5&quot; r=&quot;1.5&quot; fill=&quot;currentColor&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;clock&quot;&gt;Tue 10 Nov 14:20&lt;/span&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;desk&quot;&gt;&lt;div class=&quot;menu&quot; data-level=&quot;0&quot; style=&quot;margin-top:2px;z-index:10&quot;&gt;&lt;div class=&quot;item disabled&quot;&gt;&lt;span class=&quot;t&quot;&gt;Auto-switch running · usage read just now&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item checked&quot;&gt;&lt;svg class=&quot;check&quot; viewBox=&quot;0 0 12 10&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.2 5.4 4.4 8.5 10.8 1.4&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.7&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;span class=&quot;t&quot;&gt;#1 personal · 5h 86% · 7d 38% · Fable 52% · 1 Fable reset&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;#2 work · 5h 12% · 7d 21% · extra 18%&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item attention&quot;&gt;&lt;span class=&quot;t&quot;&gt;#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Rotate to next&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Switch to best&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Next available&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Add account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Disable / enable account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Remove account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Use a reset&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Refresh current credentials&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Switch history&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Settings&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Refresh now&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Quit&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe><iframe class="shot zoomed" title="menu bar, shot 2" width="755" height="470" scrolling="no" srcdoc="&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width&quot;&gt;
+&lt;meta name=&quot;color-scheme&quot; content=&quot;dark&quot;&gt;
+&lt;title&gt;⇄ personal · 86% · 38%&lt;/title&gt;
+&lt;style&gt;
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { display: flex; justify-content: center; align-items: flex-start; }
+  .stage {
+    position: relative; display: inline-flex; flex-direction: column; box-sizing: border-box;
+    overflow: hidden; border-radius: 12px; background: radial-gradient(120% 90% at 8% 0%, #3d4a8a 0%, rgba(61,74,138,0) 55%),radial-gradient(90% 80% at 100% 18%, #6b3f6e 0%, rgba(107,63,110,0) 60%),radial-gradient(110% 90% at 60% 110%, #1f5a63 0%, rgba(31,90,99,0) 60%),linear-gradient(160deg, #1b1f33 0%, #141622 100%);
+    font-family: -apple-system, BlinkMacSystemFont, &quot;SF Pro Text&quot;, &quot;Helvetica Neue&quot;,
+      system-ui, sans-serif;
+    font-size: 13px; -webkit-font-smoothing: antialiased; width:755px;height:470px;
+  }
+  .bar {
+    height: 24px; flex: none; display: flex; align-items: center; justify-content: flex-end;
+    padding: 0 10px 0 0; background: rgba(16, 17, 26, 0.34); color: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(24px) saturate(170%); -webkit-backdrop-filter: blur(24px) saturate(170%);
+    font-weight: 500; white-space: nowrap;
+  }
+  .bar .glyph { width: 32px; height: 24px; display: flex; align-items: center;
+                 justify-content: center; }
+  .bar .glyph svg { height: 14px; width: auto; }
+  .bar .glyph.battery svg { height: 13px; }
+  .bar .glyph.other { opacity: .9; }
+  .bar .status { height: 22px; line-height: 22px; padding: 0 8px; margin: 0 2px;
+                  border-radius: 5px; }
+  .bar .status.open { background: rgba(255, 255, 255, 0.22); }
+  .bar .clock { padding: 0 2px 0 10px; font-variant-numeric: tabular-nums; }
+  .desk {
+    flex: 1; display: flex; flex-direction: row; justify-content: flex-end;
+    align-items: flex-start; padding: 0 8px 34px 96px;
+  }
+  .window { display: block; flex: none; border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(0, 0, 0, 0.6);
+             position: relative; z-index: 1; }
+  .menu {
+    position: relative; flex: none; box-sizing: border-box; min-width: 160px;
+    padding: 5px 0; border-radius: 10px; background: rgba(36, 36, 40, 0.74);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    white-space: nowrap; cursor: default;
+  }
+  .menu + .menu { margin-left: -4px; }
+  .closed .menu { visibility: hidden; }
+  .item {
+    position: relative; height: 22px; line-height: 22px; margin: 0 5px;
+    padding: 0 18px 0 17px; border-radius: 5px; letter-spacing: -0.08px;
+  }
+  .item.submenu { padding-right: 34px; }
+  .item.disabled, .item.heading { color: rgba(255, 255, 255, 0.36); }
+  .item.attention { color: #ff9f0a; }
+  .item.selected { background: #0a6ad8; color: #ffffff; }
+  .check { position: absolute; left: 4px; top: 6px; width: 10px; height: 10px; }
+  .chevron { position: absolute; right: 9px; top: 5px; width: 6px; height: 12px; }
+  .sep { height: 11px; margin: 0 10px; position: relative; }
+  .sep::after { content: &quot;&quot;; position: absolute; left: 0; right: 0; top: 5px; height: 1px;
+                 background: rgba(255, 255, 255, 0.13); }
+  .note {
+    position: absolute; z-index: 40; top: 30px; right: 10px;
+    width: 344px; box-sizing: border-box; display: flex; gap: 10px; align-items: flex-start;
+    padding: 11px 14px 12px 11px; border-radius: 18px; background: rgba(44, 44, 48, 0.80);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    line-height: 16px; letter-spacing: -0.08px;
+  }
+  .note-icon { flex: none; width: 32px; height: 32px; margin-top: 1px; border-radius: 8px;
+                background: linear-gradient(180deg, #8a8a90 0%, #5e5e64 100%); }
+  .note-title { font-weight: 600; }
+&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div class=&quot;stage dark closed&quot; id=&quot;stage&quot;&gt;
+  &lt;div class=&quot;bar&quot;&gt;
+    &lt;span class=&quot;glyph other&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;rect x=&quot;2.5&quot; y=&quot;3&quot; width=&quot;11&quot; height=&quot;10&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.3&quot;/&gt;&lt;path d=&quot;M5 8h6&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.3&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;status&quot; id=&quot;status&quot;&gt;⇄ personal · 86% · 38%&lt;/span&gt;
+    &lt;span class=&quot;glyph battery&quot;&gt;&lt;svg viewBox=&quot;0 0 26 14&quot;&gt;&lt;rect x=&quot;1&quot; y=&quot;2&quot; width=&quot;21&quot; height=&quot;10&quot; rx=&quot;3&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.1&quot; opacity=&quot;.55&quot;/&gt;&lt;rect x=&quot;2.8&quot; y=&quot;3.8&quot; width=&quot;14&quot; height=&quot;6.4&quot; rx=&quot;1.6&quot; fill=&quot;currentColor&quot;/&gt;&lt;path d=&quot;M23.6 5.5v3&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.4&quot; stroke-linecap=&quot;round&quot; opacity=&quot;.55&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 18 14&quot;&gt;&lt;path d=&quot;M1.6 5.2a10.8 10.8 0 0 1 14.8 0M4.2 8a7 7 0 0 1 9.6 0M6.8 10.7a3.2 3.2 0 0 1 4.4 0&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;circle cx=&quot;9&quot; cy=&quot;12.6&quot; r=&quot;0.9&quot; fill=&quot;currentColor&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;circle cx=&quot;6.8&quot; cy=&quot;6.8&quot; r=&quot;4.6&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.5&quot;/&gt;&lt;path d=&quot;m10.3 10.3 3.8 3.8&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.7&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 18 16&quot;&gt;&lt;rect x=&quot;1.5&quot; y=&quot;2&quot; width=&quot;15&quot; height=&quot;5&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.2&quot;/&gt;&lt;circle cx=&quot;12.5&quot; cy=&quot;4.5&quot; r=&quot;1.5&quot; fill=&quot;currentColor&quot;/&gt;&lt;rect x=&quot;1.5&quot; y=&quot;9&quot; width=&quot;15&quot; height=&quot;5&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.2&quot;/&gt;&lt;circle cx=&quot;5.5&quot; cy=&quot;11.5&quot; r=&quot;1.5&quot; fill=&quot;currentColor&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;clock&quot;&gt;Tue 10 Nov 14:20&lt;/span&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;desk&quot;&gt;&lt;div class=&quot;menu&quot; data-level=&quot;0&quot; style=&quot;margin-top:2px;z-index:10&quot;&gt;&lt;div class=&quot;item disabled&quot;&gt;&lt;span class=&quot;t&quot;&gt;Auto-switch running · usage read just now&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item checked&quot;&gt;&lt;svg class=&quot;check&quot; viewBox=&quot;0 0 12 10&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.2 5.4 4.4 8.5 10.8 1.4&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.7&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;span class=&quot;t&quot;&gt;#1 personal · 5h 86% · 7d 38% · Fable 52% · 1 Fable reset&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;#2 work · 5h 12% · 7d 21% · extra 18%&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item attention&quot;&gt;&lt;span class=&quot;t&quot;&gt;#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Rotate to next&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Switch to best&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Next available&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Add account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Disable / enable account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Remove account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Use a reset&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Refresh current credentials&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Switch history&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Settings&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Refresh now&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Quit&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe><iframe class="shot zoomed" title="menu bar, shot 3" width="755" height="470" scrolling="no" srcdoc="&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width&quot;&gt;
+&lt;meta name=&quot;color-scheme&quot; content=&quot;dark&quot;&gt;
+&lt;title&gt;⇄ personal · 88% · 38%&lt;/title&gt;
+&lt;style&gt;
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { display: flex; justify-content: center; align-items: flex-start; }
+  .stage {
+    position: relative; display: inline-flex; flex-direction: column; box-sizing: border-box;
+    overflow: hidden; border-radius: 12px; background: radial-gradient(120% 90% at 8% 0%, #3d4a8a 0%, rgba(61,74,138,0) 55%),radial-gradient(90% 80% at 100% 18%, #6b3f6e 0%, rgba(107,63,110,0) 60%),radial-gradient(110% 90% at 60% 110%, #1f5a63 0%, rgba(31,90,99,0) 60%),linear-gradient(160deg, #1b1f33 0%, #141622 100%);
+    font-family: -apple-system, BlinkMacSystemFont, &quot;SF Pro Text&quot;, &quot;Helvetica Neue&quot;,
+      system-ui, sans-serif;
+    font-size: 13px; -webkit-font-smoothing: antialiased; width:755px;height:470px;
+  }
+  .bar {
+    height: 24px; flex: none; display: flex; align-items: center; justify-content: flex-end;
+    padding: 0 10px 0 0; background: rgba(16, 17, 26, 0.34); color: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(24px) saturate(170%); -webkit-backdrop-filter: blur(24px) saturate(170%);
+    font-weight: 500; white-space: nowrap;
+  }
+  .bar .glyph { width: 32px; height: 24px; display: flex; align-items: center;
+                 justify-content: center; }
+  .bar .glyph svg { height: 14px; width: auto; }
+  .bar .glyph.battery svg { height: 13px; }
+  .bar .glyph.other { opacity: .9; }
+  .bar .status { height: 22px; line-height: 22px; padding: 0 8px; margin: 0 2px;
+                  border-radius: 5px; }
+  .bar .status.open { background: rgba(255, 255, 255, 0.22); }
+  .bar .clock { padding: 0 2px 0 10px; font-variant-numeric: tabular-nums; }
+  .desk {
+    flex: 1; display: flex; flex-direction: row; justify-content: flex-end;
+    align-items: flex-start; padding: 0 8px 34px 96px;
+  }
+  .window { display: block; flex: none; border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(0, 0, 0, 0.6);
+             position: relative; z-index: 1; }
+  .menu {
+    position: relative; flex: none; box-sizing: border-box; min-width: 160px;
+    padding: 5px 0; border-radius: 10px; background: rgba(36, 36, 40, 0.74);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    white-space: nowrap; cursor: default;
+  }
+  .menu + .menu { margin-left: -4px; }
+  .closed .menu { visibility: hidden; }
+  .item {
+    position: relative; height: 22px; line-height: 22px; margin: 0 5px;
+    padding: 0 18px 0 17px; border-radius: 5px; letter-spacing: -0.08px;
+  }
+  .item.submenu { padding-right: 34px; }
+  .item.disabled, .item.heading { color: rgba(255, 255, 255, 0.36); }
+  .item.attention { color: #ff9f0a; }
+  .item.selected { background: #0a6ad8; color: #ffffff; }
+  .check { position: absolute; left: 4px; top: 6px; width: 10px; height: 10px; }
+  .chevron { position: absolute; right: 9px; top: 5px; width: 6px; height: 12px; }
+  .sep { height: 11px; margin: 0 10px; position: relative; }
+  .sep::after { content: &quot;&quot;; position: absolute; left: 0; right: 0; top: 5px; height: 1px;
+                 background: rgba(255, 255, 255, 0.13); }
+  .note {
+    position: absolute; z-index: 40; top: 30px; right: 10px;
+    width: 344px; box-sizing: border-box; display: flex; gap: 10px; align-items: flex-start;
+    padding: 11px 14px 12px 11px; border-radius: 18px; background: rgba(44, 44, 48, 0.80);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    line-height: 16px; letter-spacing: -0.08px;
+  }
+  .note-icon { flex: none; width: 32px; height: 32px; margin-top: 1px; border-radius: 8px;
+                background: linear-gradient(180deg, #8a8a90 0%, #5e5e64 100%); }
+  .note-title { font-weight: 600; }
+&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div class=&quot;stage dark closed&quot; id=&quot;stage&quot;&gt;
+  &lt;div class=&quot;bar&quot;&gt;
+    &lt;span class=&quot;glyph other&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;rect x=&quot;2.5&quot; y=&quot;3&quot; width=&quot;11&quot; height=&quot;10&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.3&quot;/&gt;&lt;path d=&quot;M5 8h6&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.3&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;status&quot; id=&quot;status&quot;&gt;⇄ personal · 88% · 38%&lt;/span&gt;
+    &lt;span class=&quot;glyph battery&quot;&gt;&lt;svg viewBox=&quot;0 0 26 14&quot;&gt;&lt;rect x=&quot;1&quot; y=&quot;2&quot; width=&quot;21&quot; height=&quot;10&quot; rx=&quot;3&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.1&quot; opacity=&quot;.55&quot;/&gt;&lt;rect x=&quot;2.8&quot; y=&quot;3.8&quot; width=&quot;14&quot; height=&quot;6.4&quot; rx=&quot;1.6&quot; fill=&quot;currentColor&quot;/&gt;&lt;path d=&quot;M23.6 5.5v3&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.4&quot; stroke-linecap=&quot;round&quot; opacity=&quot;.55&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 18 14&quot;&gt;&lt;path d=&quot;M1.6 5.2a10.8 10.8 0 0 1 14.8 0M4.2 8a7 7 0 0 1 9.6 0M6.8 10.7a3.2 3.2 0 0 1 4.4 0&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;circle cx=&quot;9&quot; cy=&quot;12.6&quot; r=&quot;0.9&quot; fill=&quot;currentColor&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;circle cx=&quot;6.8&quot; cy=&quot;6.8&quot; r=&quot;4.6&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.5&quot;/&gt;&lt;path d=&quot;m10.3 10.3 3.8 3.8&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.7&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 18 16&quot;&gt;&lt;rect x=&quot;1.5&quot; y=&quot;2&quot; width=&quot;15&quot; height=&quot;5&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.2&quot;/&gt;&lt;circle cx=&quot;12.5&quot; cy=&quot;4.5&quot; r=&quot;1.5&quot; fill=&quot;currentColor&quot;/&gt;&lt;rect x=&quot;1.5&quot; y=&quot;9&quot; width=&quot;15&quot; height=&quot;5&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.2&quot;/&gt;&lt;circle cx=&quot;5.5&quot; cy=&quot;11.5&quot; r=&quot;1.5&quot; fill=&quot;currentColor&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;clock&quot;&gt;Tue 10 Nov 14:21&lt;/span&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;desk&quot;&gt;&lt;div class=&quot;menu&quot; data-level=&quot;0&quot; style=&quot;margin-top:2px;z-index:10&quot;&gt;&lt;div class=&quot;item disabled&quot;&gt;&lt;span class=&quot;t&quot;&gt;Auto-switch running · usage read just now&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item checked&quot;&gt;&lt;svg class=&quot;check&quot; viewBox=&quot;0 0 12 10&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.2 5.4 4.4 8.5 10.8 1.4&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.7&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;span class=&quot;t&quot;&gt;#1 personal · 5h 88% · 7d 38% · Fable 52% · 1 Fable reset&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;#2 work · 5h 12% · 7d 21% · extra 18%&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item attention&quot;&gt;&lt;span class=&quot;t&quot;&gt;#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Rotate to next&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Switch to best&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Next available&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Add account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Disable / enable account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Remove account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Use a reset&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Refresh current credentials&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Switch history&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Settings&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Refresh now&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Quit&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe><iframe class="shot zoomed" title="menu bar, shot 4" width="755" height="470" scrolling="no" srcdoc="&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width&quot;&gt;
+&lt;meta name=&quot;color-scheme&quot; content=&quot;dark&quot;&gt;
+&lt;title&gt;⇄ work · 12% · 21%&lt;/title&gt;
+&lt;style&gt;
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { display: flex; justify-content: center; align-items: flex-start; }
+  .stage {
+    position: relative; display: inline-flex; flex-direction: column; box-sizing: border-box;
+    overflow: hidden; border-radius: 12px; background: radial-gradient(120% 90% at 8% 0%, #3d4a8a 0%, rgba(61,74,138,0) 55%),radial-gradient(90% 80% at 100% 18%, #6b3f6e 0%, rgba(107,63,110,0) 60%),radial-gradient(110% 90% at 60% 110%, #1f5a63 0%, rgba(31,90,99,0) 60%),linear-gradient(160deg, #1b1f33 0%, #141622 100%);
+    font-family: -apple-system, BlinkMacSystemFont, &quot;SF Pro Text&quot;, &quot;Helvetica Neue&quot;,
+      system-ui, sans-serif;
+    font-size: 13px; -webkit-font-smoothing: antialiased; width:755px;height:470px;
+  }
+  .bar {
+    height: 24px; flex: none; display: flex; align-items: center; justify-content: flex-end;
+    padding: 0 10px 0 0; background: rgba(16, 17, 26, 0.34); color: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(24px) saturate(170%); -webkit-backdrop-filter: blur(24px) saturate(170%);
+    font-weight: 500; white-space: nowrap;
+  }
+  .bar .glyph { width: 32px; height: 24px; display: flex; align-items: center;
+                 justify-content: center; }
+  .bar .glyph svg { height: 14px; width: auto; }
+  .bar .glyph.battery svg { height: 13px; }
+  .bar .glyph.other { opacity: .9; }
+  .bar .status { height: 22px; line-height: 22px; padding: 0 8px; margin: 0 2px;
+                  border-radius: 5px; }
+  .bar .status.open { background: rgba(255, 255, 255, 0.22); }
+  .bar .clock { padding: 0 2px 0 10px; font-variant-numeric: tabular-nums; }
+  .desk {
+    flex: 1; display: flex; flex-direction: row; justify-content: flex-end;
+    align-items: flex-start; padding: 0 8px 34px 96px;
+  }
+  .window { display: block; flex: none; border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(0, 0, 0, 0.6);
+             position: relative; z-index: 1; }
+  .menu {
+    position: relative; flex: none; box-sizing: border-box; min-width: 160px;
+    padding: 5px 0; border-radius: 10px; background: rgba(36, 36, 40, 0.74);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    white-space: nowrap; cursor: default;
+  }
+  .menu + .menu { margin-left: -4px; }
+  .closed .menu { visibility: hidden; }
+  .item {
+    position: relative; height: 22px; line-height: 22px; margin: 0 5px;
+    padding: 0 18px 0 17px; border-radius: 5px; letter-spacing: -0.08px;
+  }
+  .item.submenu { padding-right: 34px; }
+  .item.disabled, .item.heading { color: rgba(255, 255, 255, 0.36); }
+  .item.attention { color: #ff9f0a; }
+  .item.selected { background: #0a6ad8; color: #ffffff; }
+  .check { position: absolute; left: 4px; top: 6px; width: 10px; height: 10px; }
+  .chevron { position: absolute; right: 9px; top: 5px; width: 6px; height: 12px; }
+  .sep { height: 11px; margin: 0 10px; position: relative; }
+  .sep::after { content: &quot;&quot;; position: absolute; left: 0; right: 0; top: 5px; height: 1px;
+                 background: rgba(255, 255, 255, 0.13); }
+  .note {
+    position: absolute; z-index: 40; top: 30px; right: 10px;
+    width: 344px; box-sizing: border-box; display: flex; gap: 10px; align-items: flex-start;
+    padding: 11px 14px 12px 11px; border-radius: 18px; background: rgba(44, 44, 48, 0.80);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    line-height: 16px; letter-spacing: -0.08px;
+  }
+  .note-icon { flex: none; width: 32px; height: 32px; margin-top: 1px; border-radius: 8px;
+                background: linear-gradient(180deg, #8a8a90 0%, #5e5e64 100%); }
+  .note-title { font-weight: 600; }
+&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div class=&quot;stage dark closed&quot; id=&quot;stage&quot;&gt;
+  &lt;div class=&quot;bar&quot;&gt;
+    &lt;span class=&quot;glyph other&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;rect x=&quot;2.5&quot; y=&quot;3&quot; width=&quot;11&quot; height=&quot;10&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.3&quot;/&gt;&lt;path d=&quot;M5 8h6&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.3&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;status&quot; id=&quot;status&quot;&gt;⇄ work · 12% · 21%&lt;/span&gt;
+    &lt;span class=&quot;glyph battery&quot;&gt;&lt;svg viewBox=&quot;0 0 26 14&quot;&gt;&lt;rect x=&quot;1&quot; y=&quot;2&quot; width=&quot;21&quot; height=&quot;10&quot; rx=&quot;3&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.1&quot; opacity=&quot;.55&quot;/&gt;&lt;rect x=&quot;2.8&quot; y=&quot;3.8&quot; width=&quot;14&quot; height=&quot;6.4&quot; rx=&quot;1.6&quot; fill=&quot;currentColor&quot;/&gt;&lt;path d=&quot;M23.6 5.5v3&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.4&quot; stroke-linecap=&quot;round&quot; opacity=&quot;.55&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 18 14&quot;&gt;&lt;path d=&quot;M1.6 5.2a10.8 10.8 0 0 1 14.8 0M4.2 8a7 7 0 0 1 9.6 0M6.8 10.7a3.2 3.2 0 0 1 4.4 0&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;circle cx=&quot;9&quot; cy=&quot;12.6&quot; r=&quot;0.9&quot; fill=&quot;currentColor&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;circle cx=&quot;6.8&quot; cy=&quot;6.8&quot; r=&quot;4.6&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.5&quot;/&gt;&lt;path d=&quot;m10.3 10.3 3.8 3.8&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.7&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 18 16&quot;&gt;&lt;rect x=&quot;1.5&quot; y=&quot;2&quot; width=&quot;15&quot; height=&quot;5&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.2&quot;/&gt;&lt;circle cx=&quot;12.5&quot; cy=&quot;4.5&quot; r=&quot;1.5&quot; fill=&quot;currentColor&quot;/&gt;&lt;rect x=&quot;1.5&quot; y=&quot;9&quot; width=&quot;15&quot; height=&quot;5&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.2&quot;/&gt;&lt;circle cx=&quot;5.5&quot; cy=&quot;11.5&quot; r=&quot;1.5&quot; fill=&quot;currentColor&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;clock&quot;&gt;Tue 10 Nov 14:22&lt;/span&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;desk&quot;&gt;&lt;div class=&quot;menu&quot; data-level=&quot;0&quot; style=&quot;margin-top:2px;z-index:10&quot;&gt;&lt;div class=&quot;item disabled&quot;&gt;&lt;span class=&quot;t&quot;&gt;Auto-switch running · usage read 2m ago&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item attention&quot;&gt;&lt;span class=&quot;t&quot;&gt;#1 personal · 5h 91% · 7d 38% · Fable 52% · 1 Fable reset&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item checked&quot;&gt;&lt;svg class=&quot;check&quot; viewBox=&quot;0 0 12 10&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.2 5.4 4.4 8.5 10.8 1.4&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.7&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;span class=&quot;t&quot;&gt;#2 work · 5h 12% · 7d 21% · extra 18%&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item attention&quot;&gt;&lt;span class=&quot;t&quot;&gt;#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Rotate to next&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Switch to best&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Next available&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Add account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Disable / enable account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Remove account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Use a reset&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Refresh current credentials&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Switch history&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Settings&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Refresh now&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Quit&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;note&quot; id=&quot;note&quot; role=&quot;status&quot;&gt;&lt;div class=&quot;note-icon&quot;&gt;&lt;/div&gt;&lt;div class=&quot;note-text&quot;&gt;&lt;div class=&quot;note-title&quot;&gt;ai-quota-swap&lt;/div&gt;&lt;div class=&quot;note-body&quot;&gt;Switched #1 personal → #2 work · 5h reached 91%&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe><iframe class="shot" title="menu bar, shot 5" width="755" height="470" scrolling="no" srcdoc="&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width&quot;&gt;
+&lt;meta name=&quot;color-scheme&quot; content=&quot;dark&quot;&gt;
+&lt;title&gt;⇄ work · 12% · 21%&lt;/title&gt;
+&lt;style&gt;
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { display: flex; justify-content: center; align-items: flex-start; }
+  .stage {
+    position: relative; display: inline-flex; flex-direction: column; box-sizing: border-box;
+    overflow: hidden; border-radius: 12px; background: radial-gradient(120% 90% at 8% 0%, #3d4a8a 0%, rgba(61,74,138,0) 55%),radial-gradient(90% 80% at 100% 18%, #6b3f6e 0%, rgba(107,63,110,0) 60%),radial-gradient(110% 90% at 60% 110%, #1f5a63 0%, rgba(31,90,99,0) 60%),linear-gradient(160deg, #1b1f33 0%, #141622 100%);
+    font-family: -apple-system, BlinkMacSystemFont, &quot;SF Pro Text&quot;, &quot;Helvetica Neue&quot;,
+      system-ui, sans-serif;
+    font-size: 13px; -webkit-font-smoothing: antialiased; width:755px;height:470px;
+  }
+  .bar {
+    height: 24px; flex: none; display: flex; align-items: center; justify-content: flex-end;
+    padding: 0 10px 0 0; background: rgba(16, 17, 26, 0.34); color: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(24px) saturate(170%); -webkit-backdrop-filter: blur(24px) saturate(170%);
+    font-weight: 500; white-space: nowrap;
+  }
+  .bar .glyph { width: 32px; height: 24px; display: flex; align-items: center;
+                 justify-content: center; }
+  .bar .glyph svg { height: 14px; width: auto; }
+  .bar .glyph.battery svg { height: 13px; }
+  .bar .glyph.other { opacity: .9; }
+  .bar .status { height: 22px; line-height: 22px; padding: 0 8px; margin: 0 2px;
+                  border-radius: 5px; }
+  .bar .status.open { background: rgba(255, 255, 255, 0.22); }
+  .bar .clock { padding: 0 2px 0 10px; font-variant-numeric: tabular-nums; }
+  .desk {
+    flex: 1; display: flex; flex-direction: row; justify-content: flex-end;
+    align-items: flex-start; padding: 0 8px 34px 28px;
+  }
+  .window { display: block; flex: none; border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(0, 0, 0, 0.6);
+             position: relative; z-index: 1; }
+  .menu {
+    position: relative; flex: none; box-sizing: border-box; min-width: 160px;
+    padding: 5px 0; border-radius: 10px; background: rgba(36, 36, 40, 0.74);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    white-space: nowrap; cursor: default;
+  }
+  .menu + .menu { margin-left: -4px; }
+  .closed .menu { visibility: hidden; }
+  .item {
+    position: relative; height: 22px; line-height: 22px; margin: 0 5px;
+    padding: 0 18px 0 17px; border-radius: 5px; letter-spacing: -0.08px;
+  }
+  .item.submenu { padding-right: 34px; }
+  .item.disabled, .item.heading { color: rgba(255, 255, 255, 0.36); }
+  .item.attention { color: #ff9f0a; }
+  .item.selected { background: #0a6ad8; color: #ffffff; }
+  .check { position: absolute; left: 4px; top: 6px; width: 10px; height: 10px; }
+  .chevron { position: absolute; right: 9px; top: 5px; width: 6px; height: 12px; }
+  .sep { height: 11px; margin: 0 10px; position: relative; }
+  .sep::after { content: &quot;&quot;; position: absolute; left: 0; right: 0; top: 5px; height: 1px;
+                 background: rgba(255, 255, 255, 0.13); }
+  .note {
+    position: absolute; z-index: 40; top: 30px; right: 10px;
+    width: 344px; box-sizing: border-box; display: flex; gap: 10px; align-items: flex-start;
+    padding: 11px 14px 12px 11px; border-radius: 18px; background: rgba(44, 44, 48, 0.80);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    line-height: 16px; letter-spacing: -0.08px;
+  }
+  .note-icon { flex: none; width: 32px; height: 32px; margin-top: 1px; border-radius: 8px;
+                background: linear-gradient(180deg, #8a8a90 0%, #5e5e64 100%); }
+  .note-title { font-weight: 600; }
+&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div class=&quot;stage dark&quot; id=&quot;stage&quot;&gt;
+  &lt;div class=&quot;bar&quot;&gt;
+    &lt;span class=&quot;glyph other&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;rect x=&quot;2.5&quot; y=&quot;3&quot; width=&quot;11&quot; height=&quot;10&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.3&quot;/&gt;&lt;path d=&quot;M5 8h6&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.3&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;status open&quot; id=&quot;status&quot;&gt;⇄ work · 12% · 21%&lt;/span&gt;
+    &lt;span class=&quot;glyph battery&quot;&gt;&lt;svg viewBox=&quot;0 0 26 14&quot;&gt;&lt;rect x=&quot;1&quot; y=&quot;2&quot; width=&quot;21&quot; height=&quot;10&quot; rx=&quot;3&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.1&quot; opacity=&quot;.55&quot;/&gt;&lt;rect x=&quot;2.8&quot; y=&quot;3.8&quot; width=&quot;14&quot; height=&quot;6.4&quot; rx=&quot;1.6&quot; fill=&quot;currentColor&quot;/&gt;&lt;path d=&quot;M23.6 5.5v3&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.4&quot; stroke-linecap=&quot;round&quot; opacity=&quot;.55&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 18 14&quot;&gt;&lt;path d=&quot;M1.6 5.2a10.8 10.8 0 0 1 14.8 0M4.2 8a7 7 0 0 1 9.6 0M6.8 10.7a3.2 3.2 0 0 1 4.4 0&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;circle cx=&quot;9&quot; cy=&quot;12.6&quot; r=&quot;0.9&quot; fill=&quot;currentColor&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;circle cx=&quot;6.8&quot; cy=&quot;6.8&quot; r=&quot;4.6&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.5&quot;/&gt;&lt;path d=&quot;m10.3 10.3 3.8 3.8&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.7&quot; stroke-linecap=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;glyph&quot;&gt;&lt;svg viewBox=&quot;0 0 18 16&quot;&gt;&lt;rect x=&quot;1.5&quot; y=&quot;2&quot; width=&quot;15&quot; height=&quot;5&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.2&quot;/&gt;&lt;circle cx=&quot;12.5&quot; cy=&quot;4.5&quot; r=&quot;1.5&quot; fill=&quot;currentColor&quot;/&gt;&lt;rect x=&quot;1.5&quot; y=&quot;9&quot; width=&quot;15&quot; height=&quot;5&quot; rx=&quot;2.5&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.2&quot;/&gt;&lt;circle cx=&quot;5.5&quot; cy=&quot;11.5&quot; r=&quot;1.5&quot; fill=&quot;currentColor&quot;/&gt;&lt;/svg&gt;&lt;/span&gt;
+    &lt;span class=&quot;clock&quot;&gt;Tue 10 Nov 14:22&lt;/span&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;desk&quot;&gt;&lt;div class=&quot;menu&quot; data-level=&quot;1&quot; data-title=&quot;Switch history&quot; style=&quot;margin-top:299px;z-index:11&quot;&gt;&lt;div class=&quot;item disabled&quot;&gt;&lt;span class=&quot;t&quot;&gt;#1 personal → #2 work · 2026-11-10 14:22&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Open full log…&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;menu&quot; data-level=&quot;0&quot; style=&quot;margin-top:2px;z-index:10&quot;&gt;&lt;div class=&quot;item disabled&quot;&gt;&lt;span class=&quot;t&quot;&gt;Auto-switch running · usage read 2m ago&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item attention&quot;&gt;&lt;span class=&quot;t&quot;&gt;#1 personal · 5h 91% · 7d 38% · Fable 52% · 1 Fable reset&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item checked&quot;&gt;&lt;svg class=&quot;check&quot; viewBox=&quot;0 0 12 10&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.2 5.4 4.4 8.5 10.8 1.4&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.7&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;span class=&quot;t&quot;&gt;#2 work · 5h 12% · 7d 21% · extra 18%&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item attention&quot;&gt;&lt;span class=&quot;t&quot;&gt;#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Rotate to next&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Switch to best&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Next available&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Add account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Disable / enable account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Remove account&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Use a reset&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Refresh current credentials&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item submenu selected&quot;&gt;&lt;span class=&quot;t&quot;&gt;Switch history&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;sep&quot; role=&quot;separator&quot;&gt;&lt;/div&gt;&lt;div class=&quot;item submenu&quot;&gt;&lt;span class=&quot;t&quot;&gt;Settings&lt;/span&gt;&lt;svg class=&quot;chevron&quot; viewBox=&quot;0 0 7 12&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M1.3 1.3 5.7 6 1.3 10.7&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;1.6&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;/&gt;&lt;/svg&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Refresh now&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;item&quot;&gt;&lt;span class=&quot;t&quot;&gt;Quit&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe></div></div></div>
+<script type="application/json" id="timeline">[{"at":1000,"kind":"show","shot":1,"ms":200},{"at":2500,"kind":"show","shot":2,"ms":120},{"at":4000,"kind":"show","shot":3,"ms":200},{"at":7400,"kind":"show","shot":4,"ms":240},{"at":11800,"kind":"end"}]</script>
+<script>
+(function () {
+  var shots = document.querySelectorAll(".shot");
+  var events = JSON.parse(document.getElementById("timeline").textContent);
+  var W = 755, MAX = 2.4, MARGIN = 14;
+  var top = 1;
+  function show(i, ms) {
+    var shot = shots[i];
+    shot.style.transition = "opacity " + ms + "ms ease-in-out";
+    shot.style.zIndex = ++top;
+    shot.classList.add("on");
+    setTimeout(function () {  // the one beneath is covered now
+      for (var j = 0; j < shots.length; j++) {
+        if (j !== i) { shots[j].style.transition = "none"; shots[j].classList.remove("on"); }
+      }
+    }, ms + 40);
+  }
+  function apply(e) {
+    if (e.kind === "show") show(e.shot, e.ms);
+    else if (e.kind === "end") document.body.classList.add("done");
+  }
+  function measure() {
+    // Magnify about the bar's right-hand end, as far as keeps the widest
+    // title, and any banner of a magnified shot, in view (the drawings are
+    // same-origin, so their layout is here).
+    var zoom = 1.8;
+    try {
+      var left = W;
+      for (var i = 0; i < shots.length; i++) {
+        var doc = shots[i].contentDocument;
+        left = Math.min(left, doc.getElementById("status").getBoundingClientRect().left);
+        var note = doc.getElementById("note");
+        if (note && shots[i].classList.contains("zoomed")) {
+          left = Math.min(left, note.getBoundingClientRect().left);
+        }
+      }
+      zoom = Math.max(1, Math.min(MAX, (W - MARGIN) / (W - left)));
+    } catch (err) {}
+    document.getElementById("fit").style.setProperty("--zoom", zoom);
+  }
+  var started = false;
+  function start() {
+    if (started) return;
+    started = true;
+    document.body.classList.add("playing");
+    events.forEach(function (e) { setTimeout(function () { apply(e); }, e.at); });
+  }
+  window.__play = start;
+  document.addEventListener("keydown", start);
+  var waiting = shots.length;
+  function loaded() {
+    if (--waiting) return;
+    measure();
+    document.body.classList.add("ready");
+  }
+  for (var k = 0; k < shots.length; k++) {
+    var d = shots[k].contentDocument;
+    if (d && d.readyState === "complete" && d.getElementById("stage")) loaded();
+    else shots[k].addEventListener("load", loaded);
+  }
+})();
+</script>
+</body>
+</html>

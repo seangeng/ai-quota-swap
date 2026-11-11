@@ -86,7 +86,6 @@ def ansi_to_html(text: str, *, theme: str, columns: int) -> str:
 
 
 def page(blocks: list[Block], *, title: str, theme: str, columns: int) -> str:
-    c = _CHROME[theme]
     parts = []
     for i, b in enumerate(blocks):
         if i:
@@ -108,7 +107,29 @@ def page(blocks: list[Block], *, title: str, theme: str, columns: int) -> str:
 <style>
   html, body {{ margin: 0; padding: 0; background: transparent; }}
   body {{ display: flex; justify-content: center; }}
-  .window {{
+{window_css(theme, columns)}
+</style>
+</head>
+<body>
+{window_html(title, f'<pre class="screen">{screen}</pre>')}
+</body>
+</html>
+"""
+
+
+def window_html(title: str, screen: str) -> str:
+    """The window around a screen: the title bar with its three dots."""
+    return f"""<div class="window" id="window">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="title">{html.escape(title)}</div></div>
+{screen}
+</div>"""
+
+
+def window_css(theme: str, columns: int) -> str:
+    """The terminal window's styles, shared by every page that draws one."""
+    c = _CHROME[theme]
+    return f"""  .window {{
     width: fit-content; box-sizing: border-box; overflow: hidden;
     background: {c["bg"]}; border: 1px solid {c["border"]}; border-radius: 12px;
   }}
@@ -136,18 +157,7 @@ def page(blocks: list[Block], *, title: str, theme: str, columns: int) -> str:
     tab-size: 8;
   }}
   .prompt {{ color: {c["prompt"]}; }}
-  .cmd {{ font-weight: 600; }}
-</style>
-</head>
-<body>
-<div class="window" id="window">
-  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
-    <div class="title">{html.escape(title)}</div></div>
-<pre class="screen">{screen}</pre>
-</div>
-</body>
-</html>
-"""
+  .cmd {{ font-weight: 600; }}"""
 
 
 def write_page(path: Path, blocks: list[Block], *, title: str, theme: str, columns: int) -> None:

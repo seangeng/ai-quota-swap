@@ -503,6 +503,44 @@ class TestEngineResetCredits:
         h.tick()
         assert len(h.consumed) == 1 and h.of(ResetEvent) == []
 
+    @pytest.mark.parametrize("auto", ["active", "on-limit"])
+    def test_before_switch_holds_for_the_credit_and_spends_it_at_resets_threshold(
+        self, env, monkeypatch, auto
+    ):
+        """resets.beforeSwitch is in the engine tick qswap codex auto shares
+        (docs/resets.md, "Before switching"): over a switch line of 98, A
+        stays for its own credit with the words Claude Code's hold uses, and
+        spends it at resets.threshold 100. B has room throughout."""
+        h = Harness(env, monkeypatch, threshold=98.0)
+        for key, value in (("auto", auto), ("threshold", "100"), ("beforeSwitch", "true")):
+            set_setting(h.sw.data_root, f"resets.{key}", value)
+        self.setup_pair(h, active_pct=99.0)
+        assert h.tick() is TickOutcome.NO_ACTION
+        assert h.reasons() == ["reset-ahead"] and h.consumed == []
+        (held,) = h.of(NoSwitchEvent)
+        assert held.human() == (
+            "No switch yet: auto mode spends #2 a@example.com's own weekly reset when 7d "
+            "reaches 100%, rather than switching away (resets.beforeSwitch)"
+        )
+        h.clock.advance(200)  # past the store's serve window: A is read again
+        h.answer("acct-a", reading(100, credits=[h.cr], now=h.clock.now))
+        h.after_claim["acct-a"] = reading(0, credits=[], now=h.clock.now)
+        h.tick()
+        assert [c[:2] for c in h.consumed] == [("acct-a", h.cr["id"])]
+        assert h.of(SwitchEvent) == [] and h.live_email() == "a@example.com"
+
+    @pytest.mark.parametrize("before_switch", [None, "false"])
+    def test_without_before_switch_it_moves_at_the_line(self, env, monkeypatch, before_switch):
+        h = Harness(env, monkeypatch, threshold=98.0)
+        set_setting(h.sw.data_root, "resets.auto", "active")
+        set_setting(h.sw.data_root, "resets.threshold", "100")
+        if before_switch is not None:
+            set_setting(h.sw.data_root, "resets.beforeSwitch", before_switch)
+        self.setup_pair(h, active_pct=99.0)
+        assert h.tick() is TickOutcome.SWITCHED
+        assert h.consumed == [] and "reset-ahead" not in h.reasons()
+        assert h.live_email() == "b@example.com"
+
     def test_a_credit_on_an_expired_saved_login_is_not_planned(self, h):
         # The account cannot be read ("unknown until used"), so the planner has
         # no numbers to justify a spend on it.

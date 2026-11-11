@@ -5,18 +5,8 @@
     "mode": "littledemo",
     "video": "assets/demos/autoswitch.mp4",
     "gif": "assets/demos/autoswitch.gif",
-    "gifBytes": 1117418,
-    "upload": {
-      "id": "demo_mke649fhtxo371dkgaf0",
-      "status": "ready",
-      "jobId": "job_5ekooyamqzoi14xbd9qu",
-      "shareUrl": "https://littledemo.com/d/demo_mke649fhtxo371dkgaf0",
-      "embedUrl": "https://littledemo.com/embed/demo_mke649fhtxo371dkgaf0",
-      "videoUrl": "https://littledemo.com/api/v1/demos/demo_mke649fhtxo371dkgaf0/video",
-      "thumbUrl": "https://littledemo.com/thumb/demo_mke649fhtxo371dkgaf0.png",
-      "gifUrl": "https://littledemo.com/gif/demo_mke649fhtxo371dkgaf0.gif"
-    },
-    "recorder": "@littledemo/cli 0.3.2 record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg"
+    "gifBytes": 913761,
+    "recorder": "@littledemo/cli record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg"
   },
   "reset": {
     "name": "reset",
@@ -24,17 +14,36 @@
     "mode": "littledemo",
     "video": "assets/demos/reset.mp4",
     "gif": "assets/demos/reset.gif",
-    "gifBytes": 1206941,
-    "upload": {
-      "id": "demo_cd56uxcfkevqli7f36sa",
-      "status": "ready",
-      "jobId": "job_rd1rp6jnlyzoqxkje10p",
-      "shareUrl": "https://littledemo.com/d/demo_cd56uxcfkevqli7f36sa",
-      "embedUrl": "https://littledemo.com/embed/demo_cd56uxcfkevqli7f36sa",
-      "videoUrl": "https://littledemo.com/api/v1/demos/demo_cd56uxcfkevqli7f36sa/video",
-      "thumbUrl": "https://littledemo.com/thumb/demo_cd56uxcfkevqli7f36sa.png",
-      "gifUrl": "https://littledemo.com/gif/demo_cd56uxcfkevqli7f36sa.gif"
-    },
-    "recorder": "@littledemo/cli 0.3.2 record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg"
+    "gifBytes": 888995,
+    "recorder": "@littledemo/cli record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg"
+  },
+  "menubar": {
+    "name": "menubar",
+    "scenario": "autoswitch",
+    "mode": "littledemo",
+    "page": "docs/shots/recording-menubar.html",
+    "video": "assets/demos/menubar.mp4",
+    "recorder": "@littledemo/cli record (local Chrome, loopback page), GIF re-encoded with ffmpeg",
+    "gif": "assets/demos/menubar.gif",
+    "gifBytes": 1321376
+  },
+  "quickstart": {
+    "name": "quickstart",
+    "scenario": "quickstart",
+    "mode": "littledemo",
+    "page": "docs/shots/recording-quickstart.html",
+    "video": "assets/demos/quickstart.mp4",
+    "recorder": "@littledemo/cli record (local Chrome, loopback page), GIF re-encoded with ffmpeg",
+    "gif": "assets/demos/quickstart.gif",
+    "gifBytes": 542110
+  },
+  "dashboard": {
+    "name": "dashboard",
+    "scenario": "showcase",
+    "mode": "littledemo",
+    "video": "assets/demos/dashboard.mp4",
+    "recorder": "@littledemo/cli record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg",
+    "gif": "assets/demos/dashboard.gif",
+    "gifBytes": 1374171
   }
 }

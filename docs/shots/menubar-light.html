@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<meta name="color-scheme" content="light">
+<title>⇄ personal · 46% · 38%</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { display: flex; justify-content: center; align-items: flex-start; }
+  .stage {
+    position: relative; display: inline-flex; flex-direction: column; box-sizing: border-box;
+    overflow: hidden; border-radius: 12px; background: radial-gradient(120% 90% at 6% 0%, #c9d8ff 0%, rgba(201,216,255,0) 55%),radial-gradient(90% 80% at 100% 15%, #f6d3e2 0%, rgba(246,211,226,0) 60%),radial-gradient(110% 90% at 55% 110%, #cdeee8 0%, rgba(205,238,232,0) 60%),linear-gradient(160deg, #eef0f7 0%, #e7e9f2 100%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
+      system-ui, sans-serif;
+    font-size: 13px; -webkit-font-smoothing: antialiased; 
+  }
+  .bar {
+    height: 24px; flex: none; display: flex; align-items: center; justify-content: flex-end;
+    padding: 0 10px 0 0; background: rgba(255, 255, 255, 0.42); color: rgba(0, 0, 0, 0.86);
+    backdrop-filter: blur(24px) saturate(170%); -webkit-backdrop-filter: blur(24px) saturate(170%);
+    font-weight: 500; white-space: nowrap;
+  }
+  .bar .glyph { width: 32px; height: 24px; display: flex; align-items: center;
+                 justify-content: center; }
+  .bar .glyph svg { height: 14px; width: auto; }
+  .bar .glyph.battery svg { height: 13px; }
+  .bar .glyph.other { opacity: .9; }
+  .bar .status { height: 22px; line-height: 22px; padding: 0 8px; margin: 0 2px;
+                  border-radius: 5px; }
+  .bar .status.open { background: rgba(0, 0, 0, 0.11); }
+  .bar .clock { padding: 0 2px 0 10px; font-variant-numeric: tabular-nums; }
+  .desk {
+    flex: 1; display: flex; flex-direction: row; justify-content: flex-end;
+    align-items: flex-start; padding: 0 8px 34px 96px;
+  }
+  .window { display: block; flex: none; border-radius: 12px; box-shadow: 0 24px 60px rgba(40, 40, 80, 0.28), 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+             position: relative; z-index: 1; }
+  .menu {
+    position: relative; flex: none; box-sizing: border-box; min-width: 160px;
+    padding: 5px 0; border-radius: 10px; background: rgba(242, 242, 244, 0.80);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.7), 0 14px 36px rgba(30, 30, 60, 0.22), 0 2px 8px rgba(30, 30, 60, 0.12); color: rgba(0, 0, 0, 0.86);
+    white-space: nowrap; cursor: default;
+  }
+  .menu + .menu { margin-left: -4px; }
+  .closed .menu { visibility: hidden; }
+  .item {
+    position: relative; height: 22px; line-height: 22px; margin: 0 5px;
+    padding: 0 18px 0 17px; border-radius: 5px; letter-spacing: -0.08px;
+  }
+  .item.submenu { padding-right: 34px; }
+  .item.disabled, .item.heading { color: rgba(0, 0, 0, 0.45); }
+  .item.attention { color: #e07800; }
+  .item.selected { background: #0a6ad8; color: #ffffff; }
+  .check { position: absolute; left: 4px; top: 6px; width: 10px; height: 10px; }
+  .chevron { position: absolute; right: 9px; top: 5px; width: 6px; height: 12px; }
+  .sep { height: 11px; margin: 0 10px; position: relative; }
+  .sep::after { content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 1px;
+                 background: rgba(0, 0, 0, 0.11); }
+  .note {
+    position: absolute; z-index: 40; top: 30px; right: 10px;
+    width: 344px; box-sizing: border-box; display: flex; gap: 10px; align-items: flex-start;
+    padding: 11px 14px 12px 11px; border-radius: 18px; background: rgba(246, 246, 248, 0.86);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.7), 0 14px 36px rgba(30, 30, 60, 0.22), 0 2px 8px rgba(30, 30, 60, 0.12); color: rgba(0, 0, 0, 0.86);
+    line-height: 16px; letter-spacing: -0.08px;
+  }
+  .note-icon { flex: none; width: 32px; height: 32px; margin-top: 1px; border-radius: 8px;
+                background: linear-gradient(180deg, #c4c4ca 0%, #9c9ca3 100%); }
+  .note-title { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="stage light" id="stage">
+  <div class="bar">
+    <span class="glyph other"><svg viewBox="0 0 16 16"><rect x="2.5" y="3" width="11" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 8h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>
+    <span class="status open" id="status">⇄ personal · 46% · 38%</span>
+    <span class="glyph battery"><svg viewBox="0 0 26 14"><rect x="1" y="2" width="21" height="10" rx="3" fill="none" stroke="currentColor" stroke-width="1.1" opacity=".55"/><rect x="2.8" y="3.8" width="14" height="6.4" rx="1.6" fill="currentColor"/><path d="M23.6 5.5v3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity=".55"/></svg></span>
+    <span class="glyph"><svg viewBox="0 0 18 14"><path d="M1.6 5.2a10.8 10.8 0 0 1 14.8 0M4.2 8a7 7 0 0 1 9.6 0M6.8 10.7a3.2 3.2 0 0 1 4.4 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="9" cy="12.6" r="0.9" fill="currentColor"/></svg></span>
+    <span class="glyph"><svg viewBox="0 0 16 16"><circle cx="6.8" cy="6.8" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m10.3 10.3 3.8 3.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+    <span class="glyph"><svg viewBox="0 0 18 16"><rect x="1.5" y="2" width="15" height="5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="12.5" cy="4.5" r="1.5" fill="currentColor"/><rect x="1.5" y="9" width="15" height="5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="5.5" cy="11.5" r="1.5" fill="currentColor"/></svg></span>
+    <span class="clock">Tue 10 Nov 14:20</span>
+  </div>
+  <div class="desk"><div class="menu" data-level="0" style="margin-top:2px;z-index:10"><div class="item disabled"><span class="t">Auto-switch running for Claude Code and Codex · usage read 1m ago</span></div><div class="sep" role="separator"></div><div class="item heading"><span class="t">Claude Code accounts</span></div><div class="item checked"><svg class="check" viewBox="0 0 12 10" aria-hidden="true"><path d="M1.2 5.4 4.4 8.5 10.8 1.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="t">#1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset</span></div><div class="item"><span class="t">#2 work · 5h 12% · 7d 21% · extra 18%</span></div><div class="item attention"><span class="t">#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset</span></div><div class="item"><span class="t">#4 side · disabled · 5h 0% · 7d 9%</span></div><div class="item"><span class="t">#5 ci · API key · $2.06 today · $25.22/$40 (63%) est.</span></div><div class="sep" role="separator"></div><div class="item heading"><span class="t">Codex accounts</span></div><div class="item checked"><svg class="check" viewBox="0 0 12 10" aria-hidden="true"><path d="M1.2 5.4 4.4 8.5 10.8 1.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="t">#1 maya@example.com · 5h 22% · 7d 47%</span></div><div class="item"><span class="t">#2 work · 5h 8% · 7d 15% · 1 reset credit</span></div><div class="sep" role="separator"></div><div class="item disabled"><span class="t">Today $5.16 · 7 days $78.25 (estimated)</span></div><div class="sep" role="separator"></div><div class="item"><span class="t">Rotate to next (Claude Code)</span></div><div class="item"><span class="t">Switch to best (Claude Code)</span></div><div class="item"><span class="t">Next available (Claude Code)</span></div><div class="sep" role="separator"></div><div class="item submenu"><span class="t">Add account</span><svg class="chevron" viewBox="0 0 7 12" aria-hidden="true"><path d="M1.3 1.3 5.7 6 1.3 10.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="item submenu"><span class="t">Disable / enable account</span><svg class="chevron" viewBox="0 0 7 12" aria-hidden="true"><path d="M1.3 1.3 5.7 6 1.3 10.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="item submenu"><span class="t">Remove account</span><svg class="chevron" viewBox="0 0 7 12" aria-hidden="true"><path d="M1.3 1.3 5.7 6 1.3 10.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="item submenu"><span class="t">Use a reset</span><svg class="chevron" viewBox="0 0 7 12" aria-hidden="true"><path d="M1.3 1.3 5.7 6 1.3 10.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="item"><span class="t">Refresh current credentials (Claude Code)</span></div><div class="item submenu"><span class="t">Switch history</span><svg class="chevron" viewBox="0 0 7 12" aria-hidden="true"><path d="M1.3 1.3 5.7 6 1.3 10.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="sep" role="separator"></div><div class="item submenu"><span class="t">Settings</span><svg class="chevron" viewBox="0 0 7 12" aria-hidden="true"><path d="M1.3 1.3 5.7 6 1.3 10.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="item"><span class="t">Refresh now</span></div><div class="item"><span class="t">Quit</span></div></div></div>
+</div>
+</body>
+</html>

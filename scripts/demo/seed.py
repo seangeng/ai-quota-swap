@@ -77,7 +77,9 @@ def seed_claude(switcher, scenario: Scenario) -> None:
 
     A scenario with no managed Claude account writes no registry at all, as
     on a machine where ``qswap add`` never ran; its live login (if any) is the
-    unmanaged ``scenario.live``.
+    unmanaged ``scenario.live``. A scenario with managed accounts and a
+    ``live`` login is a machine where someone ran ``/login`` in Claude Code
+    after their last ``qswap add``: the registry still names ``active``.
     """
     accounts = scenario.claude_accounts
     if accounts:
@@ -117,7 +119,11 @@ def seed_claude(switcher, scenario: Scenario) -> None:
         data["activeAccountNumber"] = scenario.active
         switcher._write_json(switcher.sequence_file, data)
 
-    live = scenario.account(scenario.active) if scenario.active is not None else scenario.live
+    # Claude Code's login: an unmanaged one if the scenario has it (a first
+    # run, or a `/login` since the last `qswap add`), else the active account.
+    live = scenario.live
+    if live is None and scenario.active is not None:
+        live = scenario.account(scenario.active)
     if live is not None:
         _write_live_claude(switcher, live, scenario)
 

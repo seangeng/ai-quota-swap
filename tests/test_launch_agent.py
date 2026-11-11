@@ -26,6 +26,11 @@ from ai_quota_swap.exceptions import ClaudeSwitchError
 PROGRAM = ["/Users/x/.local/bin/qswap"]
 UID = 501
 
+# These fake subprocess.run, the layer under launch_agent._launchctl, so the
+# suite's launchd guard leaves _launchctl real for them; its audit hook still
+# refuses to start launchctl underneath (tests/conftest.py).
+pytestmark = pytest.mark.launchctl_subprocess_fake
+
 
 @pytest.fixture(autouse=True)
 def _on_macos():

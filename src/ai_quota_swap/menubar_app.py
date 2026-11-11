@@ -727,6 +727,9 @@ def run_app(switcher, rumps, AppKit) -> int:
         def _do_toggle_weekly_for_model(self, a: Action):
             self._change_resets(a)
 
+        def _do_toggle_before_switch(self, a: Action):
+            self._change_resets(a)
+
         def _change_resets(self, a: Action):
             """Off → on can spend something irreversible: ask once, judged on
             settings.json as it is now (a terminal may have changed it since

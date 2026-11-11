@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<meta name="color-scheme" content="dark">
+<title>qswap</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { display: flex; justify-content: center; align-items: center; min-height: 100vh;
+          background: radial-gradient(ellipse at 50% 40%, #26211d 0%, #0d0d0e 70%); }
+  #frame { zoom: 1.8; padding: 8px; }
+  .window {
+    width: fit-content; box-sizing: border-box; overflow: hidden;
+    background: #17181c; border: 1px solid #33343a; border-radius: 12px;
+  }
+  .titlebar {
+    position: relative; height: 40px; display: flex; align-items: center;
+    background: #222327; border-bottom: 1px solid #33343a;
+  }
+  .dots { display: flex; gap: 8px; padding-left: 16px; }
+  .dots i { display: block; width: 12px; height: 12px; border-radius: 50%; }
+  .dots i:nth-child(1) { background: #ff5f57; }
+  .dots i:nth-child(2) { background: #febc2e; }
+  .dots i:nth-child(3) { background: #28c840; }
+  .title {
+    position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
+    font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: #9a9a98;
+  }
+  .screen {
+    margin: 0; padding: 20px 28px 24px; color: #e4e4e2;
+    width: 80ch;
+    font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
+      "DejaVu Sans Mono", "Liberation Mono", monospace;
+    font-size: 15px; line-height: 1.5; white-space: pre;
+    font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
+    tab-size: 8;
+  }
+  .prompt { color: #8a8a88; }
+  .cmd { font-weight: 600; }
+  .window { box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3); }
+  /* The lines scroll inside the screen's padding, as a terminal's do. */
+  .scroll { height: 33em; overflow: hidden; }
+  .scroll > div { min-height: 1.5em; }
+  .cur { display: inline-block; width: 0.6em; height: 1.15em; vertical-align: -0.2em;
+          margin-left: 1px; background: #e4e4e2; opacity: 0.85; }
+  .cur[hidden], .part[hidden] { display: none; }
+  /* A recording is keyboard-only: the recorder's pointer and key overlays
+     would sit over the drawing, so the page hides them. */
+  #__ld_cursor, #__demo-cursor, #__demo-keys { display: none !important; }
+</style>
+</head>
+<body>
+<div id="frame">
+<div class="window" id="window">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="title">qswap</div></div>
+<div class="screen"><div class="scroll" id="screen"><div class="part" id="line0"><span class="prompt">$</span> <span class="cmd" id="cmd0">qswap add --alias work</span><span class="cur" id="cur0" hidden></span></div><div class="part out" id="out0"><span style="color: #d7875f; text-decoration-color: #d7875f">Added</span> #2 work (maya@northwind.example.com)</div><div class="part" id="gap1"> </div><div class="part" id="line1"><span class="prompt">$</span> <span class="cmd" id="cmd1">qswap list</span><span class="cur" id="cur1" hidden></span></div><div class="part out" id="out1"><span style="font-weight: bold">Claude Code accounts</span>
+  #1 <span style="color: #d7875f; text-decoration-color: #d7875f">personal</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@example.com) · Max 20x</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 18%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 17:30 · in 3h 10m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 26%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 14 16:20 · in 4d 2h</span>
+
+  #2 <span style="color: #d7875f; text-decoration-color: #d7875f">work</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@northwind.example.com) · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Team · Northwind Labs</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 71%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 16:00 · in 1h 40m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 44%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 15 16:20 · in 5d 2h · ahead of pace</span></div><div class="part" id="gap2"> </div><div class="part" id="line2"><span class="prompt">$</span> <span class="cmd" id="cmd2">qswap switch 1</span><span class="cur" id="cur2" hidden></span></div><div class="part out" id="out2"><span style="color: #d7875f; text-decoration-color: #d7875f">Switched</span> #2 work → #1 personal (maya@example.com)
+<span style="font-weight: bold">Claude Code accounts</span>
+  #1 <span style="color: #d7875f; text-decoration-color: #d7875f">personal</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@example.com) · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Max 20x</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 18%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 17:30 · in 3h 10m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 26%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 14 16:20 · in 4d 2h</span>
+
+  #2 <span style="color: #d7875f; text-decoration-color: #d7875f">work</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@northwind.example.com) · Team · Northwind Labs</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 71%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 16:00 · in 1h 40m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 44%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 15 16:20 · in 5d 2h · ahead of pace</span>
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">Claude Code picks up the new account within 30 seconds; restart it to apply now.</span></div><div class="part" id="gap3"> </div><div class="part" id="line3"><span class="prompt">$</span> <span class="cmd" id="cmd3">qswap status</span><span class="cur" id="cur3" hidden></span></div><div class="part out" id="out3"><span style="font-weight: bold">Claude Code</span>
+  #1 <span style="color: #d7875f; text-decoration-color: #d7875f">personal</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@example.com) · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Max 20x</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 18%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 17:30 · in 3h 10m</span>
+     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 26%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 14 16:20 · in 4d 2h</span>
+
+<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">2 Claude Code accounts are managed.</span>
+Auto-switch is not running. Start it with: qswap auto</div><div class="part" id="gapend"> </div><div class="part" id="lineend"><span class="prompt">$</span> <span class="cur" id="curend"></span></div></div></div>
+</div>
+</div>
+<script type="application/json" id="commands">["qswap add --alias work","qswap list","qswap switch 1","qswap status"]</script>
+<script type="application/json" id="timeline">[{"at":800,"kind":"clear","block":-1,"chars":0},{"at":1341,"kind":"type","block":0,"chars":1},{"at":1381,"kind":"type","block":0,"chars":2},{"at":1412,"kind":"type","block":0,"chars":3},{"at":1448,"kind":"type","block":0,"chars":4},{"at":1476,"kind":"type","block":0,"chars":5},{"at":1571,"kind":"type","block":0,"chars":6},{"at":1628,"kind":"type","block":0,"chars":7},{"at":1665,"kind":"type","block":0,"chars":8},{"at":1709,"kind":"type","block":0,"chars":9},{"at":1802,"kind":"type","block":0,"chars":10},{"at":1855,"kind":"type","block":0,"chars":11},{"at":1885,"kind":"type","block":0,"chars":12},{"at":1924,"kind":"type","block":0,"chars":13},{"at":1971,"kind":"type","block":0,"chars":14},{"at":2022,"kind":"type","block":0,"chars":15},{"at":2052,"kind":"type","block":0,"chars":16},{"at":2107,"kind":"type","block":0,"chars":17},{"at":2196,"kind":"type","block":0,"chars":18},{"at":2249,"kind":"type","block":0,"chars":19},{"at":2281,"kind":"type","block":0,"chars":20},{"at":2323,"kind":"type","block":0,"chars":21},{"at":2355,"kind":"type","block":0,"chars":22},{"at":2615,"kind":"enter","block":0,"chars":0},{"at":2755,"kind":"output","block":0,"chars":0},{"at":4196,"kind":"type","block":1,"chars":1},{"at":4236,"kind":"type","block":1,"chars":2},{"at":4267,"kind":"type","block":1,"chars":3},{"at":4303,"kind":"type","block":1,"chars":4},{"at":4331,"kind":"type","block":1,"chars":5},{"at":4426,"kind":"type","block":1,"chars":6},{"at":4454,"kind":"type","block":1,"chars":7},{"at":4486,"kind":"type","block":1,"chars":8},{"at":4515,"kind":"type","block":1,"chars":9},{"at":4562,"kind":"type","block":1,"chars":10},{"at":4822,"kind":"enter","block":1,"chars":0},{"at":4962,"kind":"output","block":1,"chars":0},{"at":7103,"kind":"type","block":2,"chars":1},{"at":7143,"kind":"type","block":2,"chars":2},{"at":7174,"kind":"type","block":2,"chars":3},{"at":7210,"kind":"type","block":2,"chars":4},{"at":7238,"kind":"type","block":2,"chars":5},{"at":7333,"kind":"type","block":2,"chars":6},{"at":7378,"kind":"type","block":2,"chars":7},{"at":7414,"kind":"type","block":2,"chars":8},{"at":7453,"kind":"type","block":2,"chars":9},{"at":7500,"kind":"type","block":2,"chars":10},{"at":7547,"kind":"type","block":2,"chars":11},{"at":7596,"kind":"type","block":2,"chars":12},{"at":7680,"kind":"type","block":2,"chars":13},{"at":7708,"kind":"type","block":2,"chars":14},{"at":7968,"kind":"enter","block":2,"chars":0},{"at":8108,"kind":"output","block":2,"chars":0},{"at":10549,"kind":"type","block":3,"chars":1},{"at":10589,"kind":"type","block":3,"chars":2},{"at":10620,"kind":"type","block":3,"chars":3},{"at":10656,"kind":"type","block":3,"chars":4},{"at":10684,"kind":"type","block":3,"chars":5},{"at":10779,"kind":"type","block":3,"chars":6},{"at":10824,"kind":"type","block":3,"chars":7},{"at":10857,"kind":"type","block":3,"chars":8},{"at":10898,"kind":"type","block":3,"chars":9},{"at":10945,"kind":"type","block":3,"chars":10},{"at":10980,"kind":"type","block":3,"chars":11},{"at":11030,"kind":"type","block":3,"chars":12},{"at":11290,"kind":"enter","block":3,"chars":0},{"at":11430,"kind":"output","block":3,"chars":0},{"at":13630,"kind":"end","block":-1,"chars":0}]</script>
+<script>
+(function () {
+  var screen = document.getElementById("screen");
+  var events = JSON.parse(document.getElementById("timeline").textContent);
+  var commands = JSON.parse(document.getElementById("commands").textContent);
+  function el(id) { return document.getElementById(id); }
+  function scroll() { screen.scrollTop = screen.scrollHeight; }
+  function only(id) {  // the cursor sits on one prompt at a time
+    var c = document.querySelectorAll(".cur");
+    for (var i = 0; i < c.length; i++) c[i].hidden = c[i].id !== id;
+  }
+  function clear() {
+    var parts = screen.querySelectorAll(".part");
+    for (var i = 0; i < parts.length; i++) parts[i].hidden = true;
+    for (var b = 0; b < commands.length; b++) el("cmd" + b).textContent = "";
+    el("line0").hidden = false;
+    only("cur0");
+    scroll();
+  }
+  function apply(e) {
+    if (e.kind === "clear") clear();
+    else if (e.kind === "type") el("cmd" + e.block).textContent = commands[e.block].slice(0, e.chars);
+    else if (e.kind === "enter") only("");
+    else if (e.kind === "output") {
+      el("out" + e.block).hidden = false;
+      var next = e.block + 1 < commands.length ? e.block + 1 : "end";
+      if (el("gap" + next)) el("gap" + next).hidden = false;
+      el("line" + next).hidden = false;
+      only("cur" + next);
+      scroll();
+    } else if (e.kind === "end") document.body.classList.add("done");
+  }
+  var started = false;
+  function start() {
+    if (started) return;
+    started = true;
+    document.body.classList.add("playing");
+    events.forEach(function (e) { setTimeout(function () { apply(e); }, e.at); });
+  }
+  window.__play = start;
+  document.addEventListener("keydown", start);
+  scroll();
+  document.body.classList.add("ready");
+})();
+</script>
+</body>
+</html>

@@ -1,42 +1,88 @@
 # ai-quota-swap
 
-`qswap` keeps several Claude Code and Codex accounts on one machine, shows how much quota each one has left, and switches between them by hand or before the active one runs out.
+ai-quota-swap (the `qswap` command) is for anyone with more than one Claude Code or Codex account: it keeps them all on one machine, shows each one's 5-hour and weekly usage in the macOS menu bar or a terminal, and switches to another account before the active one runs out.
 
-<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/dashboard.png" alt="The qswap dashboard: Claude Code and Codex accounts with their 5-hour, weekly and Fable usage, held resets, an API key's spend against its budget, and today's estimated cost" width="900">
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero-light.png">
+  <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero.png" alt="The qswap menu bar with its menu open in front of the terminal dashboard: Claude Code and Codex accounts with their 5-hour and weekly usage, held usage resets, an API key's spend against its budget, today's estimated cost, and auto-switch running for both" width="900">
+</picture>
 
-## What it does
+Every screenshot and recording on this page shows made-up accounts and comes from the [demo harness](https://github.com/seangeng/ai-quota-swap/blob/main/scripts/demo/README.md). The terminal pictures are qswap's own output. The menu bar pictures are drawings of the menu rows and notification text the app produces.
 
-- Shows every account's 5-hour, weekly and per-model usage, plan, held resets and API spend: `qswap list`.
-- Switches accounts without logging out, by hand or automatically at a line you set: `qswap switch`, `qswap auto`.
-- Spends usage resets of the right kind when they help most: `qswap reset`.
-- Runs Claude Code as a different account in one terminal while the others keep theirs: `qswap run`.
-- Moves running Claude Code sessions onto a Console API key (account 5 here) and back, without logging anyone out: `qswap switch 5`. Tested on Claude Code 2.1.322 with print-mode sessions; not yet with interactive ones, nor with a claude.ai login underneath on the user settings file ([what has not been tested](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#limits)).
-- Counts tokens and their estimated API cost per account, model and project, and holds API keys to a monthly budget or a prepaid credit: `qswap usage`, `qswap budget`, `qswap credit`.
-- Puts all of it in a terminal dashboard (`qswap`) and a macOS menu bar app (`qswap menubar`).
+## What you get
 
-Codex support (`qswap codex ...`) is experimental: it has been tested against fakes, not yet with two real Codex accounts.
+### The menu bar (macOS)
+
+`qswap menubar` puts the active account in the menu bar with how much of its 5-hour and weekly windows it has used, as `⇄ personal · 46% · 38%`. Its menu lists every Claude Code and Codex account with usage, held resets and today's cost. Click an account to switch to it, or run `qswap menubar --auto-switch` and let it switch for you; a notification says when and why.
+
+<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/menubar.gif" alt="Recording: the qswap menu bar with made-up accounts. The menu is open on #1 personal at 86% of its 5-hour window; it closes and the title climbs to 88%; when #1 personal's 5-hour window reaches 91%, auto-switch moves to #2 work, the title changes to work and a notification says Switched #1 personal → #2 work · 5h reached 91%; the menu opens again with #2 work checked and the switch in Switch history" width="800">
+
+Every row of the menu, its settings and how to start it at login: [docs/menubar.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/menubar.md).
+
+### Switching before the limit
+
+`qswap auto` checks the active account every minute. When a window reaches 90%, it moves to the account with the most room left, and running Claude Code sessions carry on with the new account. `qswap auto --dry-run` says what it would do and changes nothing. The menu bar's auto-switch runs the same engine with the same settings, so on a Mac you do not need `qswap auto` as well.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/auto-light.png">
+  <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/auto.png" alt="qswap auto: two checks of #1 personal below its 90% line, then, when #1 personal's 5-hour window reaches 91%, a switch to #2 work" width="800">
+</picture>
+
+Strategies, switch lines, cron and running it as a service: [docs/auto-switch.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/auto-switch.md).
+
+### Usage resets
+
+Some plans come with banked usage resets (Claude Code's `/limit-reset`), and each kind clears different windows: a Fable reset clears Fable's weekly window only, a weekly reset the all-models weekly window. `qswap reset` lists what every account holds, and `qswap reset 1` spends one on account 1; a spent reset cannot be undone. By default, auto-switch spends the narrowest reset that helps only once no other account can take over, at most 3 in 24 hours for each provider. The picture has `resets.auto` set to `active`, which spends the active account's own reset as soon as a window it clears reaches 95%.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/reset-light.png">
+  <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/reset.png" alt="qswap reset with resets.auto set to active: #1 personal holds a Fable reset and a weekly reset; qswap reset 1 --yes spends the Fable one and Fable drops to 0%" width="800">
+</picture>
+
+The kinds, when auto mode spends each, and the guards: [docs/resets.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/resets.md).
+
+### What it costs
+
+`qswap usage` prices the tokens in this machine's Claude Code and Codex session files at API list prices, by day, account, model or project. On a subscription you pay a flat price, so the figure is what the same usage would cost through the API.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/usage-light.png">
+  <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/usage.png" alt="qswap usage: tokens and estimated API cost per day for the last 7 days, Claude Code and Codex together" width="800">
+</picture>
+
+A Console API key can be an account too: `qswap add-token` adds it, and `qswap budget 5 40` gives it a monthly budget of $40 (`qswap credit` records a prepaid credit). qswap's auto-switch enforces the budget, so it applies only while auto-switch runs; for a hard cap, set a spend limit on the key's workspace in the Claude Console. With `autoswitch.includeApiKeyAccounts` on, auto-switch moves to a key only when no subscription can take over.
+
+Reports and prices: [docs/usage.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/usage.md). Keys, budgets and credits: [docs/api-accounts.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md).
+
+### The dashboard and the command line
+
+Bare `qswap` in a terminal opens a dashboard of every account, on macOS, Linux and Windows: `s` switches, `w` watches every account, `g` opens auto-switch and `u` shows tokens and cost. Each view is also a command (`qswap list`, `qswap status`, `qswap usage`), with `--json` for scripts.
+
+<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/dashboard.gif" alt="Recording: the qswap dashboard with made-up Claude Code and Codex accounts; w opens the watch page, g the auto-switch view in dry run, u the usage report, and esc returns to the main view" width="800">
+
+Every screen and key: [docs/dashboard.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/dashboard.md).
 
 ## Install
 
-ai-quota-swap is not on PyPI yet; a release there is coming. Install it from the repository with uv or pipx:
+ai-quota-swap is not on PyPI yet, so install it from GitHub with [uv](https://docs.astral.sh/uv/). On a Mac, install it with the menu bar:
+
+```bash
+uv tool install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
+qswap menubar                 # start the menu bar now and at every login
+qswap menubar --auto-switch   # let it switch Claude Code accounts for you
+```
+
+On Linux (WSL included) or Windows:
 
 ```bash
 uv tool install git+https://github.com/seangeng/ai-quota-swap
-# or
-pipx install git+https://github.com/seangeng/ai-quota-swap
 ```
 
-You need:
-
-- Python 3.12 or newer.
-- macOS, Linux (WSL included) or Windows. The menu bar app is macOS only. On macOS, saved logins go in the login Keychain; on Linux and Windows, in files in qswap's data directory.
-- Claude Code, logged in. Codex is optional.
-
-To update, run `qswap upgrade`. It runs `uv tool upgrade ai-quota-swap` or `pipx upgrade ai-quota-swap`, whichever installed it; on Windows it prints that command for you to run.
+pipx takes the same arguments (`pipx install git+https://github.com/seangeng/ai-quota-swap`). You need Python 3.12 or newer, and Claude Code logged in; Codex is optional. `qswap upgrade` updates qswap with whichever tool installed it (on Windows it prints the command to run).
 
 ## Quick start
 
-Log in to Claude Code with your first account, then save that login as an account:
+Log in to Claude Code with your first account, then save that login:
 
 ```text
 $ qswap add --alias personal
@@ -44,83 +90,60 @@ Added #1 personal (maya@example.com)
 To add another account, log in to it in Claude Code (/login), then: qswap add
 ```
 
-In Claude Code, run `/login` with your second account, then run `qswap add --alias work`. Go straight to `/login`: a `/logout` first may revoke the saved login of the account you leave. Repeat for every account you have.
+In Claude Code, run `/login` with your next account. Go straight to `/login`: a `/logout` first may revoke the saved login of the account you leave. Then save the second account, look at both, switch back to the first and check where you are:
 
-`qswap list` shows them all:
-
-<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/list.png" alt="qswap list: each account's 5h, 7d and Fable usage with reset times, plan, held resets, an API key's spend, and two Codex accounts" width="780">
-
-Switch to another account by number, email or alias:
+<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/quickstart.gif" alt="Recording: a terminal typing qswap add --alias work, qswap list, qswap switch 1 and qswap status, each answered with its output" width="800">
 
 ```text
-$ qswap switch work
-Switched #1 personal → #2 work (maya@northwind.example.com)
+$ qswap add --alias work
+Added #2 work (maya@northwind.example.com)
+$ qswap list
+Claude Code accounts
+  #1 personal (maya@example.com) · Max 20x
+     ├ 5h      18%  resets 17:30 · in 3h 10m
+     └ 7d      26%  resets Nov 14 16:20 · in 4d 2h
+
+  #2 work (maya@northwind.example.com) · active · Team · Northwind Labs
+     ├ 5h      71%  resets 16:00 · in 1h 40m
+     └ 7d      44%  resets Nov 15 16:20 · in 5d 2h · ahead of pace
+$ qswap switch 1
+Switched #2 work → #1 personal (maya@example.com)
 ...
 Claude Code picks up the new account within 30 seconds; restart it to apply now.
+$ qswap status
+Claude Code
+  #1 personal (maya@example.com) · active · Max 20x
+     ├ 5h      18%  resets 17:30 · in 3h 10m
+     └ 7d      26%  resets Nov 14 16:20 · in 4d 2h
+
+2 Claude Code accounts are managed.
+Auto-switch is not running. Start it with: qswap auto
 ```
 
-A running Claude Code session keeps working and moves to the new account on its own: within about 30 seconds on macOS, where the login is in the Keychain, and from its next message on Linux and Windows. A switch to an API-key account moves running sessions to the key within a few seconds and keeps the subscription logged in underneath ([switching to an API key](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#switch-to-an-api-key); tested on Claude Code 2.1.322 in print mode, not yet with interactive sessions or with a claude.ai login underneath on the user settings file).
+The account you just added is the one Claude Code is logged in to, so it is the active one, and `qswap switch 1` goes back to the first. Switch by number, email or alias. Running Claude Code sessions move to the new account within about 30 seconds on macOS, and from their next message on Linux and Windows.
 
-When something looks wrong, run `qswap doctor` first. It checks Claude Code, Codex, the data directory, the menu bar and auto-switch, and prints the command that fixes each problem. The [quick start guide](https://github.com/seangeng/ai-quota-swap/blob/main/docs/quickstart.md) walks through all of this in more detail.
+To let qswap switch for you, run `qswap auto`. The menu bar's auto-switch is off until you turn it on with `qswap menubar --auto-switch`. The [quick start guide](https://github.com/seangeng/ai-quota-swap/blob/main/docs/quickstart.md) has each step in more detail.
 
-## Switching automatically
+## Everything else
 
-`qswap auto` checks the active account every minute and switches before it runs out. Here the dashboard's auto view runs it live, and the active account climbs past its 90% line:
+| To | Run | Read |
+|---|---|---|
+| keep several Codex logins | `qswap codex add`, then `qswap codex login` (not plain `codex login`) for each further account | [codex.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/codex.md) |
+| run Claude Code as another account in one terminal only | `qswap run 2` | [sessions.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/sessions.md) |
+| pick the account for a directory | `qswap map 2 ~/work/client-app` | [sessions.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/sessions.md#pick-the-account-per-directory) |
+| script it | `--json`, and `qswap auto --once` for cron, with exit codes | [json-output.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/json-output.md) |
+| see or change a setting | `qswap config`, `qswap config set autoswitch.threshold 85` | [settings.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/settings.md) |
+| find what is wrong and how to fix it | `qswap doctor` | [troubleshooting.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/troubleshooting.md) |
+| move over from claude-swap | `cswap export FILE`, then `qswap import FILE`; never run both on the same accounts | [coming-from-claude-swap.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/coming-from-claude-swap.md) |
+| remove everything qswap stored | `qswap purge` | [SECURITY.md](https://github.com/seangeng/ai-quota-swap/blob/main/SECURITY.md#remove-everything) |
+| find any command | `qswap help`, `qswap help COMMAND` | [all the docs](https://github.com/seangeng/ai-quota-swap/blob/main/docs/README.md) |
 
-<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/autoswitch.gif" alt="Recording: in the dashboard's auto view, going live; #1 personal climbs from 87% to 92% of its 5-hour window and the engine switches to #2 work" width="800">
+## What is new or experimental
 
-It switches at 90% by default (`qswap config set autoswitch.threshold 85` to change it) and moves to the account with the most quota left. Other strategies use up first the weekly quota that resets soonest, or follow an order you set. `--dry-run` says what it would do without doing it, and `qswap auto --once` checks once and reports the outcome in its exit code, for cron. Details, strategies and running it as a service: [docs/auto-switch.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/auto-switch.md).
-
-## Usage resets
-
-Anthropic grants some plans banked usage resets (Claude Code's `/limit-reset`). Each one refills the windows it clears to 0% and is lost if unused by its date. Resets come in kinds, and spending the wrong one wastes it:
-
-| Kind | Clears |
-|---|---|
-| Fable reset (or another model's) | that model's weekly window |
-| five-hour reset | the 5-hour window |
-| weekly reset | the all-models weekly window |
-| full reset | the 5-hour and the weekly windows; every Codex reset credit is one |
-
-<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/reset.gif" alt="Recording: #1 personal is at 100% of its Fable window and holds a Fable reset and a weekly reset; the auto engine spends the Fable reset and Fable drops to 0%, keeping the weekly one" width="800">
-
-`qswap reset` lists what each account holds and what auto mode would spend now; `qswap reset 1` spends one on account 1, the narrowest kind that clears a window at 95% or more. While auto-switch runs, it spends resets by itself when switching cannot help (`resets.auto last-resort`, the default), at most 3 a day for each provider. Modes and guards: [docs/resets.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/resets.md).
-
-## Codex accounts
-
-Codex has the same commands under `qswap codex`:
-
-```bash
-qswap codex add      # save the Codex login you are using
-qswap codex login    # log in another account without signing the first one out
-qswap codex switch 2
-qswap codex auto     # switch when the active account is out (99% by default)
-```
-
-Add further accounts with `qswap codex login`, not plain `codex login`, which signs the active login out first. Never run `codex logout` on a login qswap saved. This part is experimental: switching and reset credits have been tested against fakes only. Read [docs/codex.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/codex.md) before your first Codex switch.
-
-## Usage and cost
-
-`qswap usage` reads the session files Claude Code and Codex write on this machine and prices the tokens at API list prices. Only `--billed`, which asks Anthropic what it billed an organization, uses the network.
-
-```text
-$ qswap usage --by model
-Token usage, 2026-11-04 to 2026-11-10, Claude Code and Codex, by model
-
-  Model              Input  Output  Cache read  Cache write  Est. cost
-  claude-opus-5-5     573K    948K       44.1M         2.2M     $41.14
-  claude-sonnet-5-5   580K    918K       43.4M         2.3M     $20.35
-  claude-fable-5-2   93.0K    164K        7.3M         384K     $12.62
-  gpt-6.1-sol         826K    170K        2.4M            0      $3.60
-  claude-haiku-5-5   74.0K    130K        5.7M         303K      $0.17
-  Total               2.1M    2.3M        103M         5.2M     $77.88
-```
-
-Group by day, account, model, project, provider or session with `--by`. A subscription is not billed per token, so for subscription accounts the figure measures value used, not a bill. More: [docs/usage.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/usage.md).
-
-## API accounts and budgets
-
-Add a Console API key as an account with `qswap add-token sk-ant-api03-...`. `qswap switch 5` makes it the active account: qswap adds one line to Claude Code's settings (`"apiKeyHelper": ".../qswap key-helper 5"`), and every running and new Claude Code session uses the key within a few seconds. The subscription stays logged in underneath, and `qswap switch 1` takes the line out again. This has been tested on Claude Code 2.1.322 with sessions in print mode (`claude -p`); interactive sessions, a claude.ai login underneath on the user settings file, and Remote Control have not been tried yet ([Limits](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#limits)).
+- The menu bar is new, and macOS only.
+- Codex support is experimental. It has been tested against fakes and with one real account; switching between two real Codex accounts has not been tried yet. Read [docs/codex.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/codex.md) before your first Codex switch.
+- `qswap run` is experimental, and covers Claude Code only.
+- Switching to an API key is new. It moves every running Claude Code session onto the key and keeps the subscription logged in underneath:
 
 ```text
 $ qswap switch 5
@@ -130,81 +153,19 @@ stays logged in underneath. claude.ai connectors and Remote Control are
 unavailable while a key is in use. Go back with: qswap switch 1
 ```
 
-Its row shows what it spent today and this month instead of usage windows. `qswap budget 5 40` gives it a monthly budget, and `qswap credit 5 1187` records a prepaid balance that counts down (`$1,150 of $1,187 credit left`):
-
-```text
-  #5 ci · active · API key · over #1 personal
-     $2.06 today · $25.22 this month of $40 (63%) · estimate
-```
-
-At its budget, or with its credit spent, auto-switch stops using the account. Both are brakes inside qswap, not caps at Anthropic. With `autoswitch.includeApiKeyAccounts` on, auto-switch also uses a key as a last resort, only when every subscription is at its limit and only a key with a budget or credit, and comes back once a subscription has room. A usage reset auto mode spends comes before the key; one your `resets.*` settings keep stays banked, and the switch names it with `qswap reset N`. Spend is estimated from this machine's sessions, or read from Anthropic's usage report once you register the organization's Admin key with `qswap api org add`. `qswap run 5` runs one session on the key and leaves everything else alone. More: [docs/api-accounts.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md).
-
-## Several accounts at once
-
-`qswap run 2` starts Claude Code as account 2 in this terminal only; the active account and every other terminal keep theirs. Sessions share your `~/.claude` settings and chat history. `qswap map 2 ~/work/client-app` makes a bare `qswap run` in that directory, or any directory below it, start account 2. `qswap run` is experimental. More: [docs/sessions.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/sessions.md).
-
-## The dashboard
-
-Run `qswap` with no arguments in a terminal (or `qswap tui`) for the dashboard shown at the top of this page. `s` switches, `w` watches every account, `g` opens auto-switch for each provider, `u` shows the usage report, `esc` goes back and `q` quits. `qswap watch` opens straight on the watch page. It runs on macOS, Linux and Windows. More: [docs/dashboard.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/dashboard.md).
-
-## The menu bar (macOS)
-
-```bash
-uv tool install --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
-qswap menubar                 # start it now and at every login
-qswap menubar --auto-switch   # let it switch Claude Code accounts for you
-```
-
-It shows every account's usage and today's cost, and switches with a click. Its auto-switch is off until you turn it on, per provider. This build of the menu bar has not yet been run by hand on a Mac; it is tested through its menu description and unit tests. More: [docs/menubar.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/menubar.md).
-
-## Scripting
-
-Add `--json` to `list`, `status`, `switch`, `reset`, `priority`, `config`, `usage`, `budget`, `credit` or `doctor` for one JSON object on stdout; `qswap auto --json` prints one event per line. Every payload has a `schemaVersion`, and payloads only gain fields.
-
-| Exit code | Meaning |
-|---|---|
-| `0` | success; for `auto --once`, it switched |
-| `1` | failure; under `--json`, the error is on stdout |
-| `2` | `auto --once`: nothing to do |
-| `3` | `auto --once`: a switch was needed but no account can take over |
-| `64` | usage error: unknown command, bad flag, missing argument |
-| `130` | interrupted (Ctrl-C) |
-
-A command that asks before it changes something (`remove`, `purge`, `reset N`) stops without a terminal unless you pass `--yes`. Field reference: [docs/json-output.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/json-output.md).
+The switch adds one line to Claude Code's settings (`"apiKeyHelper": ".../qswap key-helper 5"`), and `qswap switch 1` takes it out. It has been tested on Claude Code 2.1.322 with sessions in print mode (`claude -p`), not yet with an interactive session or with a claude.ai login underneath ([what has not been tested](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#limits)).
 
 ## What it stores and what it talks to
 
-qswap keeps saved logins in the macOS login Keychain, or in files in its data directory on Linux and Windows, and everything else in that directory (`~/.ai-quota-swap`, or `~/.local/share/ai-quota-swap` on Linux). It talks to Anthropic and OpenAI with each account's own token, and once a day it checks PyPI for a newer version; there is no telemetry and no qswap server. It reads usage and spends resets through endpoints the vendors do not document, which can change without notice. Reading reset status identifies as Claude Code, because Anthropic reports resets only to Claude Code. [SECURITY.md](https://github.com/seangeng/ai-quota-swap/blob/main/SECURITY.md) lists every file and endpoint, and how to remove everything with `qswap purge`.
+Saved logins go in the macOS login Keychain, or in files in qswap's data directory on Linux and Windows. Everything else qswap keeps lives in that directory: `~/.ai-quota-swap`, or `~/.local/share/ai-quota-swap` on Linux. The menu bar adds a LaunchAgent, its log and a small wrapper app in `/Applications` ([docs/menubar.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/menubar.md#files)).
 
-## Coming from claude-swap
+qswap talks to Anthropic and OpenAI with each account's own token, and once a day asks PyPI whether a newer version exists. It makes no other network calls and has no server of its own. Usage readings and reset spends go through endpoints the vendors do not document, which can change without notice. Reading reset status identifies as Claude Code, because Anthropic reports resets only to Claude Code.
 
-ai-quota-swap started as a fork of claude-swap and keeps its own data, so it starts empty. Stop claude-swap's menu bar and any `cswap auto` first, then move your accounts across:
-
-```bash
-cswap export ~/claude-swap-export.json
-qswap import ~/claude-swap-export.json
-rm ~/claude-swap-export.json    # it holds your logins in plain text
-```
-
-Do not run both tools against the same accounts. Steps, what an export carries, and removing claude-swap: [docs/coming-from-claude-swap.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/coming-from-claude-swap.md).
-
-## Documentation
-
-- [Quick start](https://github.com/seangeng/ai-quota-swap/blob/main/docs/quickstart.md): from nothing to two accounts and a switch.
-- [Switching automatically](https://github.com/seangeng/ai-quota-swap/blob/main/docs/auto-switch.md): strategies, lines, the log, cron and services.
-- [Usage resets](https://github.com/seangeng/ai-quota-swap/blob/main/docs/resets.md): the kinds, when auto mode spends each, the guards.
-- [Codex accounts](https://github.com/seangeng/ai-quota-swap/blob/main/docs/codex.md): adding, switching, what a switch does to running sessions.
-- [Usage and cost](https://github.com/seangeng/ai-quota-swap/blob/main/docs/usage.md) and [API accounts and budgets](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md).
-- [Several accounts at once](https://github.com/seangeng/ai-quota-swap/blob/main/docs/sessions.md): `run`, `map`, what sessions share.
-- [The dashboard](https://github.com/seangeng/ai-quota-swap/blob/main/docs/dashboard.md) and [the menu bar](https://github.com/seangeng/ai-quota-swap/blob/main/docs/menubar.md).
-- [Settings](https://github.com/seangeng/ai-quota-swap/blob/main/docs/settings.md), [JSON output](https://github.com/seangeng/ai-quota-swap/blob/main/docs/json-output.md) and [troubleshooting](https://github.com/seangeng/ai-quota-swap/blob/main/docs/troubleshooting.md).
-- [Coming from claude-swap](https://github.com/seangeng/ai-quota-swap/blob/main/docs/coming-from-claude-swap.md).
-
-`qswap help` lists the commands by task; `qswap help COMMAND` shows one command's options and examples. What changed is in the [changelog](https://github.com/seangeng/ai-quota-swap/blob/main/CHANGELOG.md), what comes next in the [roadmap](https://github.com/seangeng/ai-quota-swap/blob/main/ROADMAP.md).
+[SECURITY.md](https://github.com/seangeng/ai-quota-swap/blob/main/SECURITY.md) lists every file and endpoint, and how `qswap purge` removes everything.
 
 ## Contributing
 
-[CONTRIBUTING.md](https://github.com/seangeng/ai-quota-swap/blob/main/CONTRIBUTING.md) covers setup, running qswap against invented accounts, the tests and the lint. The code map is in [docs/architecture.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/architecture.md). Report security problems privately, as [SECURITY.md](https://github.com/seangeng/ai-quota-swap/blob/main/SECURITY.md) describes.
+[CONTRIBUTING.md](https://github.com/seangeng/ai-quota-swap/blob/main/CONTRIBUTING.md) covers setup, running qswap against invented accounts, the tests and the lint. The code map is in [docs/architecture.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/architecture.md). What changed is in the [changelog](https://github.com/seangeng/ai-quota-swap/blob/main/CHANGELOG.md), what comes next in the [roadmap](https://github.com/seangeng/ai-quota-swap/blob/main/ROADMAP.md). Report security problems privately, as [SECURITY.md](https://github.com/seangeng/ai-quota-swap/blob/main/SECURITY.md) describes.
 
 ## License
 

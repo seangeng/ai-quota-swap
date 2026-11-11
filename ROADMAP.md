@@ -14,14 +14,14 @@ Feature-complete for a first release, 0.1.0, which is prepared but not yet on Py
 - Claude Code accounts, from claude-swap 1.1.0b1 and extended: switching by hand and
   automatically, parallel sessions (`run`, `map`), export and import, JSON output.
 - Codex accounts (experimental): add, `qswap codex login`, switch, auto-switch, reset credits.
-  Tested against fakes only; not yet run with two real Codex accounts, and no real reset credit
-  has been spent.
+  Tested against fakes and with one real account; not yet run with two real Codex accounts, and
+  no real reset credit has been spent.
 - Usage resets by kind for both providers, spent by hand or by the engine under `resets.auto`,
   with a fresh reading, a daily cap per provider and request-id reuse.
 - `qswap usage`: tokens and estimated cost from the local session files of both CLIs.
 - API-key accounts: spend, monthly budgets, Admin API figures, `usage --billed`.
 - A dashboard and a macOS menu bar covering both providers, with an auto-switch engine per
-  provider. The menu bar's new build has not yet been run by hand.
+  provider. The menu bar has been in daily use on the author's Mac since 2026-11-10.
 - `qswap doctor`, task-first docs, screenshots and recordings made from invented accounts.
 
 What remains, in rough order:
