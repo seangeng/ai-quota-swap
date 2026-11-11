@@ -772,7 +772,9 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             text = None if raw is None else raw.decode("utf-8")
         except UnicodeDecodeError:
             text = "\x00"
-        state = claude_settings.state_of_text(text, Path(settings_path))
+        state = claude_settings.state_of_text(
+            text, Path(settings_path), data_dir=f.data_dir, default_dir=_default_data_dir(f),
+        )
     else:
         state = claude_settings.HelperState(
             claude_settings.INVALID, Path(settings_path),
@@ -816,6 +818,17 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             f"{where} sets apiKeyHelper; Claude Code uses it instead of the "
             "active account, and qswap cannot add its own",
             fix=f"remove apiKeyHelper from {where}",
+        ))
+    elif state.kind == claude_settings.OTHER:
+        # Decision SS4: another qswap's line, for its own data directory
+        # (named on a line of its own): not this qswap's to check or repair.
+        checks.append(Check(
+            "claude.api_key_helper", "claude", WARN,
+            f"{where} holds the key line of another qswap; Claude Code uses that "
+            "qswap's key instead of the active account, and qswap cannot add its "
+            "own. That qswap's data directory:",
+            fix=f"remove apiKeyHelper from {where}",
+            path=_abbr(state.data_dir, f.home),
         ))
     elif state.kind == claude_settings.OURS:
         row = _accounts(registry).get(state.number)
@@ -1095,6 +1108,17 @@ def _line_program(command: str | None, home: Path | None) -> str:
     if any(c.isspace() for c in shown):
         shown = f'"{shown}"'
     return f"{shown} {line.module} ai_quota_swap" if line.module else shown
+
+
+def _default_data_dir(f: _Facts) -> Path | None:
+    """The data directory a key line without ``--data-dir`` belongs to on
+    this machine (decision SS4): ``~/.local/share/ai-quota-swap`` on Linux,
+    ``~/.ai-quota-swap`` elsewhere."""
+    if f.home is None:
+        return None
+    if f.platform in (Platform.LINUX, Platform.WSL):
+        return f.home / ".local" / "share" / "ai-quota-swap"
+    return f.home / paths.LEGACY_BACKUP_DIRNAME
 
 
 def _key_repair_command(p: Probes, f: _Facts, registry: dict | None) -> str:

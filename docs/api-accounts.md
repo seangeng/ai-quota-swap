@@ -56,7 +56,7 @@ The switch adds one line to Claude Code's user settings, `~/.claude/settings.jso
 }
 ```
 
-The command is the `qswap` of this install, by absolute path, so a session with another `PATH` finds it; the path is quoted when it has spaces or shell characters in it. On Linux the line also names qswap's data directory (`--data-dir`), because Claude Code started from a desktop launcher or an editor may have another `XDG_DATA_HOME`, or none.
+The command is the `qswap` of this install, by absolute path, so a session with another `PATH` finds it; the path is quoted when it has spaces or shell characters in it. On Linux the line also names qswap's data directory (`--data-dir`), because Claude Code started from a desktop launcher or an editor may have another `XDG_DATA_HOME`, or none. A line for another data directory is another qswap's (one run with another `XDG_DATA_HOME`, say): this qswap leaves it alone, does not switch to a key while it is there, and `qswap list` and `qswap doctor` name that data directory.
 
 Claude Code watches that file. About a second after the write (measured on Claude Code 2.1.322), every session that reads it, running or new, sends its requests with the key that `qswap key-helper 5` prints, instead of the claude.ai login. Nothing else changes: not the login, not the saved key, not `~/.claude.json`. Running sessions keep their conversation. Some things do change for them:
 

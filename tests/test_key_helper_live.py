@@ -522,7 +522,10 @@ class TestSettingsStates:
         path = tmp_path / "settings.json"
         path.write_text(json.dumps({"apiKeyHelper": line}), encoding="utf-8")
         state = claude_settings.read_state(path)
-        assert (state.kind, state.number) == ("ours", number)
+        # Recognised by the same structure, a line naming another data
+        # directory than this qswap's is another qswap's (decision SS4).
+        kind = "other-qswap" if "--data-dir" in line else "ours"
+        assert (state.kind, state.number) == (kind, number)
 
     @pytest.mark.parametrize("line", [
         "/opt/vault/print-key", "qswap key-helper", "qswap key-helper 5 extra",

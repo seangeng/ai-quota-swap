@@ -1282,14 +1282,29 @@ def join_names(names: Sequence[str]) -> str:
 _and = join_names
 
 
+def shown_dir(path: str) -> str:
+    """A data directory in a sentence: in double quotes when it holds a
+    space, so it is never broken across lines."""
+    return f'"{path}"' if any(c.isspace() for c in path) else path
+
+
+def other_qswap_sentence(other_dir: str) -> str:
+    """Whose ``apiKeyHelper`` it is, when it is another qswap's (SS4)."""
+    return (
+        "That apiKeyHelper is the key line of another qswap, whose data directory "
+        f"is {shown_dir(other_dir)}."
+    )
+
+
 def key_helper_foreign_refusal(
     target: str, number: str | int, path: str, *, log_out_sessions: bool = False,
-    prefix: str = "Error: ",
+    prefix: str = "Error: ", other_dir: str | None = None,
 ) -> str:
     """Another ``apiKeyHelper`` is in the settings (decision B6, F47): every
     session uses it now, and it outranks a saved key too, so the one way
     forward is to remove it. ``log_out_sessions``: the refusal of
-    ``--log-out-sessions`` itself."""
+    ``--log-out-sessions`` itself. ``other_dir``: the helper is another
+    qswap's key line, for that data directory (decision SS4)."""
     if log_out_sessions:
         head = (
             f"not switched. {path} sets another apiKeyHelper, which outranks a saved "
@@ -1302,6 +1317,8 @@ def key_helper_foreign_refusal(
             "Claude Code session uses it now, before any login or saved key, so "
             f"qswap cannot add the key line for {target} beside it."
         )
+    if other_dir:
+        head += " " + other_qswap_sentence(other_dir)
     lines = wrap(prefix + head, WIDTH - 2)
     lines[0] = lines[0][len(prefix):]
     return "\n".join([
@@ -1326,6 +1343,31 @@ def key_line_defeated_refusal(
         *lines,
         *wrap(f"Remove {_and(names)} from the env block of {path}, then: qswap switch {number}"),
     ])
+
+
+def foreign_helper_fix(path: str) -> str:
+    """The one way forward from another ``apiKeyHelper`` in the settings."""
+    return f"Remove apiKeyHelper from {path}"
+
+
+def other_qswap_note(path: str, other_dir: str) -> list[str]:
+    """The settings hold another qswap's key line (decision SS4): its key is
+    what every session uses, and this qswap does not touch it."""
+    return wrap(
+        f"{path} holds the key line of another qswap, whose data directory is "
+        f"{shown_dir(other_dir)}, so Claude Code sessions use that qswap's key, "
+        f"not an account here, until the line is removed. {foreign_helper_fix(path)}"
+    )
+
+
+def other_qswap_followup(path: str, other_dir: str) -> list[str]:
+    """After a switch to a subscription while another qswap's key line is in
+    the settings (decision SS4): the line stays, and so do the sessions."""
+    return wrap(
+        "Claude Code sessions stay on the key of another qswap, whose data "
+        f"directory is {shown_dir(other_dir)}, until its key line is removed from "
+        f"{path}."
+    )
 
 
 def key_sent_elsewhere(path: str, host: str, target: str) -> str:

@@ -25,6 +25,12 @@ Reading gives a :class:`HelperState`:
 ``foreign``
     ``apiKeyHelper`` is someone else's. Its value is never shown: a helper
     command may carry a key.
+``other-qswap``
+    ``apiKeyHelper`` is a qswap line for another data directory (decision
+    SS4): its ``--data-dir`` names another one, or it names none (the default
+    data directory, as on macOS and Windows) while this qswap runs with
+    another. It is another program's line, as ``foreign`` is: never repaired,
+    removed or counted as this qswap's active key; ``data_dir`` names it.
 ``invalid``
     The file is not a JSON object (a parse error, or another JSON value).
 
@@ -69,6 +75,8 @@ HELPER_VERB = "key-helper"
 WRITE_ATTEMPTS = 5
 
 NO_FILE, NONE, OURS, FOREIGN, INVALID = "no-file", "none", "ours", "foreign", "invalid"
+#: A qswap line for another data directory (decision SS4).
+OTHER = "other-qswap"
 
 
 class SettingsError(Exception):
@@ -93,8 +101,11 @@ class HelperState:
     path: Path
     number: str | None = None
     error: str | None = None
-    #: qswap's own line (``ours`` only; a foreign helper's value is never kept).
+    #: qswap's own line (``ours``, and another qswap's for ``other-qswap``;
+    #: a foreign helper's value is never kept).
     command: str | None = None
+    #: The data directory another qswap's line is for (``other-qswap`` only).
+    data_dir: str | None = None
 
     @property
     def stale_command(self) -> bool:
@@ -114,7 +125,7 @@ class HelperState:
     def reason(self) -> str | None:
         """Why qswap cannot write its line here (what follows the path in a
         message); None when it can."""
-        if self.kind == FOREIGN:
+        if self.kind in (FOREIGN, OTHER):
             return "already sets another apiKeyHelper"
         if self.kind == INVALID:
             if self.unreadable:
@@ -249,6 +260,51 @@ def parse_line(value: object) -> str | None:
     """The account number a helper command is qswap's line for, or None."""
     line = read_line(value)
     return None if line is None else line.number
+
+
+# -- whose line it is (decision SS4) --------------------------------------------------
+#
+# A line names the data directory its key is read from: the one after
+# --data-dir (every line on Linux), else the default data directory, the one
+# ``qswap key-helper`` finds by itself on macOS and Windows. A line for
+# another data directory than this qswap's belongs to another qswap.
+
+
+def default_data_dir() -> Path:
+    """The data directory a line without ``--data-dir`` belongs to: qswap's
+    default on this platform (``paths.get_backup_root`` with no
+    ``XDG_DATA_HOME``)."""
+    from ai_quota_swap.models import Platform
+    from ai_quota_swap.paths import LEGACY_BACKUP_DIRNAME
+
+    if Platform.detect() in (Platform.LINUX, Platform.WSL):
+        return Path.home() / ".local" / "share" / "ai-quota-swap"
+    return Path.home() / LEGACY_BACKUP_DIRNAME
+
+
+def line_data_dir(line: HelperLine, default: Path | None = None) -> Path:
+    """The data directory ``line`` reads its key from."""
+    if line.data_dir:
+        return Path(line.data_dir)
+    return default_data_dir() if default is None else Path(default)
+
+
+def same_dir(a: Path | str, b: Path | str) -> bool:
+    """Whether two spellings name one directory (resolved, in the
+    platform's case rule)."""
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except (OSError, ValueError):
+        return os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+
+def _this_data_dir(data_dir: Path | str | None) -> Path:
+    """This qswap's data directory: ``data_dir``, else the one in use."""
+    if data_dir is not None:
+        return Path(data_dir)
+    from ai_quota_swap.paths import get_backup_root
+
+    return get_backup_root()
 
 
 def _is_absolute(path: str) -> bool:
@@ -414,16 +470,20 @@ def qswap_executable() -> list[str]:
     return installed.command()
 
 
-def helper_command(number: str | int) -> str:
+def helper_command(number: str | int, *, data_dir: Path | str | None = None) -> str:
     """qswap's line for account ``number``: ``/abs/path/qswap key-helper 5``.
     On Linux the data directory is named too (``--data-dir``): Claude Code
     runs the line with its own environment, whose ``XDG_DATA_HOME`` may
-    differ from qswap's in either direction."""
+    differ from qswap's in either direction. Elsewhere it is named when
+    ``data_dir`` (this qswap's) is not the default one, which a line without
+    it would read (decision SS4)."""
     from ai_quota_swap import key_helper
 
     parts = [_quote(p) for p in qswap_executable()]
     line = [*parts, HELPER_VERB, str(int(number))]
     pinned = key_helper.pinned_data_dir()
+    if pinned is None and data_dir is not None and not same_dir(data_dir, default_data_dir()):
+        pinned = Path(data_dir)
     if pinned is not None:
         line += ["--data-dir", _quote(str(pinned))]
     return " ".join(line)
@@ -461,8 +521,15 @@ def _parse(text: str) -> tuple[dict | None, str | None]:
     return obj, None
 
 
-def state_of_text(text: str | None, path: Path) -> HelperState:
-    """The :class:`HelperState` of a file's text (None: no file)."""
+def state_of_text(
+    text: str | None, path: Path, *, data_dir: Path | str | None = None,
+    default_dir: Path | str | None = None,
+) -> HelperState:
+    """The :class:`HelperState` of a file's text (None: no file). A qswap
+    line is ``ours`` only when it reads its key from ``data_dir`` (this
+    qswap's data directory; the one in use when None), a line without
+    ``--data-dir`` from ``default_dir`` (:func:`default_data_dir` when None);
+    else it is another qswap's (``other-qswap``, decision SS4)."""
     if text is None:
         return HelperState(NO_FILE, path)
     _bom, text = _split_bom(text)
@@ -473,10 +540,15 @@ def state_of_text(text: str | None, path: Path) -> HelperState:
         return HelperState(INVALID, path, error=f"{HELPER_KEY} appears twice")
     if HELPER_KEY not in obj:
         return HelperState(NONE, path)
-    number = parse_line(obj[HELPER_KEY])
-    if number is None:
+    line = read_line(obj[HELPER_KEY])
+    if line is None:
         return HelperState(FOREIGN, path)
-    return HelperState(OURS, path, number=number, command=obj[HELPER_KEY])
+    theirs = line_data_dir(line, None if default_dir is None else Path(default_dir))
+    if not same_dir(theirs, _this_data_dir(data_dir)):
+        return HelperState(
+            OTHER, path, number=line.number, command=obj[HELPER_KEY], data_dir=str(theirs),
+        )
+    return HelperState(OURS, path, number=line.number, command=obj[HELPER_KEY])
 
 
 def _read(path: Path) -> str | None:
@@ -486,15 +558,16 @@ def _read(path: Path) -> str | None:
         return None
 
 
-def read_state(path: Path | None = None) -> HelperState:
-    """The state of Claude Code's user settings (or of ``path``). A file that
-    exists but cannot be read is ``invalid``. Never raises."""
+def read_state(path: Path | None = None, *, data_dir: Path | str | None = None) -> HelperState:
+    """The state of Claude Code's user settings (or of ``path``), for the
+    qswap whose data directory is ``data_dir`` (:func:`state_of_text`). A
+    file that exists but cannot be read is ``invalid``. Never raises."""
     path = settings_path() if path is None else path
     try:
         text = _read(path)
     except (OSError, UnicodeDecodeError) as e:
         return HelperState(INVALID, path, error=f"could not be read: {type(e).__name__}")
-    return state_of_text(text, path)
+    return state_of_text(text, path, data_dir=data_dir)
 
 
 # -- the text editor ------------------------------------------------------------------
@@ -789,13 +862,15 @@ def _publish(path: Path, text: str | None, mode: int | None) -> None:
 
 def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
             want: str | None = None, restore_blank: str | None = None,
-            restore_lead: str | None = None) -> tuple[str | None, str | None]:
+            restore_lead: str | None = None,
+            data_dir: Path | str | None = None) -> tuple[str | None, str | None]:
     """Set (or remove) the helper, re-reading before the write and starting
     again when the file changed. Returns ``(before, after)`` texts (without a
     byte order mark; a file that has one keeps it). ``restore_blank``: the
     text the file held before qswap's line when it held no settings
     (:func:`blank_text`), put back when removing the line leaves an empty
-    object."""
+    object. Another qswap's line (``data_dir``: this qswap's data
+    directory) is never touched, as another helper is not."""
     for attempt in range(WRITE_ATTEMPTS):
         try:
             raw = _read(path)
@@ -803,11 +878,11 @@ def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
             raise SettingsError(f"could not be read: {type(e).__name__}", kind="unreadable",
                                 path=path) from e
         bom, before = _split_bom(raw)
-        state = state_of_text(before, path)
+        state = state_of_text(before, path, data_dir=data_dir)
         if state.kind == INVALID:
             raise SettingsError(f"is not valid JSON ({state.error})", kind=INVALID, path=path)
-        if state.kind == FOREIGN:
-            raise SettingsError("already sets another apiKeyHelper", kind=FOREIGN, path=path)
+        if state.kind in (FOREIGN, OTHER):
+            raise SettingsError("already sets another apiKeyHelper", kind=state.kind, path=path)
         if value is None and state.kind != OURS:
             return before, before
         if want is not None and value is None and state.number != want:
@@ -839,21 +914,28 @@ def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
 
 
 def install(number: str | int, *, path: Path | None = None,
-            command: str | None = None) -> tuple[bool, HelperState]:
+            command: str | None = None,
+            data_dir: Path | str | None = None) -> tuple[bool, HelperState]:
     """Put qswap's line for ``number`` in the settings (replacing qswap's line
-    for another account). Returns ``(created, state)``: ``created`` when there
-    was no file before. Raises :class:`SettingsError` and writes nothing when
-    the file cannot be parsed or holds another helper."""
+    for another account), for the qswap whose data directory is ``data_dir``
+    (the one in use when None). Returns ``(created, state)``: ``created`` when
+    there was no file before. Raises :class:`SettingsError` and writes nothing
+    when the file cannot be parsed or holds another helper, or another
+    qswap's line."""
     path = settings_path() if path is None else path
-    value = command if command is not None else helper_command(number)
-    if parse_line(value) != str(int(number)):
+    value = command if command is not None else helper_command(number, data_dir=data_dir)
+    line = read_line(value)
+    if (
+        line is None or line.number != str(int(number))
+        or not same_dir(line_data_dir(line), _this_data_dir(data_dir))
+    ):
         # qswap could neither recognise nor remove a line it cannot read back.
         raise SettingsError(
             "would get a key line qswap cannot read back as its own", kind="command",
             path=path,
         )
-    before, _after = _change(path, value)
-    return before is None, read_state(path)
+    before, _after = _change(path, value, data_dir=data_dir)
+    return before is None, read_state(path, data_dir=data_dir)
 
 
 def blank_text(path: Path | None = None) -> str | None:
@@ -901,22 +983,24 @@ def brace_lead(path: Path | None = None) -> str | None:
 
 def remove(*, path: Path | None = None, remove_file_if_empty: bool = False,
            number: str | None = None, restore_blank: str | None = None,
-           restore_lead: str | None = None) -> bool:
+           restore_lead: str | None = None,
+           data_dir: Path | str | None = None) -> bool:
     """Take qswap's line out of the settings (only qswap's; ``number`` limits
     it to the line for that account). With ``remove_file_if_empty`` a file
     left holding nothing is removed (qswap created it); ``restore_blank`` and
     ``restore_lead`` put back what :func:`blank_text` and :func:`brace_lead`
     read before the line went in. Returns whether
     anything changed. Raises :class:`SettingsError` when the file cannot be
-    parsed; another helper is left alone (and is not an error)."""
+    parsed; another helper, and another qswap's line (``data_dir``: this
+    qswap's data directory), are left alone (and are not an error)."""
     path = settings_path() if path is None else path
     try:
         before, after = _change(
             path, None, remove_if_empty=remove_file_if_empty, want=number,
-            restore_blank=restore_blank, restore_lead=restore_lead,
+            restore_blank=restore_blank, restore_lead=restore_lead, data_dir=data_dir,
         )
     except SettingsError as e:
-        if e.kind == FOREIGN:
+        if e.kind in (FOREIGN, OTHER):
             return False
         raise
     return before != after

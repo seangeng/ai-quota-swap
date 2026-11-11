@@ -42,6 +42,19 @@ from ai_quota_swap.locking import FileLock
 from ai_quota_swap.printer import accent
 
 KEY_STATE_FILENAME = "key_helper.json"
+#: The codes of the notes list, status, the dashboard and the menu bar show
+#: about the key line (``switcher.key_notes``), stable for JSON (DS13):
+#: the settings cannot be read while a key is recorded; a line naming an
+#: account that cannot give a key; one running a qswap no longer there; a line
+#: that came back; a record whose line is gone; an engine-entered key nothing
+#: watches; run profiles still linked under the line, or left with a copy; a
+#: variable in the env block that outranks the line; another program's
+#: apiKeyHelper; another qswap's line (another data directory).
+KEY_NOTE_CODES = (
+    "settings-unreadable", "line-no-key", "line-moved", "line-came-back", "line-lost",
+    "unwatched", "profiles-linked", "profiles-stale", "env-outranks", "other-helper",
+    "other-data-dir",
+)
 #: ``qswap run N`` sessions on a key: one JSON line per launch (pid, number).
 KEY_RUNS_FILENAME = "key_runs.jsonl"
 ENTERED_BY = ("user", "engine")
@@ -220,6 +233,9 @@ class KeyFindings:
     copies: tuple[Path, ...] = ()
     #: The settings cannot be parsed while ``key_helper.json`` names a key.
     unreadable_record: str | None = None
+    #: The line is another qswap's: the data directory it reads its key
+    #: from (decision SS4). Not repaired, removed or counted as active here.
+    other_dir: str | None = None
 
 
 def assess_key_state(
@@ -274,6 +290,7 @@ def assess_key_state(
         lost=lost, stale_active=stale_active,
         linked=tuple(linked) if key is not None else (),
         copies=tuple(copies) if line_number is None else (),
+        other_dir=state.data_dir if state.kind == claude_settings.OTHER else None,
     )
 
 
@@ -283,8 +300,15 @@ class KeyActivationMixin:
     # -- state ------------------------------------------------------------------
 
     def key_helper_state(self) -> claude_settings.HelperState:
-        """What Claude Code's user settings say about ``apiKeyHelper``."""
-        return claude_settings.read_state()
+        """What Claude Code's user settings say about ``apiKeyHelper``, for
+        this qswap's data directory: a line for another one is another
+        qswap's (decision SS4)."""
+        return claude_settings.read_state(data_dir=self._data_dir)
+
+    @property
+    def _data_dir(self) -> Path:
+        """This qswap's data directory, which its own key line names."""
+        return Path(self.backup_dir)
 
     @property
     def key_state_path(self) -> Path:
@@ -492,7 +516,7 @@ class KeyActivationMixin:
             self._require_saved_key(number, row.get("email", ""))
             with FileLock(self.lock_file):
                 try:
-                    claude_settings.install(number)
+                    claude_settings.install(number, data_dir=self._data_dir)
                 except claude_settings.SettingsError as e:
                     path = claude_settings.shown_path(e.path or claude_settings.settings_path())
                     raise SwitchError(
@@ -711,19 +735,25 @@ class KeyActivationMixin:
         profiles: list[Path] | None = None,
     ) -> KeyHelperUnavailableError:
         """The refusal of a switch to the key ``number`` (decision B6):
-        ``kind`` is what stopped it. Another helper (``foreign``) and a
-        variable in the env block (``env``) are refused with the one way
-        forward, removing it; anything else offers ``--log-out-sessions``
-        after the fix that keeps everyone logged in."""
+        ``kind`` is what stopped it. Another helper (``foreign``), another
+        qswap's line (``other-qswap``, refused as another helper is, with its
+        data directory named: decision SS4) and a variable in the env block
+        (``env``) are refused with the one way forward, removing it; anything
+        else offers ``--log-out-sessions`` after the fix that keeps everyone
+        logged in."""
         path = claude_settings.shown_path(claude_settings.settings_path())
         label = self.label(number, long=False)
-        if kind in (claude_settings.FOREIGN, "env"):
+        if kind in (claude_settings.FOREIGN, claude_settings.OTHER, "env"):
+            other_dir = None
+            if kind == claude_settings.OTHER:
+                other_dir = self.key_helper_state().data_dir
             text = (
-                display.key_helper_foreign_refusal(
+                display.key_line_defeated_refusal(label, number, path, names)
+                if kind == "env"
+                else display.key_helper_foreign_refusal(
                     label, number, path, log_out_sessions=log_out_sessions,
+                    other_dir=claude_settings.shown_path(Path(other_dir)) if other_dir else None,
                 )
-                if kind == claude_settings.FOREIGN
-                else display.key_line_defeated_refusal(label, number, path, names)
             )
             return KeyHelperUnavailableError(
                 text, number=number, reason=reason, log_out_sessions=False,
@@ -881,7 +911,7 @@ class KeyActivationMixin:
                 pending["replacing"] = {k: v for k, v in old.items() if k != "left"}
             self._write_key_state(pending)
             try:
-                created_now, _ = claude_settings.install(number)
+                created_now, _ = claude_settings.install(number, data_dir=self._data_dir)
             except claude_settings.SettingsError as e:
                 self._write_key_state(old or None)
                 if previous_key is None:
@@ -1016,10 +1046,11 @@ class KeyActivationMixin:
         back. Logged, never raised: the refusal that follows says why."""
         try:
             if previous_key is not None:
-                claude_settings.install(previous_key)
+                claude_settings.install(previous_key, data_dir=self._data_dir)
                 return
             claude_settings.remove(
                 remove_file_if_empty=bool(created), restore_blank=blank, restore_lead=lead,
+                data_dir=self._data_dir,
             )
             self.restore_run_profiles(force=True)
         except Exception as e:
@@ -1079,6 +1110,7 @@ class KeyActivationMixin:
                     remove_file_if_empty=bool(state.get("createdSettings")),
                     restore_blank=blank if isinstance(blank, str) else None,
                     restore_lead=lead if isinstance(lead, str) else None,
+                    data_dir=self._data_dir,
                 )
             except claude_settings.SettingsError as e:
                 path = claude_settings.shown_path(e.path or claude_settings.settings_path())
@@ -1127,7 +1159,7 @@ class KeyActivationMixin:
                     self.restore_run_profiles(force=True)
                     raise OSError(self._profiles_unisolated_reason(shared))
                 try:
-                    claude_settings.install(number)
+                    claude_settings.install(number, data_dir=self._data_dir)
                 except Exception:
                     self.restore_run_profiles(force=True)
                     raise
@@ -1210,7 +1242,7 @@ class KeyActivationMixin:
             if f.key is not None and state.stale_command:
                 # qswap moved (a reinstall): the line runs a command that is
                 # gone. The same line, pointing at this qswap.
-                claude_settings.install(f.key)
+                claude_settings.install(f.key, data_dir=self._data_dir)
                 done.append(
                     f"Updated the key line for #{f.key} to run qswap from its new place."
                 )

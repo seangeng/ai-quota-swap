@@ -267,9 +267,18 @@ What the code does where this part leaves room, or where it had to differ:
   no line, gives a still-linked run profile its copy, and puts back the links of copies left
   with no line. Every `qswap switch` runs it first, and so does every tick of the engine
   (never a dry run). List, status, doctor, the dashboard and the menu bar report the same
-  findings without repairing. A line that names another `--data-dir` belongs to another
-  qswap and is not touched. When `sequence.json` or the settings cannot be read the state
+  findings without repairing. When `sequence.json` or the settings cannot be read the state
   is unknown, not missing: nothing is repaired or removed.
+- **Another qswap's line.** A line reads its key from the data directory after its
+  `--data-dir`, or, without one, from the default data directory (`~/.ai-quota-swap`;
+  `~/.local/share/ai-quota-swap` on Linux). A line for another data directory than this
+  qswap's is another program's line, as another helper is: not repaired, not removed, not
+  counted as the active key, and reported (by list, status, the dashboard, the menu bar and
+  doctor) with that data directory named. A switch to a key is refused in the words of the
+  refusal for another helper, plus the data directory; a switch to a subscription leaves the
+  line and says that sessions stay on the other qswap's key until the line is removed. A
+  qswap whose own data directory is not the default always names it in its line, on every
+  platform.
 - **Settings that cannot be read while a key is recorded.** Every surface says the same
   sentence: `~/.claude/settings.json cannot be read (...); qswap last made #5 ci the active
   API key there, and its key line may still be in it. Fix the JSON in
