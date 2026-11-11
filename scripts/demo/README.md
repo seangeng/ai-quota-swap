@@ -17,14 +17,15 @@ Run everything from the repository root with the dev dependencies installed
     uv run python scripts/demo/run.py usage -- usage --by model
     uv run python scripts/demo/run.py fleet --serve            # the dashboard at http://127.0.0.1:8765/
     uv run python scripts/demo/run.py fleet --menubar          # the menu bar's menu, as an outline
+    uv run python scripts/demo/run.py showcase --menubar --html menu.html   # ... and as a picture
     uv run python scripts/demo/build.py                        # regenerate all shots
 
 `run.py <scenario> --menubar` prints the macOS menu bar's menu for the
-scenario as an indented outline: the menu bar cannot be drawn off macOS or
-inside the sandbox, but every row it shows comes from one pure function
-(`ai_quota_swap.menubar.build_menu`), which the outline prints after the same
-reads and ledger scan the app makes. Commands after `--` run first, so
-`run.py fleet --menubar -- switch 5` prints the menu with an API key active.
+scenario as an indented outline. Every row the menu bar shows comes from one
+pure function (`ai_quota_swap.menubar.build_menu`), which the outline prints
+after the same reads and ledger scan the app makes. Commands after `--` run
+first, so `run.py fleet --menubar -- switch 5` prints the menu with an API key
+active.
 
 `run.py <scenario> -- <qswap arguments>` runs the real CLI entry point
 (`ai_quota_swap.cli.main`) against a scenario. Separate several commands with
@@ -35,6 +36,58 @@ output as a terminal-window page, `--theme light` for the light palette, and
 are installed is the harness's choice, not this machine's: both are, unless
 `--without-cli claude` (or `codex`) says otherwise, so output is the same on a
 laptop with both CLIs and a CI runner with neither.
+
+## The menu bar picture
+
+Add `--html FILE` to `--menubar` and the harness also draws that menu: the
+right-hand end of a macOS menu bar with qswap's title, and the menu open
+under it. The menu bar pictures are drawings of the real menu's rows, not
+photographs of the app, which needs macOS and rumps and never runs in the
+sandbox. `menubar_page.py` draws each row the way `menubar_app` turns it into
+a native item: a row with nothing to click is greyed (the section headings
+are such rows), a checked row has a check mark, a row that needs you is
+orange, and a submenu row ends in a chevron. Other apps' status icons are
+neutral placeholders, and the clock shows the scenario's time. A status item
+near the right of the bar has its menu pushed left to stay on screen, so
+submenus open to the left, as they do on a Mac.
+
+| Option | Does |
+|---|---|
+| `--theme light` | draws the light appearance; dark is the default |
+| `--open "Use a reset"` | opens that submenu beside the menu and selects its row. `"Settings > Use resets automatically"` opens one inside another. A title the menu does not have stops the run with exit status 2 and lists the submenus it has |
+| `--highlight TEXT` | puts the row of the innermost open menu that starts with TEXT under the pointer; a greyed row is refused |
+| `--closed` | draws the bar with the menu shut, at the size of the open picture |
+| `--beside PNG` | puts a 2x screenshot on the desktop as a window behind the menu; the hero uses the dashboard |
+| `--size WxH` | fixes the picture's size in CSS px, so frames line up |
+| `--auto-switch [claude\|codex\|both]` | turns the menu bar's auto-switch on and runs its engines (below); `both` when no value is given |
+| `--frames DIR` | with `--auto-switch`: one picture after each of Claude Code's engine checks |
+| `--ticks N` | how many checks `--frames` draws (default 4) |
+
+The page is plain HTML and CSS, with no font, script or image from anywhere
+else (the window behind the hero is embedded in the page).
+
+Without `--auto-switch` the menu's first row reads `Auto-switch off`, as it
+does on a Mac where nobody turned it on. With it, the harness turns the
+Auto-switch toggles on in the temporary `menubar_settings.json` and hosts the
+engines as the app does: an `EngineSupervisor` starts an `AutoSwitchEngine`
+for each provider in a thread of its own, with the `qswap menubar` host label,
+against the canned API and inside the same guards. The menu is drawn after
+each engine's first check, so `Auto-switch running for Claude Code and Codex`
+is what a running engine shows. Each check then waits until the picture of
+its result is drawn.
+
+For a recording, `--frames DIR` writes three files after each check:
+`frame-NN.html` (open, or as `--open` and `--closed` say), `frame-NN-closed.html`
+and `frame-NN.txt`, the outline. On a scenario with time compression the
+checks come one scenario minute apart, a few real seconds each:
+
+    uv run python scripts/demo/run.py autoswitch --menubar --auto-switch \
+        --frames frames --open "Switch history"
+
+The titles go `⇄ personal · 86% · 38%`, `⇄ personal · 88% · 38%`, then
+`⇄ work · 12% · 21%` once the engine switches at 91%; from then on Switch
+history lists `#1 personal → #2 work · 2026-11-10 14:22`. Screenshot each
+page's `#stage` element at 2x, as `capture.py` does, to get the frames.
 
 ## Why it is safe
 
@@ -87,7 +140,9 @@ command the key line names (`installed.command`, pinned to a stand-in
 `~/.local/bin/qswap` in the temp home that is never run), the check of that
 line (`claude_settings._run_check`, which runs `qswap key-helper N --check`
 in the demo process instead of through the shell), the machine-wide managed
-settings file doctor reads (none), and the
+settings file doctor reads (none), each menu bar engine's `tick` under
+`--menubar --auto-switch` (wrapped on that engine object to wait for the
+picture of its check), and the
 four functions in `ai_quota_swap.codex.processes` that reach processes
 (listing Codex processes with `ps`, finding and restarting Codex's background
 server, running `codex login`). The sandbox refuses those spawns, so the demo
@@ -162,6 +217,13 @@ guarded app process. Their PNGs are also wrapped in static pages
 (`docs/shots/dashboard.html`, `watch.html`, ...) so the whole set can be
 published from `docs/shots/` with `index.html` as the entry.
 
+Menu bar shots (`MENUBAR_SHOTS`) render to `docs/shots/<name>.html` with
+`run.py --menubar --html` and are captured after the dashboard shots, because
+`hero` and `hero-light` put `dashboard.png` and `dashboard-light.png` behind
+the menu. `menubar-settings` is not in the README's table; it shows the
+auto-switch toggles for `docs/menubar.md`. ScreenFramed does not frame these:
+they come with their own desktop.
+
 The README and the docs use the PNGs in `assets/screenshots/raw/`. The README
 links them by absolute `raw.githubusercontent.com` URL, so they render on PyPI
 too; after regenerating, check that every name the README and `docs/` use
@@ -171,10 +233,11 @@ still exists.
 
 `capture.py` does each step; `build.py` runs them in order.
 
-- `capture.py html` renders the CLI pages.
+- `capture.py html` renders the CLI pages and the menu bar pages (the heroes
+  wait for `shots`, which renders them once the dashboard PNGs exist).
 - `capture.py shots` takes raw screenshots with a local headless Chrome at 2x
-  into `assets/screenshots/raw/` and compresses them with pngquant when it is
-  installed. Set `CHROME_PATH` if Chrome is not at
+  into `assets/screenshots/raw/`: CLI pages, then dashboard shots, then menu
+  bar drawings. It compresses them with pngquant when it is installed. Set `CHROME_PATH` if Chrome is not at
   `/Applications/Google Chrome.app`.
 - `capture.py frame` frames each page with the ScreenFramed CLI into
   `assets/screenshots/`. ScreenFramed renders the URL in its cloud, so it needs
