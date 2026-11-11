@@ -759,13 +759,19 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
 def _key_line_check(p: Probes, f: _Facts, state, record: dict, where: str) -> Check:
     """qswap's line for an API-key account: run with ``--check`` the way
     Claude Code runs it (decision B2). It passes naming the command it runs,
-    or fails with why it cannot answer and ``qswap switch N``, which writes
-    the line again for this install."""
+    or fails with why it cannot answer and the next step: the helper's own
+    when its message names one, else ``qswap switch N``, which writes the
+    line again for this install. A check that could not be made warns."""
     from ai_quota_swap import claude_settings
 
     why, err = _try(p.key_line_answers, state.command)
     if err is not None:
-        why = f"could not be checked ({_reason(err)})"
+        return Check(
+            "claude.key_helper", "claude", WARN,
+            f"{where} makes #{state.number} the active API key; qswap could not "
+            f"check that its line answers ({_reason(err)})",
+            fix=f"qswap key-helper {state.number} --check",
+        )
     if why is not None:
         line = claude_settings.read_line(state.command)
         then = ""

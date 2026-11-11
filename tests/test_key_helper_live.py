@@ -2746,6 +2746,19 @@ class TestTheLineAnswers:
         assert reason == "did not answer within 0.3 seconds"
         assert time.monotonic() - started < 10  # the program and its children are gone
 
+    def test_a_check_that_could_not_be_made_warns(self, temp_home, tmp_path):
+        from dataclasses import replace as with_probe
+
+        def boom(command):
+            raise OSError("no shell")
+
+        _fleet()
+        self._line(temp_home, f"{self._program(tmp_path, 'exit 0\n')} key-helper 5")
+        probes = with_probe(doctor.default_probes(), key_line_answers=boom)
+        check = {c.id: c for c in doctor.run_checks(probes)}["claude.key_helper"]
+        assert check.status == "warn" and "could not check" in check.summary
+        assert check.fix == "qswap key-helper 5 --check"
+
     def test_only_qswaps_own_line_is_run(self, temp_home, monkeypatch):
         ran: list[str] = []
         monkeypatch.setattr(claude_settings, "_run_check",
