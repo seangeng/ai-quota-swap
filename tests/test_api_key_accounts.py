@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_quota_swap import clis
+from ai_quota_swap import claude_settings, clis
 from ai_quota_swap import macos_keychain
 from ai_quota_swap.credentials import (
     CLAUDE_CODE_KEYCHAIN_SERVICE,
@@ -380,7 +380,9 @@ class TestSessionGuard:
         with pytest.raises(SystemExit):
             mgr.run("2", [], share=True)
         assert seen["args"][0] == "--settings"
-        assert json.loads(seen["args"][1])["apiKeyHelper"].endswith("key-helper 2")
+        line = json.loads(seen["args"][1])["apiKeyHelper"]
+        # On Linux the line also names the data directory (decision B3).
+        assert claude_settings.parse_line(line) == "2"
 
 
 # ---------------------------------------------------------------------------

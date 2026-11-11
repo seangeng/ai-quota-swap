@@ -108,14 +108,24 @@ def _fleet(platform: Platform = Platform.MACOS) -> ClaudeAccountSwitcher:
     return s
 
 
+def pin_key_helper_platform(monkeypatch) -> None:
+    """The key helper's own platform, macOS as the fleet's is: on Linux the
+    line also names the data directory (``--data-dir``, decision B3), which
+    the lines these tests pin leave out. The tests of that rule set
+    ``key_helper._platform`` themselves, so every runner checks both forms."""
+    monkeypatch.setattr(key_helper, "_platform", lambda: "macos")
+
+
 @pytest.fixture(autouse=True)
 def _fixed_command(monkeypatch):
     """The installed command every helper line names, fixed for the tests
     (and taken to exist and to answer: TestMovedQswap is about one that does
-    not exist, TestTheLineAnswers about one that does not answer)."""
+    not exist, TestTheLineAnswers about one that does not answer), on the
+    key helper's macOS (:func:`pin_key_helper_platform`)."""
     monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [QSWAP])
     monkeypatch.setattr(claude_settings, "command_missing", lambda command: False)
     monkeypatch.setattr(claude_settings, "check_command", lambda command, **kw: None)
+    pin_key_helper_platform(monkeypatch)
 
 
 @pytest.fixture

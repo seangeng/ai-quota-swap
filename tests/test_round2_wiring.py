@@ -21,6 +21,8 @@ from ai_quota_swap.switcher import USAGE_API_KEY
 from ai_quota_swap.usage_store import UsageEntry
 from tests.test_autoswitch import _usage
 from tests.test_key_helper_live import (
+    POSIX_ONLY,
+    pin_key_helper_platform,
     _REAL_CHECK_COMMAND,
     _REAL_COMMAND_MISSING,
     _REAL_RUN_CHECK,
@@ -34,12 +36,18 @@ from tests.test_key_helper_live import (
 )
 
 
+#: How the messages name Claude Code's user settings: "~/.claude/settings.json",
+#: with this platform's separator.
+WHERE = str(Path("~") / ".claude" / "settings.json")
+
+
 @pytest.fixture(autouse=True)
 def _fixed_command(monkeypatch):
     """The installed command every line names, taken to exist and answer."""
     monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [QSWAP])
     monkeypatch.setattr(claude_settings, "command_missing", lambda command: False)
     monkeypatch.setattr(claude_settings, "check_command", lambda command, **kw: None)
+    pin_key_helper_platform(monkeypatch)
 
 
 def _line(home: Path) -> str | None:
@@ -150,7 +158,7 @@ class TestTheEngineTickReadsTheReconcile:
         assert held.reason == "settings-unreadable"
         text = " ".join(held.human().split())
         assert "qswap last made #2 ci the active API key" in text
-        assert "Fix the JSON in ~/.claude/settings.json" in text
+        assert f"Fix the JSON in {WHERE}" in text
         assert _settings(temp_home).read_bytes() == before
         said = [n for n in _notified(h) if "qswap last made" in n]
         assert len(said) == 1
@@ -379,6 +387,7 @@ class TestTheWayBackFromAnUnwatchedKey:
 # == B2: qswap switch N to the active key, with the line really run =====================
 
 
+@POSIX_ONLY  # the stand-in qswap is a shell script
 class TestSwitchToTheActiveKeyRunsTheLine:
     """B2 across the seam: the check runs the line through the shell (the
     real runner, a stand-in program), and the repair writes this install's

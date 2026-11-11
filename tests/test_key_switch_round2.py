@@ -19,6 +19,7 @@ from ai_quota_swap.exceptions import SwitchError
 from ai_quota_swap.models import Platform
 from ai_quota_swap.paths import get_global_config_path
 from tests.test_key_helper_live import (
+    pin_key_helper_platform,
     KEY_5,
     KEY_6,
     MAYA,
@@ -34,6 +35,11 @@ from tests.test_key_helper_live import (
 )
 
 
+#: How the messages name Claude Code's user settings: "~/.claude/settings.json",
+#: with this platform's separator.
+WHERE = str(Path("~") / ".claude" / "settings.json")
+
+
 @pytest.fixture(autouse=True)
 def _fixed_command(monkeypatch):
     """The installed command every line names, taken to exist and answer
@@ -41,6 +47,7 @@ def _fixed_command(monkeypatch):
     monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [QSWAP])
     monkeypatch.setattr(claude_settings, "command_missing", lambda command: False)
     monkeypatch.setattr(claude_settings, "check_command", lambda command, **kw: None)
+    pin_key_helper_platform(monkeypatch)
 
 
 @pytest.fixture
@@ -566,9 +573,9 @@ class TestUnparseableSettingsWithARecord:
         s = _fleet()
         self._break(s, temp_home)
         notes = _notes(s)
-        assert "~/.claude/settings.json cannot be read" in notes
+        assert f"{WHERE} cannot be read" in notes
         assert "qswap last made #5 ci the active API key" in notes
-        assert "Fix the JSON in ~/.claude/settings.json" in notes
+        assert f"Fix the JSON in {WHERE}" in notes
         status = " ".join(" ".join(s.status_lines()).split())
         assert "qswap last made #5 ci the active API key" in status
         capsys.readouterr()
@@ -578,7 +585,7 @@ class TestUnparseableSettingsWithARecord:
         assert "qswap last made #5 ci" in " ".join(snap.key_notes)
         check = _check("claude.key_helper")
         assert check.status == "fail" and "qswap last made #5 ci" in check.summary
-        assert check.fix == "fix the JSON in ~/.claude/settings.json"
+        assert check.fix == f"fix the JSON in {WHERE}"
 
     @pytest.mark.parametrize("op", ["swap", "move", "add-token"])
     def test_the_guards_name_the_file(self, temp_home, op):
@@ -597,7 +604,7 @@ class TestUnparseableSettingsWithARecord:
                     assume_yes=True,
                 )
         text = " ".join(str(caught.value).split())
-        assert "Fix the JSON in ~/.claude/settings.json" in text
+        assert f"Fix the JSON in {WHERE}" in text
         assert "qswap switch 1" not in text
 
     @pytest.mark.parametrize("argv", [["switch", "1"], ["switch"], ["switch", "7"]])
@@ -608,7 +615,7 @@ class TestUnparseableSettingsWithARecord:
         assert code == 1
         text = " ".join(err.split())
         assert "qswap last made #5 ci the active API key" in text
-        assert "Fix the JSON in ~/.claude/settings.json" in text
+        assert f"Fix the JSON in {WHERE}" in text
         assert "Already on" not in out
 
 
@@ -713,7 +720,7 @@ class TestTheEnvBlock:
         assert code == 1
         text = " ".join(err.split())
         assert name in text and SECRET not in text
-        assert f"Remove {name} from the env block of ~/.claude/settings.json, then: qswap switch 5" in text
+        assert f"Remove {name} from the env block of {WHERE}, then: qswap switch 5" in text
         assert "--log-out-sessions" not in text
         _fits(err)
         assert _settings(temp_home).read_bytes() == before
@@ -784,7 +791,7 @@ class TestAnotherHelper:
         assert "Not logged in" not in text
         assert "--log-out-sessions" not in text
         assert err.rstrip().endswith(
-            "Remove apiKeyHelper from ~/.claude/settings.json, then: qswap switch 5"
+            f"Remove apiKeyHelper from {WHERE}, then: qswap switch 5"
         )
         _fits(err)
         assert _settings(temp_home).read_bytes() == before
@@ -801,7 +808,7 @@ class TestAnotherHelper:
         assert code == 1
         text = " ".join(err.split())
         assert "outranks a saved key" in text
-        assert "Remove apiKeyHelper from ~/.claude/settings.json, then: qswap switch 5" in text
+        assert f"Remove apiKeyHelper from {WHERE}, then: qswap switch 5" in text
         assert _claude_state(block_real_keychain) == before
         assert s.current_account_number() == "1"
 
@@ -825,7 +832,7 @@ class TestAnotherHelper:
         code, out, err = run(s, "switch", "5")
         assert code == 1
         text = " ".join(err.split())
-        fix = text.index("Fix the JSON in ~/.claude/settings.json, then: qswap switch 5")
+        fix = text.index(f"Fix the JSON in {WHERE}, then: qswap switch 5")
         assert fix < text.index("qswap switch 5 --log-out-sessions")
         _fits(err)
 
