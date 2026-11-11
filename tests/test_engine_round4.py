@@ -344,6 +344,54 @@ class TestKeptResetWhileAClaimSettles:
         )
 
 
+# == R4-5: a kept reset whose window refills soon says that first =============================
+
+
+class TestTheTimeLeftComesFirst:
+    """Decision R4-5: when "too little time left in the window" applies, it
+    is the reason shown, whatever else also applies. Timeline T6 with #1
+    active named "auto mode spends resets of the active account only" for a
+    reset whose 7d window refills in 9 hours, inviting a spend that buys 9
+    hours."""
+
+    SOON = 9 * 3600
+
+    def _kept(self, usage, settings=ResetSettings(), **kw):
+        views = [resets.AccountView(num=n, usage=u, threshold=90.0) for n, u in usage.items()]
+        return resets.kept_resets(views, current="1", settings=settings, now=1_000_000.0, **kw)
+
+    @pytest.mark.parametrize("settings, kw", [
+        (ResetSettings(auto="active"), {}),
+        (ResetSettings(auto="off"), {}),
+        (ResetSettings(), {"claims_today": 3, "daily_cap": 3}),
+    ], ids=["active-only", "auto-off", "daily-cap"])
+    def test_it_comes_before_every_other_reason(self, settings, kw):
+        usage = {"1": _rusage(d7=100),
+                 "3": _rusage(d7=100, reset_in=self.SOON, grants=[_week()])}
+        (kept,) = self._kept(usage, settings, **kw)
+        assert (kept.account, kept.reason, kept.words) == (
+            "3", "min-hours-left", "its 7d window refills in 9h",
+        )
+        assert kept.note("#3 c@example.com") == (
+            "#3 c@example.com holds 1 weekly reset auto mode keeps (its 7d window refills "
+            "in 9h); to spend it instead: qswap reset 3"
+        )
+
+    def test_and_before_the_kind_of_reset(self):
+        weekly = _grant("g-week", clears=("seven_day", "seven_day_overage_included"))
+        usage = {"1": _rusage(d7=40, fable=100, reset_in=self.SOON, grants=[weekly]),
+                 "3": _rusage(d7=100)}
+        (kept,) = self._kept(usage, watched=("Fable",))
+        assert (kept.reason, kept.words) == ("min-hours-left", "its Fable window refills in 9h")
+
+    def test_with_time_left_the_other_reason_stands(self):
+        usage = {"1": _rusage(d7=100), "3": _rusage(d7=100, grants=[_week()])}
+        (kept,) = self._kept(usage, ResetSettings(auto="active"))
+        assert (kept.reason, kept.words) == (
+            "active-only", "auto mode spends resets of the active account only",
+        )
+
+
 # == EM2: a key whose link to an organization is not known ===================================
 
 

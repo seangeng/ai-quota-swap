@@ -164,7 +164,9 @@ class TestTheKeptResetOnEverySurface:
         assert [(n["account"], n["fix"]) for n in notes] == [
             (1, "qswap reset 1"), (3, "qswap reset 3"),
         ]
-        assert "(auto mode is off)" in notes[0]["text"]
+        # Both windows refill in 10 hours: the time left is said first, also
+        # with auto mode off (decision R4-5).
+        assert "(its 7d window refills in 10h)" in notes[0]["text"]
 
     def test_it_lasts_only_while_it_is_true(self, temp_home, monkeypatch, capsys):
         """The reset spent by hand (no grant left): the note goes."""

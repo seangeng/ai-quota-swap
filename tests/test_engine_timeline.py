@@ -1143,8 +1143,9 @@ class TestT6AResetThePlannerKeeps:
         """All four out; #2 holds a weekly reset and its 7d window refills in
         9 hours (under resets.minHoursLeft, 24). The engine enters the key,
         does not spend the reset, and names it with `qswap reset 2` (EM4).
-        With #2 active its reason is the time left; with #1 active it is
-        that auto mode spends only the active account's resets."""
+        Its reason is the time left, with #2 active and with #1 active too,
+        where auto mode would also spend only the active account's resets
+        (decision R4-5: the time left is said first)."""
         long = active == "2"
         subs = {
             # On #2's day the others are out on their weekly windows too, so
@@ -1168,11 +1169,8 @@ class TestT6AResetThePlannerKeeps:
                      "qswap reset 1",
                 "2": "#2 work holds 1 weekly reset auto mode keeps (its 7d window refills "
                      "in 9h); to spend it instead: qswap reset 2",
-                "2-other": "#2 work holds 1 weekly reset auto mode keeps (auto mode spends "
-                           "resets of the active account only); to spend it instead: "
-                           "qswap reset 2",
             }
-            expected = [notes["1"], notes["2"]] if long else [notes["2-other"]]
+            expected = [notes["1"], notes["2"]] if long else [notes["2"]]
             assert list(s.reset_notes) == expected, s.reset_notes
             window = "7d" if long else "5h"
             assert s.human() == (
@@ -1181,7 +1179,7 @@ class TestT6AResetThePlannerKeeps:
             ), s.human()
             kept = {entry["account"]: entry for entry in s.to_json()["resetsKept"]}
             assert kept[2]["fix"] == "qswap reset 2"
-            assert kept[2]["reason"] == ("min-hours-left" if long else "active-only")
+            assert kept[2]["reason"] == "min-hours-left"
             assert kept[2]["resets"] == [{"kind": "weekly", "count": 1}]
             # The auto log and the notification say the same (EM4).
             log = _log_lines(h)

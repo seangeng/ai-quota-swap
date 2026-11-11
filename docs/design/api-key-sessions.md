@@ -184,7 +184,8 @@ return to it when the key is left.
     or refill is still out. A reset the user's settings keep (`resets.minHoursLeft`, the
     daily cap, the `active` mode, the kind rule, `resets.auto off`) stays banked: the
     engine does not override them to stay off a key, and names each such reset on the
-    switch with `qswap reset N` (`resets.kept_resets`, decision EM4). While the key it
+    switch with `qswap reset N` (`resets.kept_resets`, decision EM4), giving the time left
+    in its window as the reason whenever `resets.minHoursLeft` applies (R4-5). While the key it
     entered is active, status, list, the dashboard and the menu bar's key row name them too,
     for as long as it is true (`autoswitch.kept_resets_now`, from the stored readings).
   - A key it entered is left for a subscription under its own lines with at least 5 points of

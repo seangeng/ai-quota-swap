@@ -1260,13 +1260,14 @@ def kept_resets(
     it afterwards). An account that cannot claim (set aside, a claim still
     settling) is left out. When the planner would spend a reset now there is
     nothing kept (it comes before a key). The reason, first that applies:
-    auto mode is off; today's limit on automatic resets is reached; auto
-    mode spends resets of the active account only; it is a weekly (or full)
-    reset and only a model window is full; its window refills within
-    ``min_hours_left``; after it another window would stay over the
-    account's switch line (``last-resort`` lands only on an account the
-    engine would switch to); the active account's last claim has not been
-    followed by a reading (the planner waits for it)."""
+    its window refills within ``min_hours_left`` (whatever else also
+    applies, decision R4-5: spending it would buy only that time); auto
+    mode is off; today's limit on automatic resets is reached; auto mode
+    spends resets of the active account only; it is a weekly (or full)
+    reset and only a model window is full; after it another window would
+    stay over the account's switch line (``last-resort`` lands only on an
+    account the engine would switch to); the active account's last claim
+    has not been followed by a reading (the planner waits for it)."""
     auto_on = getattr(settings, "enabled", True) and settings.auto in (
         "active", "on-limit", "last-resort",
     )
@@ -1305,6 +1306,14 @@ def _kept_reason(
     now: float,
     settling: bool = False,
 ) -> tuple[str, str]:
+    # Decision R4-5: a window that refills on its own soon is said first,
+    # whatever else keeps the reset. ``helpful`` set the time rule aside;
+    # with it back (the kind rule still aside) nothing is left.
+    if not _evaluate(view, replace(settings, weekly_for_model_limit=True), now):
+        timed = helpful[0]
+        return "min-hours-left", (
+            f"its {timed.window} window refills in {_hours_words(timed.hours_left or 0.0)}"
+        )
     if not auto_on:
         return "auto-off", KEPT_REASONS["auto-off"]
     if capped:
@@ -1313,16 +1322,10 @@ def _kept_reason(
         return "active-only", KEPT_REASONS["active-only"]
     plural = sum(c.grant.get("resets_left", 1) for c in helpful) > 1
     if not _evaluate(view, settings, now):
-        if _evaluate(view, replace(settings, weekly_for_model_limit=True), now) or not _evaluate(
-            view, replace(settings, min_hours_left=0.0), now
-        ):
-            noun = scope_noun(helpful[0].scope, grant_kind(helpful[0].grant))
-            what = f"they are {noun}s" if plural else f"it is a {noun}"
-            return "kind", f"{what} and only a model window is full"
-        timed = _evaluate(view, replace(settings, min_hours_left=0.0), now)[0]
-        return "min-hours-left", (
-            f"its {timed.window} window refills in {_hours_words(timed.hours_left or 0.0)}"
-        )
+        # The time rule does not apply (above), so the kind rule keeps it.
+        noun = scope_noun(helpful[0].scope, grant_kind(helpful[0].grant))
+        what = f"they are {noun}s" if plural else f"it is a {noun}"
+        return "kind", f"{what} and only a model window is full"
     # Kept by the landing rule: after it, a window stays over the switch line.
     from ai_quota_swap.lines import window_line
 
