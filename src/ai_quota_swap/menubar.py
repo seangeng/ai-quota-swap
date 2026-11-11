@@ -57,7 +57,7 @@ from ai_quota_swap.menubar_notify import (  # noqa: F401  (re-exported)
     should_surface_engine_error,
 )
 from ai_quota_swap.printer import warning
-from ai_quota_swap.settings import RESET_AUTO_MODES, ResetSettings
+from ai_quota_swap.settings import RESET_AUTO_MODES, RESET_BEFORE_SWITCH_MODES, ResetSettings
 from ai_quota_swap.switcher import SENTINEL_NOTES, USAGE_API_KEY, USAGE_RELOGIN_REQUIRED  # noqa: F401
 
 ICON = "⇄"
@@ -1366,13 +1366,22 @@ RESET_AUTO_LABELS = {
 RESETS_APPLY_TO = "Applies to Claude Code and Codex"
 RESETS_OFF_NOTE = "Usage resets are not read (resets.enabled is off)"
 WEEKLY_FOR_MODEL_LABEL = "Use a weekly reset for a single model's limit"
+BEFORE_SWITCH_LABEL = "Use the active account's reset before switching"
+BEFORE_SWITCH_TOOLTIP = (
+    "resets.beforeSwitch: auto-switch stays past the active account's switch line "
+    "until its own reset is spent at resets.threshold"
+)
 _NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five"}
 
 
 def _resets_menu(inp: MenuInput) -> Row:
     """*Use resets automatically*: one checked choice per ``resets.auto``
-    mode, then the ``resets.weeklyForModelLimit`` toggle. Each choice's
-    tooltip is ``qswap reset``'s ``Auto:`` line for it."""
+    mode, then the ``resets.weeklyForModelLimit`` and ``resets.beforeSwitch``
+    toggles. Each choice's tooltip is ``qswap reset``'s ``Auto:`` line for
+    it. ``resets.beforeSwitch`` does nothing while ``resets.enabled`` is off
+    and under ``off`` and ``last-resort``: there its row is greyed, keeps its
+    check mark, and its tooltip says why, ``resets.enabled`` first, as
+    ``qswap config set`` does."""
     rs = inp.resets
     # Shared by both providers; said only where Codex is part of the menu.
     rows: list[Row] = [Row(RESETS_APPLY_TO)] if inp.codex_shown else []
@@ -1389,6 +1398,20 @@ def _resets_menu(inp: MenuInput) -> Row:
         checked=rs.weekly_for_model_limit,
         tooltip="resets.weeklyForModelLimit: automatic use may spend a weekly or full "
                 "reset when only a per-model limit such as Fable's is reached",
+    ))
+    if not rs.enabled:
+        idle = "resets.enabled is false"
+    elif rs.auto not in RESET_BEFORE_SWITCH_MODES:
+        idle = f"resets.auto is {rs.auto}"
+    else:
+        idle = None
+    rows.append(Row(
+        BEFORE_SWITCH_LABEL,
+        action=Action("toggle-before-switch") if idle is None else None,
+        checked=rs.before_switch,
+        tooltip=BEFORE_SWITCH_TOOLTIP if idle is None else (
+            f"{BEFORE_SWITCH_TOOLTIP}; no effect while {idle}"
+        ),
     ))
     return Row("Use resets automatically", children=tuple(rows))
 
@@ -1434,6 +1457,8 @@ def resets_setting(action: Action, resets: ResetSettings) -> tuple[str, str]:
         return "resets.auto", str(action.value)
     if action.kind == "toggle-weekly-for-model":
         return "resets.weeklyForModelLimit", "false" if resets.weekly_for_model_limit else "true"
+    if action.kind == "toggle-before-switch":
+        return "resets.beforeSwitch", "false" if resets.before_switch else "true"
     raise ValueError(f"not a resets setting: {action.kind}")
 
 
@@ -1833,7 +1858,7 @@ ACTION_KINDS = frozenset({
     "toggle-disabled", "refresh-creds", "open-log", "restart-engines", "toggle-name",
     "title-follows", "title-pct", "toggle-scoped", "interval", "toggle-auto",
     "threshold", "toggle-login", "refresh-now", "quit",
-    "resets-auto", "toggle-weekly-for-model", "use-reset",
+    "resets-auto", "toggle-weekly-for-model", "toggle-before-switch", "use-reset",
 })
 
 
