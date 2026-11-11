@@ -568,6 +568,67 @@ class TestConfig:
         assert all(len(line) <= 80 for line in err.splitlines())
 
 
+class TestConfigAfterItIsOn:
+    """The other way round: with resets.beforeSwitch on, a change to
+    resets.auto or resets.enabled that leaves it doing nothing says so."""
+
+    def _run(self, argv, capsys):
+        from tests.test_config_cli import _run
+
+        return _run(argv, capsys)
+
+    def _on(self, capsys, auto: str = "active") -> None:
+        assert self._run(["set", "resets.auto", auto], capsys)[0] == 0
+        assert self._run(["set", "resets.beforeSwitch", "true"], capsys) == (
+            0, "resets.beforeSwitch = true\n", "")
+
+    @pytest.mark.parametrize("auto", ["off", "last-resort"])
+    def test_resets_auto_where_it_does_nothing(self, temp_home, capsys, auto):
+        self._on(capsys)
+        code, out, err = self._run(["set", "resets.auto", auto], capsys)
+        assert (code, out) == (0, f"resets.auto = {auto}\n")
+        assert err == f"resets.beforeSwitch has no effect while resets.auto is {auto}\n"
+
+    def test_resets_enabled_false(self, temp_home, capsys):
+        self._on(capsys)
+        code, out, err = self._run(["set", "resets.enabled", "false"], capsys)
+        assert (code, out) == (0, "resets.enabled = false\n")
+        assert err == "resets.beforeSwitch has no effect while resets.enabled is false\n"
+
+    def test_unset_resets_auto_back_to_last_resort(self, temp_home, capsys):
+        self._on(capsys)
+        code, out, err = self._run(["unset", "resets.auto"], capsys)
+        assert (code, out) == (0, "resets.auto unset (default: last-resort)\n")
+        assert err == "resets.beforeSwitch has no effect while resets.auto is last-resort\n"
+
+    @pytest.mark.parametrize("argv", [
+        ["set", "resets.auto", "on-limit"], ["set", "resets.auto", "active"],
+        ["set", "resets.enabled", "true"], ["set", "resets.threshold", "100"],
+    ])
+    def test_no_note_where_it_still_applies(self, temp_home, capsys, argv):
+        self._on(capsys)
+        code, _out, err = self._run(argv, capsys)
+        assert (code, err) == (0, "")
+
+    @pytest.mark.parametrize("before_switch", [None, "false"])
+    @pytest.mark.parametrize("argv", [
+        ["set", "resets.auto", "off"], ["set", "resets.auto", "last-resort"],
+        ["set", "resets.enabled", "false"], ["unset", "resets.auto"],
+    ])
+    def test_no_note_while_it_is_off_or_unset(self, temp_home, capsys, before_switch, argv):
+        self._run(["set", "resets.auto", "active"], capsys)
+        if before_switch is not None:
+            self._run(["set", "resets.beforeSwitch", before_switch], capsys)
+        code, _out, err = self._run(argv, capsys)
+        assert (code, err) == (0, "")
+
+    def test_list_and_get_show_it(self, temp_home, capsys):
+        code, out, _ = self._run([], capsys)
+        line = next(ln for ln in out.splitlines() if ln.startswith("resets.beforeSwitch"))
+        assert line.split()[1] == "false" and "(default)" in line
+        assert self._run(["get", "resets.beforeSwitch"], capsys)[1] == "false\n"
+
+
 # -- the documents quote what the code prints ------------------------------------------
 
 REPO = Path(__file__).resolve().parents[1]
@@ -622,6 +683,17 @@ def test_the_documents_quote_the_config_note():
 
     note = _config_set_note(Path("/nonexistent"), setting_spec("resets.beforeSwitch"), True)
     assert f"$ qswap config set resets.beforeSwitch true\nresets.beforeSwitch = true\n{note}\n" in (
+        _page("docs/resets.md"))
+
+
+def test_the_documents_quote_the_note_after_it_is_on(tmp_path):
+    from ai_quota_swap.cli import _config_set_note
+    from ai_quota_swap.settings import setting_spec
+
+    set_setting(tmp_path, "resets.beforeSwitch", "true")
+    set_setting(tmp_path, "resets.auto", "off")
+    note = _config_set_note(tmp_path, setting_spec("resets.auto"), "off")
+    assert note and f"$ qswap config set resets.auto off\nresets.auto = off\n{note}\n" in (
         _page("docs/resets.md"))
 
 

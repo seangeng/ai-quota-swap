@@ -1571,7 +1571,8 @@ def _say_unwatched_key(switcher, as_json: bool) -> None:
 
 def _config_set_note(root, spec, value) -> str | None:
     """One line after ``qswap config set`` when the value it saved does
-    nothing as the other settings stand, with the command that changes that.
+    nothing as the other settings stand, with the command that changes that;
+    or when it leaves ``resets.beforeSwitch``, already on, doing nothing.
     ``resets.enabled`` is named before ``resets.auto``: it is the outer
     switch."""
     from ai_quota_swap.settings import RESET_BEFORE_SWITCH_MODES, load_reset_settings
@@ -1582,6 +1583,15 @@ def _config_set_note(root, spec, value) -> str | None:
             return "No effect while resets.enabled is false: qswap config set resets.enabled true"
         if rs.auto not in RESET_BEFORE_SWITCH_MODES:
             return f"No effect while resets.auto is {rs.auto}: qswap config set resets.auto active"
+        return None
+    if spec.dotted == "resets.enabled" and value is False:
+        idle = "resets.enabled is false"
+    elif spec.dotted == "resets.auto" and value not in RESET_BEFORE_SWITCH_MODES:
+        idle = f"resets.auto is {value}"
+    else:
+        return None
+    if load_reset_settings(root).before_switch:
+        return f"resets.beforeSwitch has no effect while {idle}"
     return None
 
 
@@ -1733,6 +1743,11 @@ settings (README, Configuration, describes each):
             if unset_setting(root, args.key):
                 default = setting_spec(args.key).default
                 print(f"{args.key} unset (default: {format_setting_value(default)})")
+                # The default can leave resets.beforeSwitch doing nothing too
+                # (resets.auto back to last-resort).
+                note = _config_set_note(root, setting_spec(args.key), default)
+                if note:
+                    print(muted(note), file=sys.stderr)
             else:
                 print(muted(f"{args.key} is not set; it already uses its default"), file=sys.stderr)
     except ProviderError as e:

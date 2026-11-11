@@ -120,6 +120,14 @@ resets.beforeSwitch = true
 No effect while resets.auto is last-resort: qswap config set resets.auto active
 ```
 
+With it on, a later change that leaves it doing nothing says so too:
+
+```text
+$ qswap config set resets.auto off
+resets.auto = off
+resets.beforeSwitch has no effect while resets.auto is off
+```
+
 ## Guards
 
 Spending a reset cannot be undone, so every automatic spend passes these checks.
