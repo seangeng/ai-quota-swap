@@ -314,35 +314,6 @@ def check_for_update(current_version: str) -> str | None:
         return None
 
 
-def _installed_version_on_disk() -> str | None:
-    """The version ai-quota-swap actually has on disk after an upgrade.
-
-    importlib.metadata resolves the running environment, so it still reports
-    the pre-upgrade version from inside this process. A fresh interpreter
-    started from sys.executable reads the tool directory uv/pipx rewrote,
-    giving an honest after-version for both install methods without parsing
-    `uv tool list` / `pipx list` output. Best effort: any failure or timeout
-    returns None so a verification hiccup never masks the upgrade's own exit
-    status.
-    """
-    code = (
-        "import importlib.metadata as m\n"
-        "print(m.version('ai-quota-swap'))"
-    )
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        )
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    version = result.stdout.strip()
-    return version or None
-
-
 def install_identity() -> dict:
     """``{"version", "source"}`` of the ai-quota-swap this process runs.
 
@@ -374,16 +345,34 @@ def describe_identity(identity: dict | None) -> str:
     return f"{version} ({str(source)[:7]})" if source else version
 
 
-def _installed_identity_on_disk() -> dict | None:
-    """:func:`install_identity` as a fresh interpreter sees it after an upgrade.
+def _same_build(a: dict, b: dict) -> bool:
+    """Whether two identities name one build: the same version and commit."""
+    return (a.get("version"), a.get("source")) == (b.get("version"), b.get("source"))
 
-    Same reasoning as :func:`_installed_version_on_disk`: this process still
-    reports the pre-upgrade build. Best effort, None on any failure.
+
+def _installed_identity_on_disk() -> dict | None:
+    """:func:`install_identity` of the build on disk after an upgrade.
+
+    importlib.metadata resolves the running environment, so it still reports
+    the pre-upgrade build from inside this process. A fresh interpreter
+    started from sys.executable reads the tool directory uv/pipx rewrote,
+    giving an honest after-build for both install methods without parsing
+    `uv tool list` / `pipx list` output. It reads the package metadata only
+    (the version, and the commit in ``direct_url.json`` as
+    :func:`install_identity` does), never the new build's own code, whose
+    functions may have other names. Best effort: any failure or timeout
+    returns None so a verification hiccup never masks the upgrade's own exit
+    status.
     """
     code = (
-        "import json\n"
-        "from ai_quota_swap.update_check import install_identity\n"
-        "print(json.dumps(install_identity()))"
+        "import importlib.metadata as m, json\n"
+        "d = m.distribution('ai-quota-swap')\n"
+        "try:\n"
+        "    raw = d.read_text('direct_url.json')\n"
+        "    commit = (json.loads(raw).get('vcs_info') or {}).get('commit_id') if raw else None\n"
+        "except Exception:\n"
+        "    commit = None\n"
+        "print(json.dumps({'version': d.version, 'source': commit or None}))"
     )
     try:
         result = subprocess.run(
@@ -396,10 +385,12 @@ def _installed_identity_on_disk() -> dict | None:
         identity = json.loads(result.stdout)
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
         return None
-    return identity if isinstance(identity, dict) else None
+    if not isinstance(identity, dict) or not identity.get("version"):
+        return None
+    return identity
 
 
-def _restart_menubar_if_rebuilt(before: dict) -> None:
+def _restart_menubar_if_rebuilt(before: dict, after: dict | None) -> None:
     """Restart a RUNNING menu bar service when the upgrade changed the build.
 
     launchd keeps the old process until something restarts it; until now the
@@ -408,11 +399,12 @@ def _restart_menubar_if_rebuilt(before: dict) -> None:
     version and commit, so a git install that keeps its version string counts.
     Other upgrade routes (``uv tool upgrade`` by hand) are covered by the next
     plain ``qswap menubar``, which compares the worker's build stamp.
+    ``after`` is :func:`_installed_identity_on_disk`'s answer, None when the
+    build on disk could not be read.
     """
     from ai_quota_swap.printer import warning
 
-    after = _installed_identity_on_disk()
-    if after is None or after == before:
+    if after is None or _same_build(after, before):
         return
     from ai_quota_swap import launch_agent
     from ai_quota_swap.exceptions import ProviderError
@@ -436,8 +428,11 @@ def run_self_upgrade(current_version: str | None = None) -> int:
     manager is missing from PATH. After a successful run it verifies what
     actually landed on disk and reports the before -> after, since a package
     manager can exit 0 without changing anything (uv's "Nothing to upgrade",
-    #491). A uv install with a release cooldown also gets told about a release
-    the cooldown hides, since uv itself only reports "Nothing to upgrade".
+    #491). The report names the build, version and commit (``0.1.0 (ad03d17)
+    -> 0.1.0 (fdeb279)``), since every git install of one release shares its
+    version. A uv install with a release cooldown also gets told about a
+    release the cooldown hides, since uv itself only reports "Nothing to
+    upgrade".
     """
     from ai_quota_swap.printer import accent, error, warning
 
@@ -445,8 +440,8 @@ def run_self_upgrade(current_version: str | None = None) -> int:
         from ai_quota_swap import __version__
 
         current_version = __version__
-    before = current_version
-    before_identity = install_identity()
+    # Read before the package manager rewrites direct_url.json.
+    before = {**install_identity(), "version": current_version}
 
     method = _detect_install_method()
     commands = {
@@ -495,14 +490,16 @@ def run_self_upgrade(current_version: str | None = None) -> int:
     # rewrote, so the report is honest for both install methods. Verification
     # is best effort: a failure or timeout returns None and we stay silent,
     # never masking the upgrade's own exit status.
-    after = _installed_version_on_disk()
-    if before and after and after != before:
-        print(accent(f"ai-quota-swap upgraded: {before} -> {after}"))
-    elif before and after:
-        print(f"ai-quota-swap is still at {after}.")
+    after = _installed_identity_on_disk()
+    if after is not None and not _same_build(after, before):
+        print(accent(
+            f"ai-quota-swap upgraded: {describe_identity(before)} -> {describe_identity(after)}"
+        ))
+    elif after is not None:
+        print(f"ai-quota-swap is still at {describe_identity(after)}.")
 
     if sys.platform == "darwin":
-        _restart_menubar_if_rebuilt(before_identity)
+        _restart_menubar_if_rebuilt(before, after)
 
     if method == "uv":
         notice = held_back_release_notice(current_version)

@@ -1,7 +1,7 @@
 [project]
 name = "ai-quota-swap"
 version = "0.1.0"
-description = "Keep several Claude Code and Codex accounts, see the quota each has left, and switch by hand or automatically; with usage resets, token costs, a terminal dashboard and a macOS menu bar"
+description = "Claude Code and Codex account switcher: multiple accounts, live 5-hour and weekly quota, auto-switch before usage limits, usage resets, token costs, terminal dashboard, macOS menu bar"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -18,20 +18,32 @@ keywords = [
     "claude-code",
     "anthropic",
     "codex",
+    "codex-cli",
     "openai-codex",
     "account-switcher",
     "multi-account",
+    "claude-max",
+    "auto-switch",
+    "usage-limits",
     "rate-limit",
     "quota",
+    "usage-tracker",
     "usage-tracking",
     "token-usage",
+    "cost-tracking",
+    "api-key",
     "cli",
     "tui",
     "menubar",
+    "macos",
+    "claude-swap",
+    "cswap",
+    "qswap",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
+    "Environment :: MacOS X",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS",
@@ -41,6 +53,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Monitoring",
     "Topic :: Utilities",
 ]
 

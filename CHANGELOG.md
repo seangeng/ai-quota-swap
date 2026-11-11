@@ -17,6 +17,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - Read-only commands never ask; a question is only asked on a terminal, and without one the command stops with a line naming `--yes` (now on `remove`, `purge`, `add --slot`, `add-token --slot` and `qswap codex remove`). Cancelling `purge` changes nothing, the menu bar included.
 - Usage errors exit 64 (not 2, which `auto --once` uses for "nothing to do"); every `--json` failure is the error envelope, and every payload carries `schemaVersion`. `priority --json` is new.
 - Messages fit 80 columns and name commands by verb, never by a legacy flag. `qswap budget` and `qswap api org` output are not yet wrapped or worded this way.
+- `qswap upgrade` names the build before and after, with the commit of a git install, so a new commit of the same version reads as an upgrade (`ai-quota-swap upgraded: 0.1.0 (ad03d17) -> 0.1.0 (fdeb279)`) and no change as `ai-quota-swap is still at 0.1.0 (fdeb279).`; `qswap --version` adds the commit too (`qswap 0.1.0 (fdeb279)`). A PyPI install reads as before.
 
 ### Dashboard
 
@@ -91,6 +92,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `docs/settings.md` is generated from the settings in the code (`scripts/settings_doc.py`), and a test fails when a setting is missing from it, when it is stale, or when a link or anchor in any Markdown file does not resolve.
 - Every screenshot is regenerated from the current build, most from a new `showcase` scenario, and the auto-switch and reset recordings are re-made.
 - The README opens on the menu bar, with a picture of its menu in front of the dashboard, and docs/menubar.md walks through the menu; the demo harness now draws the menu bar from `build_menu` (`run.py SCENARIO --menubar --html FILE`, dark and light, any submenu open) and the notification the app posts for a switch, and new recordings show the menu bar switching, the quick start and the dashboard.
+- The README's title, first paragraph and section headings say what people search for (a Claude Code and Codex account switcher, multiple accounts, 5-hour and weekly limits, auto-switch), a FAQ answers eight common questions, and a line says the project is independent of Anthropic and OpenAI; the package's summary, keywords and classifiers match, for PyPI.
 
 ### Tooling
 

@@ -88,6 +88,22 @@ def _prog_name() -> str:
     return name
 
 
+class _VersionAction(argparse.Action):
+    """``--version``: ``qswap 0.1.0``, and ``qswap 0.1.0 (fdeb279)`` for a git
+    install, whose builds of one release all carry the same version. The
+    commit is read when the flag is given, so no other command pays for it."""
+
+    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS,
+                 help="print the version"):
+        super().__init__(option_strings, dest=dest, default=default, nargs=0, help=help)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from ai_quota_swap.update_check import describe_identity, install_identity
+
+        print(f"{parser.prog} {describe_identity(install_identity())}")
+        parser.exit()
+
+
 # Memorable subcommand aliases → the long-standing flags they expand to. Lets
 # users type `qswap list`, `qswap status`, `qswap add`, etc. instead of `--list`
 # / `--status` / `--add-account`, which all still work. `switch` is special-cased
@@ -2509,11 +2525,7 @@ def _dispatch(argv: list[str]) -> None:
     )
 
     # Version and debug flags (outside mutually exclusive group)
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
+    parser.add_argument("--version", action=_VersionAction)
     parser.add_argument(
         "--debug",
         action="store_true",
