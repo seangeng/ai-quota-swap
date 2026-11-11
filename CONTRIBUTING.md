@@ -108,7 +108,7 @@ CI runs the same command. The rule selection, and the rules left out until the c
 3. Anything that changes behaviour gets a design doc in `docs/design/`, or an update to an existing one, before or with the code. The existing ones show the format.
 4. JSON output is a contract that only grows. Add fields; never rename, remove or retype one. Document new fields in [docs/json-output.md](docs/json-output.md).
 5. Text output follows [docs/design/ux.md](docs/design/ux.md): one word per thing, 80 columns, the next command to run on every dead end.
-6. Update the user docs your change affects, and add a line to the Unreleased section of [CHANGELOG.md](CHANGELOG.md). A new setting also needs its meaning and an example value in `scripts/settings_doc.py`; run it to regenerate [docs/settings.md](docs/settings.md). `tests/test_docs.py` fails while the page is stale or a link in any Markdown file is broken.
+6. Update the user docs your change affects, and add a line to the Unreleased section of [CHANGELOG.md](CHANGELOG.md). A new setting also needs its meaning and an example value in `scripts/settings_doc.py`; run it to regenerate [docs/settings.md](docs/settings.md). `tests/test_docs.py` fails while the page is stale or a link in any Markdown file is broken, and `tests/test_docs_examples.py` while a page quotes an API-key message the code no longer prints.
 
 ## Regenerate screenshots
 
