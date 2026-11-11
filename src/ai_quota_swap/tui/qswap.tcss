@@ -231,7 +231,7 @@ ConfirmModal, AddTokenModal, OutputModal, CommandModal {
     margin-top: 1;
 }
 
-/* Flat chip buttons: quiet at rest, terracotta block when focused. ←/→ move
+/* Flat chip buttons: quiet at rest, a violet block when focused. ←/→ move
    focus between them, Enter presses — the accent shows where Enter lands. */
 .modal-buttons Button {
     border: none;
@@ -274,4 +274,10 @@ ConfirmModal, AddTokenModal, OutputModal, CommandModal {
 
 AddTokenModal Input {
     margin-bottom: 1;
+}
+
+/* The placeholders are the fields' only labels. Textual draws them in
+   $text-disabled, under 3:1 on the light theme; muted text reads at AA. */
+AddTokenModal Input > .input--placeholder {
+    color: $secondary;
 }

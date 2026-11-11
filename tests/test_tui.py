@@ -2356,3 +2356,25 @@ class TestThemeWiring:
             await menu_select(pilot, "theme:light")
             assert app._theme_name == "light"
             assert app.theme == "qswap-light"
+
+    @pytest.mark.parametrize("setting", ["dark", "light"])
+    async def test_add_token_placeholders_are_muted_text(self, tmp_path, setting):
+        # The placeholders are the form's only labels, so they take the muted
+        # text colour, which reads at AA, not Textual's fainter default.
+        from textual.widgets import Input
+
+        from ai_quota_swap.tui import theme
+
+        (tmp_path / "settings.json").write_text(json.dumps({"ui": {"theme": setting}}))
+        fake = FakeSwitcher([make_account("1", active=True)], tmp_path)
+        app = make_app(fake)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await settle(pilot)
+            await menu_select(pilot, "add-menu")
+            await menu_select(pilot, "add-token")
+            muted = theme.MUTED if setting == "dark" else theme.MUTED_LIGHT
+            inputs = list(app.screen.query(Input))
+            assert len(inputs) == 3
+            for field in inputs:
+                colour = field.get_component_rich_style("input--placeholder").color
+                assert colour.triplet.hex == muted, field.id
