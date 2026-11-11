@@ -493,6 +493,73 @@ class TestCodex:
         assert stats.missing == 1
         assert env.sums("codex")["requests"] == 1
 
+    @pytest.mark.parametrize("when", ["before-its-stat", "before-its-read"])
+    def test_a_file_deleted_after_the_listing_is_vanished_not_missing(
+        self, env, monkeypatch, when
+    ):
+        """Decision R4-2: an entry that no longer exists at all when the scan
+        fails to read it was deleted between the listing and the read. It is
+        counted as vanished, not as an unreadable (missing) entry."""
+        gone = write_lines(env.transcript("gone.jsonl"), [claude_line(mid="m-1", ts=T0)])
+        write_lines(env.transcript("kept.jsonl"), [claude_line(mid="m-2", ts=T0)])
+        real_stat_all = scanner._stat_all
+
+        def stat_all(paths):
+            if when == "before-its-stat":
+                gone.unlink()
+                return real_stat_all(paths)
+            stats = real_stat_all(paths)
+            gone.unlink()
+            return stats
+
+        monkeypatch.setattr(scanner, "_stat_all", stat_all)
+        stats = env.scan(("claude",))
+        assert (stats.vanished, stats.missing, stats.missing_paths) == (1, 0, [])
+        assert (stats.to_json()["vanished"], stats.to_json()["missing"]) == (1, 0)
+        assert env.sums("claude")["requests"] == 1
+
+    def test_a_broken_link_is_missing_not_vanished(self, env):
+        link = env.transcript("linked.jsonl")
+        link.parent.mkdir(parents=True)
+        link.symlink_to(env.home / "unmounted-volume" / "linked.jsonl")
+        stats = env.scan(("claude",))
+        assert (stats.missing, stats.vanished) == (1, 0)
+        assert stats.to_json()["vanished"] == 0
+
+    @pytest.mark.skipif(
+        os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+        reason="mode 000 keeps only a POSIX non-root reader out",
+    )
+    def test_a_file_it_may_not_read_is_missing_not_vanished(self, env):
+        locked = write_lines(env.transcript("locked.jsonl"), [claude_line(mid="m-1", ts=T0)])
+        locked.chmod(0)
+        try:
+            stats = env.scan(("claude",))
+        finally:
+            locked.chmod(0o600)
+        assert (stats.missing, stats.vanished) == (1, 0)
+
+    @pytest.mark.skipif(
+        os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+        reason="a directory's search bit keeps only a POSIX non-root reader out",
+    )
+    def test_a_file_in_a_directory_it_may_not_enter_is_missing_not_vanished(self, env):
+        """Decision R4-2: a permission error stays missing. A directory the
+        scan can list but not enter (mode 0600, as after a recursive chmod
+        600) still holds its files: they are unreadable, not deleted."""
+        write_lines(env.transcript("kept.jsonl"), [claude_line(mid="m-1", ts=T0)])
+        held = write_lines(
+            env.transcript("held.jsonl", slug="-work-other"), [claude_line(mid="m-2", ts=T0)]
+        )
+        held.parent.chmod(0o600)
+        try:
+            stats = env.scan(("claude",))
+        finally:
+            held.parent.chmod(0o700)
+        assert (stats.missing, stats.vanished) == (1, 0)
+        assert stats.missing_paths == [str(held)]
+        assert env.sums("claude")["requests"] == 1
+
     def test_symlinked_rollouts_are_read(self, env):
         real = write_lines(env.home / "archive" / rollout_name(THREAD_A), [
             codex_meta(T0, THREAD_A), codex_turn(T0), codex_record(T0, THREAD_A, "resp-1"),

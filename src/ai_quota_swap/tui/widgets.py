@@ -615,7 +615,7 @@ def panel_pieces(fleet: data.Fleet, width: int, palette: Palette, app) -> list[_
             block = blocks[(view.provider, acc.number)]
             row = row_text(
                 block, width, palette, column=column, extra=account_extra(acc),
-                over_budget=data.over_budget(acc),
+                over_budget=data.key_needs_attention(acc),
             )
             if acc.is_active:
                 pieces.extend(_card_pieces(
@@ -630,6 +630,12 @@ def panel_pieces(fleet: data.Fleet, width: int, palette: Palette, app) -> list[_
                 pieces.append(_Piece(lines, "row", section, compact=[row]))
             else:
                 pieces.append(_Piece([row], "row", section))
+        notes = tuple(getattr(getattr(view, "snapshot", None), "key_notes", ()) or ())
+        if notes:
+            # The key helper line names an account that cannot give a key, or
+            # run profiles kept a stale settings copy: the repair, in words.
+            pieces.append(_Piece(sentences([" ".join(n.strip() for n in notes)],
+                                           width, palette.sev_warn), "note", section))
     return pieces
 
 

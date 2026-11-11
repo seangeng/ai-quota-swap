@@ -479,6 +479,7 @@ class TestBlocks:
     def test_api_key_spend_as_the_command_line_prints_it(self):
         entry = UsageEntry(sentinel=USAGE_API_KEY, api_spend={
             "spend": {"used": 14.0, "limit": 20.0, "pct": 70.0}, "today": 10.0,
+            "as_of": time.time(),  # measured just now: the budget is held (A4)
         })
         acc = make_account(3, kind="api_key", entry=entry)
         block = self._block(acc)
@@ -1976,7 +1977,9 @@ class TestAutoScreen:
             await settle(pilot)
             plain = _candidates(app)
             rows = plain.splitlines()
-            assert rows[-1].startswith("  #5 user5@example.com") and "last resort" in rows[-1]
+            # A key with neither a budget nor a credit is one auto-switch
+            # never enters (decision A2): it says so, last.
+            assert rows[-1] == "  #5 user5@example.com  API key · no budget or credit, not used"
             assert "user8@" not in plain  # at its budget
 
     async def test_candidates_rank_by_policy_headroom_under_a_weekly_line(self, tmp_path, fake_engine):

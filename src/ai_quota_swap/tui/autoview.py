@@ -19,6 +19,7 @@ engines are the only fetchers.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -29,12 +30,13 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, RichLog, Static
 
-from ai_quota_swap import display, oauth, printer
+from ai_quota_swap import api_spend, display, oauth, printer
 from ai_quota_swap.autolog import AutoLog
 from ai_quota_swap.autoswitch import (
     AutoSwitchEngine,
     AutoSwitchEvent,
     pct_label,
+    key_entry_hold,
     rotation_candidates,
 )
 from ai_quota_swap.json_output import USAGE_RELOGIN_REQUIRED
@@ -144,11 +146,25 @@ def next_best(
         else:
             ranked.append((-binding.line_headroom, order, cand))
     out = [c for _k, _o, c in sorted(ranked, key=lambda t: (t[0], t[1]))] + rest
+    # A key the engine would not enter says why, after those it would
+    # (decisions A2 and A4; ux.md: a skipped account shows why everywhere).
+    unused: list[Candidate] = []
+    now = time.time()
     for number in picked.api_key:
         acc = accounts[number]
         name = display.account_label(acc.number, alias=acc.alias or None, email=acc.email)
-        out.append(Candidate(number, name, "API key · only as a last resort"))
-    return out
+        hold = key_entry_hold(getattr(acc.usage, "api_spend", None), now=now)
+        if hold == "key-no-limit":
+            unused.append(Candidate(number, name, "API key · no budget or credit, not used"))
+        elif hold == "spend-unknown":
+            unused.append(Candidate(number, name, f"API key · {api_spend.LIMIT_NOT_ENFORCED}"))
+        elif hold == "limit-latched":
+            latched = api_spend.latch_of(getattr(acc.usage, "api_spend", None)) or "budget"
+            words = api_spend.LATCHED_WORDS[latched]
+            unused.append(Candidate(number, name, f"API key · {words}, not used"))
+        else:
+            out.append(Candidate(number, name, "API key · only as a last resort"))
+    return out + unused
 
 
 @dataclass

@@ -36,6 +36,7 @@ from ai_quota_swap.tui.data import (
     ProviderView,
     cost_line,
     format_duration,
+    login_email,
     run_action,
     settings_root,
     usage_report,
@@ -389,8 +390,14 @@ class QswapApp(App):
                 return True
             if (
                 not result.ok and not log_out_sessions and result.error
-                and result.error_type == "SessionsRunningError"
+                and result.error_type in ("SessionsRunningError", "KeyHelperUnavailableError")
+                # No saved-key way to offer (another apiKeyHelper, a
+                # credential in the settings' env block): the refusal shows.
+                and (result.error_fields or {}).get("logOutSessions") is not False
             ):
+                # Through the key helper a switch to a key asks nothing; this
+                # is the saved-key way, offered when the helper cannot be
+                # added (docs/design/api-key-sessions.md).
                 fields = result.error_fields or {}
                 self._offer_log_out_sessions(
                     provider, str(number), result.error, int(fields.get("sessions") or 0),
@@ -399,6 +406,7 @@ class QswapApp(App):
                     # error.from_key: re-activating the active key is not a
                     # key-to-key switch.
                     from_key=bool(fields.get("fromKey")),
+                    helper=result.error_type == "KeyHelperUnavailableError",
                 )
                 return True
             if not result.ok:
@@ -424,14 +432,18 @@ class QswapApp(App):
 
     def _offer_log_out_sessions(
         self, provider: str, number: str, error: str, sessions: int, anyway: bool,
-        *, from_key: bool = False,
+        *, from_key: bool = False, helper: bool = False,
     ) -> None:
         # The command line's refusal as a question; the button is what
         # "qswap switch N --log-out-sessions" says to run. Cancel is the focus.
+        title = (
+            display.KEY_HELPER_QUESTION_TITLE if helper
+            else display.api_key_question_title(sessions, from_key=from_key)
+        )
         self.push_screen(
             ConfirmModal(
                 display.api_key_question(error),
-                title=display.api_key_question_title(sessions, from_key=from_key),
+                title=title,
                 yes_label=display.api_key_question_button(from_key=from_key),
                 default_no=True,
             ),
@@ -531,14 +543,12 @@ class QswapApp(App):
 
     def live_email(self, provider: str) -> str | None:
         """The provider's live login: the active managed account's email, or
-        the unmanaged login's."""
+        the unmanaged login's; under a key, the login underneath it
+        (:func:`ai_quota_swap.tui.data.login_email`)."""
         view = self.fleet.view(provider) if self.fleet else None
         if view is None:
             return None
-        if view.active_number is not None:
-            acc = view.account(view.active_number)
-            return acc.email if acc else None
-        return view.live_email
+        return login_email(view)
 
     def add_current(self, provider: str) -> None:
         sw = self.switcher_for(provider)

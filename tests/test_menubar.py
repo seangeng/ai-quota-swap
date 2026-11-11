@@ -15,6 +15,7 @@ import json
 import plistlib
 import sqlite3
 import sys
+import time
 import threading
 from pathlib import Path
 
@@ -461,8 +462,9 @@ def test_row_codex_reset_credits():
 
 def _api_reading(used=212.40, limit=500.0, today=4.12, source="ledger"):
     pct = used / limit * 100 if limit else None
+    # Measured just now: a budget is held only with a fresh figure (A4).
     return {"spend": {"used": used, "limit": limit, "pct": pct}, "today": today,
-            "source": source, "as_of": _NOW, "unpriced_tokens": 0}
+            "source": source, "as_of": time.time(), "unpriced_tokens": 0}
 
 
 def test_row_api_key_with_a_budget_is_compact():
@@ -493,6 +495,23 @@ def test_row_api_key_over_budget_is_never_cut_where_it_matters():
     text = _row(long_name).text
     assert text == "#5 · API key · $4.12 today · $520.00/$500 (104%, over budget) est."
     assert len(text) <= menubar.ROW_LIMIT
+
+
+def test_row_api_key_at_its_budget_with_a_credit_never_cuts_the_credit():
+    """The re-check's case: the budget reached and a credit with cents. The
+    row read "... · $1,187.03 of $1…", at a glance a credit of one dollar.
+    The credit gives way whole (the tooltip keeps it)."""
+    reading = _api_reading(used=25.22, limit=20.0, today=2.06)
+    reading["credit"] = {"amount": 1187.03, "used": 0.0, "left": 1187.03, "spent": False,
+                         "expired": False, "since": "2026-11-01T00:00:00Z", "expires": None,
+                         "source": "ledger", "unpriced_tokens": 0}
+    acc = _acct(number="5", email="ci@example.com", alias="ci", kind="api_key",
+                active=True, entry=Reading(sentinel=USAGE_API_KEY, api_spend=reading))
+    row = _row(acc)
+    assert len(row.text) <= menubar.ROW_LIMIT
+    assert "$25.22/$20 (126%, over budget) est." in row.text
+    assert row.text.endswith(("credit left", "over budget) est.")), row.text
+    assert "$1,187.03 of $1,187.03 credit left" in row.tooltip
 
 
 def test_row_placeholder_name_is_never_an_address_or_cut_mid_word():

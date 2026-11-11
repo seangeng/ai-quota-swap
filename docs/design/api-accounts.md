@@ -127,7 +127,11 @@ reference includes a bucket that ends at `ending_at`. The organization total in 
 cent: the per-key figure leaves out web search, code execution, discounts and credits.
 
 The local figure is read from the ledger without a scan, read-only, with UTC month and day
-bounds, and refreshes when `qswap usage` scans (which now records `last_scan_at`).
+bounds, and refreshes when the ledger is scanned (`qswap usage`, the menu bar every 15
+minutes, the dashboard every 5, and the engine before it enters a key and every 5 minutes
+while a key with a budget or credit is active; each records `last_scan_at`). Tokens of a
+model with no price count toward a budget or credit at the dearest rate in the table for
+their kind of token, never as zero (`unpriced_tokens` says how many).
 
 Months and days are UTC, as in Anthropic's reports (buckets snap to UTC boundaries).
 
@@ -135,14 +139,21 @@ Months and days are UTC, as in Anthropic's reports (buckets snap to UTC boundari
 
 `qswap budget ACCOUNT AMOUNT` sets a monthly budget in dollars; `qswap budget ACCOUNT off`
 removes it; `qswap budget` lists them. Stored on the account record like `threshold`, and
-carried across a `--slot` re-add like the other user settings.
+carried across a `--slot` re-add and an `import --force` like the other user settings.
 
 - At or over budget, an API-key account is not a candidate for auto-switch.
 - If the active account is an API-key account at or over budget, the engine treats it as at
   its limit (trigger `at-limit`) and looks for another account.
 - At 80% the engine emits one `budget-warning` event per account per month, remembered in
   `autoswitch_state.json` (`budgetWarnings`).
-- With no budget, or no figure to hold it against, behaviour is unchanged.
+- A budget or credit needs a figure no older than 20 minutes (`as_of`: Anthropic's report
+  time or the ledger's last scan). Without one the engine treats the key as at its limit
+  (`spend-unknown`), and the rows say `limit not enforced: no spend figure`.
+- A key the engine judged at its limit stays so in `autoswitch_state.json` until the month
+  rolls over (budget) or the budget or credit is set again, so a reading that drops because
+  its source got worse does not make it a candidate.
+- A key with neither a budget nor a credit is never entered by the engine. The rest of the
+  rules for using a key are in [api-key-sessions.md](api-key-sessions.md#live-activation-the-default-for-api-key-accounts).
 
 A budget is a brake inside qswap, not a hard cap at Anthropic. The docs say so and point to
 workspace spend limits in the Console for a real cap.

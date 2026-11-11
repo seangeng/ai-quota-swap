@@ -331,8 +331,10 @@ class TestSettingSpecs:
         by_section: dict[str, set[str]] = {}
         for spec in SETTING_SPECS.values():
             by_section.setdefault(spec.section, set()).add(spec.field)
+        # Where the settings came from (``settings_root``, ``pinned``) is
+        # not a setting: those fields are left out of comparison (EM11).
         assert by_section["autoswitch"] == {
-            f.name for f in AutoSwitchSettings.__dataclass_fields__.values()
+            f.name for f in AutoSwitchSettings.__dataclass_fields__.values() if f.compare
         }
         assert by_section["ui"] == {
             f.name for f in UiSettings.__dataclass_fields__.values()

@@ -129,7 +129,7 @@ With pipx: `pipx install --force 'ai-quota-swap[menubar] @ git+https://github.co
 
 ## A running session still uses the old account
 
-A switch changes the login on disk. A program that is already running reads it again on its own schedule, and qswap's message after the switch says when. The two lines below are for subscription accounts; a running session never moves to an API key ([below](#not-logged-in-after-switching-to-an-api-key)).
+A switch changes the login on disk. A program that is already running reads it again on its own schedule, and qswap's message after the switch says when. The two lines below are for subscription accounts; a switch to an API key reaches running sessions within a few seconds ([api-accounts.md](api-accounts.md#switch-to-an-api-key)).
 
 - **Claude Code on macOS**: `Claude Code picks up the new account within 30 seconds; restart it to apply now.` Claude Code caches the Keychain item for about that long.
 - **Claude Code on Linux and Windows**, or on macOS when the Keychain could not be used: `Claude Code uses the new account from its next message.` Claude Code reads `.credentials.json` again when it changes.
@@ -137,15 +137,97 @@ A switch changes the login on disk. A program that is already running reads it a
 
 Continuing a conversation on another account starts without the old account's prompt cache, so its first message may use more quota than usual.
 
-A switch has no effect at all while `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` is set in your shell: Claude Code uses that instead of its login. `qswap run` ignores them for its session and says so (`Ignoring ANTHROPIC_API_KEY for this session ...`); `qswap switch` cannot. `qswap switch` warns when one of them is set (`Warning: ANTHROPIC_API_KEY is set; claude started here ignores the switch.`), and `qswap doctor` lists them, by name only. Remove them from your shell and its startup files:
+A switch has no effect at all while `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` is set in your shell: Claude Code uses that instead of its login. `qswap run` ignores them for its session and says so (`Ignoring ANTHROPIC_API_KEY for this session ...`); `qswap switch` cannot. `qswap switch` warns when one of them is set (`Warning: ANTHROPIC_API_KEY is set; claude started here ignores the switch.`), and `qswap doctor` lists them, by name only. A switch to an API key is the exception for `CLAUDE_CODE_OAUTH_TOKEN`: qswap's key line comes before it in Claude Code's order, so a `claude` started from that shell uses the key too, and the warning says so (`Warning: CLAUDE_CODE_OAUTH_TOKEN is set, but the key line comes before it, so claude started here uses the key too.`). `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` come before the line as well. Remove them from your shell and its startup files:
 
 ```bash
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
 ```
 
+## A session stays on an API key
+
+`qswap switch 1` took the key line out of `~/.claude/settings.json`, and a session still sends its requests with the key. Check, in that order:
+
+- `qswap status` names the active account. If it still says `#5 ci · active · API key`, the line is still there: the switch failed (it says why), or another program wrote an older copy of the settings back, which status reports as `The key line for #5 ci came back after qswap took it out` with the command that leaves it (within 24 hours of qswap taking it out; a line written later is yours). The line can also be another qswap's, one with another data directory: status then says `~/.claude/settings.json holds the key line of another qswap, whose data directory is ~/elsewhere`, and only removing that line, or that qswap's own switch, moves the sessions. `qswap doctor` shows what `~/.claude/settings.json` holds.
+- The session was started with `qswap run 5`: its key is on its own command line and lasts as long as it does. Quit it and start it again.
+- The session was started while the key was saved the older way (`--log-out-sessions`) and you switched to another key since: such a session keeps its key until you restart it.
+- Another settings layer sets an `apiKeyHelper` of its own. Claude Code reads its settings in this order, the first one that sets a value winning: managed settings, `--settings`, the project's `.claude/settings.local.json`, its `.claude/settings.json`, and last your user settings, where qswap's line is (Anthropic's documentation). A helper in any of the others outranks qswap's line in both directions, and qswap cannot change those files: remove the helper there. `qswap doctor` warns about the managed settings and about the project settings of the directory it runs in.
+
+A session moves when Claude Code sees the settings file change, about a second after the write (measured on Claude Code 2.1.322). One that has been idle moves on its next request.
+
+## The key line was left behind after a crash
+
+qswap stopped between its two steps (a crash, a reboot, a killed terminal), or its account was removed by hand. `qswap doctor` names what is left and the command that repairs it:
+
+```text
+Claude Code
+  fail  ~/.claude/settings.json makes #9 the active API key, but #9 does not
+        exist; new Claude Code sessions fail to get a key, and running ones keep
+        the key they have until the settings change
+        fix: qswap switch 1
+```
+
+A running session that already holds a key keeps sending it while the line fails, so the sessions of an account removed by hand go on spending on its old key until the line changes (seen on Claude Code 2.1.322).
+
+Run profiles keep their settings copy while any line of qswap's is in, so they are reported once the line is gone (a crash between removing the line and restoring the profiles):
+
+```text
+Claude Code
+  fail  2 qswap run profiles keep a copy of Claude Code's settings from while a
+        key was active, so changes to the settings do not reach them
+        fix: qswap switch 1
+```
+
+`qswap switch` to the account underneath removes a line that cannot give a key and puts the run profiles' settings links back; it also clears a record of a key whose line is gone, and gives its own copy to a run profile that still shares the settings while the line is in. A line you deleted by hand leaves such a record, which doctor reports as one warning with the way off the key first:
+
+```text
+Claude Code
+  warn  qswap made #5 ci the active API key, and the account list names it as
+        the active account, but its key line is no longer in
+        ~/.claude/settings.json; Claude Code sessions do not use it
+        fix: qswap switch 1
+        to use the key again: qswap switch 5
+```
+
+`qswap list`, `qswap status`, the dashboard and the menu bar say the same, the two steps in the same order. When the login under it is one qswap does not manage, the first step is `qswap add`, which saves that login and clears the record too. Without qswap, delete the `apiKeyHelper` line from `~/.claude/settings.json` by hand ([api-accounts.md](api-accounts.md#removing-the-line-by-hand)).
+
+When `~/.claude/settings.json` is not valid JSON while qswap's record names a key, qswap cannot tell whether its line is still in the file, and every command that would change accounts stops with the same sentence:
+
+```text
+$ qswap switch 1
+Error: ~/.claude/settings.json cannot be read (line 1: Illegal trailing comma
+  before end of object); qswap last made #5 ci the active API key there, and its
+  key line may still be in it. Fix the JSON in ~/.claude/settings.json, then
+  retry.
+```
+
+`qswap status`, `qswap list`, the dashboard and the menu bar show it too, `qswap doctor` fails with it, and auto-switch stops switching (`settings-unreadable` in JSON). When the file is there but cannot be read at all (its permissions, say), the sentence says `could not be read: PermissionError` in the brackets and ends `Make ~/.claude/settings.json readable, then retry.`
+
+## "apiKeyHelper script is failing"
+
+Claude Code says `Your apiKeyHelper script is failing` when the command in the line printed no key. A new session fails at once; one that already holds the key keeps sending it until the settings change. Check the line's command yourself: with `--check` it prints nothing when the key can be read, and otherwise one line saying what is wrong (`qswap doctor` runs the same check):
+
+```bash
+qswap key-helper 5 --check
+```
+
+- `#5 does not exist` or `is a subscription account`: the line names the wrong account. `qswap switch N` to the account you want removes or replaces it.
+- `has no saved key` or `saved credential is not an API key`: save it again with `qswap add-token KEY --slot 5`. A switch refuses such an account, so this only happens when the saved key is changed or lost after the switch.
+- `the Keychain could not be read`: unlock the login keychain (a remote shell may not have it unlocked).
+- The command itself is not found: qswap was reinstalled somewhere else. `qswap switch 5` points the line at this qswap; `qswap doctor` reports it too.
+
+## "Invalid API key · Fix external API key"
+
+Every prompt in every Claude Code session stalls for about four minutes and then shows `Invalid API key · Fix external API key`. The API rejected the key that qswap's line gives: it was revoked, mistyped, or belongs to an organization that disabled it. Claude Code runs the helper again after each rejection and retries, 13 requests in all (seen on Claude Code 2.1.322), so every session on the machine waits the same way. Go back to the subscription underneath, which needs no restart:
+
+```bash
+qswap switch 1
+```
+
+Then save a working key with `qswap add-token KEY --slot 5` before you switch to it again. `qswap switch 5` cannot tell a rejected key from a good one: it makes no request with it.
+
 ## Not logged in after switching to an API key
 
-Claude Code sessions answer `Not logged in · Please run /login` about 30 seconds after a switch to an API-key account. A running Claude Code looks up a saved API key once, when it starts, so a session that started on a subscription cannot use the key, and the switch took its login away. qswap refuses this switch while sessions are running unless you pass `--log-out-sessions`, and the menu bar asks first; older versions did not.
+Claude Code sessions answer `Not logged in · Please run /login` about 30 seconds after a switch to an API-key account made with `--log-out-sessions`, or by a qswap older than the key line. Such a switch saves the key where a running Claude Code never picks it up, and takes its login away. qswap does this only when you pass `--log-out-sessions` (or answer *Switch and log out sessions* in the menu bar or the dashboard).
 
 Do not run `/login` in those sessions. Either:
 
@@ -159,9 +241,15 @@ Do not run `/login` in those sessions. Either:
 
 `qswap doctor` lists this state as `#5 ci (API key) is active and 6 Claude Code sessions that started on a subscription are running`. After a switch from one API key to another, sessions started on an earlier key keep using it until you restart them.
 
-## An API-key switch is refused, but no session is running
+## A switch to an API key is refused
 
-`qswap switch 5` stops with `qswap could not read Claude Code's session records, so it cannot tell whether sessions are running`, and auto-switch never moves onto the key. A Claude Code that was killed while writing can leave a record half written, and qswap cannot tell whether its process still runs. The refusal and `qswap doctor` name the file:
+The switch says why and what to do, and changes nothing. The cases, with their messages, are in [api-accounts.md](api-accounts.md#when-the-line-cannot-be-added):
+
+- `~/.claude/settings.json already sets another apiKeyHelper`: every session uses that helper now. Remove it from the file, then switch again. When that helper is another qswap's key line (another data directory), the refusal adds `That apiKeyHelper is the key line of another qswap, whose data directory is ~/elsewhere.`
+- `~/.claude/settings.json sets ANTHROPIC_API_KEY in its env block` (or `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`): Claude Code obeys that before any key line. Remove it from the `env` block, then switch again. `qswap switch 5` to the key already active refuses the same way when such a variable was added since, and `qswap list` and `qswap status` say so.
+- `~/.claude/settings.json is not valid JSON`: fix the file, then switch again. The same goes for a file qswap cannot write, and for a `qswap run` profile it cannot give its copy of the settings. Only these refusals offer `--log-out-sessions`, the saved-key way, which logs running sessions out.
+
+Session records matter only in those refusals, where qswap says what `--log-out-sessions` would do to running sessions. A Claude Code that was killed while writing can leave a record half written, and qswap cannot tell whether its process still runs, so the refusal says `qswap could not read the Claude Code session records, so it cannot tell whether sessions are running on the shared login` and names the file:
 
 ```text
 This session record could not be read:
@@ -169,7 +257,11 @@ This session record could not be read:
 If Claude Code process 4101 is gone, delete the file.
 ```
 
-Check with `ps -p 4101` (or Task Manager on Windows) and delete the file when no Claude Code runs as that process. A record whose process has already exited is ignored without asking.
+Check with `ps -p 4101` (or Task Manager on Windows) and delete the file when no Claude Code runs as that process. A record whose process has already exited is ignored without asking. `qswap doctor` lists such records as a warning. A switch that can add the key line does not look at them, and neither does auto-switch.
+
+## Another machine's sessions fail after a settings sync
+
+The key line names this machine's path to `qswap` and an account number that means something only to this machine's qswap. If `~/.claude/settings.json` is a link into a dotfiles repository, or a sync tool copies it, while a key is active, another machine gets the line too. There, new Claude Code sessions fail with `Your apiKeyHelper script is failing` when that path or account does not exist, or move to whatever key that machine's qswap has as #5. On that machine, `qswap switch N` to its own subscription removes a line that cannot give a key; without qswap, delete the line by hand. On this machine, leave the key (`qswap switch 1`) before you commit or sync the file.
 
 ## Codex keeps its login in the OS keyring
 

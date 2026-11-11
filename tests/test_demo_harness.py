@@ -431,9 +431,50 @@ class TestScenarioStates:
         assert all(len(row) <= 72 for row in self._account_rows(r.stdout))
         r = _run(["usage", "--menubar"])
         assert r.returncode == 0, r.stderr
-        assert "7 days $179.72 (estimated)" in r.stdout  # qswap usage's total
+        # qswap usage's total; Haiku 5.5 prompts over 100,000 tokens at
+        # their own price (pricing.py, ANTHROPIC_LONG).
+        assert "7 days $180.55 (estimated)" in r.stdout
         r = _run(["empty-claude", "--menubar"])
         assert "Claude Code is logged in as maya@example.com. Add it with: qswap add" in r.stdout
+
+    def test_an_active_api_key_renders_in_the_sandbox(self):
+        # The documents quote the states under an active key: the switch,
+        # doctor (which runs the key line with --check) and the switch to the
+        # key already active (which runs it too). The line names the demo's
+        # own ~/.local/bin/qswap, never this checkout, and nothing spawns.
+        r = _run(["fleet", "--width", "80", "--", "switch", "5", "++", "doctor",
+                  "++", "switch", "5"])
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "crossed the sandbox" not in r.stderr
+        assert "Go back with: qswap switch 1" in r.stdout
+        assert (
+            "  ok    active API key: #5 ci, through qswap's key line in\n"
+            "        ~/.claude/settings.json, which runs ~/.local/bin/qswap\n"
+        ) in r.stdout
+        assert "Already on #5 ci (API key)\n" in r.stdout
+        assert str(REPO) not in r.stdout
+        # --menubar after commands: the menu for the state they leave.
+        r = _run(["fleet", "--menubar", "--", "switch", "5"])
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "✓ #5 ci · API key · over #1 personal · no usage recorded\n" in r.stdout
+        assert "#1 personal · underneath · 5h 46% · 7d 38%" in r.stdout
+
+    def test_last_resort_moves_to_the_key_with_a_budget(self):
+        # Every subscription at its limit, the key with a budget and a fresh
+        # spend figure: auto-switch's last resort, and what the surfaces say
+        # about a key it entered: the --once tick that entered it watches it
+        # for 15 minutes (decision DS4).
+        r = _run(["last-resort", "--width", "80", "--", "auto", "--once", "++", "status"])
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "Switched #1 personal → #5 ci · 5h limit reached\n" in r.stdout
+        assert "#5 ci · active · API key · over #1 personal · by auto-switch" in r.stdout
+        assert "Auto-switch entered #5 ci and last checked it just now (qswap auto --once)." in (
+            r.stdout
+        )
+        assert "nothing watches its limit" not in r.stdout
+        r = _run(["last-resort", "--", "budget", "5", "off", "++", "auto", "--once"])
+        assert r.returncode == 3, r.stdout + r.stderr
+        assert "#5 ci has no budget or credit; set one" in r.stdout
 
     def test_trouble_seeds_a_quarantine_the_engine_honours(self):
         # After `list` reads it, the quarantined account (4) has a fresh,

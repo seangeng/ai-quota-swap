@@ -4,12 +4,18 @@ Transcripts do not say which account produced them, so each provider's data
 root carries an append-only ``activations.jsonl``. One JSON object per line::
 
     {"ts": "2026-11-10T14:12:26.123Z", "number": 2, "email": "a@example.com",
-     "org": "", "source": "switch"}
+     "org": "", "source": "switch", "how": "login"}
 
 ``source`` is ``"switch"`` when qswap switched the live login, and
 ``"observed"`` when qswap noticed that the live login differs from the last
 line (a manual ``/login``, another tool). An event belongs to the account whose
 interval contains its timestamp; usage before the first line is unattributed.
+
+``how`` (docs/design/api-key-sessions.md) says how the account was made
+active: ``login`` (the live claude.ai login), ``helper`` (an API key through
+qswap's ``apiKeyHelper`` line, which every session follows within seconds) or
+``saved-key`` (an API key saved for Claude Code, which only sessions started
+after the activation use). Lines written before the field existed have none.
 
 The writers here are called from the switch path and from a cheap observation
 point, so they must never raise into the caller and never block: no locks, one
@@ -29,6 +35,7 @@ from pathlib import Path
 
 FILENAME = "activations.jsonl"
 SOURCES = ("switch", "observed")
+HOWS = ("login", "helper", "saved-key")
 
 # Per-process memory of the last line seen per log file, keyed by path:
 # ((size, mtime_ns), (email, org)). Lets the observation point skip the tail
@@ -123,6 +130,7 @@ def record_activation(
     org: str | None,
     source: str = "switch",
     now: float | None = None,
+    how: str | None = None,
 ) -> bool:
     """Append one activation line. Returns True when a line was written.
 
@@ -137,16 +145,16 @@ def record_activation(
             num = int(number) if number is not None else None
         except (TypeError, ValueError):
             num = None
-        _append(
-            path,
-            {
-                "ts": _iso(time.time() if now is None else now),
-                "number": num,
-                "email": email,
-                "org": org or "",
-                "source": source if source in SOURCES else "switch",
-            },
-        )
+        line = {
+            "ts": _iso(time.time() if now is None else now),
+            "number": num,
+            "email": email,
+            "org": org or "",
+            "source": source if source in SOURCES else "switch",
+        }
+        if how in HOWS:
+            line["how"] = how
+        _append(path, line)
         key = _stat_key(path)
         if key is not None:
             _last_seen[str(path)] = (key, (email, org or ""))
@@ -162,6 +170,7 @@ def observe_live_login(
     email: str,
     org: str | None,
     now: float | None = None,
+    how: str | None = None,
 ) -> bool:
     """Append an ``observed`` line when the live login differs from the last line.
 
@@ -184,7 +193,7 @@ def observe_live_login(
         if last == ident:
             return False
         return record_activation(
-            root, number=number, email=email, org=org, source="observed", now=now
+            root, number=number, email=email, org=org, source="observed", now=now, how=how
         )
     except Exception:
         return False
@@ -196,6 +205,7 @@ class Activation:
     account: str  # identity_key
     number: int | None
     source: str
+    how: str = ""
 
 
 class ActivationLog:
@@ -229,6 +239,7 @@ class ActivationLog:
                             account=identity_key(email, obj.get("org") or ""),
                             number=num if isinstance(num, int) else None,
                             source=str(obj.get("source") or ""),
+                            how=str(obj.get("how") or ""),
                         )
                     )
         except OSError:
@@ -246,6 +257,80 @@ class ActivationLog:
         """The account live at ``ts``; ``""`` (unattributed) before the first line."""
         i = bisect.bisect_right(self._times, ts) - 1
         return self.activations[i].account if i >= 0 else ""
+
+    def _hows(self) -> list[str]:
+        """The ``how`` in force from each line: a line with none continues
+        the one before it when that is the same account."""
+        hows: list[str] = []
+        for i, a in enumerate(self.activations):
+            how = a.how
+            if not how and i > 0 and self.activations[i - 1].account == a.account:
+                how = hows[i - 1]
+            hows.append(how)
+        return hows
+
+    def helper_underneath(self, ts: float) -> str | None:
+        """The login under the API key active through qswap's key line at
+        ``ts``: the account in force before the run of helper lines that
+        ``ts`` falls in began (a switch from one key to another keeps the
+        same login under it). None when no key was active through the line
+        at ``ts``, or nothing was in force before it."""
+        i = bisect.bisect_right(self._times, ts) - 1
+        if i < 0:
+            return None
+        hows = self._hows()
+        if hows[i] != "helper":
+            return None
+        while i >= 0 and hows[i] == "helper":
+            i -= 1
+        return self.activations[i].account if i >= 0 else None
+
+    def saved_key_periods(self) -> bool:
+        """Whether any line activated an API key as a saved key."""
+        return any(a.how == "saved-key" for a in self.activations)
+
+    def saved_key_owner(
+        self, account: str, hour: int, session_start: float | None
+    ) -> str | None:
+        """The account usage of ``account`` in UTC epoch ``hour`` belongs to
+        instead, under the saved-key rule (docs/design/api-key-sessions.md):
+        in a ``saved-key`` period only sessions started after the activation
+        used the key, so a session whose first event is before it stays with
+        the account live before. None when the rule does not apply.
+
+        Each line starts its own period, also within a run of lines for one
+        account: the ``how`` in force at the bucket's time decides (a line
+        with none continues the one before it). A bucket is an hour, so the
+        rule applies only when every line of ``account`` in force during the
+        hour is a saved-key one: any part of the hour under the helper line
+        (or a login) keeps the usage on the key, the side that counts the
+        key's spend high. The session is compared with the earliest of those
+        periods, and its usage goes to the account in force just before that
+        period, unless that is ``account`` itself (a helper line before the
+        saved-key one: the session was on the key all along)."""
+        if session_start is None:
+            return None
+        lo, hi = hour * 3600, (hour + 1) * 3600
+        acts = self.activations
+        hows: list[str] = []
+        starts: list[int] = []
+        for i, a in enumerate(acts):
+            how, start = a.how, i
+            if not how and i > 0 and acts[i - 1].account == a.account:
+                how, start = hows[i - 1], starts[i - 1]
+            hows.append(how)
+            starts.append(start)
+        in_force = [
+            i for i, a in enumerate(acts)
+            if a.account == account and a.ts < hi and (i + 1 == len(acts) or acts[i + 1].ts > lo)
+        ]
+        if not in_force or any(hows[i] != "saved-key" for i in in_force):
+            return None
+        first = min(starts[i] for i in in_force)
+        if session_start >= acts[first].ts:
+            return None
+        before = acts[first - 1].account if first > 0 else ""
+        return None if before == account else before
 
     def numbers(self) -> dict[str, int]:
         """Last known account number per identity, for accounts since removed."""

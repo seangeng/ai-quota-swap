@@ -383,6 +383,13 @@ class AccountBlock:
     error: str | None = None
     retry_in_s: float | None = None
     set_aside: str | None = None
+    #: The subscription whose login is live under an active key (docs/design/
+    #: api-key-sessions.md): shown ``underneath``, never ``active``.
+    underneath: bool = False
+    #: On an active key: the account underneath (``#1 personal``).
+    over: str = ""
+    #: On an active key: auto-switch entered it (``by auto-switch``).
+    by_engine: bool = False
 
 
 def label_for(block: AccountBlock, *, long: bool = True) -> str:
@@ -425,10 +432,16 @@ def header_parts(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ")
     facts: list[tuple[str, str]] = []
     if block.active:
         facts.append(("active", "active"))
+    elif block.underneath:
+        facts.append((UNDERNEATH, "underneath"))
     if block.disabled:
         facts.append(("disabled", "disabled"))
     if block.kind == "api_key":
         facts.append(("API key", "api-key"))
+    if block.over:
+        facts.append((over_fact(block.over), "over"))
+    if block.by_engine:
+        facts.append((BY_ENGINE, "over"))
     if block.plan:
         facts.append((block.plan, "plan-lapsed" if block.plan_warning else "plan"))
     if block.org:
@@ -481,6 +494,7 @@ def header_line(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ") 
     styles: dict[str, Callable[[str], str]] = {
         "active": bolded, "disabled": muted, "api-key": muted,
         "plan": muted, "plan-lapsed": yellowed, "org": muted,
+        "underneath": muted, "over": muted,
     }
     parts = header_parts(block, width=width, indent=indent)
     styled_name = accent(parts.name) if parts.alias else parts.name
@@ -730,6 +744,9 @@ def block_from_entry(
     kind: str = "oauth",
     lines: Lines = Lines(),
     set_aside: str | None = None,
+    underneath: bool = False,
+    over: str = "",
+    by_engine: bool = False,
     sentinel_notes: dict[str, str] | None = None,
     login_row: WindowRow | None = None,
     now: float,
@@ -766,6 +783,8 @@ def block_from_entry(
         number=number, email=email, alias=alias, provider=provider,
         show_provider=show_provider, active=active, disabled=disabled,
         plan=plan, plan_warning=plan_warning, org=org, kind=kind,
+        underneath=underneath and not active, over=over if active else "",
+        by_engine=by_engine and active,
     )
     sentinel = getattr(entry, "sentinel", None)
     last_good = getattr(entry, "last_good", None)
@@ -956,7 +975,9 @@ def api_key_question(refusal: str) -> str:
         if line.startswith("To switch anyway"):
             break
         records.append(line)
-    return "\n".join([text[:1].upper() + text[1:], *records])
+    if not text.startswith("qswap "):  # a command's name keeps its case
+        text = text[:1].upper() + text[1:]
+    return "\n".join([text, *records])
 
 
 def api_key_question_title(sessions: int, *, from_key: bool = False) -> str:
@@ -1094,6 +1115,475 @@ def api_key_followup(
     return []
 
 
+# -- part 2: the key helper (docs/design/api-key-sessions.md) -----------------------
+#
+# An API-key account is active while qswap's apiKeyHelper line is in Claude
+# Code's user settings. Every session that reads that file follows it within a
+# few seconds, running or new; the subscription whose login is live stays
+# logged in "underneath", and sessions return to it when the line goes.
+
+#: How a switch made an account active (the activation log's ``how``).
+HOW_HELPER = "helper"
+HOW_SAVED_KEY = "saved-key"
+HOW_LOGIN = "login"
+
+#: The question's title (menu bar, dashboard) when the key helper cannot be
+#: added and the saved-key way is offered instead.
+KEY_HELPER_QUESTION_TITLE = "Use the saved key instead?"
+
+#: The sentence every move onto a key carries. Remote Control needs the
+#: claude.ai login too: Anthropic's documentation says API keys are not
+#: supported there (decision B9, F57).
+KEY_CONNECTORS = (
+    "claude.ai connectors and Remote Control are unavailable while a key is in use."
+)
+
+#: The header fact of the subscription under an active key.
+UNDERNEATH = "underneath"
+#: The header fact of a key auto-switch entered (decision B8).
+BY_ENGINE = "by auto-switch"
+
+
+#: The way off a key when there is no subscription to go back to.
+KEY_NO_WAY_BACK = "log in to a subscription (claude, then /login), then run: qswap add"
+
+
+def key_unwatched(key: str, back: str | None, watch: object = None) -> list[str]:
+    """Auto-switch entered the active key: when no engine watches it, nothing
+    leaves the key at its budget or credit, or when a subscription has room.
+    ``back`` is the way back (``key_way_back``); None: no subscription.
+    ``watch`` is ``engine_watching()`` (``autoswitch.KeyWatch``): no line
+    while a loop watches, when it last checked while a recent ``--once``
+    tick does, and otherwise that only a dry run runs or when an engine last
+    checked (decisions DS3, DS4). Without it: nothing is running."""
+    from ai_quota_swap.autoswitch import key_watch_words
+
+    words = key_watch_words(key, watch)
+    if words is None:
+        return []
+    words = words[0].upper() + words[1:]
+    if watch:
+        return wrap(f"{words}.")
+    step = f"To go back: {back}" if back else f"To leave it, {KEY_NO_WAY_BACK}"
+    return wrap(f"{words}. {step}")
+
+
+def over_fact(underneath: str) -> str:
+    """The header fact of an active key: ``over #1 personal``."""
+    return f"over {underneath}"
+
+
+def key_switch_followup(
+    *, target: str, underneath: str | None, from_key: str | None = None,
+    back: str | None = None, no_way_back: bool = False,
+) -> list[str]:
+    """What follows "Switched … (API key)" on the helper path: where running
+    sessions go, the login that stays underneath (an account, or the address
+    of a login qswap does not manage), what a key turns off, and the way back
+    (``back``, the one ``key_way_back`` gives every surface: the switch to the
+    account underneath or to a subscription, or ``qswap add`` over a login
+    qswap does not manage). ``no_way_back``: there is no subscription to go
+    back to, so it says how to leave (decision DS11)."""
+    if from_key:
+        first = (
+            f"Running Claude Code sessions move from {from_key} to {target} within "
+            "a few seconds."
+        )
+    else:
+        first = "Running Claude Code sessions move to the key within a few seconds."
+    parts = [first]
+    if underneath:
+        parts.append(f"{underneath} stays logged in underneath.")
+    parts.append(KEY_CONNECTORS)
+    if back == "qswap add":
+        parts.append(f"To go back, add that login first: {back}")
+    elif back:
+        parts.append(f"Go back with: {back}")
+    elif no_way_back:
+        parts.append(f"To leave it, {KEY_NO_WAY_BACK}")
+    return wrap(" ".join(parts))
+
+
+def key_leave_followup(target: str, *, login_switch: bool = False) -> list[str]:
+    """What follows "Switched #5 ci → #1 personal" when a key is left. With
+    ``login_switch`` the login changed too (the target was not underneath),
+    which Claude Code picks up within about 30 seconds."""
+    if login_switch:
+        return wrap(
+            f"Running Claude Code sessions move to {target} within about 30 seconds."
+        )
+    return wrap(f"Running Claude Code sessions are back on {target} within a few seconds.")
+
+
+#: After the saved key of the active key's account was replaced. The line is
+#: the same, so Claude Code keeps its cached key until the cache expires (5
+#: minutes in Claude Code 2.1.322) or a request is rejected (a 401 clears it).
+KEY_REFRESH = (
+    "Running Claude Code sessions pick up the new key within 5 minutes, or at once "
+    "after a request is rejected."
+)
+
+
+def key_still_active(key: str, number: str | int) -> list[str]:
+    """After ``qswap add`` saved the login while a key is active: sessions
+    keep the key, and the switch that puts them on that login."""
+    return wrap(
+        f"{key} is still the active API key; Claude Code sessions use it, not this "
+        f"login. To use this login: qswap switch {number}"
+    )
+
+
+def key_helper_refusal(
+    target: str, number: str | int, reason: str, sessions: int = 0, *,
+    from_key: str | None = None, prefix: str = "Error: ", records: Sequence[str] = (),
+    fix: str | None = None, paths: Sequence[str] = (),
+) -> str:
+    """Why a switch to the API-key account ``target`` was refused when qswap
+    cannot add its key line (``reason``: the settings file's path and what
+    is wrong with it), and the saved-key path that goes ahead anyway, which
+    only sessions started after the switch use. ``sessions`` is how many
+    Claude Code sessions run on the shared login (:data:`SESSIONS_UNKNOWN`
+    when the records could not be read); ``from_key`` names the active account
+    when it is a saved key too; ``records`` are the session records qswap
+    could not read (:func:`unreadable_records_lines`); ``paths``, what the
+    ``fix`` is about (run profiles), each whole on a line of its own."""
+    head = (
+        f"not switched. qswap cannot add the key line for {target} to the "
+        f"Claude Code settings: {reason}. Without it, the key can only be saved "
+        "for Claude Code, which a running session does not pick up."
+    )
+    if from_key:
+        body = (
+            "Sessions started while "
+            f"{from_key} was active keep using its key until you restart them."
+        )
+    elif sessions > 0:
+        are = "is" if sessions == 1 else "are"
+        each = "it stops" if sessions == 1 else "each one stops"
+        body = (
+            f"{_sessions(sessions)} {are} running on the shared login: about 30 "
+            f'seconds after the switch {each} with "Not logged in" until you '
+            "switch back or restart it."
+        )
+    elif sessions < 0:
+        body = (
+            "qswap could not read the Claude Code session records, so it cannot "
+            "tell whether sessions are running on the shared login; any that are "
+            'stop with "Not logged in" about 30 seconds after the switch.'
+        )
+    else:
+        body = "No Claude Code session is running on the shared login."
+    lines = wrap(prefix + head + " " + body, WIDTH - 2)
+    lines[0] = lines[0][len(prefix):]
+    return "\n".join([
+        *lines,
+        _STARTED_AFTER,
+        *unreadable_records_lines(records, WIDTH - 2),
+        *(f"  {path}" for path in paths),
+        # The fix that keeps everyone logged in comes before the override
+        # (F47): "Fix the JSON in ~/.claude/settings.json, then: ...".
+        *(wrap(f"{fix}, then: qswap switch {number}") if fix else []),
+        "To switch anyway:",
+        f"  qswap switch {number} {LOG_OUT_SESSIONS_FLAG}",
+    ])
+
+
+def join_names(names: Sequence[str]) -> str:
+    """``A``, ``A and B``, ``A, B and C``: the one way names are joined in a
+    sentence."""
+    names = list(names)
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+_and = join_names
+
+
+def shown_dir(path: str) -> str:
+    """A data directory in a sentence: in double quotes when it holds a
+    space, so it is never broken across lines."""
+    return f'"{path}"' if any(c.isspace() for c in path) else path
+
+
+def other_qswap_sentence(other_dir: str) -> str:
+    """Whose ``apiKeyHelper`` it is, when it is another qswap's (SS4)."""
+    return (
+        "That apiKeyHelper is the key line of another qswap, whose data directory "
+        f"is {shown_dir(other_dir)}."
+    )
+
+
+def key_helper_foreign_refusal(
+    target: str, number: str | int, path: str, *, log_out_sessions: bool = False,
+    prefix: str = "Error: ", other_dir: str | None = None,
+) -> str:
+    """Another ``apiKeyHelper`` is in the settings (decision B6, F47): every
+    session uses it now, and it outranks a saved key too, so the one way
+    forward is to remove it. ``log_out_sessions``: the refusal of
+    ``--log-out-sessions`` itself. ``other_dir``: the helper is another
+    qswap's key line, for that data directory (decision SS4)."""
+    if log_out_sessions:
+        head = (
+            f"not switched. {path} sets another apiKeyHelper, which outranks a saved "
+            "key: with --log-out-sessions every session would be logged out and "
+            "still use that helper."
+        )
+    else:
+        head = (
+            f"not switched. {foreign_helper_clause(path)}, so qswap cannot add the "
+            f"key line for {target} beside it."
+        )
+    if other_dir:
+        head += " " + other_qswap_sentence(other_dir)
+    lines = wrap(prefix + head, WIDTH - 2)
+    lines[0] = lines[0][len(prefix):]
+    return "\n".join([
+        *lines, *wrap(f"{foreign_helper_fix(path)}, then: qswap switch {number}"),
+    ])
+
+
+def foreign_helper_clause(path: str) -> str:
+    """What another ``apiKeyHelper`` in the settings does, in the words the
+    refusal and the note share (decision DS16)."""
+    return (
+        f"{path} already sets another apiKeyHelper, and every Claude Code session "
+        "uses it now, before any login or saved key"
+    )
+
+
+def foreign_helper_fix(path: str) -> str:
+    """The one way forward from another ``apiKeyHelper`` in the settings."""
+    return f"Remove apiKeyHelper from {path}"
+
+
+def foreign_helper_note(path: str) -> list[str]:
+    """Another program's ``apiKeyHelper`` (decision DS16): the note list,
+    status, the dashboard and the menu bar show, in the refusal's words."""
+    return wrap(
+        f"{foreign_helper_clause(path)}, so qswap cannot add a key line beside it. "
+        f"{foreign_helper_fix(path)}"
+    )
+
+
+def key_line_defeated_clause(path: str, names: Sequence[str]) -> str:
+    """What a variable in the settings' ``env`` block does to the key line,
+    in the words the refusal and the note share (decisions B6, DS16)."""
+    # The file sets them: the verb follows the file, however many there are.
+    return (
+        f"{path} sets {_and(names)} in its env block, which Claude Code obeys before "
+        "any key line"
+    )
+
+
+def key_line_defeated_fix(path: str, names: Sequence[str], number: str | int | None = None) -> str:
+    """Remove the variables; then the switch to ``number`` when one is named."""
+    then = f", then: qswap switch {number}" if number is not None else ""
+    return f"Remove {_and(names)} from the env block of {path}{then}"
+
+
+def key_line_defeated_refusal(
+    target: str, number: str | int, path: str, names: Sequence[str], *,
+    prefix: str = "Error: ", active: bool = False, host: str | None = None,
+    saved_key: bool = False,
+) -> str:
+    """The settings' ``env`` block sets a variable Claude Code obeys before
+    any key line (decision B6, F59): named, never its value. For a
+    credential, what the note says (:func:`key_line_outranked_consequence`,
+    decision R4-3): the key would be sent beside it (the first switch), or
+    still is (``active``: the switch to the key already active), to
+    ``host`` when ``ANTHROPIC_BASE_URL`` sends it there. A provider variable,
+    and the ``--log-out-sessions`` refusal (``saved_key``), keep "would not
+    use"."""
+    if saved_key or any(name in _PROVIDER_VARS for name in names):
+        what = f"so sessions would not use {target}"
+    else:
+        what = key_line_outranked_consequence(names, target, host, would=not active)
+    head = f"not switched. {key_line_defeated_clause(path, names)}, {what}."
+    lines = wrap(prefix + head, WIDTH - 2)
+    lines[0] = lines[0][len(prefix):]
+    return "\n".join([*lines, *wrap(key_line_defeated_fix(path, names, number))])
+
+
+#: The env variables that switch Claude Code to another provider: with one
+#: set, no key of Anthropic's is sent.
+_PROVIDER_VARS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+
+
+def key_line_outranked_consequence(
+    names: Sequence[str], key: str | None, host: str | None = None, *,
+    would: bool = False,
+) -> str:
+    """What a variable in the env block does while the key line of ``key``
+    is in. A credential (``ANTHROPIC_AUTH_TOKEN``, ``ANTHROPIC_API_KEY``)
+    takes the place of one header, and sessions still send the key from the
+    line in the other: measured on Claude Code 2.1.322 (x-api-key the key,
+    the bearer the token), and to ``host`` when ``ANTHROPIC_BASE_URL`` sends
+    it there. Which one Anthropic bills was not tested. Another provider
+    sends no key of Anthropic's. With no key active, no switch to one.
+    ``would``: the same fact before the line is in (a refusal)."""
+    if not key:
+        return "so qswap does not switch to an API key"
+    if any(name in _PROVIDER_VARS for name in names):
+        return f"so sessions do not use {key}"
+    what = "the credential that variable sets" if len(names) == 1 else (
+        "the credentials those variables set"
+    )
+    to = f" to {host}" if host else ""
+    send, may = ("would send", "could") if would else ("still send", "may")
+    return (
+        f"yet sessions {send} the key of {key} with every request{to}, beside "
+        f"{what}, so either {may} be billed"
+    )
+
+
+def key_line_outranked_note(
+    path: str, names: Sequence[str], key: str | None, number: str | int | None,
+    *, host: str | None = None,
+) -> list[str]:
+    """A variable in the env block outranks the key line (decision DS16):
+    over the active key ``key`` (its number ``number``), or, with none
+    active, over every key qswap would switch to. The refusal's words and
+    fix; what it does to the active key (:func:`key_line_outranked_consequence`)."""
+    what = key_line_outranked_consequence(names, key, host)
+    return wrap(
+        f"{key_line_defeated_clause(path, names)}, {what}. "
+        f"{key_line_defeated_fix(path, names, number if key else None)}"
+    )
+
+
+def other_qswap_note(path: str, other_dir: str) -> list[str]:
+    """The settings hold another qswap's key line (decision SS4): its key is
+    what every session uses, and this qswap does not touch it."""
+    return wrap(
+        f"{path} holds the key line of another qswap, whose data directory is "
+        f"{shown_dir(other_dir)}, so Claude Code sessions use that qswap's key, "
+        f"not an account here, until the line is removed. {foreign_helper_fix(path)}"
+    )
+
+
+def other_qswap_followup(path: str, other_dir: str) -> list[str]:
+    """After a switch to a subscription while another qswap's key line is in
+    the settings (decision SS4): the line stays, and so do the sessions."""
+    return wrap(
+        "Claude Code sessions stay on the key of another qswap, whose data "
+        f"directory is {shown_dir(other_dir)}, until its key line is removed from "
+        f"{path}."
+    )
+
+
+def key_sent_elsewhere(path: str, host: str, target: str) -> str:
+    """The one warning when the settings send the key to another host."""
+    return (
+        f"Warning: {path} sets ANTHROPIC_BASE_URL, so Claude Code sends the key of "
+        f"{target} to {host}."
+    )
+
+
+#: What a line that cannot give a key leaves running sessions with (E2, read
+#: on Claude Code 2.1.322): the key they hold, until the settings change or a
+#: request is rejected; only new sessions get none.
+BROKEN_LINE_RUNNING = "running ones keep the key they have until the settings change"
+
+
+def key_helper_problem(
+    number: str, why: str, fix_command: str, *, key: str | None = None,
+) -> list[str]:
+    """The lines every surface shows for a helper line naming an account that
+    does not exist or is not an API-key account (``why``: ``missing`` or
+    ``not-api-key``). ``key``: the account's name when it exists (``#7
+    work``, decision DS7); else its number."""
+    key = key or f"#{number}"
+    what = "does not exist" if why == "missing" else "is not an API-key account"
+    return wrap(
+        f"The Claude Code settings make {key} the active API key, but {key} "
+        f"{what}: new Claude Code sessions fail to get a key, and {BROKEN_LINE_RUNNING}. "
+        f"Remove the line: {fix_command}"
+    )
+
+
+def key_helper_moved(number: str, fix_command: str, *, key: str | None = None) -> list[str]:
+    """qswap's key line runs a qswap that is no longer there (a reinstall
+    moved it), so sessions on the key cannot get it. ``key``: the account's
+    name (``#5 ci``, decision DS7); else its number."""
+    key = key or f"#{number}"
+    return wrap(
+        f"The key line for {key} in the Claude Code settings runs a qswap that "
+        f"is no longer there: new Claude Code sessions fail to get the key, and "
+        f"{BROKEN_LINE_RUNNING}. Point it at this qswap: {fix_command}"
+    )
+
+
+#: Said when the user names the key auto-switch entered.
+KEY_KEPT = (
+    "Auto-switch keeps it now, and leaves it at its budget, when its credit is "
+    "spent or expires, or when its spend cannot be measured for 20 minutes."
+)
+
+
+def settings_fix(path: str, error: str | None) -> str:
+    """The step for a settings file qswap cannot use: ``Make PATH readable``
+    when reading it failed (its permissions, say), else ``Fix the JSON in
+    PATH`` (it was read and does not parse)."""
+    if (error or "").startswith("could not be read"):
+        return f"Make {path} readable"
+    return f"Fix the JSON in {path}"
+
+
+def key_settings_unreadable(path: str, error: str | None, key: str) -> list[str]:
+    """The settings cannot be read or parsed while qswap's record names a
+    key: the one note list, status, the dashboard, the menu bar, doctor, the
+    guards and a refused switch all show (decision B5)."""
+    why = f" ({error})" if error else ""
+    return wrap(
+        f"{path} cannot be read{why}; qswap last made {key} the active API key "
+        f"there, and its key line may still be in it. {settings_fix(path, error)}, "
+        "then retry."
+    )
+
+
+def key_line_came_back(key: str, fix_command: str) -> list[str]:
+    """qswap took the key line out and an older copy of the settings, written
+    back by another program, put it in again."""
+    return wrap(
+        f"The key line for {key} came back after qswap took it out: another program "
+        f"wrote an older copy of the Claude Code settings, so sessions use {key} "
+        f"again. To leave it: {fix_command}"
+    )
+
+
+def key_line_lost(key: str, path: str, number: str | int, back: str | None) -> list[str]:
+    """qswap's record names a key whose line is no longer in the settings
+    (removed by hand, say). The way off the key comes first (decision E1):
+    ``back``, the switch to the account underneath (``key_way_back``), which
+    clears the record; None: no subscription to go to. Using the key again
+    comes second, and says so."""
+    step = f"To leave it: {back}." if back else f"To leave it, {KEY_NO_WAY_BACK}."
+    return wrap(
+        f"qswap made {key} the active API key, but its key line is no longer in "
+        f"{path}, so Claude Code sessions do not use it. {step} To use the key "
+        f"again: qswap switch {number}"
+    )
+
+
+def profiles_still_linked_line(count: int, key: str, fix_command: str) -> list[str]:
+    """Run profiles still sharing the user settings while the key line is in."""
+    noun = "profile still shares" if count == 1 else "profiles still share"
+    its = "its" if count == 1 else "their"
+    return wrap(
+        f"{count} qswap run {noun} the Claude Code settings, so {its} sessions use "
+        f"{key} too. Give {'it its' if count == 1 else 'them their'} own copy: {fix_command}"
+    )
+
+
+def stale_copies_line(count: int, fix_command: str) -> list[str]:
+    """The run profiles left with a copy of the settings after the key line
+    was removed (a crash between the two steps)."""
+    noun = "profile keeps" if count == 1 else "profiles keep"
+    return wrap(
+        f"{count} qswap run {noun} a copy of the Claude Code settings from while a "
+        f"key was active. Restore the shared settings: {fix_command}"
+    )
+
+
 #: The variables that make Claude Code ignore the active account.
 OVERRIDE_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
 
@@ -1110,3 +1600,25 @@ def override_warning(names: Sequence[str]) -> str:
     else:
         subject = f"{', '.join(names[:-1])} and {names[-1]} are set"
     return f"Warning: {subject}; claude started here ignores the switch."
+
+
+#: Claude Code ranks the key line above this variable (its documented
+#: precedence; decision B6, F62): a session started with it follows the key.
+OAUTH_TOKEN_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+def override_warnings(names: Sequence[str], *, key_line: bool = False) -> list[str]:
+    """What ``qswap switch`` warns about the exported variables: with
+    ``key_line`` (a switch onto a key through the line) the OAuth token
+    variable does not override the switch, its sessions use the key too."""
+    names = list(names)
+    out: list[str] = []
+    ignoring = [n for n in names if not (key_line and n == OAUTH_TOKEN_VAR)]
+    if ignoring:
+        out.append(override_warning(ignoring))
+    if key_line and OAUTH_TOKEN_VAR in names:
+        out.append(
+            f"Warning: {OAUTH_TOKEN_VAR} is set, but the key line comes before it, so "
+            "claude started here uses the key too."
+        )
+    return out

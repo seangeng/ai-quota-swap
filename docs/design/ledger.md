@@ -97,8 +97,12 @@ Transcripts do not say which account served a request.
   (2.1.281 and later) writes `session-owner` lines with the `accountUuid` and
   `organizationUuid` of the account that started the session, set once and never updated. At
   report time, a session whose owner differs from the account the log gives for its first
-  event was started from a profile (whose login never changes), and all of it goes to the
-  owner. A default-tree session keeps time-based attribution, so a switch mid-session moves
+  event, and whose owner line came before that event (`owner_early`, recorded at scan time),
+  was started from a profile (whose login never changes), and all of it goes to the owner. A
+  session started while an API key's helper line was in is stamped only once the line is
+  gone, with the login's account (read in the 2.1.322 binary); its late stamp is ignored, so
+  its usage on the key stays on the key. A ledger written before the column existed reads
+  as early, which keeps its attribution. A default-tree session keeps time-based attribution, so a switch mid-session moves
   its later usage to the new account. Sessions starting before the first activation line stay
   unattributed.
 - Sessions with entrypoint `claude-desktop` (and `claude-desktop-3p`, `local-agent`) run on a

@@ -133,6 +133,15 @@ def ref_label(ref: Mapping | None, context: object = None) -> str:
     return number_label(ref.get("number"), ref.get("email") or "", context)
 
 
+def context_label(number: object, context: object = None) -> str:
+    """``#3 c@example.com``: an account's label with its email from the
+    tick's views (``context.accounts``) when the event carries none."""
+    for view in getattr(context, "accounts", ()) or ():
+        if str(getattr(view, "number", "")) == str(number):
+            return view_label(view, context)
+    return number_label(number, "", context)
+
+
 def view_label(view: object, context: object = None) -> str:
     """The label of an ``AccountView``; its own alias wins."""
     alias = getattr(view, "alias", "") or _alias(context, getattr(view, "number", None))
@@ -234,7 +243,13 @@ def account_facts(
         return "disabled", "dim"
     if state == "api-key":
         used = getattr(view, "used", False)
-        return ("API key, used as a last resort" if used else "API key, not used"), "dim"
+        if not used:
+            return "API key, not used", "dim"
+        # What the engine does with the key on this tick, as the dashboard's
+        # Next best says it (ux.md: a skipped account shows why everywhere).
+        return _key_view_words().get(getattr(view, "key_hold", None) or "", (
+            "API key, used as a last resort"
+        )), "dim"
     if state == "unavailable":
         return display.usage_unavailable(error), "dim"
     if state == "not-read":
@@ -430,12 +445,48 @@ def switch_reason(event: object) -> str:
             value = pct_text(binding.pct, pct_decimals(binding.line))
             return f"{binding.label} reached {value}%"
         return "switch line reached"
+    back = (
+        "; no subscription has room, so back to the account underneath"
+        if getattr(event, "back_underneath", False) else ""
+    )
+    if trigger == "key-return":
+        return "a subscription has room again"
     if trigger == "at-limit":
         if getattr(event, "over_budget", False):
-            return "monthly budget reached"
+            from ai_quota_swap import api_spend
+
+            reason = getattr(event, "limit_reason", None) or ""
+            words = {
+                "credit-spent": "credit spent",
+                "credit-expired": "credit expired",
+                api_spend.SPEND_UNKNOWN: api_spend.SPEND_UNKNOWN_WORDS,
+                api_spend.NO_LIMIT: api_spend.NO_LIMIT_WORDS,
+                "keys-off": KEYS_OFF_WORDS,
+            }.get(reason, "monthly budget reached")
+            if reason in ("", "budget", "credit-spent") and (
+                getattr(event, "limit_source", None) == api_spend.SOURCE_LEDGER
+            ):
+                words += " (estimate)"  # this machine's count, not Anthropic's
+            failure = getattr(event, "scan_failure", None)
+            if reason == api_spend.SPEND_UNKNOWN and failure:
+                # The scan could not cover the period: say why, not an age (EM3).
+                words = f"its spend is not known ({api_spend.scan_failure_words(failure)[0]})"
+            if reason == api_spend.SPEND_UNKNOWN and getattr(event, "dry_run", False):
+                # A dry run does not scan; a real run does first (EM6).
+                words += "; a real run measures it first and may stay"
+            return words + back
+        tail = ""
+        if getattr(event, "before_key", False):
+            # A subscription taken instead of an API key (decision EM9).
+            target = getattr(event, "target_binding", None)
+            if target is not None and target.over:
+                value = pct_text(target.pct, pct_decimals(target.line))
+                tail = f"; taken over its switch line ({target.label} {value}%) before an API key"
+            else:
+                tail = "; taken before an API key"
         if binding is not None and binding.pct >= 100.0:
-            return f"{binding.label} limit reached"
-        return "limit reached"
+            return f"{binding.label} limit reached{tail}"
+        return f"limit reached{tail}"
     if trigger == "failover":
         return "usage unreadable"
     if trigger == "consume-first":
@@ -447,10 +498,14 @@ def switch_reason(event: object) -> str:
     return trigger.replace("-", " ")
 
 
-def switch_sentence(event: object, *, src: str | None = None, dst: str | None = None) -> str:
+def switch_sentence(
+    event: object, *, src: str | None = None, dst: str | None = None, notes: bool = True,
+) -> str:
     """``Switched #1 personal → #2 work · 5h reached 91%``; a dry run
     ``Would switch … (dry run)``. ``src``/``dst`` replace the labels (the
-    renderer passes fitted ones)."""
+    renderer passes fitted ones). Onto a key, the usable resets auto mode
+    keeps follow, one per account (decision EM4); ``notes`` False leaves
+    them out for a renderer that prints each on a line of its own."""
     context = getattr(event, "context", None)
     src = ref_label(getattr(event, "from_ref", None), context) if src is None else src
     dst = ref_label(getattr(event, "to_ref", None), context) if dst is None else dst
@@ -458,10 +513,48 @@ def switch_sentence(event: object, *, src: str | None = None, dst: str | None = 
     verb = "Would switch" if getattr(event, "dry_run", False) else "Switched"
     move = f"{src} → {dst}" if src else f"to {dst}"
     tail = " (dry run)" if getattr(event, "dry_run", False) else ""
-    return f"{verb} {move} · {switch_reason(event)}{tail}"
+    if tail and getattr(event, "measures_first", False):
+        tail += "; a real run measures the spend first, and may not move"
+    kept = "".join(f"; {note}" for note in getattr(event, "reset_notes", ()) or ()) if notes else ""
+    return f"{verb} {move} · {switch_reason(event)}{tail}{kept}"
 
 
 # -- no switch, in words ---------------------------------------------------------------
+
+
+#: A key's limit as "past ..." reads it (stuck-on-key).
+def _key_view_words() -> dict[str, str]:
+    from ai_quota_swap import api_spend
+
+    return {
+        "key-no-limit": "API key, no budget or credit, not used",
+        "spend-unknown": f"API key, {api_spend.LIMIT_NOT_ENFORCED}",
+        "budget": "API key, monthly budget reached",
+        "credit-spent": "API key, credit spent",
+        "credit-expired": "API key, credit expired",
+        "latched-budget": f"API key, {api_spend.LATCHED_WORDS['budget']}, not used",
+        "latched-credit-spent": f"API key, {api_spend.LATCHED_WORDS['credit-spent']}, not used",
+        "key-left": "API key, not used until a subscription has room",
+    }
+
+
+_LIMIT_WORDS = {
+    "budget": "its monthly budget",
+    "credit-spent": "its credit",
+    "credit-expired": "its credit's expiry",
+    "spend-unknown": "its limit (its spend could not be measured)",
+    "no-limit": "its limit (it has no budget or credit)",
+}
+#: Why the engine left a key it entered after API keys were turned off (EM11).
+KEYS_OFF_WORDS = "API keys are turned off (autoswitch.includeApiKeyAccounts)"
+#: How a key was left at its limit, as "auto-switch left #2 ci ..." says it.
+_LEFT_WORDS = {
+    "budget": "at its monthly budget",
+    "credit-spent": "with its credit spent",
+    "credit-expired": "with its credit expired",
+    "spend-unknown": "when its spend could not be measured",
+    "no-limit": "as it has no budget or credit",
+}
 
 
 def _relogin_views(views: Iterable) -> list:
@@ -596,7 +689,21 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         who = number_label(account, "", context) if account else "a candidate"
         return f"re-checking {who}", "wait"
     if reason == "active-api-key":
+        if (getattr(event, "detail", "") or "").startswith("you chose"):
+            return "on the API key you chose", "routine"
         return "no quota to watch", "routine"
+    if reason == "no-subscription-room":
+        return "on the API key until a subscription has room", "routine"
+    if reason == "key-helper-unavailable":
+        return "not moving to an API key, its key line cannot be added", "wait"
+    if reason == "reset-pending":
+        return "a usage reset comes before an API key", "wait"
+    if reason == "usage-unreadable-hold":
+        account = getattr(event, "account", None)
+        who = context_label(account, context) if account else "a subscription"
+        return f"waiting for {who}'s usage before an API key", "wait"
+    # key-no-limit, spend-unknown, key-unusable and stuck-on-key need the
+    # user: the line is the whole sentence, with its command.
     if reason == "api-key-sessions":
         running = getattr(event, "sessions", None)
         if running and running > 0:
@@ -663,7 +770,142 @@ def no_switch_sentence(event: object) -> str:
             )
         return f"No switch yet: {detail}" if detail else "No switch yet: usage could not be re-read"
     if reason == "active-api-key":
+        if detail.startswith("you chose"):
+            return (
+                "No switch: you chose the active API key; auto-switch leaves it at its "
+                "budget, when its credit is spent or expires, or when its spend cannot "
+                "be measured for 20 minutes"
+            )
         return "No switch: the active account is an API key, which has no quota to watch"
+    if reason == "no-subscription-room":
+        return "No switch: staying on the API key until a subscription has room"
+    if reason == "key-helper-unavailable":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "an API-key account"
+        return (
+            f"Not switching to {who}: qswap cannot add its key line to Claude "
+            "Code's settings; see why with: qswap doctor"
+        )
+    if reason == "reset-pending":
+        account = getattr(event, "account", None)
+        if account:
+            # A planned reset put off for want of a fresh reading (EM4).
+            wait = getattr(event, "wait_s", None)
+            upto = (
+                f"; waiting up to {duration_text(wait)} for it"
+                if isinstance(wait, (int, float)) and wait > 0 else ""
+            )
+            return (
+                "Not switching to an API key yet: auto mode would spend a usage reset "
+                f"on {context_label(account, context)}, whose usage could not be read "
+                f"again this check{upto}"
+            )
+        return (
+            "Not switching to an API key yet: a usage reset was claimed, and its "
+            "refill comes first"
+        )
+    if reason == "usage-unreadable-hold":
+        account = getattr(event, "account", None)
+        who = context_label(account, context) if account else "a subscription"
+        wait = getattr(event, "wait_s", None)
+        upto = (
+            f"; waiting up to {duration_text(wait)} for it"
+            if isinstance(wait, (int, float)) and wait > 0 else ""
+        )
+        return (
+            f"Not switching to an API key yet: {who}'s usage could not be read this "
+            f"check{upto}"
+        )
+    if reason == "key-unusable":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "an API-key account"
+        return f"Not switching to {who}: {detail}" if detail else f"Not switching to {who}"
+    if reason == "switch-failed":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "a subscription"
+        why = (detail or "the switch failed").rstrip(".")
+        step = display.relogin_step(provider)
+        return f"Could not switch to {who}, so the next account was tried ({why}). To repair it, {step}"
+    if reason == "settings-unreadable":
+        # The sentence every surface shows for this state (decision B5).
+        return detail or "No switch: Claude Code's settings cannot be read; fix the file"
+    if reason == "stuck-on-key":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "the API key"
+        limit = _LIMIT_WORDS.get(getattr(event, "limit_reason", None) or "", "its limit")
+        way_off = getattr(event, "way_off", None)
+        step = (
+            f"Leave it with: qswap switch {way_off}" if way_off
+            else "Log in to Claude Code (claude, then /login), then run: qswap add"
+        )
+        if getattr(event, "limit_reason", None) == "keys-off":
+            return (
+                f"Staying on {who} though API keys are turned off: no login is under "
+                f"the key to go back to. {step}"
+            )
+        return f"Staying on {who} past {limit}: no login is under the key to go back to. {step}"
+    if reason == "key-no-limit":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "the API-key account"
+        number = account if account else "N"
+        return (
+            f"Not switching to an API key: {who} has no budget or credit; set one "
+            f"with: qswap budget {number} AMOUNT"
+        )
+    if reason == "key-left":
+        account = getattr(event, "account", None)
+        who = context_label(account, context) if account else "an API key"
+        why = _LEFT_WORDS.get(getattr(event, "limit_reason", None) or "", "at its limit")
+        other = getattr(event, "way_off", None)
+        step = (
+            f" To use {context_label(other, context)} now: qswap switch {other}"
+            if other else ""
+        )
+        return (
+            f"Not switching to another API key: auto-switch left {who} {why}, and "
+            f"enters no other key until a subscription has room.{step}"
+        )
+    if reason == "limit-latched":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "the API-key account"
+        number = account if account else "N"
+        if getattr(event, "limit_reason", None) == "credit-spent":
+            return (
+                f"Not switching to {who}: its credit was counted as spent, and a lower "
+                "figure since does not undo that. To use it again, record it again: "
+                f"qswap credit {number} AMOUNT"
+            )
+        return (
+            f"Not switching to {who}: its monthly budget was reached this month, and a "
+            "lower figure since does not undo that. To use it again, set the budget "
+            f"again: qswap budget {number} AMOUNT"
+        )
+    if reason == "spend-unknown":
+        from ai_quota_swap import api_spend
+
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "an API-key account"
+        failure = getattr(event, "scan_failure", None)
+        if failure:
+            # The last scan could not cover the period (EM3): why, and the
+            # way out; a dry run adds that a real run scans again first.
+            cause, step = api_spend.scan_failure_words(failure)
+            tail = (
+                ". A real run scans again first, and may move to it"
+                if getattr(event, "dry_run", False) else ""
+            )
+            return f"Not switching to {who}: its spend is not known ({cause}); {step}{tail}"
+        if getattr(event, "dry_run", False):
+            # A dry run does not scan; a real run does first (decision EM6).
+            return (
+                f"Not switching to {who}: {api_spend.SPEND_UNKNOWN_WORDS}. A real run "
+                "measures it first, and this dry run's figure may be older, so a real "
+                "run may move to it; check it with: qswap usage"
+            )
+        return (
+            f"Not switching to {who}: {api_spend.SPEND_UNKNOWN_WORDS}; check it "
+            "with: qswap usage"
+        )
     if reason == "api-key-sessions":
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "an API-key account"
@@ -1034,8 +1276,8 @@ class AutoLog:
 
             def compose(ls: list[str]) -> str:
                 if src:
-                    return switch_sentence(decision, src=ls[0], dst=ls[1])
-                return switch_sentence(decision, src="", dst=ls[0])
+                    return switch_sentence(decision, src=ls[0], dst=ls[1], notes=False)
+                return switch_sentence(decision, src="", dst=ls[0], notes=False)
 
             text = _fit_labels(compose, labels, room)
             style = _style("" if getattr(decision, "dry_run", False) else "accent")
@@ -1061,7 +1303,7 @@ class AutoLog:
             if blocked:
                 style = _style("yellow")
             elif tone == "sentence" and getattr(decision, "reason", "") in (
-                "no-active-account", "unmanaged-active-account",
+                "no-active-account", "unmanaged-active-account", "settings-unreadable",
             ):
                 style = _style("yellow")
             elif tone == "routine" and level == "ok":
@@ -1088,6 +1330,9 @@ class AutoLog:
         if kind == "switch":
             for warning in getattr(decision, "warnings", None) or ():
                 self._indented(str(warning), _style("yellow"))
+            # Usable resets auto mode keeps, one line per account (EM4).
+            for note in getattr(decision, "reset_notes", None) or ():
+                self._indented(str(note), _style(""))
         if kind == "no-switch" and getattr(decision, "records", None):
             # Session records that could not be read: each path whole on its
             # own line, never cut to the width (ux.md), then what to do.

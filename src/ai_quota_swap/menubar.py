@@ -39,7 +39,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ai_quota_swap import display, launch_agent, oauth
-from ai_quota_swap.exceptions import ClaudeSwitchError, ProviderError, SessionsRunningError
+from ai_quota_swap.exceptions import (
+    ClaudeSwitchError,
+    KeyHelperUnavailableError,
+    ProviderError,
+    SessionsRunningError,
+)
 from ai_quota_swap.fsutil import atomic_write_text
 from ai_quota_swap.labels import account_label, is_placeholder, shown_email
 from ai_quota_swap.menubar_engines import (  # noqa: F401  (re-exported)
@@ -606,6 +611,12 @@ class AccountState:
     #: Its switch lines (its own threshold, else the provider's): a window
     #: at or past one shows when it resets.
     lines: display.Lines = display.Lines()
+    #: The subscription logged in under an active key; on that key, the
+    #: account underneath (``#1 personal``). docs/design/api-key-sessions.md.
+    underneath: bool = False
+    over: str = ""
+    #: On the active key: auto-switch entered it (decision B8).
+    by_engine: bool = False
 
     def label(self, *, provider_prefix: bool = False, long: bool = True) -> str:
         """``#2 work (maya@example.com)``; ``Claude #2 work (…)`` with the prefix."""
@@ -640,6 +651,9 @@ class ProviderState:
     cli_found: bool | None = None
     error: str | None = None
     managed: int | None = None
+    #: What every surface says when the key helper line names an account
+    #: that cannot give a key, or run profiles kept a stale settings copy.
+    key_notes: tuple[str, ...] = ()
 
     @property
     def count(self) -> int:
@@ -651,9 +665,16 @@ class ProviderState:
 
     @property
     def unmanaged_live(self) -> str | None:
-        """The live login's email when qswap does not manage it (unknown, so
-        None, while the provider could not be read)."""
-        if not self.live_email or self.active is not None or self.error:
+        """The live login's email when qswap does not manage it, also under
+        an active key with no managed subscription underneath (decision B7,
+        F27); unknown, so None, while the provider could not be read."""
+        if not self.live_email or self.error:
+            return None
+        active = self.active
+        if active is not None:
+            if active.kind != "api_key" or any(a.underneath for a in self.accounts):
+                return None
+        if any(a.email == self.live_email for a in self.accounts):
             return None
         return self.live_email
 
@@ -895,6 +916,7 @@ def account_block(acc: AccountState, *, now: float, stale_after_s: float, show_p
         email=acc.email, alias=acc.alias, provider=acc.provider, show_provider=show_provider,
         active=acc.active, disabled=acc.disabled, plan=acc.plan, org=acc.org,
         kind=acc.kind, lines=acc.lines, set_aside=acc.set_aside, sentinel_notes=notes,
+        underneath=acc.underneath, over=acc.over, by_engine=acc.by_engine,
         now=now, stale_after_s=stale_after_s, reset_strings=_reset_strings(now),
         api_lines=_api_lines,
     )
@@ -928,6 +950,8 @@ def account_row(
     block = account_block(acc, now=now, stale_after_s=stale_after_s)
     parts = [acc.label(long=False)]
     attention = False
+    if acc.underneath:
+        parts.append(display.UNDERNEATH)
     if acc.disabled:
         parts.append("disabled")
     state = block.state
@@ -940,13 +964,35 @@ def account_row(
     elif state == "api-key":
         reading = getattr(acc.entry, "api_spend", None)
         parts.append("API key")
-        if api_spend.budget_state(reading) is not None:
-            # With a budget, the compact form: the budget figure (and "over
-            # budget") must never be what the row limit cuts.
-            parts.append(api_spend.menu_text(reading))
+        over = display.over_fact(acc.over) if acc.over else None
+        by = display.BY_ENGINE if acc.by_engine else None
+        if api_spend.has_limit(reading):
+            # With a budget or a credit, the compact form: the figure (and
+            # "over budget", "credit spent", "limit not enforced") must never
+            # be what the row limit cuts. Short of room, "over #1 personal"
+            # gives way first (the #1 row says "underneath"), then today's
+            # figure, then "by auto-switch" (with no engine running, the note
+            # row says it in full); the tooltip keeps them all.
+            # Last, a credit that follows a budget reached gives way whole,
+            # never cut mid-figure.
+            full = api_spend.menu_text(reading, now=now)
+            short = api_spend.menu_text(reading, now=now, today=False)
+            bare = api_spend.menu_text(reading, now=now, today=False, credit=False)
+            tries = ([over, by, full], [by, full], [by, short], [short], [bare])
         else:
-            parts.append(display.api_key_summary(block))
-        attention = api_spend.over_budget(reading)
+            summary = display.api_key_summary(block)
+            tries = ([over, by, summary], [by, summary], [summary])
+        whole = not acc.alias and is_placeholder(acc.email)
+        for extra in tries:
+            facts = [x for x in extra if x]
+            if _row_fits([*parts, *facts], whole_name=whole):
+                break
+        parts.extend(facts)
+        # A limit reached, or one not enforced (no fresh figure): the engine
+        # treats both as at the limit and leaves the key (decision A4).
+        attention = api_spend.limit_reason(reading) is not None or (
+            api_spend.limit_not_enforced(reading, now)
+        )
     elif state == "not-read":
         parts.append(display.NOT_READ_YET)
     elif state == "note":
@@ -978,6 +1024,19 @@ def account_row(
 
 #: The shortest an account label gets when a row is too long: ``#5 api…``.
 LABEL_FLOOR = 7
+
+
+def _row_fits(parts: Sequence[str], limit: int = ROW_LIMIT, *, whole_name: bool = False) -> bool:
+    """Whether :func:`fit_row` fits ``parts`` without cutting the end: the
+    label may give way (down to :data:`LABEL_FLOOR`, or to its number)."""
+    if not parts:
+        return True
+    label = parts[0]
+    if whole_name:
+        shortest = label.rsplit(" ", 1)[0] if " " in label else label
+    else:
+        shortest = label[: min(len(label), LABEL_FLOOR)]
+    return len(" · ".join([shortest, *parts[1:]])) <= limit
 
 
 def fit_row(parts: Sequence[str], limit: int = ROW_LIMIT, *, whole_name: bool = False) -> str:
@@ -1176,10 +1235,16 @@ def _provider_rows(inp: MenuInput, state: ProviderState) -> list[Row]:
             rows.append(Row(line, action=action))
         return rows
     stale = stale_after(inp.settings.refresh_interval)
-    return [
+    rows = [
         account_row(acc, now=inp.now, stale_after_s=stale, action=Action("switch", provider, acc.number))
         for acc in state.accounts
     ]
+    if state.key_notes:
+        # A key helper line that cannot give a key, or stale run-profile
+        # copies: one row, the whole sentence (and its repair) in the tooltip.
+        text = " ".join(line.strip() for line in state.key_notes)
+        rows.append(Row(display.fit(text, ROW_LIMIT), attention=True, tooltip=text))
+    return rows
 
 
 def _strategy_rows(inp: MenuInput) -> list[Row]:
@@ -1632,6 +1697,8 @@ def relogin_confirmation(refusal: str) -> str:
 #: The button that goes ahead with a switch to an API-key account while
 #: Claude Code sessions are running (``--log-out-sessions``).
 API_KEY_SWITCH_BUTTON = display.API_KEY_SWITCH_BUTTON
+#: The question's title when the key helper cannot be added.
+KEY_HELPER_QUESTION_TITLE = display.KEY_HELPER_QUESTION_TITLE
 
 
 def api_key_switch_question(error: BaseException | None) -> tuple[str, str, str] | None:
@@ -1643,10 +1710,24 @@ def api_key_switch_question(error: BaseException | None) -> tuple[str, str, str]
     where ``button`` (:data:`API_KEY_SWITCH_BUTTON`, or "Switch anyway" when
     the active account is a key too and no one is logged out) goes ahead and
     Cancel is the default. The message drops the "To switch anyway" lines the button
-    stands for. Anything else is not a question (None)."""
+    stands for. Anything else is not a question (None), and neither is a
+    refusal with no saved-key way (``error.log_out_sessions`` False)."""
     if not isinstance(error, SessionsRunningError):
         return None
     from_key = bool(getattr(error, "from_key", False))
+    if isinstance(error, KeyHelperUnavailableError):
+        if not getattr(error, "log_out_sessions", True):
+            # Another apiKeyHelper, or a credential in the settings' env
+            # block, defeats a saved key too: nothing to ask, the refusal
+            # (an alert) names the one way forward (decision B6).
+            return None
+        # The key helper could not be added (a file that cannot be parsed
+        # or written): the saved-key way is what the button does.
+        return (
+            KEY_HELPER_QUESTION_TITLE,
+            display.api_key_question(str(error)),
+            display.api_key_question_button(from_key=from_key),
+        )
     return (
         display.api_key_question_title(error.sessions, from_key=from_key),
         display.api_key_question(str(error)),

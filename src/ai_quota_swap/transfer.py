@@ -47,6 +47,17 @@ def _eprint(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _enote(msg: str, command: str | None = None) -> None:
+    """A note on stderr wrapped to 80 columns; ``command``, to be copied,
+    on a line of its own after it (docs/design/ux.md)."""
+    from ai_quota_swap.display import wrap
+
+    for line in wrap(msg):
+        _eprint(line)
+    if command:
+        _eprint(f"  {command}")
+
+
 def _holds_no_login(creds: object) -> bool:
     """A credential object with no Claude login in any shape qswap knows: no
     ``claudeAiOauth`` and no top-level tokens (the oldest shape). Such as the
@@ -542,6 +553,15 @@ def import_accounts(
     # What each written slot received, for the note about the live login.
     written_creds: dict[str, str] = {}
     live_creds, live_dead = _live_login_state(switcher)
+    # The API-key account active through Claude Code's apiKeyHelper line
+    # (docs/design/api-key-sessions.md): its slot keeps an API key, and the
+    # login underneath it is the live login above.
+    helper_getter = getattr(switcher, "helper_account", None)
+    helper_slot = helper_getter() if callable(helper_getter) else None
+    helper_before = (
+        switcher._read_account_credentials(helper_slot, switcher.account_email(helper_slot))
+        if helper_slot is not None else None
+    )
 
     # Track where the envelope's active account ended up locally. We can't
     # just look up envelope_active in the final account map afterwards: the
@@ -584,6 +604,19 @@ def import_accounts(
             _eprint(
                 f"Skipped {name}: {why}. To replace it anyway, remove it first: "
                 f"qswap remove {existing_slot}"
+            )
+            skipped += 1
+            if is_envelope_active:
+                resolved_active_slot = existing_slot
+            continue
+
+        if (
+            existing_slot is not None and existing_slot == helper_slot
+            and entry["kind"] != "api_key"
+        ):
+            _eprint(
+                f"Skipped {shown_email(entry['email'])}: slot {existing_slot} is the active "
+                "API key, and the import is not a key. Switch away first, then import again."
             )
             skipped += 1
             if is_envelope_active:
@@ -669,7 +702,12 @@ def import_accounts(
 
         data.setdefault("accounts", {})
         data.setdefault("sequence", [])
+        # Overwriting a slot keeps the user's settings on it (budget, credit,
+        # threshold, ...): an export does not carry them, and dropping a
+        # budget or credit would take a brake off without a word.
+        prior = data["accounts"].get(target_num) if outcome != "imported" else None
         new_record = {
+            **switcher._carried_settings(prior if isinstance(prior, dict) else None),
             "email": entry["email"],
             "uuid": entry["uuid"],
             "organizationUuid": entry["org_uuid"],
@@ -761,6 +799,15 @@ def import_accounts(
     #   and only there, loading it over the live login is the step (#79).
     # - An API key is never refreshed: a different imported key is lost at
     #   the next switch away unless it is loaded now.
+    if helper_slot is not None and helper_slot in written_slots:
+        name = switcher.label(helper_slot, long=False)
+        same = (helper_before or "").strip() == (written_creds.get(helper_slot) or "").strip()
+        if same:
+            _enote(f"{name} is already the active account; nothing needs doing.")
+        else:
+            from ai_quota_swap.display import KEY_REFRESH
+
+            _enote(f"The saved key for {name} was replaced. {KEY_REFRESH}")
     identity = switcher._get_current_account()
     if identity is not None and final is not None:
         live_slot = switcher._find_account_slot(final, identity[0], identity[1])
@@ -770,21 +817,37 @@ def import_accounts(
             if record.get("kind") == "api_key":
                 same = (live_creds or "").strip() == (written_creds.get(live_slot) or "").strip()
                 if same:
-                    _eprint(f"{name} is already the active account; nothing needs doing.")
+                    _enote(f"{name} is already the active account; nothing needs doing.")
                 else:
-                    _eprint(
-                        f"The saved key for {name} was replaced; Claude Code is still using "
-                        "the previous one. Load the new key, which replaces the live key, "
-                        f"with: qswap switch {live_slot} --force"
+                    # Part 2: the switch writes the key line, which running
+                    # sessions follow, and its helper prints the new key.
+                    _enote(
+                        f"The saved key for {name} was replaced; Claude Code sessions still "
+                        "use the previous one. Move them onto the new key, through the key "
+                        "line, with:",
+                        f"qswap switch {live_slot} --force",
                     )
             elif live_dead:
-                _eprint(
-                    f"{name} is the active account and its login was not working. "
-                    "Load the imported copy, which replaces the live login, with: "
-                    f"qswap switch {live_slot} --force"
-                )
-            else:
-                _eprint(f"{name} is already the active account; nothing needs doing.")
+                if helper_slot is not None:
+                    # The login underneath the active key, not the active
+                    # account; loading it leaves the key too.
+                    key_name = switcher.label(helper_slot, long=False)
+                    _enote(
+                        f"{name} is logged in underneath {key_name}, and its login was not "
+                        "working. Load the imported copy, which replaces that login and "
+                        "leaves the key, with:",
+                        f"qswap switch {live_slot} --force",
+                    )
+                else:
+                    _enote(
+                        f"{name} is the active account and its login was not working. "
+                        "Load the imported copy, which replaces the live login, with:",
+                        f"qswap switch {live_slot} --force",
+                    )
+            elif helper_slot is None:
+                # Under an active key the login is underneath it, not active,
+                # and nothing needs doing about it either: no line for it.
+                _enote(f"{name} is already the active account; nothing needs doing.")
 
 
 def _live_login_state(switcher) -> tuple[str | None, bool]:

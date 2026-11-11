@@ -76,7 +76,7 @@ Flags override settings for one run. `qswap auto --threshold 80` switches at 80%
 | `autoswitch.cooldownSeconds` | `300` | The least time between two switches made before a limit. A switch away from an account at its limit does not wait for it. A number from 0 to 86400. | `qswap config set autoswitch.cooldownSeconds 600` |
 | `autoswitch.hysteresisPct` | `10` | How many points of headroom a target needs over the active account before a switch below the limit, so two accounts near the line do not trade places on every check. A number from 0 to 50. | `qswap config set autoswitch.hysteresisPct 5` |
 | `autoswitch.strategy` | `best` | How auto-switch picks the account to move to. [auto-switch.md](auto-switch.md) explains each. One of `best`, `weekly-first`, `consume-first`, `priority-consume-first`. | `qswap config set autoswitch.strategy weekly-first` |
-| `autoswitch.includeApiKeyAccounts` | `false` | Let auto-switch move to an API-key account when no subscription account has room. API keys are billed per token. Never while Claude Code sessions are running: a running session cannot move to a key. `true` or `false`. | `qswap config set autoswitch.includeApiKeyAccounts true` |
+| `autoswitch.includeApiKeyAccounts` | `false` | Let auto-switch move to an API-key account as a last resort, when the active subscription is at its limit and no other has room. API keys are billed per token, so only a key with a monthly budget or a credit, and a spend figure no older than 20 minutes, is used. Running Claude Code sessions follow the move through the key line; the engine comes back once a subscription has 5 points of room after the cooldown, and leaves the key at once at its budget or credit. [api-accounts.md](api-accounts.md) has the rules. `true` or `false`. | `qswap config set autoswitch.includeApiKeyAccounts true` |
 | `autoswitch.unhealthyTicks` | `3` | Checks in a row on which the active account's usage cannot be read before auto-switch moves to another account. A whole number from 1 to 100. | `qswap config set autoswitch.unhealthyTicks 5` |
 | `autoswitch.model` | `(none)` | Also switch when one of these models' weekly limits is reached: one name (`Fable`), several (`Fable,Opus`) or `all`, as the per-model rows of `qswap list` name them. Not set: only the 5-hour and 7-day windows count. | `qswap config set autoswitch.model Fable` |
 
@@ -127,7 +127,7 @@ Flags override settings for one run. `qswap auto --threshold 80` switches at 80%
 
 ## Settings kept elsewhere
 
-- Per account: `qswap threshold` (the account's own switch line), `qswap priority` (its tier for `priority-consume-first`), `qswap disable` and `enable`, `qswap alias`, and `qswap budget` for API-key accounts. They are stored with the account, and `qswap codex threshold`, `priority`, `disable`, `enable` and `alias` do the same for Codex accounts.
+- Per account: `qswap threshold` (the account's own switch line), `qswap priority` (its tier for `priority-consume-first`), `qswap disable` and `enable`, `qswap alias`, and `qswap budget` and `qswap credit` for API-key accounts. They are stored with the account, and `qswap codex threshold`, `priority`, `disable`, `enable` and `alias` do the same for Codex accounts.
 - Directory mappings for `qswap run`: `qswap map` ([sessions.md](sessions.md)).
 - The macOS menu bar's display and auto-switch toggles: `menubar_settings.json`, changed from its *Settings* menu ([menubar.md](menubar.md)).
 - Your own model prices for `qswap usage`: `pricing.json` ([usage.md](usage.md)).

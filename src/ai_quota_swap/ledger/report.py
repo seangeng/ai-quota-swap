@@ -35,6 +35,8 @@ from ai_quota_swap.ledger.activations import ActivationLog, identity_key
 from ai_quota_swap.ledger.pricing import (
     ANTHROPIC_SOURCE,
     FAST_SUFFIX,
+    LONG_SUFFIX,
+    long_prompt_tier,
     OPENAI_SOURCE,
     PRICES_FETCHED,
     PriceTable,
@@ -141,6 +143,10 @@ class Report:
     searched_dirs: tuple[str, ...] | None = None
     # True when the report came from the ledger without a scan (--no-scan).
     unscanned: bool = False
+    # True when part of the range had an API key active as a saved key: only
+    # the sessions started after it used the key, which the ledger can tell
+    # only by each session's first event (docs/design/api-key-sessions.md).
+    approximate: bool = False
 
     @property
     def unattributed_share(self) -> float:
@@ -231,20 +237,47 @@ def _profile_sessions(
 ) -> dict[str, str]:
     """``{session: account}`` for Claude sessions started on a login other than
     the default one: ``qswap run`` sessions whose history went to the shared
-    tree."""
+    tree. Only an owner line that came before the session's first event
+    marks one (``owner_early``): Claude Code stamps a session started under an
+    API key's helper line only once the line is gone, with the login's
+    account, and that session's key-period usage stays on the key.
+
+    Nor is a session whose first counted event falls while a key is active
+    through the line and whose stamp names the login underneath that key
+    (decision EM10): a session opened as the subscription ran out, just
+    before the engine entered the key. ``qswap run`` for that login is
+    refused while the key is active, so such a stamp is no run profile's,
+    and attribution stays by time. A stamp naming any other login still
+    wins."""
     out: dict[str, str] = {}
     if not len(log):
         return out
-    for session, (owner, first_ts) in store.sessions("claude").items():
+    for session, (owner, first_ts, *rest) in store.sessions("claude").items():
         if first_ts is None:
             continue
+        if rest and rest[0] == 0:
+            continue  # stamped late: attribution by time
         owner_key = accounts.owner_key(owner)
         if owner_key is None:
             continue
         start = log.account_at(first_ts)
         if start != UNATTRIBUTED and start != owner_key:
+            if log.helper_underneath(first_ts) == owner_key:
+                continue  # the login under the key: attribution by time
             out[session] = owner_key
     return out
+
+
+def saved_key_moves(log: ActivationLog, hour: int, session_start: float | None,
+                    account: str | None = None) -> str | None:
+    """Where a bucket's usage goes under the saved-key rule, or None to keep
+    it (see :meth:`ActivationLog.saved_key_owner`). ``account`` defaults to
+    the one the log gives for the hour's end."""
+    if session_start is None or not log.saved_key_periods():
+        return None
+    if account is None:
+        account = log.account_at(hour * 3600 + 3599)
+    return log.saved_key_owner(account, hour, session_start)
 
 
 def build_report(
@@ -265,6 +298,13 @@ def build_report(
     accounts = Accounts(registries or {}, logs)
     claude_log = logs.get("claude") or ActivationLog([])
     overrides = _profile_sessions(store, accounts, claude_log)
+    # The saved-key rule (docs/design/api-key-sessions.md): only sessions
+    # started after a saved-key activation used the key.
+    saved_key = claude_log.saved_key_periods()
+    session_starts = (
+        {s: v[1] for s, v in store.sessions("claude").items()} if saved_key else {}
+    )
+    approximate = False
     since_hour, until_hour = day_bounds(since, until)
     raw = store.query_buckets(since_hour=since_hour, until_hour=until_hour, provider=provider)
 
@@ -280,6 +320,13 @@ def build_report(
         if prov == "claude" and session in overrides and account not in (DESKTOP_ACCOUNT,):
             account = overrides[session]
             used_profile_sessions.add(session)
+        elif saved_key and prov == "claude" and account not in (DESKTOP_ACCOUNT, UNATTRIBUTED):
+            moved = claude_log.saved_key_owner(account, hour, session_starts.get(session))
+            if moved is not None:
+                account = moved or UNATTRIBUTED
+                approximate = True
+            elif _in_saved_key_period(claude_log, account, hour):
+                approximate = True
         found = prices.lookup(model)
         cost = None
         if found is not None:
@@ -338,7 +385,14 @@ def build_report(
         attribution_starts={
             p: _iso_or_none(log.first_ts) for p, log in logs.items()
         },
+        approximate=approximate,
     )
+
+
+def _in_saved_key_period(log: ActivationLog, account: str, hour: int) -> bool:
+    """Whether ``account`` was a saved key during ``hour`` (a session that
+    started before it could not tell; the split is approximate)."""
+    return log.saved_key_owner(account, hour, float("-inf")) is not None
 
 
 def _iso_or_none(ts: float | None) -> str | None:
@@ -360,14 +414,23 @@ def _short_path(path: str) -> str:
     return home_path(path) if path else "(no project)"
 
 
+def model_label(model: str) -> str:
+    """A ledger model id as a report row names it: ``claude-opus-5-5 (fast)``,
+    ``claude-haiku-5-5 (prompt over 100K)``."""
+    if model.endswith(FAST_SUFFIX):
+        return model[: -len(FAST_SUFFIX)] + " (fast)"
+    if model.endswith(LONG_SUFFIX):
+        base = model[: -len(LONG_SUFFIX)]
+        tier = long_prompt_tier(base)
+        return f"{base} (prompt over {fmt_tokens(tier)})" if tier else base
+    return model
+
+
 def _label(row: Row, by: str, accounts: Accounts, *, show_provider: bool = False) -> None:
     if by == "day":
         row.label = row.key.strftime("%a %Y-%m-%d")  # type: ignore[union-attr]
     elif by == "model":
-        model = str(row.key)
-        row.label = (
-            model[: -len(FAST_SUFFIX)] + " (fast)" if model.endswith(FAST_SUFFIX) else model
-        )
+        row.label = model_label(str(row.key))
     elif by == "account":
         prov, key = row.key  # type: ignore[misc]
         row.label, info, row.tail = accounts.describe(key, prov, show_provider=show_provider)
@@ -426,6 +489,7 @@ def report_to_json(report: Report, scan: dict | None = None) -> dict:
         ],
         "unattributedTokens": report.unattributed_tokens,
         "unattributedShare": round(report.unattributed_share, 4),
+        "attributionApproximate": report.approximate,
         "attributionStarts": report.attribution_starts,
         "pricing": {
             "fetched": PRICES_FETCHED,
@@ -630,6 +694,12 @@ def render_text(
                 f"Unattributed: {report.unattributed_share:.0%} of tokens, used before "
                 "qswap recorded which account was live (see docs/usage.md)."
             )
+    if report.approximate:
+        footer.append(
+            "Approximate: an API key was active as a saved key in this range, which "
+            "only sessions started after it used; usage is split by each session's "
+            "first event (docs/api-accounts.md)."
+        )
     for w in report.prices.warnings:
         footer.append(f"Pricing override: {w}")
     footer.extend(notes or [])

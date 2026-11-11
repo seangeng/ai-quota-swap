@@ -32,6 +32,7 @@ The scenarios are data in `scripts/demo/scenarios.py`:
 - `reset` and `reset-after`: an account at its Fable limit holding a Fable reset and a weekly reset, before and after spending the Fable one.
 - `usage`: the fleet plus two weeks of sessions, for `qswap usage`.
 - `showcase`: the README's hero: the fleet with a budget on the API-key account and two weeks of sessions already in the ledger.
+- `last-resort`: every subscription at its limit and auto-switch allowed to use the API-key account, which has a budget: `auto --once` moves to the key.
 - `empty`, `empty-claude`, `empty-claude-codex`: first runs.
 - `trouble`: failure states, such as a dead login, a failing endpoint and a stale reading.
 
@@ -67,6 +68,27 @@ A test that needs HTTP fakes the transport. Patch `urlopen` in the module under 
 
 A test that needs the Keychain asks for the `block_real_keychain` fixture by name. It returns the in-memory store, so the test can seed items and inspect what was written (`tests/test_api_key_accounts.py` has examples). Tests that drive the real `security` CLI are marked `no_keychain_fake`, use the `tmp_keychain` fixture in `tests/test_macos_keychain_contract.py`, and run only on GitHub Actions macOS, against a throwaway keychain.
 
+## The live switch, end to end
+
+The suite fakes Claude Code, so it cannot show that a real Claude Code follows the key line a switch to an API key writes. That is checked by hand: qswap's own switch, run against the real `claude` binary and the real API, in a throwaway home, with a made-up key. It was last run on Claude Code 2.1.322; what it found is in [docs/design/api-key-sessions.md](docs/design/api-key-sessions.md#part-2-use-a-key-without-logging-anyone-out). Run it again when a change touches the line, the helper or the switch, or when Claude Code changes how it reads settings.
+
+What it shows, with print-mode sessions (`claude -p`) and the throwaway home's user settings as the only settings layer:
+
+- a session started while qswap's line is in sends the key the line prints;
+- one long-lived process (`--input-format stream-json`) follows `qswap switch 5` and the switch back, about one second after each write;
+- `qswap run 5` gives that one process the key and writes no settings;
+- a line for an account that cannot give a key fails new sessions with "Your apiKeyHelper script is failing", while a session already holding the key keeps sending it;
+- `qswap key-helper` prints exactly the key, or one line on standard error.
+
+It does not cover an interactive session, a claude.ai login underneath (the throwaway home has none), Remote Control or claude.ai connectors.
+
+How it stays away from your accounts:
+
+- `HOME` and `CLAUDE_CONFIG_DIR` point into a fresh `mktemp -d` directory, removed afterwards. Every process starts from `env -i` with a short list of variables: no `ANTHROPIC_*` variable and no `CLAUDE_CODE_OAUTH_TOKEN`.
+- The key is made up (`sk-ant-api03-E2E-FAKE-KEY-...`). The API answers every request with a 401, so nothing is billed. Claude Code retries a rejected key for about four minutes per prompt, so allow five minutes for each check that sends one.
+- qswap runs in-process, under a driver that replaces the Keychain with an in-memory store and, like the demo harness's guards, refuses opens of the real account stores (`~/.claude*`, `~/.codex`, `~/.ai-quota-swap`, the Keychain directory), writes outside the throwaway directory, spawns of `security` and `launchctl`, and any connection qswap tries other than loopback.
+- `claude` is started by absolute path, only by the check itself.
+
 ## Lint
 
 ```bash
@@ -86,7 +108,7 @@ CI runs the same command. The rule selection, and the rules left out until the c
 3. Anything that changes behaviour gets a design doc in `docs/design/`, or an update to an existing one, before or with the code. The existing ones show the format.
 4. JSON output is a contract that only grows. Add fields; never rename, remove or retype one. Document new fields in [docs/json-output.md](docs/json-output.md).
 5. Text output follows [docs/design/ux.md](docs/design/ux.md): one word per thing, 80 columns, the next command to run on every dead end.
-6. Update the user docs your change affects, and add a line to the Unreleased section of [CHANGELOG.md](CHANGELOG.md). A new setting also needs its meaning and an example value in `scripts/settings_doc.py`; run it to regenerate [docs/settings.md](docs/settings.md). `tests/test_docs.py` fails while the page is stale or a link in any Markdown file is broken.
+6. Update the user docs your change affects, and add a line to the Unreleased section of [CHANGELOG.md](CHANGELOG.md). A new setting also needs its meaning and an example value in `scripts/settings_doc.py`; run it to regenerate [docs/settings.md](docs/settings.md). `tests/test_docs.py` fails while the page is stale or a link in any Markdown file is broken, and `tests/test_docs_examples.py` while a page quotes an API-key message the code no longer prints.
 
 ## Regenerate screenshots
 

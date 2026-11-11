@@ -44,7 +44,11 @@ Sizes are rounded and move with every change; they are here so you know what you
 | `macos_keychain.py` | 200 | Keychain access through the `security` CLI |
 | `oauth.py` | 1,300 | Token parsing and refresh, the usage request and its normalization, window math |
 | `subscription.py` | 300 | The plan label (Max, Pro, Team) from the profile endpoint |
-| `session.py` | 2,400 | `qswap run`: per-account Claude Code profiles and shared history |
+| `session.py` | 2,700 | `qswap run`: per-account Claude Code profiles and shared history; `qswap run N` on a key; the settings copies run profiles hold while a key is active |
+| `key_activation.py` | 1,100 | An API key made active through Claude Code's `apiKeyHelper`: who is active and who is underneath, who entered the key, entering and leaving it, and the one reconcile every switch and engine tick runs first |
+| `claude_settings.py` | 850 | Reads Claude Code's user settings and edits its one `apiKeyHelper` key, keeping everything else as it was; reads qswap's line back and checks that it answers |
+| `key_helper.py`, `entry.py` | 250 | `qswap key-helper N`, answered before the command line module loads: prints the saved key and nothing else (`--check`: nothing at all) |
+| `installed.py` | 150 | The command that runs this install of qswap, for the key line and the menu bar's LaunchAgent |
 | `mappings.py` | 100 | `qswap map`: directory to account bindings |
 | `claude_locks.py` | 200 | Taking Claude Code's own lock directories while writing its files |
 | `paths.py` | 300 | Where Claude Code and qswap keep their files, mirroring Claude Code's rules |
@@ -173,4 +177,4 @@ On macOS the saved logins and Admin keys are Keychain items under the service `a
 | The dashboard | `tui/dashboard.py` (screens), `tui/widgets.py` (cards and bars), `tui/data.py` (`block_for`: a snapshot row in `display`'s words), `tui/app.py` (actions) | `scripts/demo/tour.py` screenshots every screen |
 | The menu bar | `menubar.build_menu` (every row and its words), `menubar_notify.Notifier` (notifications), `menubar_app` (drawing and handlers), `launch_agent.py`; `scripts/demo/run.py fleet --menubar` prints the menu for a scenario | [menubar.md](menubar.md) |
 
-API-key spend and budgets are in `api_spend.py` and `admin_api.py`; [design/api-accounts.md](design/api-accounts.md) explains them.
+API-key spend, budgets and credits are in `api_spend.py` and `admin_api.py`; [design/api-accounts.md](design/api-accounts.md) explains them. The live switch to an API key is `key_activation.py` with `claude_settings.py` and `key_helper.py`; [design/api-key-sessions.md](design/api-key-sessions.md) explains it.

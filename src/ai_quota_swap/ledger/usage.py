@@ -78,6 +78,36 @@ def _read_json(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def scan_recent(
+    data_root: Path, *, registry: dict | None = None, days: int = 7,
+    provider: str = "claude", today: date | None = None, start: float | None = None,
+) -> ScanStats:
+    """Bring the ledger up to date for the last ``days`` days and record when
+    (``last_scan_at``), without building a report: the incremental scan the
+    menu bar runs, for the auto-switch engine, which needs a fresh spend
+    figure for an API key's budget or credit (api_spend.SPEND_FRESH_S).
+    ``start`` (epoch seconds) replaces the ``days`` window: the engine scans
+    from the start of the period a key's limit is measured over (its budget
+    month, its credit), from that hour (decision EM3). The scan is
+    incremental, so a wide window costs once. Safe beside another scan
+    (every event is counted once). Raises what the scan raises; the engine
+    catches it."""
+    data_root = Path(data_root)
+    since, until = resolve_range(days=days, since=None, until=None, today=today)
+    store = LedgerStore(data_root / DB_FILENAME)
+    try:
+        if start is not None:
+            window = int(start // 3600) * 3600
+        else:
+            window = day_bounds(since, until)[0] * 3600
+        scanner = Scanner(store, default_config(data_root, registry), progress=None)
+        stats = scanner.run((provider,), since=window)
+        store.set_meta(LAST_SCAN_META, f"{time.time():.3f}")
+        return stats
+    finally:
+        store.close()
+
+
 def run_usage(
     data_root: Path,
     *,

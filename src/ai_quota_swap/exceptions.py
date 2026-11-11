@@ -131,6 +131,40 @@ class SessionsRunningError(SwitchError):
         return fields
 
 
+class KeyHelperUnavailableError(SessionsRunningError):
+    """A switch to an API-key account refused because qswap cannot add its
+    key helper to Claude Code's settings (another ``apiKeyHelper`` is set, or
+    the file cannot be parsed or written; docs/design/api-key-sessions.md,
+    part 2). Nothing was changed. ``reason`` says why in one clause; the
+    message offers ``--log-out-sessions``, the saved-key path, unless
+    ``log_out_sessions`` is False: where what defeats the line would defeat a
+    saved key too (another ``apiKeyHelper``, a credential in the settings'
+    ``env`` block), the one way forward is to remove it. A subclass of
+    :class:`SessionsRunningError` so the surfaces that ask about the
+    saved-key path (menu bar, dashboard) ask here too, when it is offered.
+    The JSON error envelope adds ``error.keyHelper`` (the reason) and
+    ``error.logOutSessions: false`` when that path is not offered."""
+
+    def __init__(
+        self, message: str, *, number: str, reason: str, sessions: int = 0,
+        unreadable: int = 0, from_key: bool = False,
+        records: tuple[str, ...] | list[str] = (), log_out_sessions: bool = True,
+    ):
+        super().__init__(
+            message, number=number, sessions=sessions, unreadable=unreadable,
+            from_key=from_key, records=records,
+        )
+        self.reason = reason
+        self.log_out_sessions = log_out_sessions
+
+    @property
+    def envelope_fields(self) -> dict:
+        fields = {**super().envelope_fields, "keyHelper": self.reason}
+        if not self.log_out_sessions:
+            fields["logOutSessions"] = False
+        return fields
+
+
 class SessionError(ClaudeSwitchError):
     """Error setting up or launching a session-mode profile."""
 

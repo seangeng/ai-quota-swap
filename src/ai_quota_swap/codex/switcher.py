@@ -1641,13 +1641,15 @@ class CodexSwitcher:
         json_output: bool = False,
         force: bool = False,
         log_out_sessions: bool = False,
+        entered_by: str = "user",
     ) -> dict | None:
         """Make an account's saved login the live one (design: switch procedure).
 
         ``force`` overwrites a live login qswap does not manage (it is lost
         unless saved elsewhere) and rewrites the live login even when it is
-        already the target. ``log_out_sessions`` is the shared signature's
-        API-key flag; Codex has no API-key accounts, so it has no effect.
+        already the target. ``log_out_sessions`` and ``entered_by`` are the
+        shared signature's API-key arguments; Codex has no API-key accounts,
+        so they have no effect.
         """
         data = self._require_registry()
         target = self._resolve(data, identifier)

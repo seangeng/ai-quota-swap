@@ -1534,6 +1534,7 @@ def _auto_command(argv: list[str]) -> None:
         code = engine.run_loop()
         if human_log is not None:
             human_log.flush()
+        _say_unwatched_key(switcher, args.json)
         sys.exit(code)
     except ProviderError as e:
         if args.json:
@@ -1548,7 +1549,24 @@ def _auto_command(argv: list[str]) -> None:
             f"\n{dimmed('Auto-switch stopped.')}",
             file=sys.stderr if args.json else sys.stdout,
         )
+        _say_unwatched_key(locals().get("switcher"), args.json)
         sys.exit(130)
+
+
+def _say_unwatched_key(switcher, as_json: bool) -> None:
+    """A stopping qswap auto on a key it entered says that nothing watches
+    the key's limit now, and how to go back (autoswitch.unwatched_key_notice)."""
+    if switcher is None:
+        return
+    from ai_quota_swap.autoswitch import unwatched_key_notice
+
+    text = unwatched_key_notice(switcher, host="qswap auto")
+    if text:
+        from ai_quota_swap.display import wrap
+
+        for line in wrap(text):
+            print(yellowed(line) if not as_json else line,
+                  file=sys.stderr if as_json else sys.stdout)
 
 
 def _config_command(argv: list[str]) -> None:
@@ -2058,14 +2076,17 @@ def _is_api_key_target(switcher, identifier: str) -> bool:
     return switcher.account_kind_for(number) == "api_key"
 
 
-def _warn_env_overrides() -> None:
+def _warn_env_overrides(*, key_line: bool = False) -> None:
     """One line when the shell exports a variable that makes Claude Code
-    ignore the active account (names only, never values)."""
+    ignore the active account (names only, never values). ``key_line``: the
+    switch is onto a key through the key line, which Claude Code ranks above
+    CLAUDE_CODE_OAUTH_TOKEN, so such sessions follow it (decision B6)."""
     from ai_quota_swap import display
 
-    names = display.exported_overrides(os.environ)
-    if names:
-        warning(display.override_warning(names))
+    for line in display.override_warnings(
+        display.exported_overrides(os.environ), key_line=key_line,
+    ):
+        warning(line)
 
 
 # -- list and status across both providers ----------------------------------------
@@ -2224,6 +2245,13 @@ def _status(switcher, *, as_json: bool):
 
 def main() -> None:
     """Main entry point for the CLI."""
+    if sys.argv[1:2] == ["key-helper"]:
+        # Normally answered by ai_quota_swap.entry before this module loads;
+        # here for a caller that enters through cli.main. Before anything
+        # that could print.
+        from ai_quota_swap.key_helper import main as key_helper_main
+
+        sys.exit(key_helper_main(sys.argv[2:]))
     force_utf8_output()
     _use_native_tls()
     # `qswap codex <verb>`: the prefix goes before the dispatch below, whose
@@ -2248,7 +2276,8 @@ def main() -> None:
 # command line knows; anything else is a usage error.
 _OWN_PARSER_VERBS = (
     "run", "auto", "config", "map", "unmap", "unclaimed", "alias", "threshold",
-    "priority", "api", "budget", "reset", "resets", "usage", "swap", "move", "doctor",
+    "priority", "api", "budget", "credit", "reset", "resets", "usage", "swap", "move",
+    "doctor",
 )
 # Options of the legacy interface that take a value (so the value is not
 # mistaken for a verb's positional argument).
@@ -2293,6 +2322,12 @@ def _help_and_usage(argv: list[str]) -> list[str] | None:
             return None
         if target in helptext.LEGACY_VERB_HELP:
             print(helptext.legacy_help(target), end="")
+            sys.exit(0)
+        if target == "key-helper":
+            # Hidden from the map, but its help is there (F54).
+            from ai_quota_swap.key_helper import HELP as key_helper_help
+
+            print(key_helper_help, end="")
             sys.exit(0)
         if target in _OWN_PARSER_VERBS:
             _dispatch([target, "--help"])
@@ -2392,10 +2427,14 @@ def _dispatch(argv: list[str]) -> None:
     if argv and argv[0] == "priority":
         _priority_command(argv[1:])
         return
-    if argv and argv[0] in ("api", "budget"):
+    if argv and argv[0] in ("api", "budget", "credit"):
         from ai_quota_swap import api_cli
 
-        (api_cli.api_command if argv[0] == "api" else api_cli.budget_command)(argv[1:])
+        {
+            "api": api_cli.api_command,
+            "budget": api_cli.budget_command,
+            "credit": api_cli.credit_command,
+        }[argv[0]](argv[1:])
         return
     if argv and argv[0] in ("reset", "resets"):
         _reset_command(argv[1:])
@@ -2527,9 +2566,9 @@ def _dispatch(argv: list[str]) -> None:
         "--log-out-sessions",
         action="store_true",
         help=(
-            "With 'switch ACCOUNT' for an API-key account: switch even though "
-            "Claude Code sessions are running (those on a subscription stop "
-            "with \"Not logged in\")"
+            "With 'switch ACCOUNT' for an API-key account: save the key for "
+            "Claude Code instead of adding the key line; running sessions on "
+            "a subscription stop with \"Not logged in\""
         ),
     )
     parser.add_argument(
@@ -2914,7 +2953,9 @@ def _dispatch(argv: list[str]) -> None:
             if not args.json:
                 for note in notes:
                     warning(f"Warning: {note}")
-                _warn_env_overrides()
+                _warn_env_overrides(key_line=(
+                    not args.log_out_sessions and _is_api_key_target(switcher, args.switch_to)
+                ))
             # The flag travels only when given, so every switch_to keeps its
             # plain call shape.
             extra = {"log_out_sessions": True} if args.log_out_sessions else {}

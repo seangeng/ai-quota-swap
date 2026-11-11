@@ -141,6 +141,15 @@ QUARANTINE_DIRNAME = "history-conflicts"
 # still passes the local reuse check.
 STALE_MARKER = ".qswap-stale-credentials"
 
+# Marks a profile whose shared settings.json is, for now, a copy of the user
+# settings without qswap's apiKeyHelper line (docs/design/api-key-sessions.md,
+# part 2): while that line is in ~/.claude/settings.json a linked profile would
+# follow it onto the key. ``was`` records whether the profile had a link or a
+# copy, so the sharing comes back as it was once the line is removed. A marker
+# left while no line is installed is a stale copy (a crash between the two
+# steps); doctor reports it and ``qswap switch`` puts the sharing back.
+SETTINGS_COPY_MARKER = ".qswap-settings-copy.json"
+
 # The user-scope MCP key mirrored from the default profile's .claude.json.
 MCP_KEY = "mcpServers"
 
@@ -786,9 +795,11 @@ class SessionManager:
         share_history = self._resolve_share_history(requested_history)
 
         account_num, email, org_uuid = self.switcher.resolve_account(identifier)
-        # Guard before the same-account direct-launch fast path below (which
-        # _exec's claude and never returns) — and before setup_session.
-        self._ensure_not_api_key(account_num, email)
+        # An API-key account runs on the shared profile with the key helper
+        # in --settings (docs/design/api-key-sessions.md, "One session").
+        # Before the same-account fast path below, which never returns.
+        if self.switcher._account_kind(account_num) == "api_key":
+            self._run_on_key(claude_bin, account_num, email, claude_args)
 
         config_dir_preset = os.environ.get("CLAUDE_CONFIG_DIR")
         # Same-account fast path: never create a second credential copy
@@ -803,6 +814,25 @@ class SessionManager:
         else:
             current = self.switcher._get_current_account()
         if current is not None and current == (email, org_uuid):
+            # The fast path drops CLAUDE_CONFIG_DIR, so the claude it starts
+            # reads the default profile's settings whatever the variable
+            # says: that is the file whose key line matters.
+            from ai_quota_swap import claude_settings
+
+            key = self.switcher._helper_verdict(claude_settings.read_state(
+                Path.home() / ".claude" / "settings.json", data_dir=self.switcher.backup_dir,
+            ))[0]
+            if key is not None:
+                # Plain claude on the default login would follow the key
+                # helper line onto the key, not run this account.
+                where = " from a normal shell" if config_dir_preset else ""
+                raise SessionError(
+                    f"{self.switcher.label(account_num, email)} is logged in underneath "
+                    f"{self.switcher.label(key, long=False)}, the active API key, so "
+                    "claude started on the default login uses the key. To run "
+                    f"{self.switcher.label(account_num, long=False)}, switch to it "
+                    f"first{where}: qswap switch {account_num}"
+                )
             if require_session:
                 raise SessionError(
                     f"{self.switcher.label(account_num, email)} is the active default "
@@ -950,18 +980,65 @@ class SessionManager:
         os.execvpe(claude_bin, argv, env)
         raise AssertionError("unreachable")  # pragma: no cover
 
+    def _run_on_key(
+        self, claude_bin: str, account_num: str, email: str, claude_args: list[str]
+    ) -> NoReturn:
+        """``qswap run N`` for an API-key account: Claude Code on the shared
+        profile, with ``--settings`` carrying the key helper for N. Only that
+        process uses the key, for as long as it lives (the flag layer is read
+        once at start, and outranks a helper in the user settings). The
+        environment is scrubbed of the variables that would override it."""
+        from ai_quota_swap import claude_settings
+
+        if any(a == "--settings" or a.startswith("--settings=") for a in claude_args):
+            raise SessionError(
+                f"{self.switcher.label(account_num, long=False)} is an API-key account, "
+                "and qswap run gives claude --settings itself (to carry the key "
+                "helper), so it cannot take another --settings after --. Put those "
+                "settings in Claude Code's settings file, or run claude directly."
+            )
+        self.switcher._require_saved_key(account_num, email)
+        scrubbed = [v for v in AUTH_OVERRIDE_ENV_VARS if os.environ.get(v)]
+        if scrubbed:
+            warning(
+                f"Ignoring {', '.join(scrubbed)} for this session — it would "
+                f"override the selected account inside Claude Code.",
+                file=sys.stderr,
+            )
+        env = {k: v for k, v in os.environ.items() if k not in AUTH_OVERRIDE_ENV_VARS}
+        preset = env.get("CLAUDE_CONFIG_DIR")
+        if preset:
+            try:
+                Path(preset).resolve().relative_to(self.sessions_dir.resolve())
+            except (ValueError, OSError):
+                pass
+            else:
+                # A qswap run profile's shell: run on the shared profile.
+                env.pop("CLAUDE_CONFIG_DIR", None)
+        flag = json.dumps({claude_settings.HELPER_KEY: claude_settings.helper_command(account_num)})
+        # The pid claude will run under (exec keeps it): removing the account
+        # names this session, whose key would stop working.
+        self.switcher.record_key_run(account_num, os.getpid())
+        print(
+            f"{accent('Launching')} {self.switcher.label(account_num, long=False)} (API key) "
+            f"{muted('[this session only]')}",
+            file=sys.stderr,
+        )
+        self._exec(claude_bin, ["--settings", flag, *claude_args], env=env)
+
     def _ensure_not_api_key(self, account_num: str, email: str) -> None:
-        """Reject API-key accounts in session mode (not supported yet).
+        """Reject API-key accounts for a session profile.
 
         Session bootstrap is OAuth-shaped — it seeds ``.credentials.json`` and
-        ``_is_session_valid`` requires ``authMethod == "claude.ai"`` — so an API-key
-        account would otherwise fail validation opaquely. Raise early with guidance.
+        ``_is_session_valid`` requires ``authMethod == "claude.ai"`` — so an
+        API-key account has no profile: ``run`` starts it on the shared
+        profile with the key helper (:meth:`_run_on_key`) before reaching here.
         """
         if self.switcher._account_kind(account_num) == "api_key":
             raise SessionError(
-                f"{self.switcher.label(account_num, email)} is an API-key account; "
-                "qswap run does not support API-key accounts yet.\n"
-                f"Make it the active login instead: qswap switch {account_num}"
+                f"{self.switcher.label(account_num, email)} is an API-key account, "
+                "which has no session profile. qswap run starts it on the shared "
+                f"profile with its key:\n  qswap run {account_num}"
             )
 
     # -- bootstrap -------------------------------------------------------
@@ -1419,6 +1496,21 @@ class SessionManager:
         for name in active_items:
             src = source_root / name
             dest = session_dir / name
+            if (
+                name == "settings.json"
+                and (
+                    name in managed
+                    or (not is_link(dest) and not dest.exists())
+                    or self._links_to(dest, src)
+                )
+                and self._settings_carry_key(src)
+            ):
+                # qswap's apiKeyHelper line is in the user settings: a link
+                # would put this profile on the key too. A copy without the
+                # line instead, until the line is removed.
+                if self._write_settings_copy(src, dest, session_dir):
+                    new_managed.append(name)
+                continue
             # Whether a link can be made here: always off Windows; on Windows
             # a junction for a directory (any user), a symlink for a file
             # (Developer Mode or an elevated terminal). Decided before the
@@ -1516,6 +1608,8 @@ class SessionManager:
             except OSError as e:
                 self._logger.warning(f"Failed to share {name} into session: {e}")
                 continue
+            if name == "settings.json":
+                (session_dir / SETTINGS_COPY_MARKER).unlink(missing_ok=True)
             new_managed.append(name)
 
         # Anything we managed before but no longer created gets removed above;
@@ -1583,6 +1677,172 @@ class SessionManager:
         if name in _DIR_ITEMS:
             return can_junction(session_dir, source_root)
         return can_symlink(session_dir)
+
+    # -- settings.json while a key is active (docs/design/api-key-sessions.md) --
+
+    def _settings_carry_key(self, src: Path) -> bool:
+        """Whether the shared settings file holds this qswap's apiKeyHelper
+        line (another qswap's, for another data directory, is not: SS4)."""
+        from ai_quota_swap import claude_settings
+
+        return claude_settings.read_state(src, data_dir=self.switcher.backup_dir).ours
+
+    @staticmethod
+    def _settings_unknown(src: Path) -> bool:
+        """Whether the user settings cannot be read or parsed, so qswap cannot
+        tell whether its line is in them: then no sharing is put back
+        (decision B5: nothing is repaired on unknown)."""
+        from ai_quota_swap import claude_settings
+
+        return claude_settings.read_state(src).kind == claude_settings.INVALID
+
+    @staticmethod
+    def _links_to(dest: Path, src: Path) -> bool:
+        """Whether ``dest`` is a link that leads to ``src`` (a dangling one
+        included), whoever made it and whatever the manifest says (F9)."""
+        if not is_link(dest):
+            return False
+        try:
+            return os.path.normcase(os.path.realpath(dest)) == os.path.normcase(
+                os.path.realpath(src)
+            )
+        except (OSError, ValueError):
+            return False
+
+    def _write_settings_copy(self, src: Path, dest: Path, session_dir: Path) -> bool:
+        """Put a copy of ``src`` without ``apiKeyHelper`` at ``dest`` (in
+        place of the link, never through it), marked so the sharing comes
+        back once the line is gone. The marker is written first: a crash
+        between the two leaves a marker over a link, which restores to the
+        same link. Returns whether the copy is in place."""
+        from ai_quota_swap import claude_settings
+
+        marker = session_dir / SETTINGS_COPY_MARKER
+        try:
+            raw = src.read_bytes().decode("utf-8") if src.exists() else None
+        except (OSError, UnicodeDecodeError) as e:
+            self._logger.warning(f"Could not read {src} for a settings copy: {e}")
+            return False
+        # No user settings yet: the line is about to create the file the
+        # link points at, so the copy is an empty object.
+        text = "{}\n" if raw is None else claude_settings.without_helper(raw)
+        try:
+            if not marker.exists():
+                was = "link" if is_link(dest) else ("copy" if dest.exists() else "none")
+                atomic_write_text(marker, json.dumps({"was": was}))
+            mode = src.stat().st_mode & 0o7777 if raw is not None else 0o644
+            atomic_write_text(dest, text, mode=mode, follow_symlinks=False)
+        except OSError as e:
+            self._logger.warning(f"Could not write the settings copy in {session_dir}: {e}")
+            return False
+        return True
+
+    def profile_dirs(self) -> list[Path]:
+        """Every run profile, each once: a profile reached through a link (a
+        tool that keeps the per-account link as its lease) is its target."""
+        out: list[Path] = []
+        seen: set[str] = set()
+        try:
+            entries = sorted(self.sessions_dir.iterdir())
+        except OSError:
+            return out
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            try:
+                if not entry.is_dir():
+                    continue
+                real = os.path.realpath(entry)
+            except OSError:
+                continue
+            if real in seen:
+                continue
+            seen.add(real)
+            out.append(Path(real))
+        return out
+
+    def _shares_settings(self, session_dir: Path) -> bool:
+        """Whether the profile shares the user settings: its manifest says
+        so, or its ``settings.json`` is a link that leads there (a first
+        launch killed before it wrote the manifest leaves such a link)."""
+        if "settings.json" in self._read_manifest(session_dir / SHARE_MANIFEST):
+            return True
+        return self._links_to(session_dir / "settings.json", Path.home() / ".claude" / "settings.json")
+
+    def isolate_settings(self) -> int:
+        """Give every run profile that shares the user settings a copy of them
+        without the key line (step one of moving onto a key). Returns how many
+        profiles hold a copy now. A profile that cannot be changed is logged
+        and left; the caller decides whether that stops the switch."""
+        src = Path.home() / ".claude" / "settings.json"
+        done = 0
+        for session_dir in self.profile_dirs():
+            if not self._shares_settings(session_dir):
+                continue
+            dest = session_dir / "settings.json"
+            if not src.exists() and not is_link(dest):
+                continue  # nothing shared, nothing the line could reach
+            if self._write_settings_copy(src, dest, session_dir):
+                done += 1
+        return done
+
+    def settings_still_shared(self) -> list[Path]:
+        """Profiles that share the user settings and whose ``settings.json``
+        is still a link (a dangling one included): a key line written now
+        would reach their sessions."""
+        return [
+            d for d in self.profile_dirs()
+            if self._shares_settings(d) and is_link(d / "settings.json")
+        ]
+
+    def restore_settings(self, *, force: bool = False) -> int:
+        """Put the sharing back in every profile holding a settings copy, once
+        the user settings no longer carry the key line (``force``: even if
+        they do, for a line being removed right now). Returns how many."""
+        src = Path.home() / ".claude" / "settings.json"
+        if not force and src.exists() and (
+            self._settings_carry_key(src) or self._settings_unknown(src)
+        ):
+            return 0
+        done = 0
+        for session_dir in self.profile_dirs():
+            marker = session_dir / SETTINGS_COPY_MARKER
+            if not marker.exists():
+                continue
+            dest = session_dir / "settings.json"
+            try:
+                if dest.exists() and not is_link(dest):
+                    dest.unlink()
+                if src.exists() and not is_link(dest) and not dest.exists():
+                    linked = False
+                    if self._can_link("settings.json", session_dir, src.parent):
+                        target = src.resolve() if src.is_symlink() else src
+                        try:
+                            self._make_link(target, dest)
+                            linked = True
+                        except OSError as e:
+                            # As _sync_items does: a copy beats nothing, and
+                            # the next launch re-syncs it.
+                            self._logger.warning(
+                                f"Could not link settings.json into {session_dir} ({e}); "
+                                "copying it instead."
+                            )
+                    if not linked:
+                        self._copy_item(src, dest)
+                marker.unlink(missing_ok=True)
+            except OSError as e:
+                self._logger.warning(f"Could not restore settings sharing in {session_dir}: {e}")
+                continue
+            done += 1
+        return done
+
+    def stale_settings_copies(self) -> list[Path]:
+        """Profiles holding a settings copy while the user settings carry no
+        key line: what a crash between the two steps of leaving a key leaves."""
+        src = Path.home() / ".claude" / "settings.json"
+        if src.exists() and (self._settings_carry_key(src) or self._settings_unknown(src)):
+            return []
+        return [d for d in self.profile_dirs() if (d / SETTINGS_COPY_MARKER).exists()]
 
     @staticmethod
     def _copy_item(src: Path, dest: Path) -> None:

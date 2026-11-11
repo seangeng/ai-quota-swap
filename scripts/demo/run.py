@@ -70,7 +70,8 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("--menubar", action="store_true",
                    help="print the menu bar's menu for the scenario as an outline "
                         "(the menu bar itself needs macOS and rumps; this is its "
-                        "description, built by ai_quota_swap.menubar.build_menu)")
+                        "description, built by ai_quota_swap.menubar.build_menu), "
+                        "after the qswap commands given after --, if any")
     p.add_argument("--tui-child", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(head)
     if "--" not in argv and not args.serve and not args.menubar:
@@ -157,22 +158,16 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
     # API), and a process with no network needs no TLS trust store.
     cli._use_native_tls = lambda: None
     install_doctor_fakes()
+    install_key_line_fakes()
     install_cli_fakes(args.without_cli)
     random.seed(scenario.name)  # the engine's poll jitter, run to run
-
-    if args.menubar:
-        print(menubar_outline(switcher))
-        if sb.violations:
-            print("run.py: the run crossed the sandbox:", file=sys.stderr)
-            for v in sb.violations:
-                print(f"  - {v}", file=sys.stderr)
-            return EXIT_VIOLATION
-        return 0
 
     code = 0
     blocks = []
     # A bare `--` is qswap with no arguments (its usage error off a terminal).
-    for command in split_commands(qswap_args) or [[]]:
+    # With --menubar the commands, if any, set up the state the menu shows.
+    commands = split_commands(qswap_args) or ([] if args.menubar else [[]])
+    for command in commands:
         saved = sys.stdout, sys.stderr
         buf = _Capture() if capture else None
         if buf is not None:
@@ -203,6 +198,10 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
                 theme=scenario.settings.get("ui", {}).get("theme", "dark"),
                 columns=args.width,
             )
+
+    if args.menubar:
+        print(menubar_outline(switcher))
+        code = 0
 
     if audit_fd is not None:
         guards.write_audit_log(audit_fd, sb)
@@ -323,6 +322,46 @@ def install_doctor_fakes() -> None:
     doctor._cli_version = lambda path: "2.1.0 (demo)"
     doctor._launchctl_print = lambda: (113, "")
     doctor._install_info = install_info
+    # The machine's own managed settings file is not the scenario's.
+    doctor._managed_settings_path = lambda: None
+
+
+def install_key_line_fakes() -> None:
+    """The key line a switch to an API key writes names this install's
+    ``qswap``, which here would be the checkout's own path. The demo pins it
+    to ``~/.local/bin/qswap`` in the temp home, where ``uv tool`` and
+    ``pipx`` put the command (a stand-in file that is never run), so output
+    is the same on every machine.
+
+    ``qswap doctor`` and ``qswap switch N`` to the active key run the key
+    line with ``--check`` through the shell, a spawn the sandbox refuses.
+    Here the check runs ``qswap key-helper N --check`` in this process
+    instead, against the temp home and the in-memory Keychain: the same
+    answer the line's command would give, with no process started. A line
+    that is not qswap's, or whose program is missing, is still judged by the
+    real ``claude_settings.command_problem`` before this is reached."""
+    import contextlib
+
+    from ai_quota_swap import claude_settings, installed, key_helper
+
+    program = Path.home() / ".local" / "bin" / "qswap"
+    program.parent.mkdir(parents=True, exist_ok=True)
+    program.write_text("#!/bin/sh\n# the demo's stand-in for qswap; never run\nexit 1\n",
+                       encoding="utf-8")
+    program.chmod(0o755)
+    installed.command = lambda: [str(program)]
+
+    def run_check(command: str, *, cwd: str, timeout: float) -> tuple[int, str]:
+        line = claude_settings.read_line(command)
+        argv = [line.number, "--check"] if line is not None else []
+        if line is not None and line.data_dir:
+            argv += ["--data-dir", line.data_dir]
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = key_helper.main(argv)
+        return code, err.getvalue()
+
+    claude_settings._run_check = run_check
 
 
 def install_time_compression(auto, coordinates, *, stop_after: bool) -> None:

@@ -58,9 +58,14 @@ MEANINGS: dict[str, str] = {
         "[auto-switch.md](auto-switch.md) explains each."
     ),
     "autoswitch.includeApiKeyAccounts": (
-        "Let auto-switch move to an API-key account when no subscription account "
-        "has room. API keys are billed per token. Never while Claude Code sessions "
-        "are running: a running session cannot move to a key."
+        "Let auto-switch move to an API-key account as a last resort, when the "
+        "active subscription is at its limit and no other has room. API keys are "
+        "billed per token, so only a key with a monthly budget or a credit, and a "
+        "spend figure no older than 20 minutes, is used. Running Claude Code "
+        "sessions follow the move through the key line; the engine comes back once "
+        "a subscription has 5 points of room after the cooldown, and leaves the key "
+        "at once at its budget or credit. [api-accounts.md](api-accounts.md) has "
+        "the rules."
     ),
     "autoswitch.unhealthyTicks": (
         "Checks in a row on which the active account's usage cannot be read "

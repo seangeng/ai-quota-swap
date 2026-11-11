@@ -254,6 +254,9 @@ class AccountSnapshot:
     # unreadable; see oauth.login_expires_at_epoch. Feeds the "re-login in
     # 5d 12h" note every account view shows while the login is due.
     login_expires_at: float | None = None
+    #: The subscription logged in under an active key
+    #: (docs/design/api-key-sessions.md): shown "underneath", never active.
+    underneath: bool = False
 
     @property
     def display_tag(self) -> str:
@@ -273,6 +276,13 @@ class AccountsSnapshot:
     active_number: str | None
     accounts: tuple[AccountSnapshot, ...]
     taken_at: float
+    #: Under a key active through the helper line: the account underneath.
+    underneath_number: str | None = None
+    #: Lines to show when the helper line names an account that cannot give
+    #: a key, or run profiles kept a stale settings copy.
+    key_notes: tuple[str, ...] = ()
+    #: Who entered the key active through the line: ``user`` or ``engine``.
+    key_entered_by: str | None = None
 
 
 @dataclass

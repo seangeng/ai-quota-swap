@@ -64,6 +64,8 @@ _CHUNK = 1024 * 1024
 # wrote a line and the server that stamps a network share's mtimes, and the
 # report's rounding of local days to UTC hours.
 MTIME_MARGIN = 86_400
+#: How many unreadable entries a scan keeps by name (``ScanStats.missing_paths``).
+MISSING_PATHS_KEPT = 3
 
 _THREAD_ID = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$"
@@ -78,6 +80,11 @@ class ScanStats:
     events: int = 0  # new events counted (after dedupe)
     duplicates: int = 0
     missing: int = 0  # unreadable entries, such as symlinks to an unmounted volume
+    # The first few of them, to name in a message (not in the JSON).
+    missing_paths: list = field(default_factory=list)
+    # Entries gone when the scan came to read them (deleted between the
+    # listing and the read): not unreadable, and not part of ``missing``.
+    vanished: int = 0
     skipped_compressed: int = 0  # .zst files with no zstd support
     # The scan window: files last changed before ``modified_since`` (epoch
     # seconds; None when every file was in scope) were not opened.
@@ -95,6 +102,7 @@ class ScanStats:
             "newEvents": self.events,
             "duplicates": self.duplicates,
             "missing": self.missing,
+            "vanished": self.vanished,
             "skippedCompressed": self.skipped_compressed,
             "modifiedSince": (
                 datetime.fromtimestamp(self.modified_since).astimezone().isoformat(
@@ -243,7 +251,9 @@ def _held(cursor: tuple | None, path: str, st: os.stat_result) -> bool:
 class _Batch:
     def __init__(self) -> None:
         self.events: list[tuple[str, Event]] = []
-        self.owners: dict[str, str] = {}
+        # session -> (owner, early): early when no event of the session came
+        # before the owner line in its file.
+        self.owners: dict[str, tuple[str, int]] = {}
         self.cursors: dict[str, tuple] = {}
         self.bytes = 0
 
@@ -276,6 +286,9 @@ class Scanner:
         self._batch = _Batch()
         self._last_progress = 0.0
         self._total_files = 0
+        # Claude sessions with a counted event in the ledger, read when a
+        # file is resumed mid-way (an owner line there came late).
+        self._counted: set[str] | None = None
 
     def _refresh_logs(self) -> None:
         """(Re)load an activation log whose file changed, so a switch made
@@ -336,7 +349,7 @@ class Scanner:
                 st = stats[path]
                 if st is None:
                     self.stats.files_seen += 1
-                    self.stats.missing += 1
+                    self._missing(path)
                     continue
                 if not self._outside_window(st, cutoff_ns, claude_cursors.get(path), path):
                     work.append((st.st_mtime_ns, path, "claude", path, st, 1, account))
@@ -363,6 +376,25 @@ class Scanner:
         finally:
             self.stats.seconds = time.monotonic() - start
         return self.stats
+
+    def _missing(self, path: str) -> None:
+        """Count an entry that could not be read, keeping the first few. One
+        that no longer exists at all, not even as a link, was deleted after
+        the listing: it counts as vanished instead (decision R4-2). A broken
+        link, a permission error or any other read error stays missing. Only
+        an lstat that says "no such entry" counts as gone: ``lexists`` is also
+        false when a directory on the path cannot be entered, and those files
+        are still there."""
+        try:
+            os.lstat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            self.stats.vanished += 1
+            return
+        except OSError:
+            pass
+        self.stats.missing += 1
+        if len(self.stats.missing_paths) < MISSING_PATHS_KEPT:
+            self.stats.missing_paths.append(path)
 
     def _outside_window(
         self, st: os.stat_result, cutoff_ns: int | None, cursor: tuple | None, path: str
@@ -393,7 +425,7 @@ class Scanner:
         try:
             f = open(path, "rb")
         except OSError:
-            self.stats.missing += 1
+            self._missing(path)
             return
         self.stats.files_read += 1
         with f:
@@ -403,6 +435,9 @@ class Scanner:
                     offset = 0  # rewritten in place: read it again; dedupe absorbs it
                 f.seek(offset)
             pos = offset
+            # Sessions with an event earlier in this file: an owner line
+            # after one came late (store.py, owner_early).
+            with_events: set[str] = set()
             for raw in f:
                 if not raw.endswith(b"\n"):
                     break  # a line still being written: leave it for next time
@@ -413,10 +448,16 @@ class Scanner:
                 if item is None:
                     pass
                 elif isinstance(item, OwnerNote):
-                    self._batch.owners.setdefault(item.session, item.owner)
+                    if item.session not in self._batch.owners:
+                        early = item.session not in with_events and not (
+                            offset and item.session in self._counted_sessions()
+                        )
+                        self._batch.owners[item.session] = (item.owner, int(early))
                 else:
                     if account is not None:
                         item.account = account
+                    if item.session:
+                        with_events.add(item.session)
                     self._batch.events.append(("claude", item))
                 if self._batch_full():
                     # Mid-file: no size, so the next scan never mistakes the
@@ -426,6 +467,11 @@ class Scanner:
                     self._maybe_progress()
             self._batch.cursors[path] = ("claude", inode, size, mtime, pos, None)
         self._maybe_progress()
+
+    def _counted_sessions(self) -> set[str]:
+        if self._counted is None:
+            self._counted = self.store.counted_sessions("claude")
+        return self._counted
 
     # -- Codex ----------------------------------------------------------------
 
@@ -455,7 +501,10 @@ class Scanner:
         """The file a thread is read from, or None when no copy is readable
         (counted as missing, or as compressed with no zstd support)."""
         found = self._pick(candidates, stats)
-        self.stats.missing += len(candidates) - len(found)
+        readable = {p for p, _s in found}
+        for p in candidates:
+            if p not in readable:
+                self._missing(p)
         if found and not ZSTD_AVAILABLE:
             self.stats.skipped_compressed += sum(1 for p, _s in found if p.endswith(".zst"))
             found = [x for x in found if not x[0].endswith(".zst")]
@@ -484,7 +533,7 @@ class Scanner:
                     state, offset = new_codex_state(), 0  # truncated: start over
         stream = self._open_codex(path)
         if stream is None:
-            self.stats.missing += 1
+            self._missing(path)
             return
         self.stats.files_read += 1
         with stream:
@@ -498,7 +547,7 @@ class Scanner:
                     stream.close()
                     stream = self._open_codex(path)
                     if stream is None:
-                        self.stats.missing += 1
+                        self._missing(path)
                         return
                     state, pos = new_codex_state(), 0
             for raw in stream:
@@ -618,13 +667,15 @@ class Scanner:
                 store.put_seen(seen_rows)
             if buckets:
                 store.add_buckets([(*k, *v) for k, v in buckets.items()])
-            sessions = {s: [o, None] for s, o in batch.owners.items()}
+            sessions = {s: [o, None, early] for s, (o, early) in batch.owners.items()}
             for s, t in first_ts.items():
-                sessions.setdefault(s, [None, None])[1] = t
+                sessions.setdefault(s, [None, None, None])[1] = t
             if sessions:
                 store.note_sessions(
-                    [("claude", s, o, t) for s, (o, t) in sessions.items()]
+                    [("claude", s, o, t, early) for s, (o, t, early) in sessions.items()]
                 )
+                if self._counted is not None:
+                    self._counted.update(first_ts)
             for path, (provider, inode, size, mtime, pos, state) in batch.cursors.items():
                 store.put_cursor(path, provider, inode, size, mtime, pos, state)
             store.commit()

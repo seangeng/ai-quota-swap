@@ -137,8 +137,8 @@ def run_app(switcher, rumps, AppKit) -> int:
             self._notifier = Notifier()
             self._supervisor = EngineSupervisor(self._make_engine, self._queue_event)
             self._watcher = ActiveChangeWatcher(
-                paths={"claude": self.switcher._get_claude_config_path, "codex": _codex_auth_path},
-                read_active={"claude": self.switcher.live_login_email, "codex": _codex_live_email},
+                paths={"claude": self._claude_watch_paths, "codex": _codex_auth_path},
+                read_active={"claude": self.switcher.active_email, "codex": _codex_live_email},
             )
             self._health_item = None
             self._health_row: Row | None = None
@@ -258,6 +258,14 @@ def run_app(switcher, rumps, AppKit) -> int:
             if not self._first_scan_done and time.monotonic() - self._started >= COST_FIRST_SCAN_DELAY_S:
                 self._first_scan_done = True
                 self.cost_timer.start()  # scans now, then every COST_SCAN_INTERVAL_S
+
+        def _claude_watch_paths(self):
+            """Claude Code's config and its user settings: a key helper line
+            added or removed outside the menu bar changes the active account
+            (docs/design/api-key-sessions.md)."""
+            from ai_quota_swap import claude_settings
+
+            return (self.switcher._get_claude_config_path(), claude_settings.settings_path())
 
         def _detect_active_change(self):
             # Reflect switches from any source (menu, CLI, an engine, a /login)
@@ -577,7 +585,11 @@ def run_app(switcher, rumps, AppKit) -> int:
                 except SessionsRunningError as e:
                     # An API-key account with sessions running: the command
                     # line refuses without --log-out-sessions; here it asks.
-                    return ("ask", api_key_switch_question(e), notes)
+                    # A refusal with no saved-key way is an alert instead.
+                    question = api_key_switch_question(e)
+                    if question is None:
+                        raise
+                    return ("ask", question, notes)
                 return ("done", result, notes)
 
             def done(outcome):
@@ -669,7 +681,9 @@ def run_app(switcher, rumps, AppKit) -> int:
             self.refresh_async(full=True)  # explicit refresh: a store-governed pass
 
         def _do_quit(self, _a: Action):
-            self._supervisor.stop_all()
+            # Said now: the event queue is not read again after quitting.
+            for text in self._supervisor.stop_all():
+                self._notify(Notification(text))
             rumps.quit_application()
 
         # ---- handlers: engines and settings --------------------------------

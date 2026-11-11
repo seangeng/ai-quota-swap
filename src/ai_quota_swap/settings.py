@@ -71,6 +71,13 @@ class AutoSwitchSettings:
     # 5h/7d windows still have headroom. None = account-wide 5h/7d only
     # (default).
     model: str | None = None
+    # Where these settings were read from (``load_engine_settings``), so a
+    # running engine follows the file for what it re-reads every check
+    # (``autoswitch.includeApiKeyAccounts``, decision EM11), and the fields
+    # a command-line flag set (``merged_with_cli``), which the file never
+    # overrides. Neither is a setting: not compared, not saved.
+    settings_root: str | None = dataclasses.field(default=None, compare=False, repr=False)
+    pinned: frozenset = dataclasses.field(default=frozenset(), compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -252,8 +259,8 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "autoswitch", "includeApiKeyAccounts", "include_api_key_accounts", "bool",
             help=(
-                "Allow rotating onto managed API-key accounts (bill per token); "
-                "never while Claude Code sessions are running"
+                "Allow moving onto a managed API-key account (billed per token) "
+                "when no subscription has room; left again once one has"
             ),
         ),
         SettingSpec(
@@ -398,7 +405,10 @@ def _clamped(settings: AutoSwitchSettings) -> AutoSwitchSettings:
                 )
                 value = spec.default
             kwargs[spec.field] = value
-    return AutoSwitchSettings(**kwargs)
+    return dataclasses.replace(
+        AutoSwitchSettings(**kwargs),
+        settings_root=settings.settings_root, pinned=settings.pinned,
+    )
 
 
 def _read_raw(path: Path) -> dict:
@@ -592,7 +602,9 @@ def load_engine_settings(backup_root: Path, provider_id: str = "claude") -> Auto
     as it is; Codex's takes its threshold from ``codex.threshold`` instead.
     Command-line flags go on top (:func:`merged_with_cli`).
     """
-    settings = load_settings(backup_root)
+    settings = dataclasses.replace(
+        load_settings(backup_root), settings_root=str(backup_root)
+    )
     if provider_id == "codex":
         settings = dataclasses.replace(
             settings, threshold=load_codex_settings(backup_root).threshold
@@ -805,7 +817,9 @@ def merged_with_cli(settings: AutoSwitchSettings, args) -> AutoSwitchSettings:
             overrides[field] = value
     if not overrides:
         return settings
-    return _clamped(dataclasses.replace(settings, **overrides))
+    return _clamped(dataclasses.replace(
+        settings, **overrides, pinned=settings.pinned | frozenset(overrides)
+    ))
 
 
 def atomic_write_json(path: Path, data: dict) -> None:
