@@ -167,58 +167,92 @@ def test_build_plist_env_without_allowlisted_keys_is_just_path(tmp_path):
 # --- program resolution ----------------------------------------------------
 
 
-def test_resolve_program_prefers_the_console_script(tmp_path):
-    script = tmp_path / "qswap"
+@pytest.fixture
+def this_install(tmp_path, monkeypatch):
+    """This install as a uv tool virtualenv in ``tmp_path``: the package and
+    its distribution record, and the console script the record names. The
+    shared resolver (``ai_quota_swap.installed``, tests/test_installed.py)
+    finds it from the package, never from PATH alone."""
+    from ai_quota_swap import installed
+
+    venv = tmp_path / "venv"
+    site = venv / "lib" / "python3.12" / "site-packages"
+    (site / "ai_quota_swap").mkdir(parents=True)
+    info = site / "ai_quota_swap-0.1.0.dist-info"
+    info.mkdir()
+    (info / "RECORD").write_text("../../../bin/qswap,sha256=x,1\n", encoding="utf-8")
+    script = venv / "bin" / "qswap"
+    script.parent.mkdir()
     script.write_text("#!/bin/sh\n")
-    with patch.object(launch_agent.sys, "argv", [str(script)]):
-        assert launch_agent.resolve_program() == [str(script)]
+    script.chmod(0o755)
+    monkeypatch.setattr(installed, "_package_dir", lambda: site / "ai_quota_swap")
+    monkeypatch.setattr(installed, "_interpreter_site_dirs", lambda: [])
+    monkeypatch.setenv("PATH", os.defpath)
+    return script
 
 
-def test_resolve_program_keeps_the_symlink_and_does_not_follow_it(tmp_path):
+def test_resolve_program_prefers_the_console_script(this_install):
+    with patch.object(launch_agent.sys, "argv", [str(this_install)]):
+        assert launch_agent.resolve_program() == [str(this_install)]
+
+
+def test_resolve_program_keeps_the_symlink_and_does_not_follow_it(tmp_path, this_install):
     """`uv tool install` links ~/.local/bin/qswap into the tool's virtualenv.
 
     Resolving that symlink would pin the virtualenv-internal path, which a
     reinstall recreates — exactly the path this module exists to avoid.
     """
-    venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    real = venv_bin / "qswap"
-    real.write_text("#!/bin/sh\n")
     link_dir = tmp_path / "local" / "bin"
     link_dir.mkdir(parents=True)
     link = link_dir / "qswap"
-    link.symlink_to(real)
+    link.symlink_to(this_install)
 
     with patch.object(launch_agent.sys, "argv", [str(link)]):
         assert launch_agent.resolve_program() == [str(link)]
 
 
-def test_resolve_program_makes_a_relative_argv0_absolute(tmp_path, monkeypatch):
-    script = tmp_path / "qswap"
-    script.write_text("#!/bin/sh\n")
-    monkeypatch.chdir(tmp_path)
+def test_resolve_program_makes_a_relative_argv0_absolute(tmp_path, this_install, monkeypatch):
+    monkeypatch.chdir(this_install.parent)
     with patch.object(launch_agent.sys, "argv", ["./qswap"]):
         result = launch_agent.resolve_program()
-    assert result == [str(script)]
+    assert result == [str(this_install)]
     assert Path(result[0]).is_absolute()
 
 
-def test_resolve_program_falls_back_to_the_interpreter_without_a_script(tmp_path):
+def test_resolve_program_falls_back_to_the_interpreter_without_a_script(
+    tmp_path, this_install
+):
+    this_install.unlink()
     with patch.object(launch_agent.sys, "argv", [str(tmp_path / "gone")]):
-        with patch.object(launch_agent.shutil, "which", return_value=None):
-            assert launch_agent.resolve_program() == [sys.executable, "-m", "ai_quota_swap"]
+        assert launch_agent.resolve_program() == [
+            sys.executable, "-P", "-m", "ai_quota_swap",
+        ]
 
 
-def test_resolve_program_ignores_an_argv0_that_is_not_qswap(tmp_path):
+@pytest.mark.skipif(sys.platform == "win32", reason="which() needs an extension there")
+def test_resolve_program_ignores_an_argv0_that_is_not_qswap(tmp_path, this_install,
+                                                            monkeypatch):
     # Running through pytest, argv[0] is the test runner — not a thing launchd
-    # should be pointed at.
+    # should be pointed at. The PATH link to this install is.
     other = tmp_path / "pytest"
     other.write_text("#!/bin/sh\n")
-    found = tmp_path / "qswap"
-    found.write_text("#!/bin/sh\n")
+    link = tmp_path / "local" / "bin" / "qswap"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(this_install)
+    monkeypatch.setenv("PATH", str(link.parent))
     with patch.object(launch_agent.sys, "argv", [str(other)]):
-        with patch.object(launch_agent.shutil, "which", return_value=str(found)):
-            assert launch_agent.resolve_program() == [str(found)]
+        assert launch_agent.resolve_program() == [str(link)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="which() needs an extension there")
+def test_resolve_program_ignores_another_installs_qswap(tmp_path, this_install, monkeypatch):
+    other = tmp_path / "homebrew" / "bin" / "qswap"
+    other.parent.mkdir(parents=True)
+    other.write_text("#!/bin/sh\n")
+    other.chmod(0o755)
+    monkeypatch.setenv("PATH", str(other.parent))
+    with patch.object(launch_agent.sys, "argv", [str(other)]):
+        assert launch_agent.resolve_program() == [str(this_install)]
 
 
 # --- install ---------------------------------------------------------------

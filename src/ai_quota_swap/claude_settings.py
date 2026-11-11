@@ -45,18 +45,17 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from ai_quota_swap.installed import COMMAND_NAMES  # names the installed command goes by
+
 #: The key qswap owns in Claude Code's settings.
 HELPER_KEY = "apiKeyHelper"
 #: The hidden verb every helper line runs.
 HELPER_VERB = "key-helper"
-#: Names the installed command goes by.
-COMMAND_NAMES = ("qswap", "ai-quota-swap")
 #: How often a write is tried again when the file keeps changing under it.
 WRITE_ATTEMPTS = 5
 
@@ -263,22 +262,13 @@ def _quote(path: str) -> str:
 
 
 def qswap_executable() -> list[str]:
-    """The command that runs this qswap, as argv: the installed ``qswap``
-    script by absolute path, or this interpreter with ``-m ai_quota_swap``."""
-    argv0 = sys.argv[0] if sys.argv else ""
-    if argv0 and _base_name(argv0) in COMMAND_NAMES:
-        found = shutil.which(argv0) if not os.path.isabs(argv0) else argv0
-        if found and os.path.isfile(found):
-            return [os.path.abspath(found)]
-    for name in COMMAND_NAMES:
-        beside = Path(sys.executable).parent / (name + (".exe" if sys.platform == "win32" else ""))
-        if beside.is_file():
-            return [str(beside)]
-    for name in COMMAND_NAMES:
-        found = shutil.which(name)
-        if found:
-            return [os.path.abspath(found)]
-    return [sys.executable, "-m", "ai_quota_swap"]
+    """The command that runs this qswap, as argv: this install's console
+    script (the PATH link to it when there is one), or this interpreter with
+    ``-P -m ai_quota_swap`` when it has none. The menu bar's LaunchAgent
+    uses the same resolver (:func:`ai_quota_swap.installed.command`)."""
+    from ai_quota_swap import installed
+
+    return installed.command()
 
 
 def helper_command(number: str | int) -> str:

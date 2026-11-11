@@ -750,10 +750,23 @@ class TestSettingsWrites:
         assert claude_settings.without_helper("{bad") == "{bad"
 
     def test_the_command_names_the_installed_qswap(self, monkeypatch, tmp_path):
+        """The real resolver: started through a link (in a directory with a
+        space) to this install's own console script, off PATH, the line
+        names that link, quoted."""
+        from ai_quota_swap import installed
+
         monkeypatch.setattr(claude_settings, "qswap_executable", _REAL_EXECUTABLE)
-        exe = tmp_path / "bin with space" / "qswap"
+        monkeypatch.setattr(key_helper, "_platform", lambda: "macos")
+        own = installed.own_scripts()
+        if not own:
+            pytest.skip("this environment has no qswap console script")
+        exe = tmp_path / "bin with space" / own[0].name
         exe.parent.mkdir()
-        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        try:
+            exe.symlink_to(own[0])
+        except (OSError, NotImplementedError):
+            pytest.skip("symbolic links are not available here")
+        monkeypatch.setenv("PATH", os.defpath)
         monkeypatch.setattr(sys, "argv", [str(exe), "switch", "5"])
         line = claude_settings.helper_command(5)
         quote = '"' if sys.platform == "win32" else "'"
@@ -875,6 +888,79 @@ class TestTheLineReadsBack:
             assert _REAL_COMMAND_MISSING(line) is False
             monkeypatch.undo()
             monkeypatch.setattr(sys, "platform", "win32")
+
+    @POSIX_ONLY
+    @pytest.mark.parametrize("on_path", [True, False])
+    def test_the_menu_bars_switch_writes_a_line_the_shell_runs(
+        self, temp_home, monkeypatch, tmp_path, on_path
+    ):
+        """F21: the real resolver in the menu bar's process shape (the
+        bundle's interpreter, argv[0] the package's __main__.py, the plist's
+        PATH): the engine's switch writes this install's console script, the
+        PATH link when the plist's PATH has it, and /bin/sh runs the line."""
+        from ai_quota_swap import installed
+
+        monkeypatch.setattr(claude_settings, "qswap_executable", _REAL_EXECUTABLE)
+        monkeypatch.setattr(key_helper, "_platform", lambda: "macos")
+        venv = tmp_path / "tools" / "ai-quota-swap"
+        site = venv / "lib" / "python3.12" / "site-packages"
+        info = site / "ai_quota_swap-0.1.0.dist-info"
+        info.mkdir(parents=True)
+        (info / "RECORD").write_text("../../../bin/qswap,sha256=x,1\n", encoding="utf-8")
+        script = venv / "bin" / "qswap"
+        script.parent.mkdir()
+        script.write_text('#!/bin/sh\necho "ran $*"\n', encoding="utf-8")
+        script.chmod(0o755)
+        contents = tmp_path / "AI Quota Swap Menubar.app" / "Contents"
+        (contents / "MacOS").mkdir(parents=True)
+        (contents / "lib").mkdir()
+        (contents / "lib" / "python3.12").symlink_to(venv / "lib" / "python3.12")
+        bundle_site = contents / "lib" / "python3.12" / "site-packages"
+        link = temp_home / ".local" / "bin" / "qswap"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(script)
+        monkeypatch.setattr(installed, "_package_dir", lambda: bundle_site / "ai_quota_swap")
+        monkeypatch.setattr(installed, "_interpreter_site_dirs", lambda: [bundle_site])
+        monkeypatch.setattr(sys, "executable", str(contents / "MacOS" / "python"))
+        monkeypatch.setattr(sys, "argv", [
+            str(bundle_site / "ai_quota_swap" / "__main__.py"), "menubar", "--foreground",
+        ])
+        plist_path = "/usr/bin:/bin:/usr/sbin:/sbin"
+        monkeypatch.setenv("PATH", f"{link.parent}:{plist_path}" if on_path else plist_path)
+        s = _fleet()
+        s.switch_to("5", json_output=True, entered_by="engine")
+        line = _settings_obj(temp_home)["apiKeyHelper"]
+        assert line == f"{link if on_path else script} key-helper 5"
+        done = subprocess.run(["/bin/sh", "-c", line], cwd=tmp_path, capture_output=True,
+                              text=True)
+        assert (done.returncode, done.stdout) == (0, "ran key-helper 5\n")
+
+    @POSIX_ONLY
+    def test_the_interpreter_form_ignores_the_sessions_project_files(self, tmp_path):
+        """F17: Claude Code runs the line from the session's project
+        directory. With -P a project file named like a standard-library
+        module is not imported; the bare -m form imports it."""
+        root = tmp_path / "data"
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        project = tmp_path / "project"
+        project.mkdir()
+        for module in ("base64", "json", "calendar"):
+            (project / f"{module}.py").write_text(
+                "open('ran', 'w').write('x')\nraise SystemExit(3)\n", encoding="utf-8"
+            )
+        q = claude_settings._quote
+        env = {"HOME": str(tmp_path / "home"), "PATH": os.defpath}
+        for flags, answers in (("-P -m", True), ("-m", False)):
+            line = f"{q(sys.executable)} {flags} ai_quota_swap key-helper 5 --data-dir {q(str(root))}"
+            assert claude_settings.parse_line(line) == "5"
+            done = subprocess.run(["/bin/sh", "-c", line], cwd=project, env=env,
+                                  capture_output=True, text=True, timeout=60)
+            if answers:
+                assert (done.returncode, done.stdout) == (0, KEY_5 + "\n"), done.stderr
+                assert not (project / "ran").exists()
+            else:
+                assert done.returncode != 0 and (project / "ran").exists()
 
     def test_a_line_qswap_could_not_read_back_is_never_written(self, monkeypatch, tmp_path):
         """A command that would not read as qswap's line for that account is
