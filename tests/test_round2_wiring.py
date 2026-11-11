@@ -455,3 +455,53 @@ class TestABrokenLineSaysWhatSessionsDo:
         check = {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
         assert "new Claude Code sessions fail to get the key" in check.summary
         assert E2_RUNNING in check.summary
+
+
+# == The active key's menu row: B8's "by auto-switch" beside A's figure ===============
+
+
+def _key_row(reading, *, by_engine: bool, over: str = "#1 personal", alias: str = "ci"):
+    acc = menubar.AccountState(
+        provider="claude", number="2", email="ci@example.com", alias=alias, kind="api_key",
+        active=True, entry=UsageEntry(sentinel=USAGE_API_KEY, api_spend=reading),
+        over=over, by_engine=by_engine,
+    )
+    return menubar.account_row(acc, now=time.time(), stale_after_s=600)
+
+
+def _budget(used: float, limit: float, *, age: float = 60) -> dict:
+    return {
+        "spend": {"used": used, "limit": limit, "pct": used / limit * 100, "currency": "USD"},
+        "today": 4.12, "source": "ledger", "as_of": time.time() - age,
+        "unpriced_tokens": 0, "month": "2026-11",
+    }
+
+
+class TestTheActiveKeysMenuRow:
+    """The key's figure and its reason are never what the row limit cuts:
+    "over #1 personal" gives way first (the #1 row says "underneath"), then
+    today's figure, then "by auto-switch" (when no engine runs, the note row
+    under the accounts says it in full)."""
+
+    @pytest.mark.parametrize("reading, by_engine, whole, gone", [
+        (_budget(212.40, 500.0), True, "$212.40/$500 (42%) est.", ("over #1",)),
+        (_budget(520.0, 500.0), True, "$520.00/$500 (104%, over budget) est.", ("over #1",)),
+        (_budget(212.40, 500.0), False, "$4.12 today · $212.40/$500 (42%) est.", ("over #1",)),
+        (_budget(14.0, 20.0, age=1500), True, "$14.00/$20 (70%) est. · limit not enforced",
+         ("over #1", "by auto-switch")),
+    ])
+    def test_the_figure_and_its_reason_stay_whole(self, reading, by_engine, whole, gone):
+        row = _key_row(reading, by_engine=by_engine)
+        assert len(row.text) <= menubar.ROW_LIMIT
+        assert row.text.endswith(whole), row.text
+        assert "…" not in row.text
+        for fact in gone:
+            assert fact not in row.text
+        if by_engine and "by auto-switch" not in gone:
+            assert "· by auto-switch ·" in row.text
+        # The tooltip keeps everything.
+        assert "over #1 personal" in row.tooltip or "#1 personal" in row.tooltip
+
+    def test_a_row_that_fits_keeps_every_fact(self):
+        row = _key_row(_budget(2.0, 50.0), by_engine=False, over="#1 me")
+        assert "over #1 me" in row.text and "today" in row.text

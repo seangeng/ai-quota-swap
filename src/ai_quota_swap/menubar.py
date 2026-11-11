@@ -964,17 +964,27 @@ def account_row(
     elif state == "api-key":
         reading = getattr(acc.entry, "api_spend", None)
         parts.append("API key")
-        if acc.over:
-            parts.append(display.over_fact(acc.over))
-        if acc.by_engine:
-            parts.append(display.BY_ENGINE)
+        over = display.over_fact(acc.over) if acc.over else None
+        by = display.BY_ENGINE if acc.by_engine else None
         if api_spend.has_limit(reading):
             # With a budget or a credit, the compact form: the figure (and
-            # "over budget", "credit spent") must never be what the row
-            # limit cuts.
-            parts.append(api_spend.menu_text(reading, now=now))
+            # "over budget", "credit spent", "limit not enforced") must never
+            # be what the row limit cuts. Short of room, "over #1 personal"
+            # gives way first (the #1 row says "underneath"), then today's
+            # figure, then "by auto-switch" (with no engine running, the note
+            # row says it in full); the tooltip keeps them all.
+            full = api_spend.menu_text(reading, now=now)
+            short = api_spend.menu_text(reading, now=now, today=False)
+            tries = ([over, by, full], [by, full], [by, short], [short])
         else:
-            parts.append(display.api_key_summary(block))
+            summary = display.api_key_summary(block)
+            tries = ([over, by, summary], [by, summary], [summary])
+        whole = not acc.alias and is_placeholder(acc.email)
+        for extra in tries:
+            facts = [x for x in extra if x]
+            if _row_fits([*parts, *facts], whole_name=whole):
+                break
+        parts.extend(facts)
         # A limit reached, or one not enforced (no fresh figure): the engine
         # treats both as at the limit and leaves the key (decision A4).
         attention = api_spend.limit_reason(reading) is not None or (
@@ -1011,6 +1021,19 @@ def account_row(
 
 #: The shortest an account label gets when a row is too long: ``#5 api…``.
 LABEL_FLOOR = 7
+
+
+def _row_fits(parts: Sequence[str], limit: int = ROW_LIMIT, *, whole_name: bool = False) -> bool:
+    """Whether :func:`fit_row` fits ``parts`` without cutting the end: the
+    label may give way (down to :data:`LABEL_FLOOR`, or to its number)."""
+    if not parts:
+        return True
+    label = parts[0]
+    if whole_name:
+        shortest = label.rsplit(" ", 1)[0] if " " in label else label
+    else:
+        shortest = label[: min(len(label), LABEL_FLOOR)]
+    return len(" · ".join([shortest, *parts[1:]])) <= limit
 
 
 def fit_row(parts: Sequence[str], limit: int = ROW_LIMIT, *, whole_name: bool = False) -> str:

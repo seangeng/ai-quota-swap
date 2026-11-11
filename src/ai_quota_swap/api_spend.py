@@ -1113,18 +1113,19 @@ def short_text(reading: dict) -> str:
 LIMIT_NOT_ENFORCED_SHORT = "limit not enforced"
 
 
-def menu_text(reading: dict, now: float | None = None) -> str:
+def menu_text(reading: dict, now: float | None = None, *, today: bool = True) -> str:
     """For a menu bar row, within its note width: ``$4.12 today ·
     $212.40/$500 (42%)``; ``(104%, over budget)`` past the budget, as
     :func:`spend_text` says it. Nothing recorded with a budget: ``$0 of $500
     this month``. A budget or credit with no fresh figure ends in ``limit
-    not enforced``."""
+    not enforced``. ``today`` False leaves today's figure out, for a row
+    with no room for it."""
     unenforced = limit_not_enforced(reading, now) and not spend_unknown(reading)
-    text = _menu_text(reading, unenforced)
+    text = _menu_text(reading, unenforced, today=today)
     return f"{text} · {LIMIT_NOT_ENFORCED_SHORT}" if unenforced else text
 
 
-def _menu_text(reading: dict, unenforced: bool) -> str:
+def _menu_text(reading: dict, unenforced: bool, *, today: bool = True) -> str:
     from ai_quota_swap.display import API_KEY_NO_USAGE_SHORT
 
     credit = reading.get("credit")
@@ -1155,8 +1156,8 @@ def _menu_text(reading: dict, unenforced: bool) -> str:
     if used is None:
         return "API key · no spend data"
     # While the limit is not enforced the row's room goes to saying so.
-    today = None if unenforced else reading.get("today")
-    text = f"{money(today)} today · " if today is not None else ""
+    spent_today = None if unenforced or not today else reading.get("today")
+    text = f"{money(spent_today)} today · " if spent_today is not None else ""
     text += money(used)
     if limit is not None and pct is not None:
         tag = f"{pct:.0f}%" + (", over budget" if pct >= 100 else "")
