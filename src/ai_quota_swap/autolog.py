@@ -133,6 +133,15 @@ def ref_label(ref: Mapping | None, context: object = None) -> str:
     return number_label(ref.get("number"), ref.get("email") or "", context)
 
 
+def context_label(number: object, context: object = None) -> str:
+    """``#3 c@example.com``: an account's label with its email from the
+    tick's views (``context.accounts``) when the event carries none."""
+    for view in getattr(context, "accounts", ()) or ():
+        if str(getattr(view, "number", "")) == str(number):
+            return view_label(view, context)
+    return number_label(number, "", context)
+
+
 def view_label(view: object, context: object = None) -> str:
     """The label of an ``AccountView``; its own alias wins."""
     alias = getattr(view, "alias", "") or _alias(context, getattr(view, "number", None))
@@ -461,6 +470,14 @@ def switch_reason(event: object) -> str:
             return words + back
         note = getattr(event, "reset_note", None)
         tail = f"; {note}" if note else ""
+        if getattr(event, "before_key", False):
+            # A subscription taken instead of an API key (decision EM9).
+            target = getattr(event, "target_binding", None)
+            if target is not None and target.over:
+                value = pct_text(target.pct, pct_decimals(target.line))
+                tail = f"; taken over its switch line ({target.label} {value}%) before an API key{tail}"
+            else:
+                tail = f"; taken before an API key{tail}"
         if binding is not None and binding.pct >= 100.0:
             return f"{binding.label} limit reached{tail}"
         return f"limit reached{tail}"
@@ -659,6 +676,10 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         return "not moving to an API key, its key line cannot be added", "wait"
     if reason == "reset-pending":
         return "a usage reset comes before an API key", "wait"
+    if reason == "usage-unreadable-hold":
+        account = getattr(event, "account", None)
+        who = context_label(account, context) if account else "a subscription"
+        return f"waiting for {who}'s usage before an API key", "wait"
     # key-no-limit, spend-unknown, key-unusable and stuck-on-key need the
     # user: the line is the whole sentence, with its command.
     if reason == "api-key-sessions":
@@ -747,6 +768,18 @@ def no_switch_sentence(event: object) -> str:
         return (
             "Not switching to an API key yet: a usage reset was claimed, and its "
             "refill comes first"
+        )
+    if reason == "usage-unreadable-hold":
+        account = getattr(event, "account", None)
+        who = context_label(account, context) if account else "a subscription"
+        wait = getattr(event, "wait_s", None)
+        upto = (
+            f"; waiting up to {duration_text(wait)} for it"
+            if isinstance(wait, (int, float)) and wait > 0 else ""
+        )
+        return (
+            f"Not switching to an API key yet: {who}'s usage could not be read this "
+            f"check{upto}"
         )
     if reason == "key-unusable":
         account = getattr(event, "account", None)

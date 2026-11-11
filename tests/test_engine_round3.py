@@ -866,3 +866,204 @@ class TestUsageOlderThanAWeek:
         assert h.engine.tick() is TickOutcome.SWITCHED
         assert h.switcher.current_account_number() == "1"
         assert _switches(h)[-1].limit_reason in ("budget", "credit-spent")
+
+
+# == EM9: no key while a subscription could take the sessions =================================
+
+
+def _u(pct5: float, pct7: float = 0.0) -> dict:
+    return {"five_hour": {"pct": pct5}, "seven_day": {"pct": pct7}}
+
+
+class TestNoKeyWhileASubscriptionHasRoom:
+    def test_priority_mode_takes_one_over_its_line_before_a_key(self, temp_home):
+        """The re-check's case (b): priority-consume-first, #1 at 100%, #3
+        at 95% over its 90% line. best, weekly-first and consume-first move
+        to #3 on the same readings; the priority rule used to enter the key."""
+        h = _fleet(temp_home, strategy="priority-consume-first")
+        assert _tick(h, {"1": _u(100), "2": "api key", "3": _u(95)}) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "3"
+        assert _settings_line(temp_home) is None
+        assert _switches(h)[-1].human() == (
+            "Switched #1 a@example.com → #3 c@example.com · 5h limit reached; taken "
+            "over its switch line (5h 95%) before an API key"
+        )
+
+    @pytest.mark.parametrize("strategy", ["best", "weekly-first", "consume-first",
+                                          "priority-consume-first"])
+    def test_every_strategy_with_5_points_of_room(self, temp_home, strategy):
+        h = _fleet(temp_home, strategy=strategy)
+        _tick(h, {"1": _u(100), "2": "api key", "3": _u(95, 60)})
+        assert h.switcher.current_account_number() == "3"
+
+    def test_less_than_5_points_is_no_room_for_the_rule(self, temp_home):
+        h = _fleet(temp_home, strategy="priority-consume-first")
+        assert _tick(h, {"1": _u(100), "2": "api key", "3": _u(96)}) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+
+    def test_room_is_needed_in_every_watched_window(self, temp_home):
+        h = _fleet(temp_home, strategy="priority-consume-first")
+        _tick(h, {"1": _u(100), "2": "api key", "3": _u(50, 97)})
+        assert h.switcher.current_account_number() == "2"
+
+
+class TestAnUnreadableSubscriptionHoldsTheKey:
+    def test_for_one_cooldown_then_the_key(self, temp_home):
+        """The re-check's case (a): #1 at 100%, #3 unreadable this check.
+        The key waits one cooldown from the first check that wanted it,
+        says so once, then goes ahead."""
+        h = _fleet(temp_home, cooldown_seconds=300)
+        readings = {"1": _u(100), "2": "api key", "3": None}
+        for _ in range(5):  # 0, 60, ..., 240 s
+            assert _tick(h, readings) is TickOutcome.BLOCKED
+            h.clock.advance(60)
+        assert h.switcher.current_account_number() == "1"
+        held = [e for e in _holds(h) if e.reason == "usage-unreadable-hold"]
+        assert len(held) == 5 and held[0].account == "3"
+        assert held[0].human() == (
+            "Not switching to an API key yet: #3 c@example.com's usage could not be "
+            "read this check; waiting up to 5m for it"
+        )
+        assert len([n for n in _notes(h) if "could not be read this check" in n]) == 1
+        assert _tick(h, readings) is TickOutcome.SWITCHED  # 300 s: one cooldown
+        assert h.switcher.current_account_number() == "2"
+
+    def test_across_cron_runs(self, temp_home):
+        h = _fleet(temp_home, cooldown_seconds=300)
+        readings = {"1": _u(100), "2": "api key", "3": None}
+        for _ in range(5):
+            h.engine = h._make_engine()  # qswap auto --once
+            assert _tick(h, readings) is TickOutcome.BLOCKED
+            h.clock.advance(60)
+        h.engine = h._make_engine()
+        assert _tick(h, readings) is TickOutcome.SWITCHED
+
+    def test_a_check_that_did_not_want_the_key_starts_it_again(self, temp_home):
+        h = _fleet(temp_home, cooldown_seconds=300)
+        readings = {"1": _u(100), "2": "api key", "3": None}
+        for _ in range(4):
+            _tick(h, readings)
+            h.clock.advance(60)
+        _tick(h, {"1": _u(50), "2": "api key", "3": None})  # #1 has room again
+        h.clock.advance(60)
+        for _ in range(4):
+            assert _tick(h, readings) is TickOutcome.BLOCKED
+            h.clock.advance(60)
+        assert h.switcher.current_account_number() == "1"
+
+    def test_a_subscription_that_needs_re_login_does_not_hold_it(self, temp_home):
+        h = _fleet(temp_home)
+        assert _tick(h, {"1": _u(100), "2": "api key", "3": "re-login needed"}) is (
+            TickOutcome.SWITCHED
+        )
+        assert h.switcher.current_account_number() == "2"
+
+    def test_a_dry_run_holds_too_and_writes_nothing(self, temp_home):
+        h = _fleet(temp_home, cooldown_seconds=300)
+        h.engine = h._make_engine(dry_run=True)
+        readings = {"1": _u(100), "2": "api key", "3": None}
+        assert _tick(h, readings) is TickOutcome.BLOCKED
+        assert "keyWantedAt" not in _state(h)
+        h.clock.advance(300)
+        assert _tick(h, readings) is TickOutcome.SWITCHED  # "Would switch"
+        assert _switches(h)[-1].dry_run
+
+
+def _pattern(kind: str, tick: int, phase: int) -> float:
+    if kind == "constant":
+        return [100.0, 95.0, 97.0][phase % 3]
+    if kind == "rising":
+        return min(100.0, 80.0 + 0.5 * tick + 3 * phase)
+    # sawtooth: 2 points a check, back to 0 at the limit (a window rolling over)
+    return float((2 * (tick + 17 * phase)) % 102)
+
+
+class TestTheInvariant:
+    """EM9 in one statement, over 300 checks of constant, rising and
+    sawtooth readings, with one engine and with two engines whose lines
+    differ: the engine never enters a key while a subscription in the
+    rotation has 5 points of room in every watched window, and never enters
+    a key and returns from it within one cooldown."""
+
+    @pytest.mark.parametrize("kind", ["constant", "rising", "sawtooth"])
+    @pytest.mark.parametrize("engines", [1, 2])
+    @pytest.mark.parametrize("strategy", ["best", "priority-consume-first"])
+    def test_it_holds(self, temp_home, kind, engines, strategy):
+        from dataclasses import replace
+
+        from ai_quota_swap.autoswitch import AutoSwitchEngine
+        from tests.test_autoswitch import _entry_for
+
+        h = _fleet(temp_home, strategy=strategy, cooldown_seconds=300)
+        second = AutoSwitchEngine(
+            h.switcher, replace(h.settings, threshold=80.0), h.events.append, clock=h.clock,
+        )
+        entered_at = None
+        for tick in range(300):
+            readings = {
+                "1": _u(_pattern(kind, tick, 0)),
+                "3": _u(_pattern(kind, tick, 1), _pattern("constant", tick, 2) - 40),
+            }
+            if kind == "sawtooth" and tick % 37 == 5:
+                readings["3"] = None  # unreadable now and then
+            room = {
+                n: min(100.0 - v["five_hour"]["pct"], 100.0 - v["seven_day"]["pct"])
+                for n, v in readings.items() if v is not None
+            }
+            engine = second if engines == 2 and tick % 2 else h.engine
+            before = len(h.events)
+            entries = {n: _entry_for(v, h.clock.now) for n, v in readings.items()}
+            entries["2"] = _entry_for("api key", h.clock.now)
+            h.engine, saved = engine, h.engine
+            try:
+                h.tick_with_entries(_with_key(h, entries))
+            finally:
+                h.engine = saved
+            for event in h.events[before:]:
+                if not isinstance(event, SwitchEvent) or event.dry_run:
+                    continue
+                to = (event.to_ref or {}).get("number")
+                if str(to) == "2":
+                    passing = [n for n, r in room.items() if r >= 5.0
+                               and n != str((event.from_ref or {}).get("number"))]
+                    assert not passing, (tick, readings)
+                    entered_at = h.clock.now
+                elif event.trigger == "key-return":
+                    assert entered_at is not None
+                    assert h.clock.now - entered_at >= 300, (tick, readings)
+            h.clock.advance(60)
+
+
+def _with_key(h, entries):
+    from dataclasses import replace
+
+    entries = dict(entries)
+    entries["2"] = replace(entries["2"], api_spend=_reading(h))
+    return entries
+
+
+class TestTheNewLinesFit:
+    """Every line this round adds to the auto log fits 80 columns."""
+
+    def _lines(self, h) -> list[str]:
+        from ai_quota_swap import autolog
+
+        lines: list[str] = []
+        log = autolog.AutoLog(lines.append, clock=lambda: "12:00:00", width=80)
+        for event in h.events:
+            log(event)
+        log.flush()
+        return [line for text in lines for line in text.splitlines()]
+
+    def test_the_holds_and_the_switches(self, temp_home):
+        h = _fleet(temp_home, strategy="priority-consume-first")
+        _tick(h, {"1": _u(100), "2": "api key", "3": _u(95)})  # before an API key
+        h2 = _fleet(temp_home)
+        _tick(h2, {"1": _u(100), "2": "api key", "3": None})  # usage-unreadable-hold
+        for h_ in (h, h2):
+            lines = self._lines(h_)
+            assert lines
+            for line in lines:
+                if line.strip().startswith("qswap "):
+                    continue
+                assert len(line) <= 80, line

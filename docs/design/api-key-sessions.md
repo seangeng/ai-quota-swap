@@ -320,7 +320,13 @@ What the code does where this part leaves room, or where it had to differ:
   ledger's is shown (`this machine only`) but never fresh, and with each of those scans the
   engine reads Anthropic's figure again, accepting an answer at most a minute old
   (`ADMIN_REFRESH_S`) whatever `admin_api.CACHE_TTL_S` says for the other readers; the way back needs 5 points of room in every window
-  (`RETURN_ROOM_PCT`). A key judged at its budget or credit stays at it in the engine's
+  (`RETURN_ROOM_PCT`). The engine never enters a key while a subscription in the rotation
+  has that much room in every watched window and is readable, not set aside and not
+  disabled: that subscription is the target instead, over its own switch line and in any
+  strategy, and the switch line says so (`taken over its switch line (5h 95%) before an API
+  key`). While another subscription's usage is unreadable, key entry waits at most one
+  cooldown from the first check that wanted the key (`keyWantedAt`;
+  `usage-unreadable-hold`, said once). A key judged at its budget or credit stays at it in the engine's
   state file, one latch per kind (`limitLatch[N]` holds `budget` and `credit` apart): the
   budget latch until the month rolls over or `qswap budget` sets it again, the credit latch
   until `qswap credit` records another; each command clears only its own, and the key stays

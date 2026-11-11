@@ -62,6 +62,7 @@ from ai_quota_swap.exceptions import (
 )
 from ai_quota_swap.json_output import (
     SCHEMA_VERSION,
+    USAGE_KEYCHAIN_UNAVAILABLE,
     USAGE_RELOGIN_REQUIRED,
     USAGE_TOKEN_EXPIRED,
 )
@@ -434,6 +435,10 @@ class SwitchEvent(AutoSwitchEvent):
     # Where the figure behind ``limit_reason`` came from (``ledger``: an
     # estimate, said so).
     limit_source: str | None = _human_only()
+    # At the limit, a subscription taken instead of an API key (decision
+    # EM9), and its binding window, which may be over its own switch line.
+    before_key: bool = _human_only(False)
+    target_binding: BindingWindow | None = _human_only()
 
     def _fields(self) -> dict:
         return {
@@ -722,6 +727,10 @@ LATCHED_REASONS = frozenset({"budget", "credit-spent"})
 #: Why the engine leaves a key it entered once ``autoswitch.includeApiKeyAccounts``
 #: is turned off: it would not enter the key now (decision EM11).
 KEYS_OFF = "keys-off"
+#: A subscription's usage that could not be read this check (no reading, a
+#: token mid-renewal, a locked Keychain): it may have room, so it holds key
+#: entry for a while (decision EM9). Needing re-login is no such state.
+_UNREADABLE_NOW = (None, USAGE_TOKEN_EXPIRED, USAGE_KEYCHAIN_UNAVAILABLE)
 
 
 def clear_limit_latch(
@@ -1674,6 +1683,11 @@ class AutoSwitchEngine:
         # API keys whose ledger figure this tick's scan could not vouch for
         # (decision EM3): their spend counts as unknown.
         self._ledger_unsure: set[str] = set()
+        # Whether this tick wanted an API key (no subscription could take the
+        # sessions), and since when checks have (``keyWantedAt`` in the state
+        # file; a dry run keeps it here only): the unreadable hold of EM9.
+        self._wanted_key = False
+        self._dry_key_wanted_at: float | None = None
 
     # -- state file ---------------------------------------------------------
 
@@ -2077,8 +2091,11 @@ class AutoSwitchEngine:
     def tick(self) -> TickOutcome:
         """Evaluate once: poll usage, maybe switch. Never raises."""
         try:
+            self._wanted_key = False
             outcome = self._tick_inner()
             self._persist_health_counters(self._health_account)
+            if not self._wanted_key:
+                self._end_key_wait()
             return outcome
         except ProviderError as e:
             self._emit(ErrorEvent(message=str(e), transient=True))
@@ -2693,11 +2710,23 @@ class AutoSwitchEngine:
             usage.get(current), headroom.get(current), settings, thresholds[current]
         )
         held_for_sessions = False
-        if (
+        key_branch = bool(
             not ordered and api_key_candidates
             and trigger == "at-limit"
             and not priority_active_ready
-        ):
+        )
+        takers = self._session_takers(oauth_candidates, headroom) if key_branch else []
+        if takers:
+            # No key while a subscription could take the sessions (decision
+            # EM9): readable, with RETURN_ROOM_PCT points of room in every
+            # watched window. It is the target instead, over its own switch
+            # line too and in any strategy, said so on the switch line.
+            ordered = takers
+            self._tick_cause["before_key"] = True
+            self._tick_cause["target_bindings"] = {
+                n: self._binding(usage.get(n), settings, thresholds[n]) for n in takers
+            }
+        elif key_branch:
             # Last resort when we must move: metered API-key accounts
             # (unmeasurable headroom). Only at the limit: the active
             # subscription has no room left. Never on the proactive trigger
@@ -2711,6 +2740,7 @@ class AutoSwitchEngine:
             # run on the shared login: a running session cannot move to a
             # saved key and would stop with "Not logged in"
             # (docs/design/api-key-sessions.md).
+            self._wanted_key = True
             helper = self._key_helper_ready()
             if self._reset_claimed or self._reset_in_flight(state, entries):
                 # Free before paid: a reset claimed this tick, or one whose
@@ -2719,6 +2749,8 @@ class AutoSwitchEngine:
                     reason="reset-pending",
                     detail="a usage reset was claimed; its refill comes before an API key",
                 ))
+                held_for_sessions = True
+            elif self._unreadable_hold(state, oauth_candidates, usage, headroom, settings):
                 held_for_sessions = True
             elif helper is False:
                 self._emit(NoSwitchEvent(
@@ -3990,6 +4022,8 @@ class AutoSwitchEngine:
             "back_underneath": bool(cause.get("back_underneath")),
             "reset_note": cause.get("reset_note"),
             "limit_source": cause.get("limit_source"),
+            "before_key": bool(cause.get("before_key")),
+            "target_binding": (cause.get("target_bindings") or {}).get(number),
         }
 
     def _account_views(
@@ -4396,6 +4430,95 @@ class AutoSwitchEngine:
                 except Exception as e:
                     _logger.debug("Could not clear a lapsed limit latch: %r", e)
         return holding[0] if holding else None
+
+    # -- no key while a subscription could take the sessions (decision EM9) ----
+    #
+    # The engine never enters an API key while a subscription in the rotation
+    # passes the return rule's room test: readable, at least RETURN_ROOM_PCT
+    # points of room in every watched window, not needing re-login (set
+    # aside) and not disabled (out of the rotation). That subscription is the
+    # target instead, over its own switch line too. While another
+    # subscription's usage cannot be read this check, key entry waits at most
+    # one cooldown from the first check that wanted the key, then goes ahead.
+
+    def _session_takers(
+        self, candidates: Sequence[str], headroom: Mapping[str, float | None],
+    ) -> list[str]:
+        """The subscriptions among ``candidates`` that could take the
+        sessions instead of a key, the most room first (rotation order breaks
+        ties)."""
+        room = {
+            n: h for n in candidates
+            if (h := headroom.get(n)) is not None and h >= RETURN_ROOM_PCT
+        }
+        return sorted(room, key=lambda n: -room[n])
+
+    def _unreadable_hold(
+        self, state: dict, candidates: Sequence[str], usage: Mapping[str, object],
+        headroom: Mapping[str, float | None], settings: AutoSwitchSettings,
+    ) -> bool:
+        """Whether key entry waits for a subscription whose usage cannot be
+        read this check (``usage-unreadable-hold``, said once per episode by
+        the notifier). At most one cooldown from the first check that wanted
+        the key; afterwards the key goes ahead."""
+        unreadable = [
+            n for n in candidates
+            if headroom.get(n) is None and usage.get(n) in _UNREADABLE_NOW
+        ]
+        now = self.clock()
+        since = self._key_wanted_since(state, now)
+        left = settings.cooldown_seconds - (now - since)
+        if not unreadable or left <= 0:
+            return False
+        self._emit(NoSwitchEvent(
+            reason="usage-unreadable-hold",
+            detail=(
+                f"account {unreadable[0]}'s usage could not be read this check; an API "
+                "key waits for it"
+            ),
+            account=unreadable[0],
+            wait_s=left,
+        ))
+        return True
+
+    def _key_wanted_since(self, state: dict, now: float) -> float:
+        """When the checks that want a key began: ``keyWantedAt`` in the
+        state file (a dry run: in memory), set now when none is recorded, or
+        when the last one is older than :data:`ONCE_WATCH_S` (a gap that
+        long is another episode)."""
+        if self.dry_run:
+            stored = self._dry_key_wanted_at
+        else:
+            stored = _number(state.get("keyWantedAt"))
+        if stored is not None and 0 <= now - stored <= ONCE_WATCH_S + self.settings.cooldown_seconds:
+            return stored
+        if self.dry_run:
+            self._dry_key_wanted_at = now
+            return now
+        state["keyWantedAt"] = now
+
+        def store(s: dict) -> None:
+            s["keyWantedAt"] = now
+
+        try:
+            self._mutate_state(store)
+        except Exception as e:
+            _logger.debug("Could not record when an API key was first wanted: %r", e)
+        return now
+
+    def _end_key_wait(self) -> None:
+        """A check that did not want a key ends the episode."""
+        self._dry_key_wanted_at = None
+        if self.dry_run or "keyWantedAt" not in self._read_state():
+            return
+
+        def drop(s: dict) -> None:
+            s.pop("keyWantedAt", None)
+
+        try:
+            self._mutate_state(drop)
+        except Exception as e:
+            _logger.debug("Could not clear when an API key was first wanted: %r", e)
 
     def _enterable_keys(
         self, state: dict, entries: Mapping[str, object], candidates: Sequence[str],
