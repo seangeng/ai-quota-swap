@@ -47,6 +47,17 @@ def _eprint(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _holds_no_login(creds: object) -> bool:
+    """A credential object with no Claude login in any shape qswap knows: no
+    ``claudeAiOauth`` and no top-level tokens (the oldest shape). Such as the
+    login item while an API-key account is active, MCP sign-ins only."""
+    if not isinstance(creds, dict):
+        return False
+    return not (
+        creds.get("claudeAiOauth") or creds.get("accessToken") or creds.get("refreshToken")
+    )
+
+
 def _parse_payload(text: str, label: str) -> dict:
     """Parse a JSON string that should decode to an object."""
     try:
@@ -155,6 +166,23 @@ def _slim_credentials(creds_obj: dict) -> dict:
     return {"claudeAiOauth": creds_obj["claudeAiOauth"]}
 
 
+def _saved_api_key(switcher: ClaudeAccountSwitcher, num: str, email: str) -> str:
+    """An API-key account's saved key, ``""`` when there is none.
+
+    A key an older qswap pushed into the previous copy is put back first, so
+    the export carries the key, not the MCP sign-ins. That heal writes, so it
+    runs under qswap's account lock like every other writer of a slot."""
+    from ai_quota_swap.locking import FileLock
+
+    heal = getattr(switcher, "_heal_api_key_backup", None)
+    lock_file = getattr(switcher, "lock_file", None)
+    if callable(heal) and lock_file is not None:
+        with FileLock(lock_file):
+            heal(num, email)
+            return switcher._read_account_credentials(num, email)
+    return switcher._read_account_credentials(num, email)
+
+
 def export_accounts(
     switcher: ClaudeAccountSwitcher,
     destination: str,
@@ -209,24 +237,49 @@ def export_accounts(
             and current_identity[0] == email
             and current_identity[1] == org_uuid
         )
+        # The account's kind is the record's, never the live store's shape:
+        # while an API-key account is active that store holds MCP sign-ins.
+        # Only a record without the field (a subscription, or a key added
+        # before it existed) is told by the shape of its saved credential.
+        is_api_key = record.get("kind") == "api_key"
 
         if is_active:
-            creds_text = switcher._read_credentials()
-            if not creds_text:
+            live = None if is_api_key else switcher._read_credentials()
+            if is_api_key or looks_like_api_key(live):
+                # A Console key never changes by itself, so the saved key is
+                # the key, whatever the live store holds. A record without
+                # the field on a live key counts as a key account only when
+                # its saved copy is a key too.
+                creds_text = _saved_api_key(switcher, num, email)
+                if not looks_like_api_key(creds_text):
+                    if not is_api_key:
+                        raise CredentialReadError(
+                            f"failed to read live credentials for active account {email}"
+                        )
+                    raise CredentialReadError(
+                        f"failed to read the saved API key for active account {email}; "
+                        f"add it again with: qswap add-token KEY --slot {num}"
+                    )
+                is_api_key = True
+            elif not live:
                 raise CredentialReadError(
                     f"failed to read live credentials for active account {email}"
                 )
+            else:
+                creds_text = live
             config_path = switcher._get_claude_config_path()
             if not config_path.exists():
                 raise ConfigError("Claude config file not found")
             config_text = config_path.read_text(encoding="utf-8")
         else:
-            # A key an older qswap pushed into the previous copy is put back
-            # first, so the export carries the key, not the MCP sign-ins.
-            heal = getattr(switcher, "_heal_api_key_backup", None)
-            if callable(heal):
-                heal(num, email)
-            creds_text = switcher._read_account_credentials(num, email)
+            if is_api_key:
+                creds_text = _saved_api_key(switcher, num, email)
+                if not looks_like_api_key(creds_text):
+                    # Anything but a key is not this account's credential.
+                    creds_text = ""
+            else:
+                creds_text = switcher._read_account_credentials(num, email)
+                is_api_key = looks_like_api_key(creds_text) and "kind" not in record
             config_text = switcher._read_account_config(num, email)
             if not creds_text or not config_text:
                 if explicit_account:
@@ -237,10 +290,16 @@ def export_accounts(
                     raise ConfigError(
                         f"no backup config found for account {num} ({email})"
                     )
-                _eprint(
-                    f"Skipping #{num} {email}: it has no saved login; "
-                    f"re-add it with: qswap add --slot {num}"
-                )
+                if record.get("kind") == "api_key":
+                    _eprint(
+                        f"Skipping #{num} {email}: it has no saved API key; "
+                        f"add it again with: qswap add-token KEY --slot {num}"
+                    )
+                else:
+                    _eprint(
+                        f"Skipping #{num} {email}: it has no saved login; "
+                        f"re-add it with: qswap add --slot {num}"
+                    )
                 continue
 
         config_obj = _parse_payload(config_text, f"config for {email}")
@@ -250,7 +309,6 @@ def export_accounts(
         # API-key accounts store the credential as a raw ``sk-ant-…`` string,
         # not OAuth JSON — carry it verbatim (and tag the kind) so the JSON parse
         # below doesn't choke and import can restore it as-is.
-        is_api_key = looks_like_api_key(creds_text)
         if is_api_key:
             creds_payload: Any = creds_text.strip()
         else:
@@ -401,6 +459,7 @@ def import_accounts(
     normalized: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, str]] = set()
     seen_aliases: set[str] = set()
+    skipped = 0
     for raw in accounts:
         email, exported_num = _validate_imported_account(switcher, raw)
         org_uuid = raw.get("organizationUuid", "") or ""
@@ -411,6 +470,15 @@ def import_accounts(
         # API-key accounts carry the credential as a raw string; OAuth accounts
         # carry a JSON object.
         is_api_key = raw.get("kind") == "api_key" or isinstance(creds_obj, str)
+        if not is_api_key and _holds_no_login(creds_obj):
+            # What an older qswap exported for an API-key account whose saved
+            # key the login item (MCP sign-ins only) had replaced: no
+            # account's credential, and never written over one.
+            local = switcher._find_account_slot(local_data, email, org_uuid)
+            name = switcher.label(local, long=False) if local else shown_email(email)
+            _eprint(f"Skipped {name}: the export holds no login or API key for it")
+            skipped += 1
+            continue
         if is_api_key:
             if not (isinstance(creds_obj, str) and looks_like_api_key(creds_obj)):
                 raise TransferError(
@@ -468,7 +536,6 @@ def import_accounts(
     switcher._init_sequence_file()
 
     imported = 0
-    skipped = 0
     overwritten = 0
     replaced = 0
     written_slots: set[str] = set()
@@ -502,6 +569,26 @@ def import_accounts(
         existing_slot = switcher._find_account_slot(
             data, entry["email"], entry["org_uuid"]
         )
+
+        local_is_key = existing_slot is not None and (
+            ((data.get("accounts") or {}).get(existing_slot) or {}).get("kind") == "api_key"
+        )
+        if existing_slot is not None and local_is_key != (entry["kind"] == "api_key"):
+            # An API-key account is never overwritten with a login, nor a
+            # subscription with a key: the slot's kind would change under it.
+            name = switcher.label(existing_slot, long=False)
+            if local_is_key:
+                why = "it is an API-key account and the export holds a login for it"
+            else:
+                why = "it is a subscription account and the export holds an API key for it"
+            _eprint(
+                f"Skipped {name}: {why}. To replace it anyway, remove it first: "
+                f"qswap remove {existing_slot}"
+            )
+            skipped += 1
+            if is_envelope_active:
+                resolved_active_slot = existing_slot
+            continue
 
         if existing_slot is not None:
             if force:

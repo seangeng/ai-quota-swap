@@ -765,7 +765,10 @@ class TestEngine:
             note = notifier.event("claude", event, both=False, now=0.0)
             if note is not None:
                 notes.append(note.body)
-        assert notes == [held[0].human()]
+        # The hold once, and (every subscription at its limit) the
+        # all-exhausted notice once, as with API-key accounts left out.
+        assert notes[0] == held[0].human()
+        assert len(notes) == 2 and "at their limit" in notes[1]
 
     def test_a_new_episode_notifies_again(self, temp_home, alive):
         h = self._harness(temp_home)
@@ -776,10 +779,10 @@ class TestEngine:
         h.tick_with_usage({"1": _usage(10), "2": "api key", "3": _usage(100)})
         h.tick_with_usage(self.EXHAUSTED)
         notes = [
-            n for n in (notifier.event("claude", e, both=False, now=0.0) for e in h.events)
+            n.body for n in (notifier.event("claude", e, both=False, now=0.0) for e in h.events)
             if n is not None
         ]
-        assert len(notes) == 2
+        assert len([n for n in notes if n.startswith("Not switching to")]) == 2
 
     def test_with_no_sessions_the_key_is_still_the_last_resort(self, temp_home, alive):
         h = self._harness(temp_home)
@@ -1020,7 +1023,12 @@ class TestUnreadableSessions:
             "Error: not switched. #5 ci is an API-key account, and qswap could not read\n"
         )
         assert "qswap switch 5 --log-out-sessions" in err
-        assert all(len(line) <= 80 for line in err.splitlines())
+        # Every record is named, each path whole on a line of its own (the
+        # one kind of line allowed past 80 columns).
+        lines = err.splitlines()
+        for pid in PIDS:
+            assert f"  {directory / f'{pid}.json'}" in lines
+        assert all(len(line) <= 80 for line in lines if not line.startswith("  "))
         assert s.current_account_number() == "1"
 
     def test_an_unlistable_directory_refuses(
@@ -1102,10 +1110,14 @@ class TestUnreadableSessions:
         assert h.active_number() == 1
         held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
         assert held.reason == "api-key-sessions"
-        assert held.human() == (
+        record = temp_home / ".claude" / "sessions" / "4101.json"
+        assert held.human().splitlines() == [
             "Not switching to #2 ci: it is an API-key account and running sessions "
-            "could not be counted"
-        )
+            "could not be counted",
+            "This session record could not be read:",
+            f"  {record}",
+            "If Claude Code process 4101 is gone, delete the file.",
+        ]
 
     def test_the_engine_holds_when_the_reader_raises(self, temp_home, alive, monkeypatch):
         h = TestEngine()._harness(temp_home)
@@ -1405,3 +1417,822 @@ class TestPinnedBehaviours:
     def test_the_menu_bar_asks_with_cancel_as_the_default(self):
         source = Path(menubar.__file__).with_name("menubar_app.py").read_text(encoding="utf-8")
         assert "if self._confirm_cancel_default(title, message, go):" in source
+
+
+# -- second review: credentials --------------------------------------------------------
+
+import os  # noqa: E402
+
+from ai_quota_swap import autolog, transfer  # noqa: E402
+from ai_quota_swap.locking import FileLock  # noqa: E402
+
+KEY_NEW = "sk-ant-api03-" + "nwnwnwnwnw" * 4
+
+
+def _managed_read_fails(monkeypatch, store):
+    """The Keychain read of the saved key ("Claude Code") fails; every other
+    item still answers."""
+    real_get = store.get_password
+
+    def get_password(service, account):
+        if service == CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE:
+            raise macos_keychain.KeychainError("managed item read timed out")
+        return real_get(service, account)
+
+    monkeypatch.setattr(macos_keychain, "get_password", get_password)
+
+
+def _export_one(s, capsys, account="5") -> dict:
+    capsys.readouterr()
+    transfer.export_accounts(s, "-", account=account)
+    return json.loads(capsys.readouterr().out)["accounts"][0]
+
+
+class TestActiveKeyReadFailsClosed:
+    """Finding 1: the login item holds only MCP sign-ins while a key is
+    active; when the saved key cannot be read, that item is never the
+    active credential."""
+
+    def test_a_failed_key_read_is_a_failed_read(
+        self, temp_home, block_real_keychain, monkeypatch
+    ):
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        assert _login_item(block_real_keychain) == {"mcpOAuth": MCP}
+        _managed_read_fails(monkeypatch, block_real_keychain)
+        active = s._store._read_active_credentials()
+        assert active.value is None
+        assert active.keychain_unavailable is True
+        assert active.degraded is True
+
+    def test_no_saved_key_still_reads_the_item(self, temp_home, block_real_keychain):
+        """Finding no key is not a failed read (a machine with no key)."""
+        s = _switcher(Platform.MACOS)
+        item = json.dumps({"mcpOAuth": MCP})
+        block_real_keychain.set_password(CLAUDE_CODE_KEYCHAIN_SERVICE, _acct(), item)
+        assert s._store._read_active_credentials().value == item
+
+    def test_file_store_with_an_unreadable_config_is_a_failed_read(self, temp_home):
+        s = _switcher(Platform.LINUX)
+        path = get_credentials_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpOAuth": MCP}), encoding="utf-8")
+        get_global_config_path().write_text("{torn", encoding="utf-8")
+        assert s._store._read_active_credentials().value is None
+
+    def test_export_of_the_active_key_when_its_read_fails(
+        self, temp_home, block_real_keychain, monkeypatch, capsys
+    ):
+        """The reviewer's probe: the export carries #5's saved key, tagged."""
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        _managed_read_fails(monkeypatch, block_real_keychain)
+        entry = _export_one(s, capsys)
+        assert entry.get("kind") == "api_key"
+        assert entry["credentials"] == KEY_5
+
+    def test_export_takes_the_kind_from_the_record(
+        self, temp_home, block_real_keychain, monkeypatch, capsys
+    ):
+        """Whatever the live store answers, an active API-key account exports
+        its saved key."""
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        monkeypatch.setattr(s, "_read_credentials", lambda: json.dumps({"mcpOAuth": MCP}))
+        entry = _export_one(s, capsys)
+        assert (entry.get("kind"), entry["credentials"]) == ("api_key", KEY_5)
+
+    def test_an_api_key_account_with_no_key_is_never_exported_as_one(
+        self, temp_home, block_real_keychain, capsys
+    ):
+        s = _fleet()
+        user = s._store._backup_username("5", EMAIL_5)
+        block_real_keychain.set_password(SECURITY_SERVICE, user, json.dumps({"mcpOAuth": MCP}))
+        capsys.readouterr()
+        transfer.export_accounts(s, "-")
+        out, err = capsys.readouterr()
+        numbers = [a["number"] for a in json.loads(out)["accounts"]]
+        assert 5 not in numbers and 6 in numbers
+        assert (
+            "Skipping #5 api-key-5@token.local: it has no saved API key; add it again "
+            "with: qswap add-token KEY --slot 5"
+        ) in err
+
+
+def _archive(tmp_path, *entries) -> str:
+    path = tmp_path / "archive.json"
+    path.write_text(json.dumps({
+        "version": 1, "encrypted": False, "activeAccountNumber": None,
+        "accounts": list(entries),
+    }), encoding="utf-8")
+    return str(path)
+
+
+def _entry(email: str, credentials, *, number: int, kind: str | None = None) -> dict:
+    entry = {
+        "number": number, "email": email, "uuid": "", "organizationUuid": "",
+        "credentials": credentials,
+        "config": {"oauthAccount": {"emailAddress": email}},
+    }
+    if kind:
+        entry["kind"] = kind
+    return entry
+
+
+class TestImportKeepsKinds:
+    """Finding 2: import --force never writes a non-key over an API-key
+    account, nor a key over a subscription, and never drops ``kind``."""
+
+    def test_an_mcp_only_object_is_skipped(
+        self, temp_home, block_real_keychain, tmp_path, capsys
+    ):
+        """The reviewer's probe: what an older qswap exported for a damaged #5."""
+        s = _fleet()
+        capsys.readouterr()
+        transfer.import_accounts(
+            s, _archive(tmp_path, _entry(EMAIL_5, {"mcpOAuth": MCP}, number=5)), force=True,
+        )
+        err = capsys.readouterr().err
+        assert "Skipped #5 ci: the export holds no login or API key for it" in err.splitlines()
+        assert "Done: 0 imported, 0 overwritten, 1 skipped" in err
+        assert s._get_sequence_data()["accounts"]["5"].get("kind") == "api_key"
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_5
+        assert _prev(s, "5", EMAIL_5) == ""
+
+    def test_a_login_is_never_written_over_an_api_key_account(
+        self, temp_home, block_real_keychain, tmp_path, capsys
+    ):
+        s = _fleet()
+        login = {"claudeAiOauth": {"accessToken": "a", "refreshToken": "r"}}
+        capsys.readouterr()
+        transfer.import_accounts(s, _archive(tmp_path, _entry(EMAIL_5, login, number=5)),
+                                 force=True)
+        err = capsys.readouterr().err
+        assert (
+            "Skipped #5 ci: it is an API-key account and the export holds a login for "
+            "it. To replace it anyway, remove it first: qswap remove 5"
+        ) in err
+        assert s._get_sequence_data()["accounts"]["5"].get("kind") == "api_key"
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_5
+
+    def test_a_key_is_never_written_over_a_subscription(
+        self, temp_home, block_real_keychain, tmp_path, capsys
+    ):
+        s = _fleet()
+        before = s._read_account_credentials("1", MAYA)
+        capsys.readouterr()
+        transfer.import_accounts(
+            s, _archive(tmp_path, _entry(MAYA, KEY_NEW, number=1, kind="api_key")), force=True,
+        )
+        err = capsys.readouterr().err
+        assert (
+            "Skipped #1 personal: it is a subscription account and the export holds an "
+            "API key for it. To replace it anyway, remove it first: qswap remove 1"
+        ) in err
+        assert "kind" not in s._get_sequence_data()["accounts"]["1"]
+        assert s._read_account_credentials("1", MAYA) == before
+
+    def test_a_new_key_for_an_api_key_account_keeps_its_kind(
+        self, temp_home, block_real_keychain, tmp_path
+    ):
+        s = _fleet()
+        transfer.import_accounts(
+            s, _archive(tmp_path, _entry(EMAIL_5, KEY_NEW, number=5, kind="api_key")),
+            force=True,
+        )
+        assert s._get_sequence_data()["accounts"]["5"].get("kind") == "api_key"
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_NEW
+
+    def test_the_oldest_login_shape_is_still_imported(
+        self, temp_home, block_real_keychain, tmp_path
+    ):
+        """Top-level tokens, from before ``claudeAiOauth``, are a login."""
+        s = _fleet()
+        legacy = {"accessToken": "tok-legacy", "refreshToken": "rt-legacy"}
+        transfer.import_accounts(
+            s, _archive(tmp_path, _entry("old@example.com", legacy, number=8)),
+        )
+        assert json.loads(s._read_account_credentials("8", "old@example.com")) == legacy
+
+
+class TestHealUnderTheLock:
+    """Finding 3: the heal writes only over the value it read, and export
+    and add-token write under the account lock."""
+
+    _damage = TestSelfHeal._damage
+
+    def test_a_key_saved_meanwhile_is_never_overwritten(
+        self, temp_home, block_real_keychain, monkeypatch
+    ):
+        """The reviewer's interleaving: another qswap saves a key into the
+        slot after the heal has read it."""
+        s = _fleet()
+        self._damage(s, block_real_keychain)
+        real_prev = s._store._read_previous_backup
+
+        def prev_then_a_concurrent_write(num, email):
+            value = real_prev(num, email)
+            s._store._write_account_credentials("5", EMAIL_5, KEY_NEW)
+            return value
+
+        monkeypatch.setattr(s._store, "_read_previous_backup", prev_then_a_concurrent_write)
+        assert s._heal_api_key_backup("5", EMAIL_5) is False
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_NEW
+
+    def test_export_heals_under_the_account_lock(
+        self, temp_home, block_real_keychain, monkeypatch, capsys
+    ):
+        s = _fleet()
+        self._damage(s, block_real_keychain)
+        real_heal = s._heal_api_key_backup
+        held = []
+
+        def heal(num, email):
+            probe = FileLock(s.lock_file)
+            free = probe.acquire(timeout=0)
+            if free:
+                probe.release()
+            held.append(not free)
+            return real_heal(num, email)
+
+        monkeypatch.setattr(s, "_heal_api_key_backup", heal)
+        entry = _export_one(s, capsys)
+        assert held == [True]
+        assert entry["credentials"] == KEY_5
+
+    def test_add_token_writes_under_the_account_lock(
+        self, temp_home, block_real_keychain, monkeypatch
+    ):
+        s = _fleet()
+        real_write = s._store._write_account_credentials
+        held = []
+
+        def write(num, email, credentials, **kwargs):
+            probe = FileLock(s.lock_file)
+            free = probe.acquire(timeout=0)
+            if free:
+                probe.release()
+            held.append(not free)
+            return real_write(num, email, credentials, **kwargs)
+
+        monkeypatch.setattr(s._store, "_write_account_credentials", write)
+        s.add_account_from_token(KEY_NEW, slot=5, assume_yes=True)  # the same slot
+        s.add_account_from_token(KEY_NEW, slot=9, assume_yes=True)  # a new one
+        s.add_account_from_token(KEY_NEW, email=EMAIL_6)  # #6 refreshed in place
+        assert held == [True, True, True]
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_NEW
+        assert s._read_account_credentials("6", EMAIL_6) == KEY_NEW
+
+
+# -- second review: guard and engine ----------------------------------------------------
+
+
+def _torn_record(home: Path, pid: int) -> Path:
+    directory = home / ".claude" / "sessions"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{pid}.json"
+    path.write_text('{"pid": %d, "sessionId": "s-' % pid, encoding="utf-8")
+    return path
+
+
+class TestStaleUnreadableRecords:
+    """Finding 4: a record that cannot be read blocks only while its process
+    may be running, and every surface names it with what to do."""
+
+    def test_a_torn_record_of_a_process_that_is_gone_is_skipped(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        _torn_record(temp_home, 4242)  # 4242 is not running
+        assert process_detection.scan_sessions() == ([], 0)
+        code, _out, err = run(s, "switch", "5")
+        assert code == 0, err
+        assert s.current_account_number() == "5"
+
+    def test_a_record_of_an_unknown_shape_and_a_dead_pid_is_skipped(
+        self, temp_home, block_real_keychain, alive
+    ):
+        s = _fleet()
+        directory = temp_home / ".claude" / "sessions"
+        directory.mkdir(parents=True)
+        (directory / "4243.json").write_text(json.dumps({"pid": "4243"}), encoding="utf-8")
+        assert process_detection.scan_sessions() == ([], 0)
+        assert s.switch_to("5", json_output=True)["switched"] is True
+
+    def test_a_record_not_named_after_a_pid_still_refuses(
+        self, temp_home, block_real_keychain, alive
+    ):
+        s = _fleet()
+        directory = temp_home / ".claude" / "sessions"
+        directory.mkdir(parents=True)
+        (directory / "notes.json").write_text("{torn", encoding="utf-8")
+        assert process_detection.scan_session_records() == ([], [directory / "notes.json"])
+        with pytest.raises(SessionsRunningError) as caught:
+            s.switch_to("5", json_output=True)
+        text = str(caught.value)
+        assert f"  {directory / 'notes.json'}" in text.splitlines()
+        assert "If that process is gone, delete the file." in text.replace("\n", " ")
+
+    def test_the_refusal_names_the_record_and_what_to_do(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        record = _torn_record(temp_home, 4101)
+        alive.add(4101)
+        code, out, err = run(s, "switch", "5")
+        assert code == 1
+        lines = err.splitlines()
+        at = lines.index("This session record could not be read:")
+        assert lines[at:] == [
+            "This session record could not be read:",
+            f"  {record}",
+            "If Claude Code process 4101 is gone, delete the file.",
+            "To switch anyway:",
+            "  qswap switch 5 --log-out-sessions",
+        ]
+        code, out, _err = run(s, "switch", "5", "--json")
+        error = json.loads(out)["error"]
+        assert error["unreadableRecords"] == [str(record)]
+        assert "fromKey" not in error
+
+    def test_the_menu_bar_question_keeps_the_path_on_its_own_line(
+        self, temp_home, block_real_keychain, alive
+    ):
+        s = _fleet()
+        record = _torn_record(temp_home, 4101)
+        alive.add(4101)
+        with pytest.raises(SessionsRunningError) as caught:
+            s.switch_to("5", json_output=True)
+        _title, message, _button = menubar.api_key_switch_question(caught.value)
+        lines = message.splitlines()
+        assert lines[0].startswith("#5 ci is an API-key account, and qswap could not read")
+        assert lines[1:] == [
+            "This session record could not be read:",
+            f"  {record}",
+            "If Claude Code process 4101 is gone, delete the file.",
+        ]
+
+    def test_the_engine_log_prints_the_path_whole(self, temp_home, alive):
+        h = TestEngine()._harness(temp_home)
+        record = _torn_record(temp_home, 4101)
+        alive.add(4101)
+        h.tick_with_usage(TestEngine.EXHAUSTED)
+        lines: list[str] = []
+        log = autolog.AutoLog(lines.append, clock=lambda: "12:00:00", width=80)
+        for event in h.events:
+            log(event)
+        log.flush()
+        assert any(line.strip() == str(record) for line in lines)
+        assert any(
+            line.strip() == "If Claude Code process 4101 is gone, delete the file."
+            for line in lines
+        )
+        assert all(len(line) <= 80 for line in lines if line.strip() != str(record))
+
+    def test_a_dead_torn_record_no_longer_holds_the_engine(self, temp_home, alive):
+        """The reviewer's probe: six hourly ticks used to hold for good."""
+        h = TestEngine()._harness(temp_home)
+        _torn_record(temp_home, 4242)
+        assert h.tick_with_usage(TestEngine.EXHAUSTED) is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+
+R1_OFFSET_S = 3600
+
+
+class TestHoldKeepsTheAllExhaustedHandling:
+    """Finding 5: held off a key with every subscription at its limit, the
+    engine still says so, sleeps until the first reset and notifies it."""
+
+    def _fleet(self, temp_home, keys: bool):
+        from tests.test_autoswitch import _iso_at
+
+        h = EngineHarness(temp_home, include_api_key_accounts=keys)
+        h.seed(1, "a@example.com")
+        h.seed(2, "key@token.local")
+        h.seed(3, "c@example.com")
+        h.make_live("a@example.com", 1)
+        data = h.switcher._get_sequence_data()
+        data["accounts"]["2"]["kind"] = "api_key"
+        h.switcher._write_json(h.switcher.sequence_file, data)
+        reset = _iso_at(h.clock.now + R1_OFFSET_S)
+        return h, {"1": _usage(100, reset), "2": "api key", "3": _usage(100, reset)}
+
+    def _outcome(self, h, usage):
+        outcome = h.tick_with_usage(usage)
+        notifier = Notifier()
+        notes = [
+            n.body for n in (notifier.event("claude", e, both=False, now=0.0) for e in h.events)
+            if n is not None
+        ]
+        return outcome, h.kinds(), h.engine._sleep_until_ts, notes
+
+    @pytest.mark.parametrize("keys", [True, False], ids=["held-off-a-key", "keys-left-out"])
+    def test_held_matches_keys_left_out(self, temp_home, alive, keys):
+        from ai_quota_swap.autoswitch import RESET_SLACK_S
+
+        _write_sessions(temp_home, PIDS)
+        alive.update(PIDS)
+        h, usage = self._fleet(temp_home, keys=keys)
+        reset = h.clock.now + R1_OFFSET_S
+        outcome, kinds, sleep, notes = self._outcome(h, usage)
+
+        assert outcome is TickOutcome.BLOCKED
+        assert kinds == (
+            ["poll", "no-switch", "all-exhausted"] if keys else ["poll", "all-exhausted"]
+        )
+        assert sleep == reset + RESET_SLACK_S
+        assert h.engine._next_delay(outcome) > 60
+        if keys:
+            assert notes[0].startswith("Not switching to #2")
+            notes = notes[1:]
+        assert len(notes) == 1 and "first resets" in notes[0]
+
+    def test_a_candidate_with_room_to_come_keeps_the_normal_cadence(
+        self, temp_home, alive
+    ):
+        _write_sessions(temp_home, PIDS)
+        alive.update(PIDS)
+        h, usage = self._fleet(temp_home, keys=True)
+        usage["3"] = None  # unreadable this tick: it may have room
+        outcome, kinds, sleep, _notes = self._outcome(h, usage)
+        assert outcome is TickOutcome.BLOCKED
+        assert kinds == ["poll", "no-switch"]
+        assert sleep is None
+
+
+class TestKeyToKeyListsEveryKey:
+    """Finding 6: a key-to-key switch lists every running session started on
+    any other API key, under the key it keeps."""
+
+    def test_a_session_from_an_earlier_key_is_listed_under_it(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        s.add_account_from_token("sk-ant-api03-" + "k7k7k7k7k7" * 4, slot=7)
+        t = time.time()
+        with patch("time.time", return_value=t - 300):
+            s.switch_to("6", json_output=True, log_out_sessions=True)
+        _write_sessions(temp_home, [4201], started_at=t - 200)  # on #6 ops
+        alive.add(4201)
+        with patch("time.time", return_value=t - 100):
+            s.switch_to("5", json_output=True, log_out_sessions=True)
+        _write_sessions(temp_home, [4202], started_at=t - 50)  # on #5 ci
+        alive.add(4202)
+
+        code, out, err = run(s, "switch", "7", "--log-out-sessions")
+
+        assert code == 0, err
+        assert out.splitlines() == [
+            "Switched #5 ci → #7 api-key-7 (API key)",
+            "These sessions were started while #5 ci was active and keep using its key until",
+            "you restart them:",
+            "  pid 4202 · app4202",
+            "These sessions were started while #6 ops was active and keep using its key until",
+            "you restart them:",
+            "  pid 4201 · app4201",
+            "Claude Code sessions started from now on use the key.",
+        ]
+
+    def test_sessions_on_the_target_key_are_not_listed(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        t = time.time()
+        with patch("time.time", return_value=t - 300):
+            s.switch_to("6", json_output=True, log_out_sessions=True)
+        _write_sessions(temp_home, [4201], started_at=t - 200)  # on #6 ops
+        alive.add(4201)
+        with patch("time.time", return_value=t - 100):
+            s.switch_to("5", json_output=True, log_out_sessions=True)
+        code, out, _err = run(s, "switch", "6", "--log-out-sessions")
+        assert code == 0
+        assert out.splitlines()[1:] == ["Claude Code sessions started from now on use the key."]
+
+
+class TestZombies:
+    """Finding 7: a process that has exited and waits to be reaped is gone."""
+
+    def test_a_zombie_is_not_alive(self):
+        with patch("ai_quota_swap.process_detection.sys.platform", "darwin"), \
+             patch("os.kill", return_value=None), \
+             patch("ai_quota_swap.process_detection._ps", return_value="Z+") as ps:
+            assert process_detection.is_pid_alive(4242) is False
+        ps.assert_called_once_with(4242, "stat")
+
+    def test_a_sleeping_process_is_alive(self):
+        with patch("ai_quota_swap.process_detection.sys.platform", "darwin"), \
+             patch("os.kill", return_value=None), \
+             patch("ai_quota_swap.process_detection._ps", return_value="Ss"):
+            assert process_detection.is_pid_alive(4242) is True
+
+    def test_an_unknown_state_is_alive(self):
+        with patch("ai_quota_swap.process_detection.sys.platform", "darwin"), \
+             patch("os.kill", side_effect=PermissionError("not ours")), \
+             patch("ai_quota_swap.process_detection._ps", return_value=None):
+            assert process_detection.is_pid_alive(4242) is True
+
+    @pytest.mark.parametrize("text, state", [
+        ("4242 (claude) Z 1 4242 4242 0 -1", "Z"),
+        ("4242 (my (odd) name) S 1 4242", "S"),
+        ("", None),
+    ])
+    def test_linux_reads_proc_stat(self, text, state):
+        with patch("ai_quota_swap.process_detection.sys.platform", "linux"), \
+             patch.object(pathlib.Path, "read_text", return_value=text):
+            assert process_detection.process_state(4242) == state
+
+    def test_windows_has_no_state(self):
+        with patch("ai_quota_swap.process_detection.sys.platform", "win32"):
+            assert process_detection.process_state(4242) is None
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="zombies are POSIX")
+    def test_a_real_unreaped_child_does_not_block_a_key_switch(
+        self, temp_home, block_real_keychain
+    ):
+        import subprocess
+
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        try:
+            deadline = time.monotonic() + 10
+            while process_detection.process_state(child.pid) != "Z":
+                assert time.monotonic() < deadline, "the child never became a zombie"
+                time.sleep(0.05)
+            _write_sessions(temp_home, [child.pid])
+            assert process_detection.scan_sessions() == ([], 0)
+            assert _fleet().switch_to("5", json_output=True)["switched"] is True
+        finally:
+            child.wait()
+
+
+class _FakeKernel32:
+    """The Windows calls the process checks make, on any platform."""
+
+    def __init__(self, *, opens=True, exit_code=259, created=None):
+        self.opens, self.exit_code, self.created = opens, exit_code, created
+        self.closed = []
+
+    def OpenProcess(self, access, inherit, pid):  # noqa: N802 - the Windows name
+        return 44 if self.opens else 0
+
+    def GetExitCodeProcess(self, handle, code):  # noqa: N802
+        code.contents.value = self.exit_code
+        return 1
+
+    def GetProcessTimes(self, handle, created, exited, kernel, user):  # noqa: N802
+        if self.created is None:
+            return 0
+        created.contents.value = self.created
+        return 1
+
+    def CloseHandle(self, handle):  # noqa: N802
+        self.closed.append(handle)
+        return 1
+
+
+def _filetime(epoch_s: float) -> int:
+    return int((epoch_s + 11_644_473_600) * 10_000_000)
+
+
+class TestWindowsRecycledPids:
+    """Finding 8: on Windows the record's ``procStartFt`` is compared with the
+    process's creation time, so a recycled pid is not a session."""
+
+    STARTED = 1_788_000_000.0
+
+    def _record(self, home: Path, pid: int, stamp: str) -> None:
+        directory = home / ".claude" / "sessions"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{pid}.json").write_text(json.dumps({
+            "pid": pid, "sessionId": "w", "cwd": "C:/w", "startedAt": 1,
+            "kind": "interactive", "entrypoint": "cli", "procStartFt": stamp,
+        }), encoding="utf-8")
+
+    @pytest.mark.parametrize("created, counted", [
+        (STARTED, True),              # the recorded process
+        (STARTED + 0.5, True),        # within the rounding slack
+        (STARTED + 3600, False),      # created later: a recycled pid
+        (STARTED - 3600, True),       # older than the record: not a stranger
+        (None, True),                 # cannot tell
+    ])
+    def test_the_creation_time_decides(self, temp_home, created, counted):
+        self._record(temp_home, 4444, str(_filetime(self.STARTED)))
+        stamp = _filetime(created) if created is not None else None
+        with patch("ai_quota_swap.process_detection.sys.platform", "win32"), \
+             patch("ai_quota_swap.process_detection.is_pid_alive", return_value=True), \
+             patch("ai_quota_swap.process_detection.process_creation_filetime",
+                   return_value=stamp):
+            sessions, unreadable = process_detection.scan_sessions()
+        assert ([s.pid for s in sessions], unreadable) == ([4444] if counted else [], 0)
+
+    def test_a_stamp_that_is_not_a_filetime_passes(self):
+        with patch("ai_quota_swap.process_detection.sys.platform", "win32"), \
+             patch("ai_quota_swap.process_detection.process_creation_filetime",
+                   return_value=_filetime(self.STARTED + 86400)):
+            assert process_detection.pid_matches_record(4444, "11485") is True
+            assert process_detection.pid_matches_record(4444, "900000000000000000") is True
+
+    def test_the_api_calls_through_a_fake_kernel32(self):
+        fake = _FakeKernel32(created=_filetime(self.STARTED))
+        with patch("ai_quota_swap.process_detection.sys.platform", "win32"), \
+             patch("ai_quota_swap.process_detection._kernel32", return_value=fake):
+            assert process_detection._is_pid_alive_windows(4444) is True
+            assert process_detection.process_creation_filetime(4444) == _filetime(self.STARTED)
+            fake.exit_code = 0  # exited, a handle still open somewhere
+            assert process_detection._is_pid_alive_windows(4444) is False
+            fake.opens = False
+            assert process_detection._is_pid_alive_windows(4444) is False
+            assert process_detection.process_creation_filetime(4444) is None
+        assert fake.closed == [44, 44, 44]
+
+    def test_off_windows_there_is_no_creation_time(self):
+        with patch("ai_quota_swap.process_detection.sys.platform", "linux"):
+            assert process_detection.process_creation_filetime(os.getpid()) is None
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the real Windows API")
+    def test_the_real_windows_api(self):
+        import subprocess
+
+        created = process_detection.process_creation_filetime(os.getpid())
+        assert created is not None
+        started = created / 10_000_000 - 11_644_473_600
+        assert started <= time.time() + 1
+        assert process_detection._is_pid_alive_windows(os.getpid()) is True
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        assert process_detection._is_pid_alive_windows(child.pid) is False
+
+
+class TestRotationJsonReason:
+    """Finding 9: a rotation held off API keys by sessions says so in JSON."""
+
+    def test_the_reason_and_message_name_the_sessions(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        _write_sessions(temp_home, PIDS)
+        alive.update(PIDS)
+        code, out, _err = run(s, "switch", "--json")
+        assert code == 0
+        payload = json.loads(out)
+        assert payload["switched"] is False
+        assert payload["reason"] == "api-key-sessions"
+        assert payload["message"] == (
+            "No other account can take over without logging Claude Code sessions out, "
+            "so you stay on Account-1. To switch to an API-key account and log the "
+            "sessions out, run: qswap switch 5 --log-out-sessions"
+        )
+        assert "Skipped Account-5 (API-key account, 6 sessions running)" in payload["warnings"]
+
+    def test_no_valid_target_is_unchanged(self, temp_home, block_real_keychain, alive, run):
+        s = _fleet()
+        for number in ("5", "6"):
+            data = s._get_sequence_data()
+            data["accounts"][number]["disabled"] = True
+            s._write_json(s.sequence_file, data)
+        code, out, _err = run(s, "switch", "--json")
+        assert json.loads(out)["reason"] == "no-valid-target"
+
+
+# -- second review: merged state --------------------------------------------------------
+
+
+class TestReactivatingTheActiveKeyOnTheFileStore:
+    """Finding 10: with no .credentials.json (an older qswap deleted it),
+    writing the active key again changes nothing in the login store."""
+
+    def test_force_on_the_active_key_is_not_refused(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet(Platform.LINUX)
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        get_credentials_path().unlink()
+        _write_sessions(temp_home, PIDS)
+        alive.update(PIDS)
+        code, _out, err = run(s, "switch", "5", "--force")
+        assert code == 0, err
+        assert not get_credentials_path().exists()
+        assert _config()["primaryApiKey"] == KEY_5
+
+    def test_on_macos_an_absent_item_is_still_refused(
+        self, temp_home, block_real_keychain, alive
+    ):
+        """There the item would be written as {}, which logs sessions out."""
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        block_real_keychain.delete_password(CLAUDE_CODE_KEYCHAIN_SERVICE, _acct())
+        _write_sessions(temp_home, [4101])
+        alive.add(4101)
+        with pytest.raises(SessionsRunningError):
+            s.switch_to("5", json_output=True, force=True)
+
+
+class TestReactivatingWithANewKey:
+    """Finding 11: loading a changed key for the active account says that
+    running sessions keep the previous one, and lists them."""
+
+    def _imported_new_key(self, s, tmp_path):
+        path = tmp_path / "export.json"
+        transfer.export_accounts(s, str(path), account="5")
+        envelope = json.loads(path.read_text())
+        envelope["accounts"][0]["credentials"] = KEY_NEW
+        path.write_text(json.dumps(envelope))
+        transfer.import_accounts(s, str(path), force=True)
+
+    def test_running_sessions_are_listed_with_the_previous_key(
+        self, temp_home, block_real_keychain, alive, run, tmp_path
+    ):
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        self._imported_new_key(s, tmp_path)
+        _write_sessions(temp_home, [4101, 4102], started_at=time.time() + 5)
+        alive.update({4101, 4102})
+
+        code, out, err = run(s, "switch", "5", "--force")
+
+        assert code == 0, err
+        assert out.splitlines()[1:] == [
+            "These sessions were started while #5 ci was active and keep using its previous",
+            "key until you restart them:",
+            "  pid 4101 · app4101",
+            "  pid 4102 · app4102",
+            "Claude Code sessions started from now on use the key.",
+        ]
+        assert block_real_keychain.get_password(
+            CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE, _acct()
+        ) == KEY_NEW
+        code, out, _err = run(s, "switch", "5", "--force", "--json")
+        assert json.loads(out)["followup"] == ["Claude Code sessions started from now on use the key."]
+
+    def test_the_same_key_again_says_only_the_usual(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        _write_sessions(temp_home, [4101], started_at=time.time() + 5)
+        alive.add(4101)
+        code, out, _err = run(s, "switch", "5", "--force", "--json")
+        assert code == 0
+        assert json.loads(out)["followup"] == ["Claude Code sessions started from now on use the key."]
+
+
+class _ActiveKeyRefusedFake(FakeSwitcher):
+    """#5 ci, an API key, is active; the switcher refuses with the
+    ``from_key`` it would give (False for re-activating #5 itself)."""
+
+    def __init__(self, *args, from_key: bool, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.from_key = from_key
+
+    def account_kind_for(self, number):
+        return "api_key" if str(number) in ("5", "6") else "oauth"
+
+    def switch_to(self, identifier, json_output=False, force=False, log_out_sessions=False):
+        if not log_out_sessions:
+            raise SessionsRunningError(
+                display.api_key_refusal(
+                    "#5 ci", 5, 6, from_key="#6 ops" if self.from_key else None,
+                ),
+                number=str(identifier), sessions=6, from_key=self.from_key,
+            )
+        return super().switch_to(identifier, json_output=json_output, force=force)
+
+
+@pytest.mark.asyncio
+class TestDashboardFollowsTheRefusal:
+    """Finding 12: the dialog's title and button come from the refusal's own
+    ``fromKey``, not from whether the active account is a key."""
+
+    async def _dialog(self, tmp_path, *, from_key: bool):
+        from textual.widgets import Static
+
+        from ai_quota_swap.tui.modals import ConfirmModal
+
+        fake = _ActiveKeyRefusedFake(
+            [make_account(1), make_account(5, alias="ci", active=True)], tmp_path,
+            from_key=from_key,
+        )
+        app = make_app(fake)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            app.do_switch("claude", "5")
+            await settle(pilot)
+            assert isinstance(app.screen, ConfirmModal)
+            body = app.screen.query_one(".modal-body", Static).render().plain
+            return app.screen._title, app.screen._yes_label, body
+
+    async def test_re_activating_the_active_key(self, tmp_path):
+        title, button, body = await self._dialog(tmp_path, from_key=False)
+        assert title == "Log out 6 running sessions?"
+        assert button == "Switch and log out sessions"
+        assert 'stops with "Not logged in"' in body
+
+    async def test_a_key_to_key_switch(self, tmp_path):
+        title, button, body = await self._dialog(tmp_path, from_key=True)
+        assert title == "Switch keys with 6 sessions running?"
+        assert button == "Switch anyway"
+        assert "Not logged in" not in body
+
+    async def test_the_envelope_carries_from_key(self):
+        error = SessionsRunningError("x", number="6", sessions=1, from_key=True)
+        assert error.envelope_fields == {"sessions": 1, "fromKey": True}

@@ -667,7 +667,9 @@ def no_switch_sentence(event: object) -> str:
     if reason == "api-key-sessions":
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "an API-key account"
-        return display.api_key_engine_sentence(who, getattr(event, "sessions", None) or 0)
+        return display.api_key_engine_sentence(
+            who, getattr(event, "sessions", None) or 0, getattr(event, "records", None) or (),
+        )
     if reason == "active-idle":
         return f"No switch: the active account's {detail}" if detail else "No switch: the active login is idle"
     if reason == "active-usage-unknown":
@@ -1048,7 +1050,9 @@ class AutoLog:
                 fragment, tone = "", "routine"
             blocked = tone == "blocked"
             if kind == "no-switch" and (tone == "sentence" or not label):
-                text = no_switch_sentence(decision)
+                # The first line; the lines naming unreadable session records
+                # follow the tick below, unwrapped.
+                text = no_switch_sentence(decision).split("\n", 1)[0]
             elif label:
                 tail = f" · {fragment}" if fragment else ""
                 text = _fit_labels(lambda ls: f"{ls[0]} {rest}{tail}", [label], room)
@@ -1084,6 +1088,12 @@ class AutoLog:
         if kind == "switch":
             for warning in getattr(decision, "warnings", None) or ():
                 self._indented(str(warning), _style("yellow"))
+        if kind == "no-switch" and getattr(decision, "records", None):
+            # Session records that could not be read: each path whole on its
+            # own line, never cut to the width (ux.md), then what to do.
+            room = self.width - len(INDENT)
+            for line in display.unreadable_records_lines(decision.records, room):
+                self._write(f"{INDENT}{_style('yellow')(line)}")
 
     def _with_set_aside(self, view: object) -> object:
         """``view`` as "needs re-login" when the engine set it aside after

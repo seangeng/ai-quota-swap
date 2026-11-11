@@ -4679,17 +4679,21 @@ class ClaudeAccountSwitcher:
                 raise ConfigError(
                     f"Existing account metadata for {email} is inconsistent"
                 )
-            self._write_account_credentials(account_num, email, credentials)
-            self._write_account_config(account_num, email, config)
-            # A refreshed credential invalidates any dead-token quarantine on this
-            # slot (mirrors ``add_account``); otherwise the stale strike row keeps
-            # the account stuck at "re-login needed" and it never fetches the new
-            # token. Token accounts are always personal, so org is "".
-            self._usage_store.clear_dead_token(
-                [account_num], {account_num: (email, "")}
-            )
-            seq["lastUpdated"] = get_timestamp()
-            self._write_json(self.sequence_file, seq)
+            # The account lock, like every other writer of a slot: the API-key
+            # heal re-reads under it, so it can never put an old key back over
+            # this one.
+            with FileLock(self.lock_file):
+                self._write_account_credentials(account_num, email, credentials)
+                self._write_account_config(account_num, email, config)
+                # A refreshed credential invalidates any dead-token quarantine on this
+                # slot (mirrors ``add_account``); otherwise the stale strike row keeps
+                # the account stuck at "re-login needed" and it never fetches the new
+                # token. Token accounts are always personal, so org is "".
+                self._usage_store.clear_dead_token(
+                    [account_num], {account_num: (email, "")}
+                )
+                seq["lastUpdated"] = get_timestamp()
+                self._write_json(self.sequence_file, seq)
             kind_label = "API key" if is_api_key else "token"
             self._logger.info(f"Updated {kind_label} for account {account_num}: {email}")
             print(f"{accent('Updated')} the {kind_label} of {self.label(account_num)}")
@@ -4768,8 +4772,10 @@ class ClaudeAccountSwitcher:
             del data["accounts"][migrate_from]
             self._write_json(self.sequence_file, data)
 
-        self._write_account_credentials(account_num, email, credentials)
-        self._write_account_config(account_num, email, config)
+        # Under the account lock, as above.
+        with FileLock(self.lock_file):
+            self._write_account_credentials(account_num, email, credentials)
+            self._write_account_config(account_num, email, config)
         # Reusing/overwriting a slot with a fresh credential lifts any dead-token
         # quarantine carried by that slot's prior lineage (mirrors ``add_account``).
         self._usage_store.clear_dead_token(
@@ -7331,6 +7337,19 @@ class ClaudeAccountSwitcher:
             return None
 
         if next_account is None:
+            if json_output and skipped["api_key"]:
+                # The keys are valid; the sessions running on the shared
+                # login are what keeps the rotation off them.
+                return self._switch_noop(
+                    strategy=strategy_label, reason="api-key-sessions",
+                    to_ref=current_ref, warnings=warnings,
+                    message=(
+                        "No other account can take over without logging Claude Code "
+                        f"sessions out, so you stay on Account-{current_num}. To "
+                        "switch to an API-key account and log the sessions out, run: "
+                        f"qswap switch {skipped['api_key'][0]} {display.LOG_OUT_SESSIONS_FLAG}"
+                    ),
+                )
             if json_output:
                 return self._switch_noop(
                     strategy=strategy_label, reason="no-valid-target",
@@ -7496,6 +7515,19 @@ class ClaudeAccountSwitcher:
 
         return running
 
+    def shared_login_unreadable(self) -> list[str]:
+        """The paths of the session records on the shared login that could
+        not be read (``process_detection.unreadable_session_records``), for a
+        message that names them; ``[]`` when there are none or the scan
+        fails. Wording only. Never raises."""
+        from ai_quota_swap.process_detection import unreadable_session_records
+
+        try:
+            return [str(path) for path in unreadable_session_records()]
+        except Exception as e:
+            self._logger.debug(f"Could not list unreadable session records: {e!r}")
+            return []
+
     def _login_item_holds_no_login(self) -> bool:
         """Whether the live login item (or ``.credentials.json``) has no
         Claude login in it: a JSON object without ``claudeAiOauth``, as
@@ -7508,6 +7540,21 @@ class ClaudeAccountSwitcher:
             return False
         return holds_no_login(live)
 
+    def _no_login_file_to_strip(self) -> bool:
+        """Off macOS, whether ``.credentials.json`` is absent: activating a key
+        then writes nothing to the login store (``_strip_oauth_login`` only
+        rewrites a file that exists), so no session can lose a login. On macOS
+        an absent item is written as ``{}``, which does log sessions out."""
+        if self.platform == Platform.MACOS:
+            return False
+        try:
+            get_credentials_path().stat()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
+
     def _refuse_api_key_switch(self, number: str) -> None:
         """Refuse a switch to the API-key account ``number`` while Claude Code
         sessions run on the shared login (``--log-out-sessions`` goes ahead)."""
@@ -7517,9 +7564,11 @@ class ClaudeAccountSwitcher:
         if not sessions and not unreadable:
             return
         current = self.current_account_number()
-        if current == str(number) and self._login_item_holds_no_login():
+        if current == str(number) and (
+            self._login_item_holds_no_login() or self._no_login_file_to_strip()
+        ):
             # The key is already active (``--force``, or a self-switch that
-            # reconciles): the login item has no login left to take away, so
+            # reconciles): the login store has no login left to take away, so
             # writing the key again logs no one out.
             return
         from_key = (
@@ -7527,15 +7576,18 @@ class ClaudeAccountSwitcher:
             if current and current != str(number) and self._account_kind(current) == "api_key"
             else None
         )
+        records = self.shared_login_unreadable() if unreadable else []
         raise SessionsRunningError(
             display.api_key_refusal(
                 self.label(number, long=False), number,
                 display.blocking_sessions(len(sessions), unreadable), from_key=from_key,
+                records=records,
             ),
             number=str(number),
             sessions=len(sessions),
             unreadable=unreadable,
             from_key=from_key is not None,
+            records=records,
         )
 
     def switch_to(
@@ -8174,6 +8226,11 @@ class ClaudeAccountSwitcher:
                 return False
             previous = self._store._read_previous_backup(account_num, email)
             if not looks_like_api_key(previous):
+                return False
+            # Only over the value read above: another qswap can have saved a
+            # credential here since (an add-token), and the old key must not
+            # replace it. Callers hold self.lock_file, as every writer does.
+            if self._read_account_credentials(account_num, email) != stored:
                 return False
             # retain=False: the previous copy IS the key. Retaining first
             # would put the non-key there before the key reaches the main
@@ -8956,7 +9013,10 @@ class ClaudeAccountSwitcher:
         otherwise. ``sessions``: running on the shared login now;
         ``started_on_key``: those started while the API-key account being
         left was active (Claude Code's own start stamp against the
-        activation log)."""
+        activation log). When the target is a key: ``on_keys``, the running
+        sessions by the API-key account that was active when each started,
+        and ``key_changed``, whether the target is the active account and its
+        saved key differs from the live one."""
         try:
             # The registry's active account, not a fresh read of ~/.claude.json:
             # the switch reads that file itself, and the follow-up only uses
@@ -8973,6 +9033,11 @@ class ClaudeAccountSwitcher:
                 if source_is_key and source != str(target_account) else [],
                 key=lambda s: (s.started_at or 0, s.pid),
             )
+            on_keys = self._sessions_by_key(sessions) if target_is_key else {}
+            key_changed = (
+                target_is_key and source == str(target_account)
+                and self._saved_key_differs_from_live(target_account)
+            )
         except Exception as e:  # wording only; never fail a switch on it
             self._logger.debug(f"API-key switch context failed: {e!r}")
             return None
@@ -8982,7 +9047,57 @@ class ClaudeAccountSwitcher:
             "target_is_key": target_is_key,
             "sessions": sessions,
             "started_on_key": started,
+            "on_keys": on_keys,
+            "key_changed": key_changed,
         }
+
+    @staticmethod
+    def _session_start_s(session) -> float:
+        """When a session's process started (epoch seconds): Claude Code's own
+        stamp in the record, else the process start time; 0 when unknown."""
+        from ai_quota_swap.process_detection import process_started_at
+
+        started = (session.started_at or 0) / 1000.0
+        return started or float(process_started_at(session.pid) or 0)
+
+    def _sessions_by_key(self, sessions: list) -> dict[str, list]:
+        """The running ``sessions`` that started while an API-key account was
+        active, by that account's number: each one keeps that key until it
+        restarts. Matched against the activation log the way doctor's check
+        does; a session started on a subscription, or before the log's first
+        line, is in none."""
+        from ai_quota_swap.ledger.activations import ActivationLog, identity_key
+
+        accounts = (self._get_sequence_data() or {}).get("accounts") or {}
+        keys = {
+            identity_key(r.get("email", ""), r.get("organizationUuid", "") or ""): str(num)
+            for num, r in accounts.items()
+            if isinstance(r, dict) and r.get("kind") == "api_key"
+        }
+        if not keys or not sessions:
+            return {}
+        log = ActivationLog.load(self.backup_dir)
+        out: dict[str, list] = {}
+        for session in sorted(sessions, key=lambda s: (s.started_at or 0, s.pid)):
+            started = self._session_start_s(session)
+            number = keys.get(log.account_at(started)) if started else None
+            if number is not None:
+                out.setdefault(number, []).append(session)
+        return out
+
+    def _saved_key_differs_from_live(self, number: str) -> bool:
+        """Whether the API-key account ``number``'s saved key is not the key
+        Claude Code holds now (an import replaced it): both must read as
+        keys."""
+        record = ((self._get_sequence_data() or {}).get("accounts") or {}).get(str(number))
+        if not record:
+            return False
+        saved = self._read_account_credentials(str(number), record.get("email", ""))
+        live = self._read_credentials()
+        return (
+            looks_like_api_key(saved) and looks_like_api_key(live)
+            and saved.strip() != (live or "").strip()
+        )
 
     def _api_key_followup(
         self, context: dict | None, target_account: str, from_ref: dict | None
@@ -8995,11 +9110,24 @@ class ClaudeAccountSwitcher:
         source = context["source"]
         if from_ref is None or str(from_ref.get("number")) != str(source):
             source = None
-        if source is not None and str(source) == str(target_account):
+        reactivated = source is not None and str(source) == str(target_account)
+        if reactivated and not (context["target_is_key"] and context.get("key_changed")):
             return (
                 ["Claude Code sessions started from now on use the key."]
                 if context["target_is_key"] else []
             )
+        # Every session started on an API key keeps that key, whichever key
+        # it was; one started on the target's own key keeps it unless the
+        # target's saved key just changed.
+        on_keys = context.get("on_keys") or {}
+        order = sorted(
+            on_keys, key=lambda num: (num != str(source), int(num) if num.isdigit() else 0)
+        )
+        kept = [
+            (self.label(num, long=False), [(s.pid, s.cwd) for s in on_keys[num]])
+            for num in order
+            if reactivated or num != str(target_account)
+        ]
         return display.api_key_followup(
             target=self.label(target_account, long=False),
             target_is_key=context["target_is_key"],
@@ -9007,6 +9135,8 @@ class ClaudeAccountSwitcher:
             source_is_key=bool(source is not None and context["source_is_key"]),
             running=len(context["sessions"]),
             started_on_key=[(s.pid, s.cwd) for s in context["started_on_key"]],
+            kept=kept,
+            reactivated=reactivated,
         )
 
     def _landed_label(self, number: str, email: str) -> str:

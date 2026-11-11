@@ -302,7 +302,9 @@ class TestHelpers:
         """A dead PID and an unreadable record both yield zero live sessions.
         Only the first is evidence that nothing is running."""
         (tmp_path / "sessions").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "sessions" / "9999.json").write_text(
+        # Named after a running process (this one): an unreadable record
+        # of a pid that is gone is skipped.
+        (tmp_path / "sessions" / f"{os.getpid()}.json").write_text(
             "not json{{{", encoding="utf-8"
         )
 
@@ -3043,7 +3045,7 @@ class TestHistoryMergeSharesTheDestination:
             history_setup, "-home-user-app/aaa.jsonl", OLDER, NEWER
         )
         (source / "sessions").mkdir()
-        (source / "sessions" / "4242.json").write_text("{not json")
+        (source / "sessions" / f"{os.getpid()}.json").write_text("{not json")  # a running pid
 
         mgr._sync_sharing(session_dir, share=True, share_history=True)
 
