@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -65,11 +66,18 @@ def _iso(ts: float) -> str:
 
 
 def parse_ts(value: object) -> float | None:
-    """Epoch seconds from an ISO-8601 string or a number; None when unusable."""
+    """Epoch seconds from an ISO-8601 string or a number; None when unusable:
+    a number that is not finite (``NaN`` and ``Infinity``, which JSON readers
+    accept) or too large for a float, so a line carrying one is skipped like
+    any other unreadable line."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        try:
+            ts = float(value)
+        except OverflowError:
+            return None
+        return ts if math.isfinite(ts) else None
     if not isinstance(value, str) or not value:
         return None
     try:

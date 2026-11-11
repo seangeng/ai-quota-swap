@@ -1714,3 +1714,36 @@ def test_a_report_walks_the_activation_log_once_not_once_per_bucket(tmp_path):
     assert out.approximate and out.profile_sessions  # both rules were reached
     assert len(buckets) > 400 and len(log) > 400
     assert _CountingLines.visits <= 4 * len(log) + 8 * len(buckets), _CountingLines.visits
+
+
+def test_a_log_line_whose_time_is_not_a_finite_number_is_skipped(tmp_path):
+    # JSON readers accept NaN and Infinity, and an integer too large for a
+    # float. qswap never writes them (a hand-edited line), and such a line
+    # is skipped like any other unreadable one. Kept, a NaN compares false
+    # with every time, so the log's binary search could take a saved-key
+    # line as in force for any hour and move that hour's usage of the key.
+    from ai_quota_swap import api_spend
+    from ai_quota_swap.ledger.activations import parse_ts
+    from ai_quota_swap.ledger.report import _in_saved_key_period
+
+    (tmp_path / "activations.jsonl").write_text(
+        '{"ts":NaN,"number":5,"email":"key5@token.local","org":"","source":"switch","how":"saved-key"}\n'
+        '{"ts":"2025-11-24T17:33:25.584Z","number":2,"email":"omar@example.com","org":"","source":"switch",'
+        '"how":"login"}\n'
+    )
+    log = ActivationLog.load(tmp_path)
+    assert len(log) == 1 and log.first_ts == parse_ts("2025-11-24T17:33:25.584Z")
+    hour = int(log.first_ts // 3600)
+    assert log.saved_key_owner("key5@token.local|", hour, float("-inf")) is None
+    assert not _in_saved_key_period(log, "key5@token.local|", hour)
+    assert not log.saved_key_periods()
+    for ts in ("Infinity", "-Infinity", "1" + "0" * 400):
+        (tmp_path / "activations.jsonl").write_text(
+            f'{{"ts":{ts},"number":1,"email":"maya@example.com","org":"","source":"switch"}}\n')
+        assert len(ActivationLog.load(tmp_path)) == 0  # and no OverflowError
+    assert [parse_ts(v) for v in (float("nan"), float("inf"), -float("inf"), 10 ** 400)] == [None] * 4
+    assert parse_ts(1762000000) == 1762000000.0 and parse_ts(1762000000.5) == 1762000000.5
+    # The other readers of these times want the same: a credit whose start
+    # is not a time is no credit, rather than one that raises later.
+    assert api_spend.credit_from_record({"credit": {"amount": 25, "since": float("nan")}}) is None
+    assert api_spend.credit_counted_from({"since": float("inf")}, None) == ""
