@@ -151,11 +151,21 @@ Design: [docs/design/api-accounts.md](docs/design/api-accounts.md). Guide:
 - [x] A live switch to an API key: qswap's `apiKeyHelper` line in Claude Code's user settings
   moves running sessions onto the key and back without logging anyone out; `qswap run N` on a
   key for one session; `qswap credit` for a prepaid balance
-  ([docs/design/api-key-sessions.md](docs/design/api-key-sessions.md)).
-- [ ] The first switch on a real `~/.claude/settings.json` with interactive sessions, by hand:
-  the design was checked on one print-mode process at a time.
-- [ ] Later: OpenAI organization usage; refreshing the local estimate from the engine without a
-  `qswap usage` run.
+  ([docs/design/api-key-sessions.md](docs/design/api-key-sessions.md)). Tested end to end on
+  Claude Code 2.1.322 with print-mode sessions and a made-up key.
+- [x] The engine keeps a key's spend figure fresh itself: it scans the ledger before it enters
+  a key and every 5 minutes while one is active.
+- [ ] The first switch on a real `~/.claude/settings.json` with interactive sessions and a
+  claude.ai login underneath, by hand: the end-to-end run had neither.
+- [ ] Remote Control and claude.ai connectors in a running session when the key line appears
+  and when it goes; then count the sessions attached through Remote Control in the switch
+  output, and hold the engine's move to a key while any are attached.
+- [ ] `qswap upgrade` while a key is active. The line names the installed `qswap`, which an
+  upgrade replaces for a few milliseconds; sessions holding a cached key ride it out, so this
+  waits until it shows up.
+- [ ] Attributing `qswap run N` sessions on a key by a record of the launch, rather than by
+  time and Claude Code's session-owner stamp.
+- [ ] Later: OpenAI organization usage.
 
 ### M5. Engine
 
