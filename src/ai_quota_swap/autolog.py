@@ -477,9 +477,9 @@ def switch_reason(event: object) -> str:
             target = getattr(event, "target_binding", None)
             if target is not None and target.over:
                 value = pct_text(target.pct, pct_decimals(target.line))
-                tail = f"; taken over its switch line ({target.label} {value}%) before an API key{tail}"
+                tail = f"; taken over its switch line ({target.label} {value}%) before an API key"
             else:
-                tail = f"; taken before an API key{tail}"
+                tail = "; taken before an API key"
         if binding is not None and binding.pct >= 100.0:
             return f"{binding.label} limit reached{tail}"
         return f"limit reached{tail}"
