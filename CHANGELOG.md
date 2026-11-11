@@ -91,6 +91,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `docs/settings.md` is generated from the settings in the code (`scripts/settings_doc.py`), and a test fails when a setting is missing from it, when it is stale, or when a link or anchor in any Markdown file does not resolve.
 - Every screenshot is regenerated from the current build, most from a new `showcase` scenario, and the auto-switch and reset recordings are re-made.
 - The README opens on the menu bar, with a picture of its menu in front of the dashboard, and docs/menubar.md walks through the menu; the demo harness now draws the menu bar from `build_menu` (`run.py SCENARIO --menubar --html FILE`, dark and light, any submenu open) and the notification the app posts for a switch, and new recordings show the menu bar switching, the quick start and the dashboard.
+- The README's title, first paragraph and section headings say what people search for (a Claude Code and Codex account switcher, multiple accounts, 5-hour and weekly limits, auto-switch), a FAQ answers eight common questions, and a line says the project is independent of Anthropic and OpenAI; the package's summary, keywords and classifiers match, for PyPI.
 
 ### Tooling
 
