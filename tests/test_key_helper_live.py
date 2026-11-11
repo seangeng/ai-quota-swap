@@ -396,7 +396,8 @@ class TestKeyHelper:
                 code = e.code
             mods = sorted(m for m in sys.modules if m.startswith("ai_quota_swap"))
             heavy = [m for m in ("urllib.request", "http.client", "ssl", "sqlite3",
-                                 "textual", "rumps") if m in sys.modules]
+                                 "textual", "rumps", "importlib.metadata", "email",
+                                 "zipfile") if m in sys.modules]
             sys.stderr.write(json.dumps({"code": code, "mods": mods, "heavy": heavy}))
         """)
         env = {"HOME": str(home), "USERPROFILE": str(home), "PATH": os.defpath}
