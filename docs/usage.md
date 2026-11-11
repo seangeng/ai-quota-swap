@@ -16,13 +16,13 @@ $ qswap usage --by account
 Token usage, 2026-11-04 to 2026-11-10, Claude Code and Codex, by account
 
   Account                    Input  Output  Cache read  Cache write  Est. cost
-  Claude #1 personal          635K    1.0M       47.9M         2.4M     $33.41
-  Claude #2 work              388K    653K       29.5M         1.6M     $22.70
-  Claude #5 ci                278K    442K       20.9M         1.1M     $16.35
+  Claude #1 personal          635K    1.0M       47.9M         2.4M     $33.61
+  Claude #2 work              388K    653K       29.5M         1.6M     $22.82
+  Claude #5 ci                278K    442K       20.9M         1.1M     $16.40
   Codex #2 work               582K    123K        1.7M            0      $2.57
   Claude #3 night-shift      19.5K   49.6K        2.2M         105K      $1.82
   Codex #1 maya@example.com   244K   47.4K        694K            0      $1.03
-  Total                       2.1M    2.3M        103M         5.2M     $77.88
+  Total                       2.1M    2.3M        103M         5.2M     $78.25
 
 Costs are estimates at API list prices (Anthropic and OpenAI pricing pages,
 2026-11-10). Subscription usage is not billed this way.
@@ -34,7 +34,7 @@ The other groupings are `model`, `project`, `provider` and `session`. The sessio
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/screenshots/raw/usage-by-model.png">
-  <img src="../assets/screenshots/raw/usage-by-model-light.png" alt="qswap usage --by model: one row per model, Claude and OpenAI models in one table" width="800">
+  <img src="../assets/screenshots/raw/usage-by-model-light.png" alt="qswap usage --by model: one row per model and price tier, Claude and OpenAI models in one table, with Claude Haiku 5.5 prompts over 100K tokens on a row of their own" width="800">
 </picture>
 
 Every line fits 80 columns. A label too long for its column is cut with `…`: account and model names lose their end, project paths their start (`…/checkout-api`). `--json` always has the whole label; its fields are in [json-output.md](json-output.md).
@@ -72,7 +72,7 @@ Each response is counted once. Claude Code writes a response several times as it
 The dollar figure is what the same tokens would cost on the pay-as-you-go API. A Claude or ChatGPT subscription is not billed per token, so read it as a measure of what you used, not as a bill.
 
 - Prices come from a table inside qswap, copied from the Anthropic and OpenAI pricing pages on 2026-11-10. The report's footer prints that date, and `--json` has it as `pricing.fetched`.
-- Long-context and prompt-length tiers use the base price. Claude Haiku 5.5 prompts over 100,000 tokens and OpenAI requests over 272K input tokens cost more on the API than shown.
+- Claude Haiku 5.5 prompts over 100,000 tokens are priced at Anthropic's long-prompt rate and get a row of their own in `--by model`, `claude-haiku-5-5 (prompt over 100K)`. OpenAI requests over 272K input tokens use the base price, so they cost more on the API than shown.
 - Batch, Flex and data-residency pricing are not applied, and neither is OpenAI's Fast (priority) processing, because Codex does not record which tier a request used.
 - Claude fast mode is priced at Anthropic's fast-mode rates. Those exist for Fable 5.2, Mythos 5.2, Opus 5.5, Opus 5 and Opus 4.8; a fast request on another model has no price.
 - A model the table does not know shows `n/a` for cost and is named under the table (`No price for: ...`). A cost ending in `+` leaves those tokens out.

@@ -55,6 +55,12 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("--height", type=int, default=32, help="terminal rows (default 32)")
     p.add_argument("--html", type=Path, help="render the output to this terminal-window page")
     p.add_argument("--title", help="window title for --html (default: the command)")
+    p.add_argument("--typing", action="store_true",
+                   help="with --html: a page that types each command and then shows its "
+                        "output, one after another, on a screen of --height lines (for "
+                        "recordings; a key press starts it)")
+    p.add_argument("--zoom", type=float, default=1.0,
+                   help="with --typing: scale the window, for a recording")
     p.add_argument("--ansi", type=Path, help="also write the raw ANSI output here")
     p.add_argument("--audit-log", type=Path, help="record every file, process and network event")
     p.add_argument("--serve", action="store_true", help="serve the TUI in a browser (loopback)")
@@ -71,12 +77,56 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
                    help="print the menu bar's menu for the scenario as an outline "
                         "(the menu bar itself needs macOS and rumps; this is its "
                         "description, built by ai_quota_swap.menubar.build_menu), "
-                        "after the qswap commands given after --, if any")
+                        "after the qswap commands given after --, if any; with "
+                        "--html, also draw it as the menu bar with its menu open")
+    mb = p.add_argument_group("menu bar drawing (with --menubar --html)")
+    mb.add_argument("--open", metavar="TITLE",
+                    help="open this submenu beside the menu (its exact row text); "
+                         "'Settings > Use resets automatically' opens one inside another")
+    mb.add_argument("--highlight", metavar="TEXT",
+                    help="draw this row (its text, or the start of it) of the innermost "
+                         "open menu under the pointer")
+    mb.add_argument("--closed", action="store_true",
+                    help="draw the menu bar with the menu closed (laid out, not shown, so "
+                         "the picture is the same size as an open one)")
+    mb.add_argument("--beside", type=Path, metavar="PNG",
+                    help="put this 2x screenshot on the desktop as a window behind the menu "
+                         "(the README's hero: the dashboard)")
+    mb.add_argument("--size", metavar="WxH", help="fix the picture's size in CSS px")
+    mb.add_argument("--auto-switch", nargs="?", const="both", choices=("claude", "codex", "both"),
+                    help="turn the menu bar's auto-switch on (default: both providers) and "
+                         "host its engines as the app does; the menu is drawn after their "
+                         "first check")
+    mb.add_argument("--frames", type=Path, metavar="DIR",
+                    help="with --auto-switch: draw the menu bar after each of Claude Code's "
+                         "engine checks into DIR (frame-NN.html, frame-NN-closed.html, "
+                         "frame-NN.txt)")
+    mb.add_argument("--ticks", type=int, default=4,
+                    help="how many engine checks --frames draws (default 4)")
     p.add_argument("--tui-child", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(head)
     if "--" not in argv and not args.serve and not args.menubar:
         p.error("give the qswap arguments after --, e.g. run.py fleet -- list "
                 "(a bare `--` runs qswap with no arguments)")
+    drawing = ("open", "highlight", "closed", "beside", "size", "auto_switch", "frames")
+    if not args.menubar and any(getattr(args, k) not in (None, False) for k in drawing):
+        p.error("--open, --highlight, --closed, --beside, --size, --auto-switch and "
+                "--frames go with --menubar")
+    if args.frames is not None and not args.auto_switch:
+        p.error("--frames draws one picture per engine check: add --auto-switch")
+    if args.typing and (args.html is None or args.menubar):
+        p.error("--typing writes the --html page of the commands after --, not with --menubar")
+    if args.zoom != 1.0 and not args.typing:
+        p.error("--zoom goes with --typing")
+    if args.ticks < 1:
+        p.error("--ticks takes a number of engine checks, 1 or more")
+    if args.size is not None:
+        try:
+            w, h = (int(x) for x in args.size.lower().split("x"))
+            args.size = (w, h)
+        except ValueError:
+            p.error(f"--size takes WIDTHxHEIGHT in CSS px, not {args.size!r}")
+    args.open = [t.strip() for t in args.open.split(" > ")] if args.open else []
     return args, tail
 
 
@@ -94,7 +144,15 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
     outputs = tuple(p.resolve() for p in (args.html, args.ansi) if p is not None)
     for out in outputs:  # before the guards: afterwards only these files are writable
         out.parent.mkdir(parents=True, exist_ok=True)
-    capture = args.html is not None or args.ansi is not None
+    if args.frames is not None:
+        args.frames = args.frames.resolve()
+        args.frames.mkdir(parents=True, exist_ok=True)
+        outputs += (args.frames,)
+    # The window behind the menu is read before the guards, like the outputs.
+    beside = args.beside.read_bytes() if args.beside is not None else None
+    # With --menubar the commands only set up the state: their output is
+    # printed as it is, and --html draws the menu bar instead.
+    capture = (args.html is not None or args.ansi is not None) and not args.menubar
     # A TUI child keeps the terminal size textual-serve hands it.
     extra_env = {} if args.tui_child else {"COLUMNS": str(args.width), "LINES": str(args.height)}
     if capture:
@@ -147,7 +205,8 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
         auto = scenario.auto
         if args.compression:
             auto = scenarios.replace(auto, compression=args.compression)
-        install_time_compression(auto, coordinates, stop_after=not args.tui_child)
+        # The menu bar's own engines run until the drawing is done.
+        install_time_compression(auto, coordinates, stop_after=not (args.tui_child or args.auto_switch))
 
     import random
 
@@ -190,18 +249,23 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
         if args.ansi:
             args.ansi.write_text("".join(f"$ {s}\n{out}" for s, (_, out) in zip(shown, blocks)),
                                  encoding="utf-8")
-        if args.html:
+        theme = scenario.settings.get("ui", {}).get("theme", "dark")
+        rendered = [render.Block(s, out) for s, (_, out) in zip(shown, blocks)]
+        if args.html and args.typing:
+            import typing_page
+
+            args.html.write_text(typing_page.page(
+                rendered, title=args.title or "qswap", theme=theme, columns=args.width,
+                rows=args.height, zoom=args.zoom,
+            ), encoding="utf-8")
+        elif args.html:
             render.write_page(
-                args.html,
-                [render.Block(s, out) for s, (_, out) in zip(shown, blocks)],
-                title=args.title or shown[0],
-                theme=scenario.settings.get("ui", {}).get("theme", "dark"),
+                args.html, rendered, title=args.title or shown[0], theme=theme,
                 columns=args.width,
             )
 
     if args.menubar:
-        print(menubar_outline(switcher))
-        code = 0
+        code = run_menubar(args, switcher, beside=beside)
 
     if audit_fd is not None:
         guards.write_audit_log(audit_fd, sb)
@@ -213,40 +277,273 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
     return code
 
 
-def menubar_outline(switcher) -> str:
-    """The menu bar's menu for the seeded scenario, as the app builds it once
-    its first read and its first ledger scan are done: both providers read
-    through the same paths the app uses (``menubar_data``), engines off, the
-    scenario's settings."""
-    import time
+def run_menubar(args: argparse.Namespace, switcher, *, beside: bytes | None) -> int:
+    """``--menubar``: print the menu's outline and, with ``--html``, draw it.
+    With ``--auto-switch`` the menu bar's engines run first, as the app hosts
+    them; ``--frames`` draws after each of Claude Code's engine checks."""
+    import menubar_page
 
-    from ai_quota_swap import menubar, menubar_data
-    from ai_quota_swap.settings import load_codex_settings, load_reset_settings, load_settings
-    from ai_quota_swap.snapshot_source import SnapshotSource
+    host = MenuBarHost(switcher, auto_switch=args.auto_switch)
+    backdrop = None
+    if beside is not None:
+        backdrop = menubar_page.Backdrop(beside, alt="The qswap dashboard")
 
-    root = switcher.backup_dir
-    # The app's background ledger scan, as it runs a minute after launch.
-    menubar_data.scan_ledger(root, registry=switcher._get_sequence_data())
-    now = time.time()
-    claude = menubar_data.claude_state(
-        switcher, SnapshotSource(switcher), full=False, store_only=False, now=now,
-    )
-    codex = menubar_data.CodexReader(root).state(full=False, store_only=False, now=now)
-    now = time.time()  # the menu is drawn after the read, as in the app
-    inp = menubar.MenuInput(
-        claude=claude,
-        codex=codex,
-        settings=menubar.MenuBarSettings.load(root / "menubar_settings.json"),
-        now=now,
-        cost=menubar_data.read_cost(root),
-        history=menubar_data.read_history(root / "ai-quota-swap.log"),
-        thresholds={
-            "claude": load_settings(root).threshold,
-            "codex": load_codex_settings(root).threshold,
-        },
-        resets=load_reset_settings(root),
-    )
-    return menubar.build_menu(inp).outline()
+    def draw(menu, target: Path, *, closed: bool, notification=None) -> None:
+        target.write_text(menubar_page.page(
+            menu, theme=args.theme or "dark", open_path=args.open, highlight=args.highlight,
+            clock=host.clock_text(), closed=closed, backdrop=backdrop, size=args.size,
+            notification=notification,
+        ), encoding="utf-8")
+
+    try:
+        host.start()
+        if args.frames is not None:
+            for i in range(args.ticks):
+                with host.after_tick("claude"):
+                    menu = host.menu()
+                    # What the app would post for this check; the closed
+                    # frame shows the last of it as a banner.
+                    notes = host.notifications()
+                    draw(menu, args.frames / f"frame-{i:02d}.html", closed=args.closed)
+                    draw(menu, args.frames / f"frame-{i:02d}-closed.html", closed=True,
+                         notification=notes[-1] if notes else None)
+                    said = "".join(f"notification: {n.body}\n" for n in notes)
+                    (args.frames / f"frame-{i:02d}.txt").write_text(
+                        menu.outline() + "\n" + said, encoding="utf-8")
+        else:
+            menu = host.menu()
+        print(menu.outline())
+        if args.html is not None:
+            draw(menu, args.html, closed=args.closed)
+    except (menubar_page.UnknownSubmenu, menubar_page.UnknownRow) as e:
+        print(f"run.py: {e}", file=sys.stderr)
+        return 2
+    finally:
+        host.close()
+    return 0
+
+
+class MenuBarHost:
+    """What the menu bar app does to decide its menu, without the app.
+
+    The reads are the app's (``menubar_data``: both providers through their
+    paced read paths, the ledger, the switch log, each engine's heartbeat),
+    and so is the input to ``build_menu`` (``MenuBarApp._menu_input``). The
+    ledger scan that the app starts a minute after launch has run.
+
+    With ``auto_switch``, the menu bar's auto-switch toggles are turned on in
+    ``menubar_settings.json``, as the menu's own toggle does, and the
+    engines run as the app hosts them: an ``EngineSupervisor`` starting an
+    ``AutoSwitchEngine`` per provider (``dry_run=False``, host label ``qswap
+    menubar``) in a thread of its own, against the scenario's canned API.
+    Each engine's check is followed by a pause until the menu has been drawn
+    from what it left, so a picture never shows half a tick. The engines'
+    events are queued as the app queues them, and :meth:`notifications`
+    turns them into what the app would post (``menubar_notify.Notifier``).
+
+    *Start at login* is drawn checked: that is the state the first
+    ``qswap menubar`` leaves, and the app reads it from launchd, which the
+    sandbox never reaches.
+    """
+
+    def __init__(self, switcher, *, auto_switch: str | None) -> None:
+        import queue
+        import threading
+
+        from ai_quota_swap import menubar, menubar_data
+        from ai_quota_swap.menubar_notify import Notifier
+        from ai_quota_swap.snapshot_source import SnapshotSource
+
+        self.switcher = switcher
+        self.root = switcher.backup_dir
+        self.claude_source = SnapshotSource(switcher)  # reused, as the app keeps its pacing
+        self.codex = menubar_data.CodexReader(self.root)
+        self.settings_path = self.root / "menubar_settings.json"
+        self.settings = menubar.MenuBarSettings.load(self.settings_path)
+        if auto_switch:
+            self.settings.auto_switch_enabled = auto_switch in ("claude", "both")
+            self.settings.codex_auto_switch_enabled = auto_switch in ("codex", "both")
+            self.settings.save(self.settings_path)
+        self.supervisor = None
+        self._ticks: queue.Queue = queue.Queue()
+        self._closing = False
+        self._events: list = []  # (provider, event), as MenuBarApp._queue_event keeps them
+        self._events_lock = threading.Lock()
+        self._notifier = Notifier()
+
+    # -- engines --------------------------------------------------------------
+
+    def wanted(self) -> dict[str, bool]:
+        from ai_quota_swap import menubar, menubar_data
+
+        return menubar.wanted_engines(
+            self.settings, codex_accounts=menubar_data.codex_registry_count(self.root),
+        )
+
+    def _make_engine(self, provider, emit):
+        """``MenuBarApp._make_engine``, with each check reported to the drawing."""
+        from ai_quota_swap import menubar
+        from ai_quota_swap.autoswitch import AutoSwitchEngine
+        from ai_quota_swap.settings import load_engine_settings
+
+        sw = self.codex.ensure() if provider == "codex" else self.switcher
+        if provider == "codex":
+            sw.require_accounts()
+        engine = AutoSwitchEngine(sw, load_engine_settings(self.root, provider), emit, dry_run=False)
+        engine.host_label = menubar.ENGINE_HOST_LABEL
+        tick = engine.tick
+
+        def reported_tick():
+            outcome = tick()
+            self._checked(provider)
+            return outcome
+
+        engine.tick = reported_tick
+        return engine
+
+    def _queue_event(self, provider: str, event) -> None:
+        # Engine thread, as in the app: queue it for the main thread.
+        with self._events_lock:
+            self._events.append((provider, event))
+
+    def notifications(self) -> list:
+        """The notifications the app would post for the engines' events since
+        the last call: ``MenuBarApp._drain_events`` without the screen."""
+        import time
+
+        from ai_quota_swap import menubar_data
+
+        with self._events_lock:
+            events, self._events = self._events, []
+        both = menubar_data.codex_registry_count(self.root) > 0
+        out = []
+        for provider, event in events:
+            if getattr(event, "kind", "") == "engine-stopped":
+                continue  # the app says this through engine_stopped; the host stops them itself
+            note = self._notifier.event(provider, event, both=both, now=time.monotonic())
+            if note is not None:
+                out.append(note)
+        return out
+
+    def _checked(self, provider: str) -> None:
+        # Engine thread: wait until the main thread has drawn this state.
+        import threading
+
+        if self._closing:
+            return
+        drawn = threading.Event()
+        self._ticks.put((provider, drawn))
+        drawn.wait(timeout=120)
+
+    def start(self) -> None:
+        """The ledger scan, then the engines the toggles want; returns once
+        each has made its first check (and holds them there)."""
+        from ai_quota_swap import menubar_data
+        from ai_quota_swap.menubar_engines import EngineSupervisor
+
+        menubar_data.scan_ledger(self.root, registry=self.switcher._get_sequence_data())
+        self._held: list = []
+        wanted = self.wanted()
+        if not any(wanted.values()):
+            return
+        self.supervisor = EngineSupervisor(self._make_engine, self._queue_event)
+        failed = self.supervisor.apply(wanted)
+        pending = {p for p, want in wanted.items() if want and p not in failed}
+        while pending:
+            provider, drawn = self._ticks.get(timeout=120)
+            pending.discard(provider)
+            self._held.append(drawn)
+
+    def _release(self) -> None:
+        for drawn in self._held:
+            drawn.set()
+        self._held = []
+
+    def after_tick(self, provider: str):
+        """``with host.after_tick("claude"):`` runs its body once that
+        engine's next check is done (the first time: its first check), while
+        the engines wait."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def held():
+            # The first time, start() already holds the first checks.
+            while not self._held:
+                p, drawn = self._ticks.get(timeout=120)
+                if p == provider:
+                    self._held.append(drawn)
+                else:
+                    drawn.set()  # another provider's check: let it go on
+            try:
+                yield
+            finally:
+                self._release()
+
+        return held()
+
+    def close(self) -> None:
+        self._closing = True
+        self._release()
+        while not self._ticks.empty():
+            self._ticks.get_nowait()[1].set()
+        if self.supervisor is not None:
+            self.supervisor.stop_all(join_timeout=10)
+
+    # -- the menu -------------------------------------------------------------
+
+    def menu(self):
+        """``build_menu`` over a fresh read, as ``MenuBarApp.rebuild_menu``
+        does after its read worker: a provider whose engine runs is read from
+        the store the engine fills (``store_only``)."""
+        import time
+
+        from ai_quota_swap import menubar, menubar_data
+        from ai_quota_swap.settings import load_codex_settings, load_reset_settings, load_settings
+
+        root = self.root
+        sup = self.supervisor
+        running = {p: sup is not None and sup.running(p) for p in ("claude", "codex")}
+        now = time.time()
+        claude = menubar_data.claude_state(
+            self.switcher, self.claude_source, full=False, store_only=running["claude"], now=now,
+        )
+        codex = self.codex.state(full=False, store_only=running["codex"], now=now)
+        beats = menubar_data.heartbeats(root)
+        now = time.time()  # the menu is drawn after the read, as in the app
+        wanted = self.wanted()
+        engines = {
+            p: menubar.engine_state(
+                p, enabled=wanted[p], running=running[p],
+                failure=sup.failure(p) if sup is not None else None,
+                heartbeat=beats.get(p), now=now,
+            )
+            for p in ("claude", "codex")
+        }
+        inp = menubar.MenuInput(
+            claude=claude,
+            codex=codex,
+            settings=self.settings,
+            now=now,
+            engines=engines,
+            cost=menubar_data.read_cost(root),
+            history=menubar_data.read_history(root / "ai-quota-swap.log"),
+            thresholds={
+                "claude": load_settings(root).threshold,
+                "codex": load_codex_settings(root).threshold,
+            },
+            can_add_token=hasattr(self.switcher, "add_account_from_token"),
+            resets=load_reset_settings(root),
+            start_at_login=True,
+        )
+        return menubar.build_menu(inp)
+
+    @staticmethod
+    def clock_text() -> str:
+        """The menu bar clock at the scenario's time: ``Tue 10 Nov 14:20``."""
+        import time
+
+        t = time.localtime()
+        return f"{time.strftime('%a', t)} {t.tm_mday} {time.strftime('%b %H:%M', t)}"
 
 
 def split_commands(args: list[str]) -> list[list[str]]:

@@ -342,8 +342,9 @@ class Scenario:
     # qswap run (the menu bar, a `list`) would have: the store then holds a
     # previous reading, so the poll planner sees movement from the first tick.
     warmup: timedelta | None = None
-    # A live Claude Code login that qswap does not manage (a first run). Its
-    # slot is only the fake API's key for its tokens.
+    # A live Claude Code login that qswap does not manage (a first run, or a
+    # `/login` since the last `qswap add`). Its slot is only the fake API's
+    # key for its tokens.
     live: ClaudeAccount | None = None
     # The managed Codex account whose login is in Codex's auth.json.
     codex_active: int | None = None
@@ -1139,6 +1140,30 @@ EMPTY_CLAUDE_CODEX = replace(
     notes="Claude Code and Codex are both logged in as maya@example.com; qswap has never run.",
 )
 
+# The quick start's second step: the first account saved with `qswap add`,
+# then `/login` in Claude Code with the second, which qswap does not manage
+# yet. `qswap add` saves it as #2, and `qswap switch 1` goes back.
+QUICKSTART = Scenario(
+    name="quickstart",
+    title="One account saved; Claude Code now logged in to a second one",
+    clock=CLOCK,
+    accounts=(replace(_FIRST_LOGIN, alias="personal"),),
+    active=1,
+    live=ClaudeAccount(
+        slot=2,
+        email="maya@northwind.example.com",
+        org_name="Northwind Labs",
+        plan="team",
+        five_hour=Window(71, 1 * H + 40 * M),
+        seven_day=Window(44, 5 * D + 2 * H),
+    ),
+    settings=_DARK,
+    notes=(
+        "#1 personal saved (Max 20x, 5h 18%); Claude Code logged in as "
+        "maya@northwind.example.com (Team, 5h 71%), not managed yet."
+    ),
+)
+
 
 # -- failure states ----------------------------------------------------------------
 
@@ -1238,7 +1263,7 @@ TROUBLE = Scenario(
 SCENARIOS: dict[str, Scenario] = {
     s.name: s for s in (
         FLEET, AUTOSWITCH, RESET, RESET_AFTER, USAGE, SHOWCASE, NEW_KEYS, LAST_RESORT,
-        EMPTY, EMPTY_CLAUDE, EMPTY_CLAUDE_CODEX, TROUBLE,
+        EMPTY, EMPTY_CLAUDE, EMPTY_CLAUDE_CODEX, QUICKSTART, TROUBLE,
     )
 }
 

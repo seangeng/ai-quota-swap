@@ -1,11 +1,9 @@
-"""The "qswap-dark" Textual theme and shared color constants.
+"""The "qswap-dark" and "qswap-light" Textual themes and shared color constants.
 
-A subtle modern dark theme: neutral charcoal backgrounds in the VS Code
-register, one warm terracotta accent (the same xterm-173 tone printer.py has
-always used for the CLI — a deliberate nod to Claude Code's orange, used
-sparingly), and desaturated severity colors so usage bars read calmly on a
-dark background. Deliberately *not* a wholesale copy of any other tool's
-palette.
+qswap draws on cool ink backgrounds with a single violet accent. The violet
+sits apart from the green, amber and red of the usage bars, and it belongs to
+neither provider. It is xterm 141, the tone printer.py uses for the command
+line's accent, so both read as one tool.
 """
 
 from __future__ import annotations
@@ -20,18 +18,18 @@ if TYPE_CHECKING:
 
 # Core palette (single source of truth — widgets import these for rich
 # renderables, the Theme below maps them onto Textual's design tokens).
-ACCENT = "#d7875f"  # warm terracotta (xterm 173)
-FOREGROUND = "#e8e4de"  # soft, slightly warm off-white
-MUTED = "#8a8a8a"  # secondary text
-BACKGROUND = "#141414"
-SURFACE = "#1e1e1e"
-PANEL = "#262626"
+ACCENT = "#af87ff"  # violet (xterm 141, the command line's accent)
+FOREGROUND = "#e4e6ee"  # cool off-white
+MUTED = "#8a8fa3"  # secondary text
+BACKGROUND = "#0f1117"  # ink
+SURFACE = "#161922"
+PANEL = "#1f2330"
 
-# Usage severity ramp (desaturated for dark backgrounds).
-SEV_OK = "#87af87"  # calm green: plenty of headroom
-SEV_WARN = "#d7af5f"  # amber: climbing (>= 70%)
-SEV_CRIT = "#d75f5f"  # soft red: near the limit (>= 90%)
-TRACK = "#3a3a3a"  # unfilled bar track
+# Usage severity ramp, light enough to read on ink.
+SEV_OK = "#7fd4a6"  # green: plenty of headroom
+SEV_WARN = "#f0c674"  # amber: climbing (>= 70%)
+SEV_CRIT = "#f47c8c"  # red: near the limit (>= 90%)
+TRACK = "#2f3445"  # unfilled bar track
 
 # Severity band edges. WARN mirrors where a user starts caring; CRIT mirrors
 # the auto-switch default threshold so bar color and switch behavior agree.
@@ -104,17 +102,18 @@ QSWAP_DARK = Theme(
     },
 )
 
-# Light companion palette (same intent, tuned for a warm near-white base).
-ACCENT_LIGHT = "#954c2a"  # burnt sienna — deepened for AA on panel (worst-case row bg)
-FOREGROUND_LIGHT = "#2b2723"
-MUTED_LIGHT = "#635d55"
-BACKGROUND_LIGHT = "#faf7f2"
-SURFACE_LIGHT = "#efeae1"
-PANEL_LIGHT = "#e2dbcf"  # most-elevated = darkest (inverted from dark)
-SEV_OK_LIGHT = "#3d6b3d"  # forest green — deepened for AA on panel
-SEV_WARN_LIGHT = "#795911"  # deep ochre — deepened for AA on panel
-SEV_CRIT_LIGHT = "#ad3128"  # brick red — deepened for AA on panel
-TRACK_LIGHT = "#cec7ba"
+# Light companion palette: the same roles on a cool near-white base. Text
+# colours are deep enough for AA on PANEL_LIGHT, the darkest row background.
+ACCENT_LIGHT = "#5b3fd1"  # violet
+FOREGROUND_LIGHT = "#1c2030"
+MUTED_LIGHT = "#565c70"
+BACKGROUND_LIGHT = "#f7f8fc"
+SURFACE_LIGHT = "#eceef5"
+PANEL_LIGHT = "#dde1ec"  # most-elevated = darkest (inverted from dark)
+SEV_OK_LIGHT = "#1a6b43"  # green
+SEV_WARN_LIGHT = "#7a5200"  # amber
+SEV_CRIT_LIGHT = "#b3263a"  # red
+TRACK_LIGHT = "#c5cad9"
 
 QSWAP_LIGHT = Theme(
     name="qswap-light",
@@ -153,10 +152,10 @@ def from_printer(line: str, palette: Palette) -> "Text":
 
     text = Text.from_ansi(line)
     roles = {
-        173: palette.accent, (149, 76, 42): palette.accent,
-        250: palette.muted, (99, 93, 85): palette.muted,
-        1: palette.sev_crit, (173, 49, 40): palette.sev_crit,
-        3: palette.sev_warn, (121, 89, 17): palette.sev_warn,
+        141: palette.accent, (91, 63, 209): palette.accent,
+        250: palette.muted, (86, 92, 112): palette.muted,
+        1: palette.sev_crit, (179, 38, 58): palette.sev_crit,
+        3: palette.sev_warn, (122, 82, 0): palette.sev_warn,
     }
     spans = []
     for span in text.spans:

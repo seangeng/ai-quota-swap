@@ -1,8 +1,8 @@
 """Console output formatting for AI Quota Swap.
 
-Provides subtle, modern terminal styling with a single warm accent color,
-dim secondary text, and bold for structure. Inspired by Claude Code's
-restrained aesthetic. Falls back to plain text when colors aren't supported.
+Provides quiet terminal styling with a single violet accent color, dim
+secondary text, and bold for structure. The colors match the dashboard's
+(tui/theme.py). Falls back to plain text when colors aren't supported.
 """
 
 from __future__ import annotations
@@ -21,16 +21,16 @@ _DIM = "\033[2m"
 
 _PALETTES: dict[str, dict[str, str]] = {
     "dark": {
-        "accent": "\033[38;5;173m",  # warm salmon/terracotta (xterm 173)
+        "accent": "\033[38;5;141m",  # violet (xterm 141, #af87ff)
         "muted": "\033[38;5;250m",  # soft gray -- readable, but quieter than normal
         "red": "\033[31m",
         "yellow": "\033[33m",
     },
     "light": {
-        "accent": "\033[38;2;149;76;42m",  # #954c2a burnt sienna
-        "muted": "\033[38;2;99;93;85m",  # #635d55
-        "red": "\033[38;2;173;49;40m",  # #ad3128
-        "yellow": "\033[38;2;121;89;17m",  # #795911 deep ochre
+        "accent": "\033[38;2;91;63;209m",  # #5b3fd1 violet
+        "muted": "\033[38;2;86;92;112m",  # #565c70
+        "red": "\033[38;2;179;38;58m",  # #b3263a
+        "yellow": "\033[38;2;122;82;0m",  # #7a5200 amber
     },
 }
 
@@ -137,7 +137,7 @@ def _style(text: str, *codes: str) -> str:
 
 
 def accent(text: str) -> str:
-    """Warm accent color for important elements."""
+    """Accent color for important elements."""
     return _style(text, _pal("accent"))
 
 

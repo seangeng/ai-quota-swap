@@ -2,9 +2,12 @@
 
 CLI shots render to HTML (``docs/shots/<name>.html`` and ``<name>-light.html``)
 and are screenshotted from there; TUI shots are screenshotted from the served
-dashboard. ``columns`` is the terminal's column count: a CLI window is as wide
-as its columns at one font size, and a TUI shot is sized in cells (columns x
-rows), so text keeps one scale across the README. Everything is captured at 2x.
+dashboard; menu bar shots are drawings of the menu's rows
+(``docs/shots/<name>.html``, see ``menubar_page.py``), taken after the TUI
+shots because the hero puts one behind the menu. ``columns`` is the
+terminal's column count: a CLI window is as wide as its columns at one font
+size, and a TUI shot is sized in cells (columns x rows), so text keeps one
+scale across the README. Everything is captured at 2x.
 """
 
 from __future__ import annotations
@@ -69,10 +72,67 @@ TUI_SHOTS = (
     TuiShot("first-run", "empty-claude-codex",
             "A first run: live Claude Code and Codex logins, nothing managed yet",
             columns=80, rows=16),
+    # The light twin, for the light hero (and a <picture> beside dashboard.png).
+    # The footer's s / w / g keys appear once the fleet is read; the light
+    # theme's start takes longer to get there.
+    TuiShot("dashboard-light", "showcase",
+            "The dashboard (qswap) in the light theme",
+            columns=100, rows=30, theme="light", settle=8.0),
+)
+
+
+@dataclass(frozen=True)
+class MenubarShot:
+    """A drawing of the macOS menu bar with qswap's menu open
+    (``run.py <scenario> --menubar --html``): the rows ``build_menu`` gives
+    for the scenario, drawn as the native menu draws them."""
+
+    name: str
+    scenario: str
+    caption: str
+    args: tuple[str, ...] = ()  # qswap commands run first to set the state; "++" between
+    theme: str = "dark"
+    open: str | None = None  # a submenu shown open beside the menu
+    highlight: str | None = None  # a row drawn under the pointer
+    auto_switch: str | None = "both"  # the menu bar's own engines, hosted as the app does
+    beside: str | None = None  # a TUI shot whose PNG is the window behind the menu
+
+
+MENUBAR_SHOTS = (
+    MenubarShot("menubar", "showcase",
+                "The menu bar: both providers' accounts with their usage, the active ones "
+                "checked, held resets, today's cost, auto-switch running"),
+    MenubarShot("menubar-light", "showcase", "The menu bar in the light theme", theme="light"),
+    MenubarShot("menubar-resets", "showcase",
+                "Use a reset: each held usage reset and Codex reset credit, and whether "
+                "it can be used now",
+                open="Use a reset", highlight="Codex #2 work"),
+    # One submenu level each, so the menus stay at a readable size on the page.
+    MenubarShot("menubar-settings", "showcase",
+                "Settings: the title, the auto-switch toggle for each provider and its "
+                "threshold, automatic resets, and Start at login",
+                open="Settings"),
+    MenubarShot("menubar-auto-resets", "showcase",
+                "Use resets automatically: when the engines spend a usage reset by "
+                "themselves, as a last resort by default",
+                open="Settings > Use resets automatically"),
+    MenubarShot("menubar-key", "showcase",
+                "An API key active: today's and this month's spend against its $40 budget, "
+                "over #1 personal, which stays logged in underneath",
+                args=("switch", "5")),
+    MenubarShot("hero", "showcase",
+                "The qswap menu bar open over the dashboard: every Claude Code and Codex "
+                "account with its usage, held resets and today's cost",
+                beside="dashboard"),
+    MenubarShot("hero-light", "showcase",
+                "The qswap menu bar open over the dashboard, light theme",
+                theme="light", beside="dashboard-light"),
 )
 
 
 def page_names() -> list[str]:
+    """The pages ScreenFramed frames: CLI windows and dashboard shots. The
+    menu bar drawings bring their own desktop and are not framed."""
     out = []
     for s in CLI_SHOTS:
         out += [s.name if t == "dark" else f"{s.name}-{t}" for t in s.themes]

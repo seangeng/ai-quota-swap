@@ -15,7 +15,6 @@ from ai_quota_swap.update_check import (
     FAILURE_TTL,
     PYPI_URL,
     _detect_install_method,
-    _installed_version_on_disk,
     check_for_update,
     held_back_release_notice,
     run_self_upgrade,
@@ -37,6 +36,11 @@ def _uv_pip_list(rows: list[dict]) -> MagicMock:
 
 
 _OUTDATED = [{"name": "ai-quota-swap", "version": "0.27.2", "latest_version": "0.28.0"}]
+
+
+def _on_disk(version: str, source: str | None = None) -> dict:
+    """What _installed_identity_on_disk reads after an upgrade."""
+    return {"version": version, "source": source}
 
 
 def _write_cache(path, version, timestamp=None):
@@ -647,7 +651,7 @@ class TestHeldBackReleaseNotice(_UvInstall):
         assert held_back_release_notice("0.27.2") is None
 
     @patch("ai_quota_swap.update_check.subprocess.run")
-    @patch("ai_quota_swap.update_check._installed_version_on_disk", return_value="0.28.0")
+    @patch("ai_quota_swap.update_check._installed_identity_on_disk", return_value=_on_disk("0.28.0"))
     def test_qswap_upgrade_prints_notice_after_uv(
         self, mock_on_disk, mock_run, tmp_path, capsys
     ):
@@ -677,7 +681,7 @@ class TestHeldBackReleaseNotice(_UvInstall):
         mock_run.assert_called_once()
 
     @patch("ai_quota_swap.update_check.subprocess.run")
-    @patch("ai_quota_swap.update_check._installed_version_on_disk", return_value=None)
+    @patch("ai_quota_swap.update_check._installed_identity_on_disk", return_value=None)
     def test_pipx_install_gets_no_notice(
         self, mock_on_disk, mock_run, tmp_path, monkeypatch, capsys
     ):
@@ -709,7 +713,7 @@ class TestHeldBackReleaseNotice(_UvInstall):
 @patch("ai_quota_swap.update_check.sys.platform", "linux")
 class TestRunSelfUpgrade:
     @patch("ai_quota_swap.update_check.subprocess.run")
-    @patch("ai_quota_swap.update_check._installed_version_on_disk", return_value=None)
+    @patch("ai_quota_swap.update_check._installed_identity_on_disk", return_value=None)
     @patch("ai_quota_swap.update_check._detect_install_method", return_value="uv")
     def test_uv_invokes_uv_tool_upgrade(self, mock_detect, mock_on_disk, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
@@ -720,7 +724,7 @@ class TestRunSelfUpgrade:
         )
 
     @patch("ai_quota_swap.update_check.subprocess.run")
-    @patch("ai_quota_swap.update_check._installed_version_on_disk", return_value=None)
+    @patch("ai_quota_swap.update_check._installed_identity_on_disk", return_value=None)
     @patch("ai_quota_swap.update_check._detect_install_method", return_value="pipx")
     def test_pipx_invokes_pipx_upgrade(self, mock_detect, mock_on_disk, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
@@ -771,7 +775,7 @@ class TestRunSelfUpgradeReport:
     def test_reports_successful_upgrade(self, mock_detect, mock_run, capsys):
         mock_run.return_value = MagicMock(returncode=0)
         with patch(
-            "ai_quota_swap.update_check._installed_version_on_disk", return_value="0.28.0"
+            "ai_quota_swap.update_check._installed_identity_on_disk", return_value=_on_disk("0.28.0")
         ):
             assert run_self_upgrade("0.27.2") == 0
         assert "ai-quota-swap upgraded: 0.27.2 -> 0.28.0" in capsys.readouterr().out
@@ -781,7 +785,7 @@ class TestRunSelfUpgradeReport:
     def test_reports_unchanged_upgrade(self, mock_detect, mock_run, capsys):
         mock_run.return_value = MagicMock(returncode=0)
         with patch(
-            "ai_quota_swap.update_check._installed_version_on_disk", return_value="0.27.2"
+            "ai_quota_swap.update_check._installed_identity_on_disk", return_value=_on_disk("0.27.2")
         ):
             assert run_self_upgrade("0.27.2") == 0
         assert "ai-quota-swap is still at 0.27.2" in capsys.readouterr().out
@@ -791,7 +795,7 @@ class TestRunSelfUpgradeReport:
     def test_no_result_line_when_verification_fails(self, mock_detect, mock_run, capsys):
         mock_run.return_value = MagicMock(returncode=0)
         with patch(
-            "ai_quota_swap.update_check._installed_version_on_disk", return_value=None
+            "ai_quota_swap.update_check._installed_identity_on_disk", return_value=None
         ):
             assert run_self_upgrade("0.27.2") == 0
         out = capsys.readouterr().out
@@ -801,7 +805,7 @@ class TestRunSelfUpgradeReport:
     @patch("ai_quota_swap.update_check.subprocess.run")
     @patch("ai_quota_swap.update_check._detect_install_method", return_value="uv")
     def test_no_result_line_when_verification_times_out(self, mock_detect, mock_run, capsys):
-        # The verification subprocess.run times out; _installed_version_on_disk
+        # The verification subprocess.run times out; _installed_identity_on_disk
         # catches subprocess.SubprocessError and returns None, so we stay
         # silent and keep the upgrade's exit status.
         mock_run.side_effect = [
@@ -822,6 +826,49 @@ class TestRunSelfUpgradeReport:
         out = capsys.readouterr().out
         assert "upgraded:" not in out
         assert "is still at" not in out
+
+
+_GIT_AD03D17 = {"version": "0.1.0", "source": "ad03d17" + "a" * 33}
+_GIT_FDEB279 = {"version": "0.1.0", "source": "fdeb279" + "b" * 33}
+
+
+@patch("ai_quota_swap.update_check.sys.platform", "linux")
+class TestUpgradeReportNamesTheBuild:
+    """Every git install of a release carries that release's version, so the
+    report names the commit too; a PyPI install, which has none, reads as it
+    did. The package manager and the build on disk are faked."""
+
+    def _upgrade(self, monkeypatch, capsys, before, after):
+        from ai_quota_swap import update_check
+
+        monkeypatch.setattr(update_check, "_detect_install_method", lambda: "pipx")
+        monkeypatch.setattr(update_check, "install_identity", lambda: dict(before))
+        monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: after)
+        with patch("ai_quota_swap.update_check.subprocess.run",
+                   return_value=MagicMock(returncode=0)) as upgrade:
+            assert run_self_upgrade(before["version"]) == 0
+        upgrade.assert_called_once_with(["pipx", "upgrade", "ai-quota-swap"], check=False)
+        return capsys.readouterr().out.splitlines()
+
+    def test_a_new_commit_of_the_same_version_is_an_upgrade(self, monkeypatch, capsys):
+        lines = self._upgrade(monkeypatch, capsys, _GIT_AD03D17, dict(_GIT_FDEB279))
+        assert lines == ["ai-quota-swap upgraded: 0.1.0 (ad03d17) -> 0.1.0 (fdeb279)"]
+
+    def test_the_same_commit_is_still_at_that_build(self, monkeypatch, capsys):
+        lines = self._upgrade(monkeypatch, capsys, _GIT_FDEB279, dict(_GIT_FDEB279))
+        assert lines == ["ai-quota-swap is still at 0.1.0 (fdeb279)."]
+
+    def test_a_pypi_install_names_only_the_version(self, monkeypatch, capsys):
+        old, new = {"version": "0.1.0", "source": None}, {"version": "0.2.0", "source": None}
+        assert self._upgrade(monkeypatch, capsys, old, dict(new)) == [
+            "ai-quota-swap upgraded: 0.1.0 -> 0.2.0"
+        ]
+        assert self._upgrade(monkeypatch, capsys, new, dict(new)) == [
+            "ai-quota-swap is still at 0.2.0."
+        ]
+
+    def test_a_build_on_disk_that_cannot_be_read_says_nothing(self, monkeypatch, capsys):
+        assert self._upgrade(monkeypatch, capsys, _GIT_AD03D17, None) == []
 
 
 @patch("ai_quota_swap.update_check.sys.platform", "win32")
@@ -897,6 +944,73 @@ class TestInstallIdentity:
         assert update_check.describe_identity(None) == "unknown"
 
 
+class TestInstalledIdentityOnDisk:
+    """After an upgrade, a fresh interpreter reads the build on disk from the
+    package metadata alone: the version, and the commit of a git install."""
+
+    def _dist_info(self, root, direct_url):
+        info = root / "ai_quota_swap-0.1.0.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: ai-quota-swap\nVersion: 0.1.0\n", encoding="utf-8"
+        )
+        if direct_url is not None:
+            (info / "direct_url.json").write_text(direct_url, encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        ("direct_url", "source"),
+        [
+            (json.dumps({"url": "https://github.com/seangeng/ai-quota-swap.git",
+                         "vcs_info": {"vcs": "git", "commit_id": _GIT_FDEB279["source"]}}),
+             _GIT_FDEB279["source"]),
+            (None, None),  # from PyPI: no direct_url.json
+            (json.dumps({"url": "file:///src/ai-quota-swap", "dir_info": {"editable": True}}), None),
+            ("not json", None),
+        ],
+        ids=["git", "pypi", "editable", "unreadable"],
+    )
+    def test_a_fresh_interpreter_reads_version_and_commit(
+        self, direct_url, source, tmp_path, monkeypatch
+    ):
+        from ai_quota_swap import update_check
+
+        # PYTHONPATH comes before site-packages, so this metadata is the one
+        # the child finds.
+        self._dist_info(tmp_path, direct_url)
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+        assert update_check._installed_identity_on_disk() == {"version": "0.1.0", "source": source}
+
+    def test_it_never_imports_the_new_build(self):
+        from ai_quota_swap import update_check
+
+        with patch("ai_quota_swap.update_check.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stdout='{"version": "0.1.0", "source": null}')
+            update_check._installed_identity_on_disk()
+        command = run.call_args.args[0]
+        assert command[:2] == [update_check.sys.executable, "-c"]
+        assert "ai_quota_swap" not in command[2]
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            subprocess.CalledProcessError(1, "python"),
+            subprocess.TimeoutExpired("python", 10),
+            OSError("no interpreter"),
+            MagicMock(returncode=0, stdout="Traceback (most recent call last):"),
+            MagicMock(returncode=0, stdout='{"source": null}'),
+            MagicMock(returncode=0, stdout='["0.1.0"]'),
+        ],
+        ids=["failed", "timed-out", "not-started", "not-json", "no-version", "not-an-object"],
+    )
+    def test_any_failure_is_none(self, outcome):
+        from ai_quota_swap import update_check
+
+        effect = {"side_effect": outcome} if isinstance(outcome, BaseException) else {
+            "return_value": outcome}
+        with patch("ai_quota_swap.update_check.subprocess.run", **effect):
+            assert update_check._installed_identity_on_disk() is None
+
+
 _OLD_BUILD = {"version": "0.27.2", "source": None}
 _NEW_BUILD = {"version": "0.28.0", "source": None}
 
@@ -916,8 +1030,7 @@ class TestUpgradeRestartsARunningMenuBar:
         from ai_quota_swap import update_check
 
         calls = self._launchd(monkeypatch, 4242)
-        monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: _NEW_BUILD)
-        update_check._restart_menubar_if_rebuilt(_OLD_BUILD)
+        update_check._restart_menubar_if_rebuilt(_OLD_BUILD, _NEW_BUILD)
         assert calls == [{"restart": True}]
         assert "Menu bar restarted onto 0.28.0 (was pid 4242)" in capsys.readouterr().out
 
@@ -926,30 +1039,25 @@ class TestUpgradeRestartsARunningMenuBar:
         from ai_quota_swap import update_check
 
         calls = self._launchd(monkeypatch, None)
-        monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: _NEW_BUILD)
-        update_check._restart_menubar_if_rebuilt(_OLD_BUILD)
+        update_check._restart_menubar_if_rebuilt(_OLD_BUILD, _NEW_BUILD)
         assert calls == []
 
     def test_does_nothing_when_the_build_did_not_change_or_is_unknown(self, monkeypatch):
         from ai_quota_swap import update_check
 
         calls = self._launchd(monkeypatch, 4242)
-        monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: _OLD_BUILD)
-        update_check._restart_menubar_if_rebuilt(_OLD_BUILD)
-        monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: None)
-        update_check._restart_menubar_if_rebuilt(_OLD_BUILD)
+        update_check._restart_menubar_if_rebuilt(_OLD_BUILD, _OLD_BUILD)
+        update_check._restart_menubar_if_rebuilt(_OLD_BUILD, None)
         assert calls == []
 
     def test_a_same_version_git_install_still_counts_as_changed(self, monkeypatch):
         from ai_quota_swap import update_check
 
         calls = self._launchd(monkeypatch, 4242)
-        monkeypatch.setattr(
-            update_check,
-            "_installed_identity_on_disk",
-            lambda: {"version": "1.0.0b1", "source": "bbbbbbb"},
+        update_check._restart_menubar_if_rebuilt(
+            {"version": "1.0.0b1", "source": "aaaaaaa"},
+            {"version": "1.0.0b1", "source": "bbbbbbb"},
         )
-        update_check._restart_menubar_if_rebuilt({"version": "1.0.0b1", "source": "aaaaaaa"})
         assert calls == [{"restart": True}]
 
     def test_a_failed_restart_is_a_warning_not_a_failed_upgrade(self, monkeypatch, capsys):
@@ -962,8 +1070,7 @@ class TestUpgradeRestartsARunningMenuBar:
             raise ClaudeSwitchError("launchctl kickstart failed (exit 3)")
 
         monkeypatch.setattr("ai_quota_swap.launch_agent.kickstart", boom)
-        monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: _NEW_BUILD)
-        update_check._restart_menubar_if_rebuilt(_OLD_BUILD)
+        update_check._restart_menubar_if_rebuilt(_OLD_BUILD, _NEW_BUILD)
         captured = capsys.readouterr()
         assert "not restarted" in captured.out + captured.err
 
@@ -979,8 +1086,7 @@ class TestUpgradeRestartsARunningMenuBar:
             raise CodexLoginError("something only a Codex path raises")
 
         monkeypatch.setattr("ai_quota_swap.launch_agent.kickstart", boom)
-        monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: _NEW_BUILD)
-        update_check._restart_menubar_if_rebuilt(_OLD_BUILD)
+        update_check._restart_menubar_if_rebuilt(_OLD_BUILD, _NEW_BUILD)
         captured = capsys.readouterr()
         assert "not restarted onto the new build: something only a Codex path raises" in (
             captured.out + captured.err
@@ -995,8 +1101,7 @@ class TestUpgradeRestartsARunningMenuBar:
         calls = self._launchd(monkeypatch, 4242)
         monkeypatch.setattr(update_check, "install_identity", lambda: _OLD_BUILD)
         monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: _NEW_BUILD)
-        with patch("ai_quota_swap.update_check._installed_version_on_disk", return_value="0.28.0"):
-            assert run_self_upgrade("0.27.2") == 0
+        assert run_self_upgrade("0.27.2") == 0
         assert calls == [{"restart": True}]
         out = capsys.readouterr().out
         assert "ai-quota-swap upgraded: 0.27.2 -> 0.28.0" in out

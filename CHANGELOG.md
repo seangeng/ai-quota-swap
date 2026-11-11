@@ -17,6 +17,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - Read-only commands never ask; a question is only asked on a terminal, and without one the command stops with a line naming `--yes` (now on `remove`, `purge`, `add --slot`, `add-token --slot` and `qswap codex remove`). Cancelling `purge` changes nothing, the menu bar included.
 - Usage errors exit 64 (not 2, which `auto --once` uses for "nothing to do"); every `--json` failure is the error envelope, and every payload carries `schemaVersion`. `priority --json` is new.
 - Messages fit 80 columns and name commands by verb, never by a legacy flag. `qswap budget` and `qswap api org` output are not yet wrapped or worded this way.
+- `qswap upgrade` names the build before and after, with the commit of a git install, so a new commit of the same version reads as an upgrade (`ai-quota-swap upgraded: 0.1.0 (ad03d17) -> 0.1.0 (fdeb279)`) and no change as `ai-quota-swap is still at 0.1.0 (fdeb279).`; `qswap --version` adds the commit too (`qswap 0.1.0 (fdeb279)`). A PyPI install reads as before.
 
 ### Dashboard
 
@@ -27,6 +28,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - A first run says how to log in or offers `Add <email>` first; the add menu lists what each provider can add, `qswap codex login` included. No menu offers an action that cannot work.
 - Nothing wraps at 80 columns: emails give way before aliases and plans before figures, and a crowded screen keeps every account on one line before it folds any.
 - Switching to an account that needs re-login is refused with the command line's message and a "Switch anyway" choice; removing asks what `qswap remove` asks. Errors read as on the command line, never as a traceback. `esc` goes back on every screen, and `q` quits from every screen outside a dialog.
+- The dashboard and the command line have qswap's own colours: a violet accent on cool ink backgrounds, in dark and light.
 
 ### Codex (experimental)
 
@@ -35,7 +37,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `qswap list` shows a Codex section with live usage, and `list --json` adds `providers.codex`.
 - `qswap codex auto` runs the shared auto-switch engine over Codex accounts and switches only once the active account is out (`codex.threshold`, default 99), because a switch restarts Codex's background server.
 - `qswap codex reset` lists and spends Codex reset credits, and auto mode spends them under the same `resets.*` settings as Claude.
-- qswap never refreshes a Codex login and never runs `codex logout`. Tested against fakes; not yet run with two real Codex accounts.
+- qswap never refreshes a Codex login and never runs `codex logout`. Tested against fakes and with one real account; not yet run with two real Codex accounts.
 
 ### Menu bar (macOS)
 
@@ -48,7 +50,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `menubar_settings.json` gains `codex_auto_switch_enabled` and `title_follows`; an older file loads as before, and keys a build does not know are kept.
 - The menu is described by one pure function (`menubar.build_menu`) and drawn by a thin rumps layer; `scripts/demo/run.py SCENARIO --menubar` prints it.
 - First-day polish: an unused API-key account reads `no usage recorded` (`$0 of $500 this month` with a budget) the same before and after the ledger's first scan; placeholder names show as `#5 api-key-5` wherever an account is named; held resets of several kinds read `resets: 3 Fable, 1 weekly`; `qswap import` over the active login says nothing needs doing; *Settings → Use resets automatically* sets `resets.auto`, `resets.weeklyForModelLimit` and `resets.beforeSwitch`; *Use a reset* spends one by hand through the same sequence as `qswap reset N --grant ID`, reserved under the state lock like the engine's claims. A reset whose outcome is unknown is reported as possibly used, and one the server had already counted as used, never as not used, in the menu bar and by `qswap reset`; an API-key account whose usage ledger cannot be read shows `spend unknown`, never $0, and `qswap usage` rebuilds a ledger file that is not a database.
-- This build of the menu bar is tested through `build_menu` and unit tests; it has not yet been run by hand on a Mac.
+- The menu bar is tested through `build_menu` and unit tests.
 
 ### Usage and cost
 
@@ -90,6 +92,8 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - Task-first pages under `docs/`: quickstart, auto-switch, resets, Codex, usage, API accounts, sessions, dashboard, menu bar, settings, JSON output, troubleshooting, and coming from claude-swap, indexed in `docs/README.md`.
 - `docs/settings.md` is generated from the settings in the code (`scripts/settings_doc.py`), and a test fails when a setting is missing from it, when it is stale, or when a link or anchor in any Markdown file does not resolve.
 - Every screenshot is regenerated from the current build, most from a new `showcase` scenario, and the auto-switch and reset recordings are re-made.
+- The README opens on the menu bar, with a picture of its menu in front of the dashboard, and docs/menubar.md walks through the menu; the demo harness now draws the menu bar from `build_menu` (`run.py SCENARIO --menubar --html FILE`, dark and light, any submenu open) and the notification the app posts for a switch, and new recordings show the menu bar switching, the quick start and the dashboard.
+- The README's title, first paragraph and section headings say what people search for (a Claude Code and Codex account switcher, multiple accounts, 5-hour and weekly limits, auto-switch), a FAQ answers eight common questions, and a line says the project is independent of Anthropic and OpenAI; the package's summary, keywords and classifiers match, for PyPI.
 
 ### Tooling
 
