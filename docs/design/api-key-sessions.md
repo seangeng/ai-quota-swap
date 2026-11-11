@@ -177,7 +177,9 @@ return to it when the key is left.
     or refill is still out. A reset the user's settings keep (`resets.minHoursLeft`, the
     daily cap, the `active` mode, the kind rule, `resets.auto off`) stays banked: the
     engine does not override them to stay off a key, and names each such reset on the
-    switch with `qswap reset N` (`resets.kept_resets`, decision EM4).
+    switch with `qswap reset N` (`resets.kept_resets`, decision EM4). While the key it
+    entered is active, status, list, the dashboard and the menu bar's key row name them too,
+    for as long as it is true (`autoswitch.kept_resets_now`, from the stored readings).
   - A key it entered is left for a subscription under its own lines with at least 5 points of
     room in every window, once the cooldown has passed since the key was entered.
   - Any key is left at once at its budget, with its credit spent or expired, or when its spend
@@ -373,13 +375,18 @@ What the code does where this part leaves room, or where it had to differ:
   says that a real run measures the spend first and that its own figure may be older,
   and it checks read-only that a key's slot can give a key (A12). The rows say auto-switch
   measures the spend before it moves to the key, never that it stays off it.
-- **The way back**, in status, list, the menu bar, the dashboard, doctor and the stopping
-  engine: `qswap switch N` to the account underneath; `qswap add` over a login qswap does
+- **The way back**, in status, list, the menu bar, the dashboard, doctor, the stopping
+  engine and the switch onto a key itself (over a login qswap does not manage, or none): `qswap switch N` to the account underneath; `qswap add` over a login qswap does
   not manage; else `qswap switch N` to the first subscription; else log in to one and run
   `qswap add`. It is also the fix for a record whose line is gone (the line deleted by
   hand): the switch clears the record and `activeAccountNumber`, which doctor reports as
   one warning; `qswap switch 5`, to use the key again, is offered second and labelled so.
   No surface names re-entering the key as that fix.
+- **Notes in JSON.** `list --json` and `status --json` carry `keyNotes`, one `{code, account,
+  fix}` for each note the text view prints, in its order (`switcher.key_notes_json`; the
+  codes are `key_activation.KEY_NOTE_CODES`). A recent `--once` tick's note is
+  `watched-once`, with no fix; a row that says a budget or credit still counts as reached
+  is `limit-latched` (status prints only the active account's row).
 - **Credit and Anthropic's figures.** The usage report has daily buckets, so the day a credit
   is recorded counts in full against it; the ledger counts from the hour. The row and `qswap
   credit` say which (`credit counted from 14:00 UTC Nov 10`). A credit recorded before this

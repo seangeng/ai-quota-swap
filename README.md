@@ -137,7 +137,7 @@ Its row shows what it spent today and this month instead of usage windows. `qswa
      $2.06 today · $25.22 this month of $40 (63%) · estimate
 ```
 
-At its budget, or with its credit spent, auto-switch stops using the account. Both are brakes inside qswap, not caps at Anthropic. With `autoswitch.includeApiKeyAccounts` on, auto-switch also uses a key as a last resort, only when every subscription is at its limit and only a key with a budget or credit, and comes back once a subscription has room. Spend is estimated from this machine's sessions, or read from Anthropic's usage report once you register the organization's Admin key with `qswap api org add`. `qswap run 5` runs one session on the key and leaves everything else alone. More: [docs/api-accounts.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md).
+At its budget, or with its credit spent, auto-switch stops using the account. Both are brakes inside qswap, not caps at Anthropic. With `autoswitch.includeApiKeyAccounts` on, auto-switch also uses a key as a last resort, only when every subscription is at its limit and only a key with a budget or credit, and comes back once a subscription has room. A usage reset auto mode spends comes before the key; one your `resets.*` settings keep stays banked, and the switch names it with `qswap reset N`. Spend is estimated from this machine's sessions, or read from Anthropic's usage report once you register the organization's Admin key with `qswap api org add`. `qswap run 5` runs one session on the key and leaves everything else alone. More: [docs/api-accounts.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md).
 
 ## Several accounts at once
 
