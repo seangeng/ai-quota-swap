@@ -21,7 +21,11 @@ Auto-switch running: switch at 90% · checks every 60s · Ctrl-C to stop
   <img src="../assets/screenshots/raw/auto-light.png" alt="qswap auto: two checks of #1 personal below its 90% line, then a switch to #2 work when its 5h window reaches 91%" width="800">
 </picture>
 
-It runs in the foreground until you press Ctrl-C. Other ways to run it:
+The dashboard's auto view (`qswap`, then `g`) runs the same engine. Here it goes live, and the active account climbs past its 90% line:
+
+<img src="../assets/demos/autoswitch.gif" alt="Recording: the dashboard's auto view goes live; #1 personal climbs past its 90% line on the 5-hour window and the engine switches to #2 work" width="800">
+
+`qswap auto` runs in the foreground until you press Ctrl-C. Other ways to run it:
 
 ```bash
 qswap auto --dry-run --verbose   # say what it would do; never switch or spend a reset

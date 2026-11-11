@@ -2,6 +2,8 @@
 
 The dashboard is a full-screen view of every Claude Code and Codex account in your terminal. From it you can switch accounts, watch usage as it changes, run auto-switch for a while, read the token and cost report, and add, disable or remove accounts. This page covers every screen and every key.
 
+<img src="../assets/demos/dashboard.gif" alt="Recording: the dashboard's main view; w opens the watch page, g the auto view, u the usage screen, and esc goes back to the main view" width="800">
+
 ## Open it
 
 | Command | Opens |
