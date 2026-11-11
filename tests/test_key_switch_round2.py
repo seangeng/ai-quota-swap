@@ -812,6 +812,35 @@ class TestAnotherHelper:
         assert _claude_state(block_real_keychain) == before
         assert s.current_account_number() == "1"
 
+    @pytest.mark.parametrize("env", [
+        {"ANTHROPIC_AUTH_TOKEN": "t"},
+        {"ANTHROPIC_API_KEY": "sk-ant-api03-other", "CLAUDE_CODE_USE_BEDROCK": "1"},
+    ])
+    def test_log_out_sessions_is_refused_for_a_variable_too(
+        self, temp_home, block_real_keychain, run, env
+    ):
+        """The re-check's case: a credential or provider variable in the env
+        block outranks a saved key as well, so the older way would log every
+        session out and leave them on the variable (decision B6)."""
+        from tests.test_key_helper_live import _claude_state
+
+        s = _fleet()
+        before_file = _settings_with(temp_home, {"env": env})
+        before = _claude_state(block_real_keychain)
+        code, out, err = run(s, "switch", "5", "--log-out-sessions")
+        assert code == 1
+        text = " ".join(err.split())
+        names = " and ".join(sorted(env)) if len(env) > 1 else next(iter(env))
+        assert "Claude Code obeys before any key line" in text, text
+        assert names.split(" and ")[0] in text
+        assert "--log-out-sessions" not in text
+        assert "sk-ant-api03-other" not in out + err and "'t'" not in out + err
+        assert _claude_state(block_real_keychain) == before
+        assert _settings(temp_home).read_bytes() == before_file
+        assert s.current_account_number() == "1"
+        code, out, _err = run(s, "switch", "5", "--log-out-sessions", "--json")
+        assert code == 1 and json.loads(out)["error"]["logOutSessions"] is False
+
     def test_the_menu_bar_does_not_ask_about_the_saved_key(self, temp_home):
         from ai_quota_swap import menubar
         from ai_quota_swap.exceptions import KeyHelperUnavailableError

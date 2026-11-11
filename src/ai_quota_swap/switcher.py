@@ -61,7 +61,7 @@ from ai_quota_swap.fsutil import (
     atomic_write_text,
     read_text_with_retry,
 )
-from ai_quota_swap.key_activation import KeyActivationMixin
+from ai_quota_swap.key_activation import KeyActivationMixin, defeating_names
 from ai_quota_swap.locking import FileLock
 from ai_quota_swap.logging_config import setup_logging
 from ai_quota_swap.models import (
@@ -8230,6 +8230,15 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 raise self._key_unavailable(
                     target_account, f"{state.shown_path()} already sets another apiKeyHelper",
                     kind=claude_settings.FOREIGN, log_out_sessions=True,
+                )
+            names = tuple(defeating_names(self._settings_env()))
+            if names:
+                # So does a credential or provider variable in the env block:
+                # sessions would stay on it, logged out of the login for nothing.
+                raise self._key_unavailable(
+                    target_account,
+                    f"{state.shown_path()} sets {', '.join(names)} in its env block",
+                    kind="env", names=names,
                 )
         if target_is_key and not log_out_sessions:
             if helper == target_account and not force:
