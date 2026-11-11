@@ -1647,9 +1647,11 @@ def _menubar_checks(p: Probes, f: _Facts) -> list[Check]:
     else:
         program, program_folder = None, None
 
-    from ai_quota_swap.update_check import INSTALL_SOURCE
+    from ai_quota_swap.update_check import MENUBAR_INSTALL_SPEC
 
-    reinstall = f"uv tool install {INSTALL_SOURCE}"
+    # With the extra: the copy this installs is the one the menu bar runs, and
+    # without rumps `qswap menubar` stops before it starts anything.
+    reinstall = f"uv tool install --force {MENUBAR_INSTALL_SPEC}"
     if offenders:
         path, folder = offenders[0]
         fix = reinstall + (", then qswap menubar" if f.menubar_configured else "")

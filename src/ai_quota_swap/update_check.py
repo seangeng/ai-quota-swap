@@ -18,12 +18,14 @@ CACHE_PATH = CACHE_DIR / "update_check.json"
 CACHE_TTL = 24 * 3600  # A successful lookup is kept for a day.
 FAILURE_TTL = 3600  # A failed one is retried after an hour.
 PYPI_URL = "https://pypi.org/pypi/ai-quota-swap/json"
-# Not on PyPI yet, so a fresh install or a reinstall with an extra comes from
-# the repository. Upgrades by tool name (`uv tool upgrade ai-quota-swap`,
-# `pipx upgrade ai-quota-swap`) reuse the source the install recorded, and
-# the PyPI lookup above answers 404, which _pypi_latest_version reports as None.
-INSTALL_SOURCE = "git+https://github.com/seangeng/ai-quota-swap"
-MENUBAR_INSTALL_SPEC = f"'ai-quota-swap[menubar] @ {INSTALL_SOURCE}'"
+# The package on PyPI, as the install commands qswap prints name it: doctor's
+# reinstall, the menu bar extra's remedy and the upgrade fallback. The extra
+# is quoted for zsh, which would read the brackets as a glob. Upgrades by tool
+# name (`uv tool upgrade ai-quota-swap`, `pipx upgrade ai-quota-swap`) reuse
+# the source the install recorded, so an install made from git before 0.1.0
+# keeps following the repository until it is reinstalled from PyPI.
+INSTALL_SOURCE = "ai-quota-swap"
+MENUBAR_INSTALL_SPEC = f"'{INSTALL_SOURCE}[menubar]'"
 
 _VERSION_RE = re.compile(
     r"(\d+(?:\.\d+)*)(?:[-_.]?(alpha|beta|preview|pre|rc|a|b|c)[-_.]?(\d+)?)?",
@@ -455,7 +457,7 @@ def run_self_upgrade(current_version: str | None = None) -> int:
             "Upgrade it the way you installed it:\n"
             "  uv tool upgrade ai-quota-swap\n"
             "  pipx upgrade ai-quota-swap\n"
-            f"  {sys.executable} -m pip install --upgrade '{INSTALL_SOURCE}'\n"
+            f"  {sys.executable} -m pip install --upgrade {INSTALL_SOURCE}\n"
             "  git pull                      # a source checkout"
         )
         return 1
