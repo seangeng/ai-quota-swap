@@ -66,8 +66,9 @@ def is_pid_alive(pid: int) -> bool:
     """Check whether a process with the given PID is running.
 
     Cross-platform:
-    - macOS/Linux/WSL: os.kill(pid, 0)
-    - Windows: ctypes OpenProcess
+    - macOS/Linux/WSL: os.kill(pid, 0), and a zombie (a process that has
+      exited and waits only for its parent to reap it) is not running
+    - Windows: ctypes OpenProcess and GetExitCodeProcess
     """
     if pid <= 1:
         return False
@@ -77,28 +78,126 @@ def is_pid_alive(pid: int) -> bool:
 
     try:
         os.kill(pid, 0)
-        return True
     except PermissionError:
         # EPERM means the process exists but we lack permission
-        return True
+        pass
     except OSError:
         return False
+    # os.kill succeeds on a zombie, and ps still reports its start time, so
+    # its record would otherwise read as a live session until it is reaped.
+    return process_state(pid) != "Z"
+
+
+def process_state(pid: int) -> str | None:
+    """The process's state letter (``R``, ``S``, ``Z`` for a zombie, ...), or
+    None when unknowable. Linux reads field 3 of ``/proc/<pid>/stat``, other
+    POSIX systems ``ps -o stat=``; Windows has no such state. Claude Code
+    tells a zombie apart the same way."""
+    if sys.platform == "win32":
+        return None
+    if sys.platform.startswith("linux"):
+        try:
+            text = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            return None
+        fields = text.rpartition(")")[2].split()
+        return fields[0][:1] if fields else None
+    text = _ps(pid, "stat")
+    return text[:1] if text else None
+
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+# GetExitCodeProcess's answer for a process that has not exited.
+STILL_ACTIVE = 259
+
+
+def _kernel32():
+    """Windows' kernel32, the seam the Windows process checks go through."""
+    import ctypes
+
+    return ctypes.windll.kernel32  # type: ignore[attr-defined]
 
 
 def _is_pid_alive_windows(pid: int) -> bool:
-    """Windows-specific PID liveness check using ctypes."""
+    """Windows-specific PID liveness check using ctypes.
+
+    OpenProcess also succeeds on a process that has exited while something
+    still holds a handle to it, so the exit code decides: ``STILL_ACTIVE``
+    is running. An exit code that cannot be read counts as running."""
     try:
         import ctypes
 
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        kernel32 = _kernel32()
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if handle:
-            kernel32.CloseHandle(handle)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong(0)
+            if kernel32.GetExitCodeProcess(handle, ctypes.pointer(code)):
+                return code.value == STILL_ACTIVE
             return True
-        return False
+        finally:
+            kernel32.CloseHandle(handle)
     except Exception:
         return False
+
+
+def process_creation_filetime(pid: int) -> int | None:
+    """When ``pid`` was created, as a Windows FILETIME (100 ns intervals
+    since 1601, UTC), or None when unknowable (not Windows, no such process,
+    no access). From GetProcessTimes, the clock Claude Code stamps into a
+    record's ``procStartFt``."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        kernel32 = _kernel32()
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            # A FILETIME is two 32-bit halves, low first: a little-endian
+            # 64-bit integer.
+            created, exited, kernel, user = (ctypes.c_ulonglong(0) for _ in range(4))
+            if not kernel32.GetProcessTimes(
+                handle, ctypes.pointer(created), ctypes.pointer(exited),
+                ctypes.pointer(kernel), ctypes.pointer(user),
+            ):
+                return None
+            return created.value or None
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+# FILETIME counts from 1601; the epoch is this many seconds later.
+_FILETIME_EPOCH_S = 11_644_473_600
+# A FILETIME outside these years is not one (another unit, or garbage).
+_FILETIME_PLAUSIBLE_S = (946_684_800, 4_102_444_800)  # 2000 .. 2100
+
+
+def _filetime_seconds(value: int) -> float | None:
+    """A FILETIME as epoch seconds, or None when it cannot be one."""
+    seconds = value / 10_000_000 - _FILETIME_EPOCH_S
+    low, high = _FILETIME_PLAUSIBLE_S
+    return seconds if low <= seconds <= high else None
+
+
+def _windows_start_matches(pid: int, stamp: str) -> bool:
+    """Is the live process at ``pid`` the one whose record carries the
+    FILETIME ``stamp``? Both come from the process's creation time, which
+    never changes, so a process created later than the stamp (a second of
+    slack for rounding) holds a recycled pid. Anything unknowable passes."""
+    recorded = _filetime_seconds(int(stamp))
+    if recorded is None:
+        return True
+    created_ft = process_creation_filetime(pid)
+    created = _filetime_seconds(created_ft) if created_ft else None
+    if created is None:
+        return True
+    return created <= recorded + 1
 
 
 def _ps(pid: int, *columns: str) -> str | None:
@@ -206,14 +305,17 @@ def pid_matches_record(pid: int, proc_start: str | None) -> bool:
     whole sleep), so a live session can read as younger than its own record;
     a claude at the pid is kept either way, and a pid genuinely recycled by
     another claude lingers only for that process's lifetime, which is what
-    happened before this check. Everything unknowable (Windows, whose stamp
-    is a FILETIME with no ``/proc`` to check it against, ``ps`` unavailable,
-    an unstamped or unparseable record) passes, because "cannot tell" must
-    never turn a live session into "nobody there".
+    happened before this check. On Windows the stamp is a FILETIME (Claude
+    Code writes it as ``procStartFt``), compared with the process's creation
+    time from GetProcessTimes. Everything unknowable (``ps`` or the Windows
+    API unavailable, an unstamped or unparseable record) passes, because
+    "cannot tell" must never turn a live session into "nobody there".
     """
     if not proc_start:
         return True
-    if proc_start.isdigit():
+    if proc_start.isascii() and proc_start.isdigit():
+        if sys.platform == "win32":
+            return _windows_start_matches(pid, proc_start)
         ticks = process_start_ticks(pid)
         return ticks is None or ticks == proc_start
     try:
@@ -259,27 +361,72 @@ def scan_sessions(claude_dir: Path | None = None) -> tuple[list[ClaudeSession], 
     A MISSING directory is the one scan failure that still counts 0: a profile
     that has never been run holds no records, and refusing on it would block
     every guarded step against it permanently.
+
+    A record that cannot be read is skipped, not counted, when its file name
+    (Claude Code names each ``{pid}.json``) is a pid that is not running: a
+    claude killed mid-write leaves such a record, and its process is gone.
+
+    See :func:`scan_session_records` for the paths behind the count.
     """
+    sessions, unreadable = scan_session_records(claude_dir)
+    return sessions, len(unreadable)
+
+
+def unreadable_session_records(claude_dir: Path | None = None) -> list[Path]:
+    """The session records that could not be read (or the sessions
+    directory, when it could not be listed), for a message that names them."""
+    return scan_session_records(claude_dir)[1]
+
+
+def _record_stamp(data: dict) -> str | None:
+    """The record's reading of its process's start: ``procStart``, or on
+    Windows ``procStartFt`` (a FILETIME), which Claude Code writes there."""
+    stamp = data.get("procStart")
+    if stamp is None and sys.platform == "win32":
+        stamp = data.get("procStartFt")
+    if isinstance(stamp, int) and not isinstance(stamp, bool):
+        stamp = str(stamp)
+    return stamp
+
+
+def _named_process_is_gone(path: Path) -> bool:
+    """Whether ``path`` is named after a pid (``4242.json``) that is not
+    running. False when the name is not a pid or liveness cannot be read."""
+    stem = path.stem
+    if not (stem.isascii() and stem.isdigit()):
+        return False
+    try:
+        return not is_pid_alive(int(stem))
+    except Exception:
+        return False
+
+
+def scan_session_records(
+    claude_dir: Path | None = None,
+) -> tuple[list[ClaudeSession], list[Path]]:
+    """:func:`scan_sessions` with the unreadable records named: the live
+    sessions, and the path of every record that could not be read (the
+    sessions directory itself when it could not be listed)."""
     sessions_dir = (claude_dir or get_claude_dir()) / "sessions"
     try:
         # ``match`` keeps the platform casing the old ``glob`` had (a
         # ``.JSON`` record still counts on Windows); ``endswith`` would not.
         paths = [p for p in sessions_dir.iterdir() if p.match("*.json")]
     except FileNotFoundError:
-        return [], 0
+        return [], []
     except OSError as exc:
         logger.debug("Cannot list session directory %s: %s", sessions_dir, exc)
-        return [], 1
+        return [], [sessions_dir]
 
     sessions = []
-    unreadable = 0
+    unreadable: list[Path] = []
     for path in paths:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             pid = data["pid"]
             if not is_pid_alive(pid):
                 continue
-            if not pid_matches_record(pid, data.get("procStart")):
+            if not pid_matches_record(pid, _record_stamp(data)):
                 logger.debug(
                     "Skipping session file %s: pid %s was recycled", path, pid
                 )
@@ -308,7 +455,13 @@ def scan_sessions(claude_dir: Path | None = None) -> tuple[list[ClaudeSession], 
             RecursionError,         # pathologically nested JSON in json.loads
             OSError,
         ) as exc:
-            unreadable += 1
+            if _named_process_is_gone(path):
+                logger.debug(
+                    "Skipping session file %s: unreadable (%s), and its process is gone",
+                    path, exc,
+                )
+                continue
+            unreadable.append(path)
             logger.debug("Skipping session file %s: %s", path, exc)
     return sessions, unreadable
 

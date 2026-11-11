@@ -64,6 +64,7 @@ class Machine:
         self.now = NOW
         self.environ: dict[str, str] = {}
         self.sessions: list = []
+        self.unreadable_sessions: list = []
 
     # -- setup ------------------------------------------------------------------
 
@@ -190,6 +191,7 @@ class Machine:
             environ=lambda: dict(self.environ),
             claude_settings_path=lambda: self.home / ".claude" / "settings.json",
             claude_sessions=lambda: list(self.sessions),
+            claude_unreadable_sessions=lambda: list(self.unreadable_sessions),
         )
 
     # -- running ------------------------------------------------------------------
@@ -1014,3 +1016,56 @@ class TestOverrides:
         before = snapshot(machine.root)
         machine.run(capsys)
         assert snapshot(machine.root) == before
+
+    def test_an_unreadable_session_record_is_named_with_its_fix(self, machine, capsys):
+        """While qswap cannot read a record it refuses every switch to an
+        API-key account; doctor names the file and says when to delete it."""
+        machine.install("claude").claude_login().claude_managed()
+        assert "claude.session_records" not in machine.checks()
+        machine.unreadable_sessions = [machine.home / ".claude" / "sessions" / "4242.json"]
+        shown = tilde(".claude", "sessions", "4242.json")
+
+        check = machine.checks()["claude.session_records"]
+
+        assert check.status == "warn"
+        assert check.summary == (
+            "1 Claude Code session record could not be read, so qswap cannot tell "
+            "whether sessions are running and will not switch to an API-key account "
+            f"without its key helper: {shown}"
+        )
+        assert check.fix == f"if Claude Code process 4242 is gone, delete {shown}"
+        code, out = machine.run(capsys)
+        assert code == 0
+        assert all(len(line) <= 80 for line in out.splitlines())
+        payload = json.loads(machine.run(capsys, "--json")[1])
+        assert "claude.session_records" in {c["id"] for c in payload["checks"]}
+
+    def test_several_records_and_an_unlistable_folder(self, machine):
+        machine.install("claude").claude_login().claude_managed()
+        sessions = machine.home / ".claude" / "sessions"
+        machine.unreadable_sessions = [sessions / "4242.json", sessions / "4243.json"]
+        check = machine.checks()["claude.session_records"]
+        assert check.summary.startswith("2 Claude Code session records could not be read")
+        assert check.summary.endswith(
+            f"{tilde('.claude', 'sessions', '4242.json')}, "
+            f"{tilde('.claude', 'sessions', '4243.json')}"
+        )
+        assert check.fix == (
+            "each is named after its Claude Code process; if that process is gone, "
+            "delete the file"
+        )
+        machine.unreadable_sessions = [sessions]
+        check = machine.checks()["claude.session_records"]
+        assert "session records folder" in check.summary
+        assert check.fix == f"check that you can open {tilde('.claude', 'sessions')}"
+
+    def test_a_probe_that_fails_adds_nothing(self, machine):
+        machine.install("claude").claude_login().claude_managed()
+
+        def refuse():
+            raise Refused("refused")
+
+        probes = replace(machine.probes(), claude_unreadable_sessions=refuse)
+        checks = {c.id: c for c in doctor.run_checks(probes)}
+        assert "claude.session_records" not in checks
+        assert not [c for c in checks.values() if c.id.endswith(".error")]

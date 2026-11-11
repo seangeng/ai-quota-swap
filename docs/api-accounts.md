@@ -108,11 +108,21 @@ To switch anyway:
   qswap switch 5 --log-out-sessions
 ```
 
-`--log-out-sessions` takes the older way: the key is saved where Claude Code reads it once, at start (the macOS Keychain item `Claude Code`, or `primaryApiKey` in `~/.claude.json` elsewhere), and the login is taken out of Claude Code's login item. A running session cannot pick a saved key up, so each one started on a subscription answers `Not logged in · Please run /login` about 30 seconds later, until you switch back or restart it. The login item itself stays, with your MCP server sign-ins in it. When qswap cannot read Claude Code's session records it says it cannot tell whether sessions are running. Under `--json` the refusal is the error envelope (`KeyHelperUnavailableError`), with the reason in `error.keyHelper` and the count in `error.sessions`.
+`--log-out-sessions` takes the older way: the key is saved where Claude Code reads it once, at start (the macOS Keychain item `Claude Code`, or `primaryApiKey` in `~/.claude.json` elsewhere), and the login is taken out of Claude Code's login item. A running session cannot pick a saved key up, so each one started on a subscription answers `Not logged in · Please run /login` about 30 seconds later, until you switch back or restart it. The login item itself stays, with your MCP server sign-ins in it.
+
+The count in the refusal is the "Running instances" `qswap list` shows. Sessions inside a `qswap run` profile have their own login and are not counted, and neither is a process that has exited. When qswap cannot read Claude Code's session records (a record half written, or in a shape it does not know), it says it cannot tell whether sessions are running. Claude Code names each record after its process id, so a record qswap cannot read is ignored when that process is no longer running. Otherwise the refusal names the file and what to do:
+
+```text
+This session record could not be read:
+  /Users/maya/.claude/sessions/4101.json
+If Claude Code process 4101 is gone, delete the file.
+```
+
+`qswap doctor` lists such records too. Under `--json` the refusal is the error envelope (`KeyHelperUnavailableError`), with the reason in `error.keyHelper`, the count in `error.sessions`, and the records it could not read counted in `error.unreadable` and listed in `error.unreadableRecords`.
 
 The menu bar and the dashboard ask nothing when the line can be added. When it cannot, they ask *Use the saved key instead?*, with Cancel as the default and *Switch and log out sessions* to go ahead.
 
-Leaving a saved key is safe: qswap never rewrites an API-key account's saved key when it leaves it, sessions started on the key move back to the subscription within about 30 seconds, and from one saved key to another the sessions started on the first keep it until you restart them (the switch lists them).
+Leaving a saved key is safe: qswap never rewrites an API-key account's saved key when it leaves it, and the account you switch to gets its own login together with the MCP sign-ins of the moment. Sessions started on the key move back to the subscription within about 30 seconds, and sessions that stopped with "Not logged in" pick the login up again and continue their conversation. From one saved key to another, a session started on the first keeps it until you restart it, and the switch lists every such session under the key it keeps, by process id and directory. Saving a changed key the same way for the account already active (after an import) lists the sessions that keep the previous key too.
 
 ### What qswap doctor checks
 

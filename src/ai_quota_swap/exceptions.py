@@ -101,27 +101,33 @@ class SessionsRunningError(SwitchError):
 
     Nothing was changed. ``sessions`` is how many were running (readable
     session records); ``unreadable`` how many records could not be read, which
-    refuses too ("could not tell" is never "nobody there"). ``from_key``: the
-    active account is an API key as well, so the switch logs no one out. The
-    JSON error envelope carries ``error.sessions``, and ``error.unreadable``
-    when it is not 0.
+    refuses too ("could not tell" is never "nobody there"), and ``records``
+    their paths. ``from_key``: the active account is an API key as well, so
+    the switch logs no one out. The JSON error envelope carries
+    ``error.sessions``; ``error.unreadable`` and ``error.unreadableRecords``
+    when records could not be read; ``error.fromKey`` when ``from_key``.
     """
 
     def __init__(
         self, message: str, *, number: str, sessions: int, unreadable: int = 0,
-        from_key: bool = False,
+        from_key: bool = False, records: tuple[str, ...] | list[str] = (),
     ):
         super().__init__(message)
         self.number = str(number)
         self.sessions = sessions
         self.unreadable = unreadable
         self.from_key = from_key
+        self.records = tuple(str(r) for r in records)
 
     @property
     def envelope_fields(self) -> dict:
         fields: dict = {"sessions": self.sessions}
         if self.unreadable:
             fields["unreadable"] = self.unreadable
+        if self.records:
+            fields["unreadableRecords"] = list(self.records)
+        if self.from_key:
+            fields["fromKey"] = True
         return fields
 
 

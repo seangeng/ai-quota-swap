@@ -253,23 +253,27 @@ class TestPidMatchesRecord:
 
     def test_same_start_ticks_is_the_recorded_process(self):
         """A Linux record stamps the /proc start time in ticks since boot,
-        which the process keeps for life: equality is the whole test."""
-        with patch("ai_quota_swap.process_detection.process_start_ticks",
+        which the process keeps for life: equality is the whole test. The
+        Linux branch, on every host (Windows compares a FILETIME instead)."""
+        with patch("ai_quota_swap.process_detection.sys.platform", "linux"), \
+             patch("ai_quota_swap.process_detection.process_start_ticks",
                    return_value=TICKS), \
              patch("ai_quota_swap.process_detection.process_started_at") as started:
             assert pid_matches_record(1234, TICKS) is True
         started.assert_not_called()
 
     def test_other_start_ticks_is_a_recycled_pid(self):
-        with patch("ai_quota_swap.process_detection.process_start_ticks",
+        with patch("ai_quota_swap.process_detection.sys.platform", "linux"), \
+             patch("ai_quota_swap.process_detection.process_start_ticks",
                    return_value="998877"), \
              patch("ai_quota_swap.process_detection.process_is_claude") as is_claude:
             assert pid_matches_record(1234, TICKS) is False
         is_claude.assert_not_called()
 
     def test_unreadable_ticks_pass(self):
-        """A FILETIME on Windows, or /proc hidden: no comparison is possible."""
-        with patch("ai_quota_swap.process_detection.process_start_ticks",
+        """/proc hidden: no comparison is possible."""
+        with patch("ai_quota_swap.process_detection.sys.platform", "linux"), \
+             patch("ai_quota_swap.process_detection.process_start_ticks",
                    return_value=None):
             assert pid_matches_record(1234, "134332352612628209") is True
 
@@ -386,7 +390,8 @@ class TestListSessions:
         def ticks(pid):
             return TICKS if pid == 1002 else "998877"
 
-        with patch("ai_quota_swap.process_detection.is_pid_alive", return_value=True), \
+        with patch("ai_quota_swap.process_detection.sys.platform", "linux"), \
+             patch("ai_quota_swap.process_detection.is_pid_alive", return_value=True), \
              patch("ai_quota_swap.process_detection.process_start_ticks",
                    side_effect=ticks):
             result = list_sessions(tmp_path)

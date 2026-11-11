@@ -11,8 +11,10 @@ Claude Code checks that appear only when they apply: an ``apiKeyHelper`` in
 Claude Code's user settings (qswap's own line is the active key; a line for an
 account that cannot give a key, or run profiles left with a settings copy,
 fail with the repair), a variable in qswap's environment that overrides the
-active account (names only, never values), and an API-key account that is
-active as a saved key while sessions older than its activation are running.
+active account (names only, never values), an API-key account that is active
+as a saved key while sessions older than its activation are running, and
+session records qswap cannot read (which stop a switch to an API-key account
+whenever the key helper cannot be added).
 
 Doctor never changes anything and never asks a question. In particular it
 builds no switcher (constructing one creates the data directory and runs
@@ -267,6 +269,12 @@ def _claude_sessions() -> list:
     return list_sessions()
 
 
+def _claude_unreadable_sessions() -> list:
+    from ai_quota_swap.process_detection import unreadable_session_records
+
+    return unreadable_session_records()
+
+
 def _now() -> float:
     return time.time()
 
@@ -342,6 +350,8 @@ class Probes:
     claude_sessions: Callable[[], list] = _claude_sessions
     #: A directory's entries (the run profiles under the data directory).
     list_dir: Callable[[Path], list[Path]] = _list_dir
+    #: The session records on the shared login that could not be read.
+    claude_unreadable_sessions: Callable[[], list] = _claude_unreadable_sessions
 
 
 def default_probes() -> Probes:
@@ -372,6 +382,7 @@ def default_probes() -> Probes:
         claude_settings_path=_claude_settings_path,
         claude_sessions=_claude_sessions,
         list_dir=_list_dir,
+        claude_unreadable_sessions=_claude_unreadable_sessions,
     )
 
 
@@ -653,6 +664,9 @@ def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
     stale = _api_key_session_check(p, f)
     if stale is not None:
         checks.append(stale)
+    records = _session_records_check(p, f)
+    if records is not None:
+        checks.append(records)
     return checks
 
 
@@ -766,6 +780,45 @@ def _stale_profile_copies(p: Probes, f: _Facts, state) -> int:
         if found:
             count += 1
     return count
+
+
+def _session_records_check(p: Probes, f: _Facts) -> Check | None:
+    """Claude Code session records qswap cannot read. While one is there
+    qswap cannot tell whether sessions are running, so where the key helper
+    cannot be used it refuses every switch to an API-key account. Claude Code
+    names each record after its process id, so a record whose process is gone
+    can be deleted."""
+    records, _ = _try(p.claude_unreadable_sessions, default=[])
+    paths = [str(r) for r in records or []]
+    if not paths:
+        return None
+    shown = [_abbr(path, f.home) for path in paths]
+    files = [s for s, path in zip(shown, paths) if path.lower().endswith(".json")]
+    if not files:
+        return Check(
+            "claude.session_records", "claude", WARN,
+            f"Claude Code's session records folder {shown[0]} could not be read, so "
+            "qswap cannot tell whether sessions are running and will not switch to "
+            "an API-key account without its key helper",
+            fix=f"check that you can open {shown[0]}",
+        )
+    n = len(files)
+    noun = "record" if n == 1 else "records"
+    stem = files[0].replace("\\", "/").rsplit("/", 1)[-1][: -len(".json")]
+    if n == 1 and stem.isascii() and stem.isdigit():
+        fix = f"if Claude Code process {stem} is gone, delete {files[0]}"
+    else:
+        fix = (
+            "each is named after its Claude Code process; if that process is gone, "
+            "delete the file"
+        )
+    return Check(
+        "claude.session_records", "claude", WARN,
+        f"{n} Claude Code session {noun} could not be read, so qswap cannot tell "
+        "whether sessions are running and will not switch to an API-key account "
+        "without its key helper: " + ", ".join(files),
+        fix=fix,
+    )
 
 
 def _api_key_session_check(p: Probes, f: _Facts) -> Check | None:

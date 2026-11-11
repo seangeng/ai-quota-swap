@@ -745,9 +745,15 @@ class CredentialStore:
             self._active_read_failed = keychain_failed
             if val:
                 if holds_no_login(val):
-                    key = self._read_managed_key()
+                    key, key_failed = self._read_managed_key_ex()
                     if key:
                         return ActiveCredentials(key, False)
+                    if key_failed:
+                        # The item holds only MCP sign-ins and the saved key
+                        # could not be read: Claude Code may well be on a key
+                        # qswap cannot see, so this is a failed read, never
+                        # the item standing in as the credential.
+                        return ActiveCredentials(None, True, True)
                 return ActiveCredentials(val, False)
         elif self._residual_verdict is False or (
             self._active_read_failed or self._keychain_unreadable
@@ -777,9 +783,12 @@ class CredentialStore:
                 return ActiveCredentials(None, keychain_failed, keychain_failed)
             if text.strip():
                 if holds_no_login(text):
-                    key = self._read_managed_key()
+                    key, key_failed = self._read_managed_key_ex()
                     if key:
                         return ActiveCredentials(key, False, keychain_failed)
+                    if key_failed:
+                        # As above: a failed read, not the file's MCP sign-ins.
+                        return ActiveCredentials(None, keychain_failed, True)
                 return ActiveCredentials(text, False, keychain_failed)
 
         # 3. Managed API key (Keychain "Claude Code" on macOS, then primaryApiKey).
@@ -814,6 +823,15 @@ class CredentialStore:
         ``primaryApiKey`` below is read from the active profile's own config and
         stays, so a custom profile with a managed key is still found.
         """
+        return self._read_managed_key_ex()[0]
+
+    def _read_managed_key_ex(self) -> tuple[str, bool]:
+        """:meth:`_read_managed_key` with a verdict: ``(key, failed)``.
+        ``failed`` is True when no key was found and a place it could be
+        could not be read (the Keychain item raised, or ``~/.claude.json``
+        exists but could not be read or parsed): "not found" is then not
+        "there is none"."""
+        failed = False
         if _active_profile_is_default() and self._use_keychain():
             try:
                 val = self._kc_call(
@@ -824,14 +842,20 @@ class CredentialStore:
             except macos_keychain.KEYCHAIN_ERRORS as e:
                 self._host._logger.warning(f"Managed-key Keychain read failed: {e}")
                 val = None
+                failed = True
             if val:
-                return val
+                return val, False
         cfg = self._read_global_config()
         if cfg:
             key = cfg.get("primaryApiKey")
             if isinstance(key, str) and key:
-                return key
-        return ""
+                return key, False
+        elif cfg is None:
+            try:
+                failed = failed or get_global_config_path().exists()
+            except OSError:
+                failed = True
+        return "", failed
 
     def _read_oauth_store(self) -> str:
         """The raw value of the OAuth store (the ``Claude Code-credentials``

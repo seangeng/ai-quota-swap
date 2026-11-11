@@ -1054,7 +1054,8 @@ class TestFetchAccountUsageSessionProfile:
         switcher._write_account_credentials("2", "test@example.com", backup)
         session_dir = self._seed_exited_profile(switcher, session)
         (session_dir / "sessions").mkdir()
-        (session_dir / "sessions" / "9999.json").write_text("not json{{{")
+        # A running pid (this one): an unreadable record of a dead one is skipped.
+        (session_dir / "sessions" / f"{os.getpid()}.json").write_text("not json{{{")
 
         with patch("ai_quota_swap.oauth.try_fetch_usage_for_account",
                    return_value=oauth.UsageOutcome({"five_hour": {"pct": 5}})) as mock_fetch:
@@ -1503,7 +1504,8 @@ class TestAdoptSessionCredential:
         session_dir = self._seed_profile(switcher, profile)
         records = session_dir / "sessions"
         records.mkdir()
-        (records / "9999.json").write_text("not json{{{", encoding="utf-8")
+        # A running pid (this one): an unreadable record of a dead one is skipped.
+        (records / f"{os.getpid()}.json").write_text("not json{{{", encoding="utf-8")
 
         assert switcher._adopt_session_credential("2", self.EMAIL, "org-uuid") is None
         assert switcher.read_account_credentials("2", self.EMAIL) == backup
@@ -1570,7 +1572,8 @@ class TestLiveSessionGuardOnAnUnreadableRecord:
     def test_unreadable_record_refuses_like_a_live_one(self, temp_home: Path):
         switcher = ClaudeAccountSwitcher()
         d = self._sessions_dir(switcher)
-        (d / "9999.json").write_text("not json{{{", encoding="utf-8")
+        # A running pid (this one): an unreadable record of a dead one is skipped.
+        (d / f"{os.getpid()}.json").write_text("not json{{{", encoding="utf-8")
 
         with pytest.raises(SessionError, match="could not be read"):
             switcher._ensure_no_live_session("2", "test@example.com", "the operation")

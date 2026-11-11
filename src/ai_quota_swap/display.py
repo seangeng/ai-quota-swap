@@ -869,15 +869,46 @@ def _sessions(n: int) -> str:
     return f"{n} Claude Code session{'' if n == 1 else 's'}"
 
 
+def unreadable_records_lines(records: Sequence[str], width: int = WIDTH) -> list[str]:
+    """The session records qswap could not read, each path on a line of its
+    own (never wrapped), and what to do about them, wrapped to ``width``;
+    ``[]`` when there are none. A record is named after its process id, so
+    one whose process is gone can be deleted. A path that is not a record is
+    the sessions directory, which could not be listed."""
+    files = [str(r) for r in records if str(r).lower().endswith(".json")]
+    folders = [str(r) for r in records if not str(r).lower().endswith(".json")]
+    lines: list[str] = []
+    if files:
+        lines.append(
+            "This session record could not be read:" if len(files) == 1
+            else "These session records could not be read:"
+        )
+        lines.extend(f"  {path}" for path in files)
+        stem = files[0].replace("\\", "/").rsplit("/", 1)[-1][: -len(".json")]
+        if len(files) == 1 and stem.isascii() and stem.isdigit():
+            lines.append(f"If Claude Code process {stem} is gone, delete the file.")
+        else:
+            lines.extend(wrap(
+                "Each is named after its Claude Code process. If that process is "
+                "gone, delete the file.", width,
+            ))
+    if folders:
+        lines.append("The session records folder could not be read:")
+        lines.extend(f"  {path}" for path in folders)
+        lines.append("Check that you can open it, then try again.")
+    return lines
+
+
 def api_key_refusal(
     target: str, number: str | int, sessions: int, *, from_key: str | None = None,
-    prefix: str = "Error: ",
+    prefix: str = "Error: ", records: Sequence[str] = (),
 ) -> str:
     """Why a switch to the API-key account ``target`` was refused while
     ``sessions`` Claude Code sessions run on the shared login, and the command
     that goes ahead. ``sessions`` is :data:`SESSIONS_UNKNOWN` (or 0) when the
     session records could not be read. ``from_key`` names the active account
-    when it is an API key too. Wrapped to 80 columns with ``prefix`` (how the command line
+    when it is an API key too. ``records`` are the session records qswap
+    could not read (:func:`unreadable_records_lines`). Wrapped to 80 columns with ``prefix`` (how the command line
     starts the first line) counted in; the text itself excludes it."""
     are = "is" if sessions == 1 else "are"
     head = (
@@ -907,11 +938,14 @@ def api_key_refusal(
     lines[0] = lines[0][len(prefix):]
     return "\n".join([
         *lines,
-        "Sessions started after the switch use the key.",
+        _STARTED_AFTER,
+        *unreadable_records_lines(records, WIDTH - 2),
         "To switch anyway:",
         f"  qswap switch {number} {LOG_OUT_SESSIONS_FLAG}",
     ])
 
+
+_STARTED_AFTER = "Sessions started after the switch use the key."
 
 #: The button (menu bar, dashboard) that goes ahead with such a switch.
 API_KEY_SWITCH_BUTTON = "Switch and log out sessions"
@@ -920,14 +954,22 @@ API_KEY_SWITCH_BUTTON = "Switch and log out sessions"
 def api_key_question(refusal: str) -> str:
     """:func:`api_key_refusal` as the body of a question whose button goes
     ahead: the explanation, without "not switched." and without the
-    ``--log-out-sessions`` lines the button stands for; one paragraph."""
+    ``--log-out-sessions`` lines the button stands for; one paragraph, then
+    the unreadable session records, if any, each path on its own line."""
+    lines = refusal.splitlines()
+    end = lines.index(_STARTED_AFTER) + 1 if _STARTED_AFTER in lines else len(lines)
     kept = [
-        line.strip() for line in refusal.splitlines()
+        line.strip() for line in lines[:end]
         if line.strip() and not line.startswith("To switch anyway")
         and not line.strip().startswith("qswap switch")
     ]
     text = " ".join(kept).replace("not switched. ", "", 1)
-    return text[:1].upper() + text[1:]
+    records = []
+    for line in lines[end:]:
+        if line.startswith("To switch anyway"):
+            break
+        records.append(line)
+    return "\n".join([text[:1].upper() + text[1:], *records])
 
 
 def api_key_question_title(sessions: int, *, from_key: bool = False) -> str:
@@ -968,25 +1010,42 @@ def api_key_skip_detail(sessions: int) -> str:
     return f"(API-key account, {sessions} sessions running)"
 
 
-def api_key_engine_sentence(target: str, sessions: int) -> str:
+def api_key_engine_sentence(target: str, sessions: int, records: Sequence[str] = ()) -> str:
     """Why the auto-switch engine did not move onto the API-key account
-    ``target``."""
+    ``target``; then, on lines of their own, the session records that could
+    not be read and what to do (:func:`unreadable_records_lines`)."""
     if sessions <= 0:
-        return (
+        text = (
             f"Not switching to {target}: it is an API-key account and running "
             "sessions could not be counted"
         )
-    noun = "running session" if sessions == 1 else "running sessions"
-    return (
-        f"Not switching to {target}: it is an API-key account and {sessions} "
-        f"{noun} could not follow"
-    )
+    else:
+        noun = "running session" if sessions == 1 else "running sessions"
+        text = (
+            f"Not switching to {target}: it is an API-key account and {sessions} "
+            f"{noun} could not follow"
+        )
+    return "\n".join([text, *unreadable_records_lines(records)])
 
 
 def session_place(pid: int, cwd: str) -> str:
     """One session in a list: ``pid 4242 · app`` (the directory's name)."""
     name = cwd.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] if cwd else ""
     return f"pid {pid} · {name}" if name else f"pid {pid}"
+
+
+def _kept_key_lines(key: str, its: str, sessions: Sequence[tuple[int, str]]) -> list[str]:
+    """The sessions started while the API-key account ``key`` was active,
+    which keep ``its`` key until they restart."""
+    if not sessions:
+        return []
+    return [
+        *wrap(
+            f"These sessions were started while {key} was active and keep using "
+            f"{its} until you restart them:"
+        ),
+        *(f"  {session_place(pid, cwd)}" for pid, cwd in sessions),
+    ]
 
 
 def api_key_followup(
@@ -997,22 +1056,36 @@ def api_key_followup(
     source_is_key: bool,
     running: int,
     started_on_key: Sequence[tuple[int, str]] = (),
+    kept: Sequence[tuple[str, Sequence[tuple[int, str]]]] = (),
+    reactivated: bool = False,
 ) -> list[str]:
     """What follows "Switched …" when either side is an API-key account; ``[]``
     otherwise (the usual follow-up applies).
 
     ``running`` is how many Claude Code sessions ran on the shared login at the
     switch; ``started_on_key`` the ``(pid, cwd)`` of those started while the
-    API-key account being left was active."""
+    API-key account being left was active. ``kept`` lists, per API-key
+    account (its label), the sessions started while it was active, which keep
+    its key; a key-to-key switch lists them all (``started_on_key`` under
+    ``source`` when ``kept`` is empty). ``reactivated``: ``target`` was
+    already active and now has a different saved key, which running sessions
+    do not pick up."""
     if target_is_key:
         lines: list[str] = []
-        if source_is_key and source:
-            if started_on_key:
+        if reactivated:
+            for key, sessions in kept:
+                its = "its previous key" if key == target else "its key"
+                lines.extend(_kept_key_lines(key, its, sessions))
+            if running and not kept:
                 lines.extend(wrap(
-                    f"These sessions were started while {source} was active and "
-                    "keep using its key until you restart them:"
+                    "Running sessions keep the previous key until you restart them."
                 ))
-                lines.extend(f"  {session_place(pid, cwd)}" for pid, cwd in started_on_key)
+            lines.append("Claude Code sessions started from now on use the key.")
+            return lines
+        if source_is_key and source:
+            groups = list(kept) or ([(source, started_on_key)] if started_on_key else [])
+            for key, sessions in groups:
+                lines.extend(_kept_key_lines(key, "its key", sessions))
             lines.append("Claude Code sessions started from now on use the key.")
             return lines
         if running:

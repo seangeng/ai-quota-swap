@@ -394,10 +394,14 @@ class QswapApp(App):
                 # Through the key helper a switch to a key asks nothing; this
                 # is the saved-key way, offered when the helper cannot be
                 # added (docs/design/api-key-sessions.md).
-                sessions = int((result.error_fields or {}).get("sessions") or 0)
+                fields = result.error_fields or {}
                 self._offer_log_out_sessions(
-                    provider, str(number), result.error, sessions, anyway,
-                    from_key=self._active_is_api_key(sw),
+                    provider, str(number), result.error, int(fields.get("sessions") or 0),
+                    anyway,
+                    # The refusal's own word on it, as the menu bar reads
+                    # error.from_key: re-activating the active key is not a
+                    # key-to-key switch.
+                    from_key=bool(fields.get("fromKey")),
                     helper=result.error_type == "KeyHelperUnavailableError",
                 )
                 return True
@@ -421,16 +425,6 @@ class QswapApp(App):
             ),
             lambda yes: self.do_switch(provider, number, anyway=True) if yes else None,
         )
-
-    @staticmethod
-    def _active_is_api_key(sw) -> bool:
-        """Whether the active account is an API key (a key-to-key switch logs
-        no one out, and the question says so)."""
-        try:
-            current = sw.current_account_number()
-            return bool(current) and sw.account_kind_for(current) == "api_key"
-        except Exception:
-            return False
 
     def _offer_log_out_sessions(
         self, provider: str, number: str, error: str, sessions: int, anyway: bool,

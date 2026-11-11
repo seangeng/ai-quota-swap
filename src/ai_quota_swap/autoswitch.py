@@ -425,8 +425,10 @@ class NoSwitchEvent(AutoSwitchEvent):
     binding: BindingWindow | None = _human_only()
     account: str | None = _human_only()
     wait_s: float | None = _human_only()
-    # api-key-sessions: how many Claude Code sessions ran on the shared login.
+    # api-key-sessions: how many Claude Code sessions ran on the shared login,
+    # and the session records that could not be read.
     sessions: int | None = _human_only()
+    records: tuple[str, ...] = _human_only(default=())
 
     def _fields(self) -> dict:
         return {"reason": self.reason, "detail": self.detail}
@@ -439,9 +441,12 @@ class NoSwitchEvent(AutoSwitchEvent):
         return autolog.no_switch_sentence(self)
 
 
-def _api_key_sessions_event(number: str, sessions: int) -> NoSwitchEvent:
+def _api_key_sessions_event(
+    number: str, sessions: int, records: tuple[str, ...] | list[str] = (),
+) -> NoSwitchEvent:
     """The engine stayed rather than land on the API-key account ``number``
-    while ``sessions`` Claude Code sessions run on the shared login."""
+    while ``sessions`` Claude Code sessions run on the shared login;
+    ``records`` are the session records that could not be read."""
     if sessions > 0:
         detail = (
             f"account {number} is an API-key account and {sessions} running "
@@ -457,6 +462,7 @@ def _api_key_sessions_event(number: str, sessions: int) -> NoSwitchEvent:
         detail=detail,
         account=str(number),
         sessions=sessions,
+        records=tuple(str(r) for r in records),
     )
 
 
@@ -2277,6 +2283,7 @@ class AutoSwitchEngine:
         priority_active_ready = priority_mode and current in switchable and self._priority_ready(
             usage.get(current), headroom.get(current), settings, thresholds[current]
         )
+        held_for_sessions = False
         if (
             not ordered and api_key_candidates
             and trigger not in ("consume-first", "priority")
@@ -2302,13 +2309,29 @@ class AutoSwitchEngine:
                     ),
                     account=api_key_candidates[0],
                 ))
+                held_for_sessions = True
+            elif helper is None and (running := self._shared_session_count()):
+                self._emit(_api_key_sessions_event(
+                    api_key_candidates[0], running, self._unreadable_session_records(),
+                ))
+                held_for_sessions = True
+            else:
+                ordered = api_key_candidates
+
+        if held_for_sessions:
+            # The way out was a key the engine cannot move to now. When every
+            # subscription is at its limit that is still the all-exhausted
+            # case (its event, its sleep until the first reset, its
+            # notification); any other wait keeps the normal cadence. No
+            # second no-switch event: it would end the hold's notification
+            # episode every tick.
+            candidate_headrooms = [headroom.get(n) for n in oauth_candidates]
+            truly_exhausted = bool(candidate_headrooms) and all(
+                h is not None and h <= 0 for h in candidate_headrooms
+            )
+            if not truly_exhausted:
                 return TickOutcome.BLOCKED
-            if helper is None:
-                running = self._shared_session_count()
-                if running:
-                    self._emit(_api_key_sessions_event(api_key_candidates[0], running))
-                    return TickOutcome.BLOCKED
-            ordered = api_key_candidates
+            return self._all_exhausted(usage)
 
         if not ordered:
             if priority_active_ready:
@@ -2385,20 +2408,7 @@ class AutoSwitchEngine:
                     )
                 )
                 return TickOutcome.BLOCKED
-            self._blocked_wait_long = True
-            earliest = self._earliest_recovery(usage)
-            if earliest is not None:
-                self._sleep_until_ts = earliest.timestamp() + RESET_SLACK_S
-            self._emit(
-                AllExhaustedEvent(
-                    earliest_reset_at=(
-                        earliest.isoformat().replace("+00:00", "Z")
-                        if earliest
-                        else None
-                    )
-                )
-            )
-            return TickOutcome.BLOCKED
+            return self._all_exhausted(usage)
 
         # -- freshen + switch ----------------------------------------------
         # The departure snapshot of the account we are leaving, taken from the
@@ -3371,6 +3381,7 @@ class AutoSwitchEngine:
 
                 self._emit(_api_key_sessions_event(
                     number, display.blocking_sessions(e.sessions, e.unreadable),
+                    getattr(e, "records", ()),
                 ))
                 return TickOutcome.BLOCKED
             except RetryableSwitchError as e:
@@ -3856,6 +3867,36 @@ class AutoSwitchEngine:
             return int(reader())
         except Exception:
             return display.SESSIONS_UNKNOWN
+
+    def _unreadable_session_records(self) -> tuple[str, ...]:
+        """The session records on the shared login that could not be read,
+        for the hold's sentence; ``()`` when there are none or the provider
+        has no such records. Never raises."""
+        reader = getattr(self.switcher, "shared_login_unreadable", None)
+        if not callable(reader):
+            return ()
+        try:
+            return tuple(str(path) for path in reader())
+        except Exception:
+            return ()
+
+    def _all_exhausted(self, usage: dict) -> TickOutcome:
+        """Every candidate is at its limit: say so once, with the earliest
+        reset, and sleep until it rather than poll at the normal cadence."""
+        self._blocked_wait_long = True
+        earliest = self._earliest_recovery(usage)
+        if earliest is not None:
+            self._sleep_until_ts = earliest.timestamp() + RESET_SLACK_S
+        self._emit(
+            AllExhaustedEvent(
+                earliest_reset_at=(
+                    earliest.isoformat().replace("+00:00", "Z")
+                    if earliest
+                    else None
+                )
+            )
+        )
+        return TickOutcome.BLOCKED
 
     def _emit(self, event: AutoSwitchEvent) -> None:
         # Every event carries this tick's context for its human text (an
