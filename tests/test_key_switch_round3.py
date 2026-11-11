@@ -803,6 +803,17 @@ class TestOneNamePerAccount:
         assert code == 1
         assert "#1 personal is a subscription account" in " ".join(err.split())
 
+    @pytest.mark.parametrize("argv", [("budget", "1", "20"), ("credit", "1", "50")])
+    def test_setting_one_on_a_subscription_names_it_by_its_alias(self, temp_home, run, argv):
+        """DS7 point 4, finished by the integrator: the refusal api_spend
+        gives when a budget or credit is set on a subscription."""
+        s = _fleet()
+        code, out, err = run(s, *argv)
+        assert code == 1
+        text = " ".join(err.split())
+        assert "#1 personal is a subscription account" in text
+        assert "maya@example.com is a subscription" not in text
+
 
 # == DS11: a way back is always named ==============================================
 

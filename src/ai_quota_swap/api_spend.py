@@ -491,8 +491,8 @@ def set_credit(
     num, email, data, record = switcher._resolve_for_policy_write(identifier)
     if record.get("kind") != "api_key":
         raise CreditError(
-            f"#{num} {email} is a subscription account; a credit applies to "
-            "API-key accounts"
+            f"{switcher.label(num, email, long=False)} is a subscription account; "
+            "a credit applies to API-key accounts"
         )
     if value is None:
         if "credit" not in record:
@@ -1429,8 +1429,8 @@ def set_budget(switcher, identifier: str, amount: object | None) -> tuple[str, s
     num, email, data, record = switcher._resolve_for_policy_write(identifier)
     if record.get("kind") != "api_key":
         raise BudgetError(
-            f"#{num} {email} is a subscription account; budgets apply to "
-            "API-key accounts"
+            f"{switcher.label(num, email, long=False)} is a subscription account; "
+            "budgets apply to API-key accounts"
         )
     current = budget_from_record(record)
     if normalized == current and (normalized is not None or "budget" not in record):
