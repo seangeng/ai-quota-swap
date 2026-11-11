@@ -2,6 +2,10 @@
 
 After this page you will have qswap installed, two accounts saved, their usage on screen, and a switch behind you. It takes about five minutes and two logins.
 
+The recording runs the commands of steps 2 to 5 against made-up accounts:
+
+<img src="../assets/demos/quickstart.gif" alt="Recording: a terminal in which qswap add saves the Claude Code login, qswap list shows every account and its usage, qswap switch 2 makes #2 the active account, and qswap status shows the active accounts" width="800">
+
 ## 1. Install
 
 ai-quota-swap is not on PyPI yet, so install it from the repository with uv or pipx:
@@ -108,7 +112,7 @@ Then run it for real. It checks every minute, switches when the active account r
 qswap auto
 ```
 
-The dashboard's auto view (`qswap`, then `g`) and the macOS menu bar run the same engine. [auto-switch.md](auto-switch.md) covers the strategies, the lines and running it unattended.
+The dashboard's auto view (`qswap`, then `g`) and the macOS menu bar run the same engine; the menu bar's is off until you turn it on with `qswap menubar --auto-switch` or from its menu. [auto-switch.md](auto-switch.md) covers the strategies, the lines and running it unattended.
 
 ## When something looks wrong
 
