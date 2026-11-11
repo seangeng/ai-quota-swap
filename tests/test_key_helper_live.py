@@ -1630,6 +1630,7 @@ def _harness(temp_home, **settings) -> EngineHarness:
     data["accounts"]["2"]["alias"] = "ci"
     h.switcher._write_json(h.switcher.sequence_file, data)
     h.switcher._write_account_credentials("2", "key@token.local", "sk-ant-api03-" + "kk" * 20)
+    h.limit_key(2)  # the engine enters only a key with a budget or credit
     return h
 
 
@@ -1829,6 +1830,7 @@ class TestLeavingForTheLoginUnderneath:
         data["accounts"]["2"]["kind"] = "api_key"
         h.switcher._write_json(h.switcher.sequence_file, data)
         h.switcher._write_account_credentials("2", "key@token.local", "sk-ant-api03-" + "kk" * 20)
+        h.limit_key(2)  # the engine enters only a key with a budget or credit
         h.switcher._write_credentials(
             h.switcher._read_account_credentials("1", "a@example.com")
         )
@@ -1915,8 +1917,9 @@ class TestCredit:
         reading = api_spend.credit_reading(c, 36.4, "admin-api", NOW + 60)
         assert reading["left"] == pytest.approx(1150.6)
         assert api_spend.credit_text(reading) == "$1,150 of $1,187 credit left"
-        full = {"spend": {"used": 36.4, "limit": None}, "source": "admin-api", "credit": reading}
-        assert api_spend.spend_text(full) == "API key · $1,150 of $1,187 credit left"
+        full = {"spend": {"used": 36.4, "limit": None}, "source": "admin-api", "credit": reading,
+                "as_of": NOW + 60}
+        assert api_spend.spend_text(full, now=NOW + 60) == "API key · $1,150 of $1,187 credit left"
         assert api_spend.limit_reason(full) is None
 
     def test_spent(self):

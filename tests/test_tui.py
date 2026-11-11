@@ -479,6 +479,7 @@ class TestBlocks:
     def test_api_key_spend_as_the_command_line_prints_it(self):
         entry = UsageEntry(sentinel=USAGE_API_KEY, api_spend={
             "spend": {"used": 14.0, "limit": 20.0, "pct": 70.0}, "today": 10.0,
+            "as_of": time.time(),  # measured just now: the budget is held (A4)
         })
         acc = make_account(3, kind="api_key", entry=entry)
         block = self._block(acc)

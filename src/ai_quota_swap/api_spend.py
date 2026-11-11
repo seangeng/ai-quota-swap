@@ -190,7 +190,8 @@ def credit_reading(credit: dict, used: float | None, source: str | None, now: fl
 def limit_reason(reading: object) -> str | None:
     """Why an API-key account is at its limit: ``credit-expired``,
     ``credit-spent`` or ``budget``; None when it is not (or nothing can
-    tell). Whichever is reached first applies."""
+    tell). Whichever is reached first applies. The engine adds the freshness
+    rule on top (:func:`engine_limit_reason`)."""
     if not isinstance(reading, dict):
         return None
     credit = reading.get("credit")
@@ -202,6 +203,91 @@ def limit_reason(reading: object) -> str | None:
     if over_budget(reading):
         return "budget"
     return None
+
+
+# -- the engine's freshness rule ----------------------------------------------------
+#
+# Auto-switch holds an API key to its budget or credit only with a spend
+# figure no older than SPEND_FRESH_S: the Admin API's ``as_of``, or the
+# ledger's last scan. Without one the key counts as at its limit
+# (``spend-unknown``): the engine does not enter it, and leaves it when it is
+# active, whoever entered it. The engine scans the ledger itself while such a
+# key is active (autoswitch.SPEND_SCAN_INTERVAL_S), so the figure stays fresh
+# when nothing else runs. The rows say "limit not enforced" in the same state.
+
+SPEND_FRESH_S = 20 * 60.0
+#: The engine's reason for a key with a budget or credit and no fresh figure.
+SPEND_UNKNOWN = "spend-unknown"
+#: That reason in words, wherever the engine says why it left or stayed off a key.
+SPEND_UNKNOWN_WORDS = "its spend could not be measured for 20 minutes"
+#: The engine's reason for leaving a key it entered that has neither (A2).
+NO_LIMIT = "no-limit"
+NO_LIMIT_WORDS = "it has no budget or credit"
+#: On a row whose budget or credit has no fresh figure to hold it against.
+LIMIT_NOT_ENFORCED = "limit not enforced: no spend figure"
+
+
+def has_limit(reading: object, record: object = None) -> bool:
+    """Whether an API-key account has a budget or a credit: on its account
+    record, or in its reading (which carries both when the record has them)."""
+    if budget_from_record(record if isinstance(record, dict) else None) is not None:
+        return True
+    if credit_from_record(record if isinstance(record, dict) else None) is not None:
+        return True
+    if not isinstance(reading, dict):
+        return False
+    spend = reading.get("spend")
+    limit = spend.get("limit") if isinstance(spend, dict) else None
+    if isinstance(limit, (int, float)) and not isinstance(limit, bool) and limit > 0:
+        return True
+    return isinstance(reading.get("credit"), dict)
+
+
+def figure_age(reading: object, now: float) -> float | None:
+    """How old the spend figure behind a reading is, in seconds; None when
+    it has none (no figure, a credit with nothing counted, or no time)."""
+    if not isinstance(reading, dict):
+        return None
+    spend = reading.get("spend")
+    used = spend.get("used") if isinstance(spend, dict) else None
+    if not isinstance(used, (int, float)) or isinstance(used, bool):
+        return None
+    credit = reading.get("credit")
+    if isinstance(credit, dict) and credit.get("left") is None:
+        return None
+    as_of = reading.get("as_of")
+    if not isinstance(as_of, (int, float)) or isinstance(as_of, bool):
+        return None
+    return max(0.0, now - float(as_of))
+
+
+def figure_fresh(reading: object, now: float) -> bool:
+    """Whether the reading has a spend figure no older than :data:`SPEND_FRESH_S`."""
+    age = figure_age(reading, now)
+    return age is not None and age <= SPEND_FRESH_S
+
+
+def engine_limit_reason(reading: object, *, now: float, limited: bool) -> str | None:
+    """Why the engine treats an API key as at its limit: :func:`limit_reason`
+    first, then :data:`SPEND_UNKNOWN` for a key with a budget or credit
+    (``limited``) whose figure is missing or older than :data:`SPEND_FRESH_S`."""
+    reason = limit_reason(reading)
+    if reason is not None:
+        return reason
+    if limited and not figure_fresh(reading, now):
+        return SPEND_UNKNOWN
+    return None
+
+
+def limit_not_enforced(reading: object, now: float | None = None) -> bool:
+    """Whether a row should say :data:`LIMIT_NOT_ENFORCED`: a budget or
+    credit not yet reached, with no fresh figure to hold it against."""
+    now = time.time() if now is None else now
+    return (
+        has_limit(reading)
+        and limit_reason(reading) is None
+        and not figure_fresh(reading, now)
+    )
 
 
 class CreditError(ValueError):
@@ -749,7 +835,8 @@ def _day_words(iso: str) -> str:
 
 def credit_text(credit: dict) -> str:
     """``$1,150 of $1,187 credit left``; ``credit expired Dec 31``; ``credit
-    spent ($0 of $1,187 left)``; ``$1,187 credit, no spend figure yet``."""
+    spent ($0 of $1,187 left)``; ``$1,187 credit`` when nothing is counted
+    yet (the row adds :data:`LIMIT_NOT_ENFORCED`)."""
     amount = budget_money(credit["amount"])
     if credit.get("expired"):
         return f"credit expired {_day_words(credit['expires'])}"
@@ -757,19 +844,27 @@ def credit_text(credit: dict) -> str:
         return f"credit spent ($0 of {amount} left)"
     left = credit.get("left")
     if left is None:
-        return f"{amount} credit, no spend figure yet"
+        return f"{amount} credit"
     return f"{credit_money(left)} of {amount} credit left"
 
 
-def spend_text(reading: dict) -> str:
+def _has_figure(reading: dict) -> bool:
+    spend = reading.get("spend") if isinstance(reading.get("spend"), dict) else {}
+    return spend.get("used") is not None
+
+
+def spend_text(reading: dict, now: float | None = None) -> str:
     """``API key · $4.12 today · $212.40 this month of $500 (42%)``, then
     ``· estimate`` when the figure is the local one. With nothing recorded:
     ``API key · no usage recorded on this machine``, after ``$0 of $500 this
     month`` when there is a budget. With a credit: ``API key · $1,150 of
     $1,187 credit left``, and the month against its budget after it when one
-    is set too."""
+    is set too. A budget or credit with no fresh figure ends in
+    :data:`LIMIT_NOT_ENFORCED` (``now`` judges the age)."""
     from ai_quota_swap.display import API_KEY_NO_USAGE
 
+    unenforced = limit_not_enforced(reading, now)
+    tail = [LIMIT_NOT_ENFORCED] if unenforced else []
     credit = reading.get("credit")
     if isinstance(credit, dict):
         parts = ["API key", credit_text(credit)]
@@ -780,7 +875,7 @@ def spend_text(reading: dict) -> str:
             parts.append(f"{money(used)} of {budget_money(limit)} this month ({tag})")
         if reading.get("source") == SOURCE_LEDGER and credit.get("left") is not None:
             parts.append("estimate")
-        return " · ".join(parts)
+        return " · ".join(parts + tail)
 
     spend = reading.get("spend") or {}
     used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
@@ -788,18 +883,25 @@ def spend_text(reading: dict) -> str:
     if spend_unknown(reading):
         from ai_quota_swap.display import API_KEY_SPEND_UNKNOWN
 
+        # The sentence already says the figure is unknown and what to run.
         parts.append(f"{API_KEY_SPEND_UNKNOWN}: {LEDGER_UNREADABLE}")
         return " · ".join(parts)
+    if unenforced and not _has_figure(reading):
+        # A budget and nothing to hold it against: no "$0 of $500", which
+        # would read as measured.
+        if limit is not None:
+            parts.append(f"budget {budget_money(limit)} a month")
+        return " · ".join(parts + tail)
     if nothing_recorded(reading):
         if limit is not None:
             parts.append(_nothing_spent(limit))
         parts.append(API_KEY_NO_USAGE)
-        return " · ".join(parts)
+        return " · ".join(parts + tail)
     if used is None:
         parts.append("no spend data yet")
         if limit is not None:
             parts.append(f"budget {budget_money(limit)} a month")
-        return " · ".join(parts)
+        return " · ".join(parts + tail)
     today = reading.get("today")
     if today is not None:
         parts.append(f"{money(today)} today")
@@ -811,15 +913,31 @@ def spend_text(reading: dict) -> str:
     parts.append(month)
     if reading.get("source") == SOURCE_LEDGER:
         parts.append("estimate")
-    return " · ".join(parts)
+    return " · ".join(parts + tail)
+
+
+#: The detail line's next step while the limit is not enforced.
+UNENFORCED_NEXT = "auto-switch stays off this key until its spend is measured: qswap usage"
 
 
 def detail_text(reading: dict, now: float | None = None) -> str | None:
     """A second line when there is more to say: why the figure is not
     Anthropic's, how old it is, or how to get one; for a credit, since when it
-    counts and when it expires."""
+    counts and when it expires. While the limit is not enforced it says how
+    old the figure is and what auto-switch does about it."""
     now = time.time() if now is None else now
     base = _detail_text(reading, now)
+    if limit_not_enforced(reading, now) and not spend_unknown(reading):
+        age = figure_age(reading, now) if _has_figure(reading) else None
+        as_of = reading.get("as_of")
+        if reading.get("source") == SOURCE_LEDGER and isinstance(as_of, (int, float)) and (
+            base is None or not base.startswith(("estimate as of", "as of"))
+        ):
+            what = "as of" if nothing_recorded(reading) else "estimate as of"
+            base = f"{what} the last qswap usage, {_age(now - as_of)}"
+        elif age is None and reading.get("source") != SOURCE_ADMIN:
+            base = None  # the row says there is no figure; the next step follows
+        base = f"{base}; {UNENFORCED_NEXT}" if base else UNENFORCED_NEXT
     credit = reading.get("credit")
     if not isinstance(credit, dict) or credit.get("expired"):
         return base
@@ -874,11 +992,22 @@ def short_text(reading: dict) -> str:
     return text
 
 
-def menu_text(reading: dict) -> str:
+#: :data:`LIMIT_NOT_ENFORCED` for a menu row, whose tooltip says the rest.
+LIMIT_NOT_ENFORCED_SHORT = "limit not enforced"
+
+
+def menu_text(reading: dict, now: float | None = None) -> str:
     """For a menu bar row, within its note width: ``$4.12 today ·
     $212.40/$500 (42%)``; ``(104%, over budget)`` past the budget, as
     :func:`spend_text` says it. Nothing recorded with a budget: ``$0 of $500
-    this month``."""
+    this month``. A budget or credit with no fresh figure ends in ``limit
+    not enforced``."""
+    unenforced = limit_not_enforced(reading, now) and not spend_unknown(reading)
+    text = _menu_text(reading, unenforced)
+    return f"{text} · {LIMIT_NOT_ENFORCED_SHORT}" if unenforced else text
+
+
+def _menu_text(reading: dict, unenforced: bool) -> str:
     from ai_quota_swap.display import API_KEY_NO_USAGE_SHORT
 
     credit = reading.get("credit")
@@ -886,6 +1015,8 @@ def menu_text(reading: dict) -> str:
         return credit_text(credit)
     spend = reading.get("spend") or {}
     used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
+    if unenforced and used is None and limit is not None:
+        return f"budget {budget_money(limit)}"
     if spend_unknown(reading):
         from ai_quota_swap.display import API_KEY_SPEND_UNKNOWN
 

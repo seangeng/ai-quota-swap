@@ -438,9 +438,13 @@ def switch_reason(event: object) -> str:
         return "a subscription has room again"
     if trigger == "at-limit":
         if getattr(event, "over_budget", False):
+            from ai_quota_swap import api_spend
+
             words = {
                 "credit-spent": "credit spent",
                 "credit-expired": "credit expired",
+                api_spend.SPEND_UNKNOWN: api_spend.SPEND_UNKNOWN_WORDS,
+                api_spend.NO_LIMIT: api_spend.NO_LIMIT_WORDS,
             }.get(getattr(event, "limit_reason", None) or "", "monthly budget reached")
             return words + back
         if binding is not None and binding.pct >= 100.0:
@@ -613,6 +617,10 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         return "on the API key until a subscription has room", "routine"
     if reason == "key-helper-unavailable":
         return "not moving to an API key, its helper cannot be added", "wait"
+    if reason == "key-no-limit":
+        return "not moving to an API key, it has no budget or credit", "wait"
+    if reason == "spend-unknown":
+        return "not moving to an API key, its spend is not measured", "wait"
     if reason == "api-key-sessions":
         running = getattr(event, "sessions", None)
         if running and running > 0:
@@ -693,6 +701,23 @@ def no_switch_sentence(event: object) -> str:
         return (
             f"Not switching to {who}: qswap cannot add its key helper to Claude "
             "Code's settings. qswap doctor says why"
+        )
+    if reason == "key-no-limit":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "the API-key account"
+        number = account if account else "N"
+        return (
+            f"Not switching to an API key: {who} has no budget or credit; set one "
+            f"with: qswap budget {number} AMOUNT"
+        )
+    if reason == "spend-unknown":
+        from ai_quota_swap import api_spend
+
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "an API-key account"
+        return (
+            f"Not switching to {who}: {api_spend.SPEND_UNKNOWN_WORDS}; check it "
+            "with: qswap usage"
         )
     if reason == "api-key-sessions":
         account = getattr(event, "account", None)

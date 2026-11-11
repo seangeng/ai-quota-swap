@@ -769,6 +769,7 @@ class TestEngine:
         data["accounts"]["2"]["alias"] = "ci"
         h.switcher._write_json(h.switcher.sequence_file, data)
         h.switcher._write_account_credentials("2", "key@token.local", "sk-ant-api03-" + "kk" * 20)
+        h.limit_key(2)  # the engine enters only a key with a budget or credit
         return h
 
     EXHAUSTED = {"1": _usage(100), "2": "api key", "3": _usage(100)}

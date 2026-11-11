@@ -156,6 +156,12 @@ HORIZON_HEADROOM_RATIO = 2.0
 # the no-return bar's release asks the account we left to have gained at least
 # this much.
 SPENT_HEADROOM_PCT = 3.0
+# While an API key with a budget or credit is active, the engine scans the
+# ledger this often, so its spend figure stays well inside
+# api_spend.SPEND_FRESH_S (20 minutes) when nothing else scans.
+SPEND_SCAN_INTERVAL_S = 5 * 60.0
+# Before entering a key it scans again unless a scan ran this recently.
+SPEND_SCAN_MIN_GAP_S = 60.0
 
 
 def _all_above_margin_met(candidate_headroom: float, active_headroom: float) -> bool:
@@ -1359,6 +1365,8 @@ class AutoSwitchEngine:
         # reason quotes. Neither is ever serialized or read by a decision.
         self._context: EventContext | None = None
         self._tick_cause: dict = {}
+        # The account records as this tick read them (budgets, credits).
+        self._tick_records: dict = {}
 
     # -- state file ---------------------------------------------------------
 
@@ -1963,10 +1971,19 @@ class AutoSwitchEngine:
         if refilled is not None:
             entries, usage, headroom = refilled
 
-        # API-key budgets (docs/api-accounts.md): one warning per account per
-        # month, and an active account at its budget is at its limit.
+        # API-key budgets and credits (docs/api-accounts.md): one warning per
+        # account per month, and an active key at its budget, its credit, or
+        # with no fresh figure for either, is at its limit. While such a key
+        # is active the engine keeps its figure fresh itself.
+        self._tick_records = self._read_account_records()
+        current_is_key = self.switcher.account_kind_for(current) == "api_key"
+        if current_is_key and self._key_limited(current, entries):
+            entries = self._keep_spend_fresh(
+                state, dict(entries), {current}, every=SPEND_SCAN_INTERVAL_S
+            )
         self._warn_budgets(state, entries)
-        active_over_budget = _over_budget(entries.get(current))
+        active_limit = self._key_brake(current, entries) if current_is_key else None
+        active_over_budget = active_limit is not None
 
         # An API key active through the helper line (docs/design/
         # api-key-sessions.md): one the engine entered is left as soon as a
@@ -1976,11 +1993,11 @@ class AutoSwitchEngine:
         if key_mode is not None:
             return self._leave_key_tick(
                 current, key_mode, entries, usage, headroom, thresholds, settings,
-                quarantined, policies,
+                quarantined, policies, state=state,
             )
 
         if (
-            self.switcher.account_kind_for(current) == "api_key"
+            current_is_key
             and not settings.include_api_key_accounts
             and not active_over_budget
         ):
@@ -2091,6 +2108,7 @@ class AutoSwitchEngine:
             "binding": active_binding,
             "over_budget": active_over_budget,
             "policies": policies,
+            "limit_reason": active_limit,
         }
 
         if trigger in ("proactive", "consume-first", "priority") and self._in_cooldown(state):
@@ -2323,7 +2341,8 @@ class AutoSwitchEngine:
                 ))
                 held_for_sessions = True
             else:
-                ordered = api_key_candidates
+                ordered, entries = self._enterable_keys(state, entries, api_key_candidates)
+                held_for_sessions = not ordered
 
         if held_for_sessions:
             # The way out was a key the engine cannot move to now. When every
@@ -3741,6 +3760,136 @@ class AutoSwitchEngine:
             return None
         return datetime.fromtimestamp(earliest, tz=timezone.utc)
 
+    # -- API keys: the spend brake ---------------------------------------------
+    #
+    # docs/api-accounts.md: the engine holds an API key to its budget or
+    # credit. It enters a key only when the key has one (a key with neither
+    # is the user's to use by hand), with a spend figure no older than
+    # api_spend.SPEND_FRESH_S; without one the key counts as at its limit
+    # (spend-unknown). It scans the ledger itself before entering a key and
+    # every SPEND_SCAN_INTERVAL_S while a key with a limit is active, so the
+    # figure stays fresh when no menu bar or dashboard runs.
+
+    def _account_record(self, num: str) -> dict | None:
+        """The account record of ``num`` as this tick read it."""
+        records = self._tick_records
+        record = records.get(str(num)) if isinstance(records, dict) else None
+        return record if isinstance(record, dict) else None
+
+    def _read_account_records(self) -> dict:
+        reader = getattr(self.switcher, "_get_sequence_data", None)
+        if not callable(reader):
+            return {}
+        try:
+            data = reader() or {}
+        except Exception:
+            return {}
+        accounts = data.get("accounts") if isinstance(data, dict) else None
+        return accounts if isinstance(accounts, dict) else {}
+
+    def _key_limited(self, num: str, entries: Mapping[str, object]) -> bool:
+        """Whether the API key ``num`` has a budget or a credit."""
+        from ai_quota_swap import api_spend
+
+        reading = getattr(entries.get(num), "api_spend", None)
+        return api_spend.has_limit(reading, self._account_record(num))
+
+    def _key_brake(self, num: str, entries: Mapping[str, object]) -> str | None:
+        """Why the engine treats the API key ``num`` as at its limit, or None:
+        its budget or credit reached, or ``spend-unknown`` (a budget or credit
+        with no fresh figure)."""
+        from ai_quota_swap import api_spend
+
+        reading = getattr(entries.get(num), "api_spend", None)
+        return api_spend.engine_limit_reason(
+            reading, now=self.clock(), limited=self._key_limited(num, entries)
+        )
+
+    def _enterable_keys(
+        self, state: dict, entries: Mapping[str, object], candidates: Sequence[str],
+    ) -> tuple[list[str], Mapping[str, object]]:
+        """The API keys the engine may enter now, in rotation order, with the
+        entries read again after a ledger scan. A key needs a budget or a
+        credit and a fresh figure under it. When none qualifies the first
+        candidate's reason is said (once per episode, by the notifier) and
+        the list is empty."""
+        entries = self._keep_spend_fresh(
+            state, dict(entries), set(candidates), every=SPEND_SCAN_MIN_GAP_S
+        )
+        ok: list[str] = []
+        first: tuple[str, str] | None = None
+        for num in candidates:
+            if not self._key_limited(num, entries):
+                why = "key-no-limit"
+            elif self._key_brake(num, entries) is not None:
+                why = "spend-unknown"
+            else:
+                ok.append(num)
+                continue
+            if first is None:
+                first = (num, why)
+        if not ok and first is not None:
+            num, why = first
+            self._emit(NoSwitchEvent(
+                reason=why,
+                detail=(
+                    f"account {num} has no budget or credit" if why == "key-no-limit"
+                    else f"account {num}'s spend has no figure from the last 20 minutes"
+                ),
+                account=num,
+            ))
+        return ok, entries
+
+    def _scans_ledger(self) -> bool:
+        """Only Claude Code's API keys are counted from the local ledger."""
+        return self._provider_id() == "claude" and hasattr(self.switcher, "backup_dir")
+
+    def _keep_spend_fresh(
+        self,
+        state: dict,
+        entries: dict,
+        nums: Collection[str],
+        *,
+        every: float,
+    ) -> dict:
+        """Scan the ledger (at most once per ``every`` seconds across engines
+        and processes: ``spendScanAt`` in the state file), then read the API
+        keys ``nums`` again. Returns ``entries`` with theirs replaced. Never
+        raises; a dry run never scans (the scan writes the ledger)."""
+        if self.dry_run or not nums or not self._scans_ledger():
+            return entries
+        now = self.clock()
+        last = state.get("spendScanAt")
+        if (
+            isinstance(last, (int, float)) and not isinstance(last, bool)
+            and 0 <= now - last < every
+        ):
+            return entries
+        from ai_quota_swap.ledger import usage as ledger_usage
+
+        try:
+            ledger_usage.scan_recent(
+                Path(self.switcher.backup_dir),
+                registry=self.switcher._get_sequence_data(),
+            )
+        except Exception as e:  # the figure stays as old as it was
+            _logger.warning("Could not scan the usage ledger for API-key spend: %r", e)
+        state["spendScanAt"] = now
+
+        def remember(s: dict) -> None:
+            s["spendScanAt"] = now
+
+        try:
+            self._mutate_state(remember)
+        except Exception as e:
+            _logger.debug("Could not record the ledger scan: %r", e)
+        try:
+            fresh = self.switcher.usage_entries_by_account(fetch=set(nums))
+        except Exception as e:
+            _logger.debug("Could not re-read API-key spend after a scan: %r", e)
+            return entries
+        return {**entries, **{n: fresh[n] for n in nums if n in fresh}}
+
     def _key_helper_ready(self) -> bool | None:
         """Whether the provider can move onto an API key through the key
         helper now: True, False (another helper is set, or the settings file
@@ -3780,16 +3929,25 @@ class AutoSwitchEngine:
         settings: AutoSwitchSettings,
         quarantined: set[str],
         policies,
+        *,
+        state: dict | None = None,
     ) -> TickOutcome:
         """One tick while an API key is active through the helper line.
 
-        At its budget, or with its credit spent or expired, the key is left
+        At its budget, with its credit spent or expired, or with no fresh
+        spend figure for either (``spend-unknown``), the key is left at once
         for the subscription with the most room, else for the account
-        underneath (said once, by the switch). Otherwise a key the user
-        entered is kept, and one the engine entered is left as soon as a
-        subscription has room: below its switch lines, with readable usage.
+        underneath (said once, by the switch). A key the engine entered that
+        has neither a budget nor a credit is left the same way: the engine
+        would not have entered it. Otherwise a key the user entered is kept,
+        and one the engine entered is left as soon as a subscription has
+        room: below its switch lines, with readable usage.
         """
-        reason = _limit_reason(entries.get(current))
+        from ai_quota_swap import api_spend
+
+        reason = self._key_brake(current, entries)
+        if reason is None and key_mode == "engine" and not self._key_limited(current, entries):
+            reason = api_spend.NO_LIMIT
         if reason is None and key_mode == "user":
             self._emit(NoSwitchEvent(
                 reason="active-api-key",

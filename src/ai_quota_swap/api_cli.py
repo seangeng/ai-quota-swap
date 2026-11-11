@@ -293,6 +293,10 @@ def _budget_line(reading: dict | None, budget: float | None) -> str:
 
         head = "no budget" if budget is None else f"budget {api_spend.budget_money(budget)}"
         return f"{head} · {API_KEY_SPEND_UNKNOWN}: {api_spend.LEDGER_UNREADABLE}"
+    unenforced = budget is not None and api_spend.limit_not_enforced(reading)
+    if unenforced and (reading.get("spend") or {}).get("used") is None:
+        # No figure to hold the budget against (qswap list says the same).
+        return f"budget {api_spend.budget_money(budget)} · {api_spend.LIMIT_NOT_ENFORCED}"
     if api_spend.nothing_recorded(reading):
         # qswap list's words for the same state.
         if budget is None:
@@ -315,6 +319,8 @@ def _budget_line(reading: dict | None, budget: float | None) -> str:
     today = reading.get("today")
     if today is not None:
         line += f" · {api_spend.money(today)} today"
+    if unenforced:
+        line += f" · {api_spend.LIMIT_NOT_ENFORCED}"
     return line
 
 

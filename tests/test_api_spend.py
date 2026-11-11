@@ -220,7 +220,7 @@ class TestAdminSource:
         assert reading["as_of"] == NOW
         assert reading["api_key_name"] == "Dev laptop"
         assert "note" not in reading
-        assert api_spend.spend_text(reading) == (
+        assert api_spend.spend_text(reading, now=NOW) == (
             "API key · $10.00 today · $14.00 this month of $20 (70%)"
         )
         assert api_spend.detail_text(reading, NOW) is None
@@ -375,10 +375,10 @@ class TestNothingRecorded:
         set_record(s, 3, budget=500)
         _ledger("someone-else@example.com", [])
         reading = _readings(s)["3"]
-        assert api_spend.spend_text(reading) == (
+        assert api_spend.spend_text(reading, now=NOW) == (
             "API key · $0 of $500 this month · no usage recorded on this machine"
         )
-        assert api_spend.menu_text(reading) == "$0 of $500 this month"
+        assert api_spend.menu_text(reading, now=NOW) == "$0 of $500 this month"
         assert api_spend.budget_state(reading) == (0.0, 500.0)  # still enforced as before
 
     def test_an_old_zero_estimate_says_how_old_without_estimate(self, env):
@@ -488,6 +488,8 @@ class TestUnreadableLedger:
         assert self.UNKNOWN in " ".join(menu_row.tooltip.split())
 
     def test_no_ledger_file_yet_is_nothing_recorded(self, env, capsys):
+        """With a budget there is no figure to hold it to: the rows say the
+        limit is not enforced (what auto-switch does), never "$0 of $500"."""
         from ai_quota_swap import menubar, menubar_data
 
         s, email = self._fleet()
@@ -496,16 +498,18 @@ class TestUnreadableLedger:
         assert api_spend.nothing_recorded(reading) and not api_spend.spend_unknown(reading)
         capsys.readouterr()
         make_switcher().list_accounts()
-        assert "$0 of $500 this month · no usage recorded on this machine" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "budget $500 a month · limit not enforced: no spend figure" in out
+        assert "$0 of $500" not in out
         run_main(["budget"])
-        assert "3: api-key-3  $0 of $500 this month · no usage recorded on this machine" in (
+        assert "3: api-key-3  budget $500 · limit not enforced: no spend figure" in (
             capsys.readouterr().out)
         snap = s.accounts_snapshot()
         acc = {a.number: a for a in snap.accounts}["3"]
-        assert TestTuiAndMenuBar._drawn(acc, row=True).endswith("   $0 of $500 this month")
+        assert "limit not enforced" in TestTuiAndMenuBar._drawn(acc, row=True)
         accs = {a.number: a for a in menubar_data.account_states(snap, "claude", {}, now=NOW)}
         assert menubar.account_row(accs["3"], now=NOW, stale_after_s=900).text == (
-            "#3 api-key-3 · API key · $0 of $500 this month")
+            "#3 api-key-3 · API key · budget $500 · limit not enforced")
 
     @pytest.mark.parametrize("keep", [0, 100, "half"])
     def test_running_qswap_usage_fixes_every_unreadable_state(self, env, capsys, keep):
@@ -560,12 +564,12 @@ class TestNoDataAndBudgets:
         reading = _readings(s)["3"]
         assert reading["spend"]["used"] is None and reading["spend"]["limit"] == 500.0
         assert reading["spend"]["pct"] is None
-        # No ledger yet reads as nothing recorded, as the first scan of an
-        # unused key will: the same state in the same words.
-        assert api_spend.spend_text(reading) == (
-            "API key · $0 of $500 this month · no usage recorded on this machine"
+        # No figure for a budget: the limit is not enforced (A4), and the
+        # detail line names what auto-switch does and how to get one.
+        assert api_spend.spend_text(reading, now=NOW) == (
+            "API key · budget $500 a month · limit not enforced: no spend figure"
         )
-        assert api_spend.detail_text(reading, NOW) is None
+        assert api_spend.detail_text(reading, NOW) == api_spend.UNENFORCED_NEXT
         assert api_spend.budget_state(reading) is None
 
     def test_budget_set_and_unset(self, env):
