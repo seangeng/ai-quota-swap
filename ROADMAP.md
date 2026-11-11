@@ -21,7 +21,7 @@ Feature-complete for a first release, 0.1.0, which is prepared but not yet on Py
 - `qswap usage`: tokens and estimated cost from the local session files of both CLIs.
 - API-key accounts: spend, monthly budgets, Admin API figures, `usage --billed`.
 - A dashboard and a macOS menu bar covering both providers, with an auto-switch engine per
-  provider. The menu bar's new build has not yet been run by hand.
+  provider. The menu bar has been in daily use on the author's Mac since 2026-11-10.
 - `qswap doctor`, task-first docs, screenshots and recordings made from invented accounts.
 
 What remains, in rough order:
