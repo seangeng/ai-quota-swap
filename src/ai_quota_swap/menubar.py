@@ -615,6 +615,8 @@ class AccountState:
     #: account underneath (``#1 personal``). docs/design/api-key-sessions.md.
     underneath: bool = False
     over: str = ""
+    #: On the active key: auto-switch entered it (decision B8).
+    by_engine: bool = False
 
     def label(self, *, provider_prefix: bool = False, long: bool = True) -> str:
         """``#2 work (maya@example.com)``; ``Claude #2 work (…)`` with the prefix."""
@@ -914,7 +916,7 @@ def account_block(acc: AccountState, *, now: float, stale_after_s: float, show_p
         email=acc.email, alias=acc.alias, provider=acc.provider, show_provider=show_provider,
         active=acc.active, disabled=acc.disabled, plan=acc.plan, org=acc.org,
         kind=acc.kind, lines=acc.lines, set_aside=acc.set_aside, sentinel_notes=notes,
-        underneath=acc.underneath, over=acc.over,
+        underneath=acc.underneath, over=acc.over, by_engine=acc.by_engine,
         now=now, stale_after_s=stale_after_s, reset_strings=_reset_strings(now),
         api_lines=_api_lines,
     )
@@ -964,6 +966,8 @@ def account_row(
         parts.append("API key")
         if acc.over:
             parts.append(display.over_fact(acc.over))
+        if acc.by_engine:
+            parts.append(display.BY_ENGINE)
         if api_spend.budget_state(reading) is not None or (
             isinstance(reading, dict) and isinstance(reading.get("credit"), dict)
         ):

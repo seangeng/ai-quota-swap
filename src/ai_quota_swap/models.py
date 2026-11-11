@@ -281,6 +281,8 @@ class AccountsSnapshot:
     #: Lines to show when the helper line names an account that cannot give
     #: a key, or run profiles kept a stale settings copy.
     key_notes: tuple[str, ...] = ()
+    #: Who entered the key active through the line: ``user`` or ``engine``.
+    key_entered_by: str | None = None
 
 
 @dataclass

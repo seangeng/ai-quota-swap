@@ -2302,6 +2302,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             taken_at=self._usage_store.clock(),
             underneath_number=under if key is not None else None,
             key_notes=tuple(self.key_helper_notes()),
+            key_entered_by=self.key_entered_by() if key is not None else None,
         )
 
     def usage_fetch_stamps(self) -> dict[str, float | None]:
@@ -6645,6 +6646,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 accounts[-1]["underneath"] = True
             if key is not None and str(num) == key:
                 accounts[-1]["how"] = display.HOW_HELPER
+                accounts[-1]["enteredBy"] = self.key_entered_by() or "user"
             credit = _record_credit(seq_data, str(num))
             if credit is not None:
                 accounts[-1]["credit"] = credit
@@ -6853,6 +6855,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         helper, under = self.active_view() if view is None else view
         over = ""
         underneath = False
+        by_engine = False
         if helper is not None:
             # The key whose line is installed is the active account; the
             # live login is the one underneath it, never "active".
@@ -6860,6 +6863,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             is_active = str(num) == helper
             if is_active and under:
                 over = self.label(under, long=False)
+            by_engine = is_active and self.key_entered_by() == "engine"
         now = self._usage_store.clock()
         policy = self._policy_from_data(seq_data, str(num))
         line = policy.threshold if policy.threshold is not None else settings.threshold
@@ -6889,7 +6893,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             plan=plan, plan_warning=plan_warning, org=org_name or "",
             kind="api_key" if record.get("kind") == "api_key" else "oauth",
             lines=display.Lines(five_hour=line, weekly=settings.weekly_threshold),
-            set_aside=held_out, underneath=underneath, over=over,
+            set_aside=held_out, underneath=underneath, over=over, by_engine=by_engine,
             sentinel_notes={k: v.replace(" — ", ": ") for k, v in SENTINEL_NOTES.items()},
             login_row=login_row, now=now, stale_after_s=_USAGE_AGE_NOTE_S,
             api_lines=api_lines,
@@ -6928,6 +6932,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             out.extend(display.key_helper_problem(f.problem["number"], f.problem["why"], fix))
         if f.key is not None:
             label = self.label(f.key, long=False)
+            if f.entered_by == "engine" and not self.engine_watching():
+                out.extend(display.key_unwatched(label, fix))
             if f.state.stale_command:
                 out.extend(display.key_helper_moved(f.key, f"qswap switch {f.key}"))
             if f.came_back:
@@ -7019,6 +7025,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 "usageStatus": status,
                 "usage": usage,
                 "how": display.HOW_HELPER,
+                "enteredBy": self.key_entered_by() or "user",
                 "needsRelogin": False,
             }
             if record.get("alias"):

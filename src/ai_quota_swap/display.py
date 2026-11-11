@@ -388,6 +388,8 @@ class AccountBlock:
     underneath: bool = False
     #: On an active key: the account underneath (``#1 personal``).
     over: str = ""
+    #: On an active key: auto-switch entered it (``by auto-switch``).
+    by_engine: bool = False
 
 
 def label_for(block: AccountBlock, *, long: bool = True) -> str:
@@ -438,6 +440,8 @@ def header_parts(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ")
         facts.append(("API key", "api-key"))
     if block.over:
         facts.append((over_fact(block.over), "over"))
+    if block.by_engine:
+        facts.append((BY_ENGINE, "over"))
     if block.plan:
         facts.append((block.plan, "plan-lapsed" if block.plan_warning else "plan"))
     if block.org:
@@ -742,6 +746,7 @@ def block_from_entry(
     set_aside: str | None = None,
     underneath: bool = False,
     over: str = "",
+    by_engine: bool = False,
     sentinel_notes: dict[str, str] | None = None,
     login_row: WindowRow | None = None,
     now: float,
@@ -779,6 +784,7 @@ def block_from_entry(
         show_provider=show_provider, active=active, disabled=disabled,
         plan=plan, plan_warning=plan_warning, org=org, kind=kind,
         underneath=underneath and not active, over=over if active else "",
+        by_engine=by_engine and active,
     )
     sentinel = getattr(entry, "sentinel", None)
     last_good = getattr(entry, "last_good", None)
@@ -1130,6 +1136,17 @@ KEY_CONNECTORS = "claude.ai connectors are unavailable while a key is in use."
 
 #: The header fact of the subscription under an active key.
 UNDERNEATH = "underneath"
+#: The header fact of a key auto-switch entered (decision B8).
+BY_ENGINE = "by auto-switch"
+
+
+def key_unwatched(key: str, fix_command: str) -> list[str]:
+    """Auto-switch entered the active key and no engine is running: nothing
+    leaves the key at its budget or credit, or when a subscription has room."""
+    return wrap(
+        f"Auto-switch entered {key} and is not running, so nothing watches its "
+        f"limit. To go back: {fix_command}"
+    )
 
 
 def over_fact(underneath: str) -> str:

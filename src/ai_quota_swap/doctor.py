@@ -833,6 +833,14 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
         elif findings.key is not None:
             f.key_line_active = label(findings.key)
             f.key_line_leave = fix
+            if findings.entered_by == "engine" and not _engine_watching(p, f):
+                # Decision B8 (F33): nothing leaves the key now.
+                checks.append(Check(
+                    "claude.key_watch", "claude", WARN,
+                    f"auto-switch entered {label(findings.key)} and is not running, so "
+                    "nothing watches its limit and sessions stay on the key",
+                    fix=fix,
+                ))
             check = _key_line_check(p, f, state, row if isinstance(row, dict) else {}, where)
             if findings.came_back and check.status == PASS:
                 check = Check(
@@ -880,6 +888,20 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             fix=fix,
         ))
     return checks
+
+
+def _engine_watching(p: Probes, f: _Facts) -> bool:
+    """Whether an auto-switch loop for Claude Code is running (its
+    heartbeat is current)."""
+    from ai_quota_swap import autoswitch
+
+    if f.data_dir is None:
+        return False
+    beat, _ = _try(p.heartbeat, f.data_dir)
+    now, _ = _try(p.now, default=None)
+    if not isinstance(now, (int, float)):
+        now = time.time()
+    return isinstance(beat, dict) and autoswitch.engine_running(beat, now)
 
 
 def _defeating(raw: bytes | None) -> tuple[bool, list[str], str | None]:

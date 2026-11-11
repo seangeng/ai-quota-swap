@@ -423,6 +423,7 @@ def block_for(
         email=acc.email, alias=acc.alias, provider=view.provider,
         show_provider=show_provider, active=acc.is_active, disabled=acc.disabled,
         underneath=bool(getattr(acc, "underneath", False)), over=over,
+        by_engine=getattr(view.snapshot, "key_entered_by", None) == "engine",
         plan=plan, plan_warning=plan_warning,
         org=acc.org_name if view.provider == "claude" else "",
         kind="api_key" if acc.kind == "api_key" else "oauth",

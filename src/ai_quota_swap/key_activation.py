@@ -479,6 +479,17 @@ class KeyActivationMixin:
             return {}
         return env_block(settings_object(raw))
 
+    def engine_watching(self) -> bool:
+        """Whether an auto-switch engine is running for this data directory
+        (its loop's heartbeat is current): one is watching the limit of a key
+        it entered (decision B8). Never raises."""
+        try:
+            from ai_quota_swap.autoswitch import engine_running, read_heartbeat
+
+            return engine_running(read_heartbeat(Path(self.backup_dir)), time.time())
+        except Exception:
+            return False
+
     def key_helper_available(self) -> bool:
         """Whether qswap can install its helper line now and sessions would
         follow it: no other helper, a file it can parse, and no variable in

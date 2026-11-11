@@ -1033,3 +1033,83 @@ class TestTheLoginUnderAKeyOnTheSurfaces:
             live_email=s.live_login_email(),
         )
         assert state.unmanaged_live is None
+
+
+# == B8: who entered the key is shown =================================================
+
+
+class TestWhoEnteredTheKey:
+    """F33: auto-switch's key says so everywhere; with no engine running one
+    line adds that nothing watches its limit, and how to go back."""
+
+    def _engine_key(self, temp_home):
+        from tests.test_key_helper_live import EXHAUSTED, _harness
+
+        h = _harness(temp_home)
+        h.tick_with_usage(EXHAUSTED)
+        assert h.switcher.key_entered_by() == "engine"
+        return h.switcher
+
+    def _beat(self, s):
+        from ai_quota_swap.autoswitch import write_heartbeat
+
+        now = time.time()
+        write_heartbeat(s.backup_dir, mode="loop", dry_run=False, last_tick_at=now,
+                        next_tick_at=now + 60, started_at=now, host="test")
+
+    def test_list_status_and_json_say_auto_switch_entered_it(self, temp_home, capsys):
+        s = self._engine_key(temp_home)
+        self._beat(s)
+        capsys.readouterr()
+        s.list_accounts(fetch=set())
+        out = capsys.readouterr().out
+        row = next(line for line in out.splitlines() if line.startswith("  #2 "))
+        assert row.endswith("· by auto-switch")
+        assert s.status_lines()[1].endswith("· by auto-switch")
+        assert "nothing watches" not in out
+        rows = {r["number"]: r for r in s.list_accounts(json_output=True, fetch=set())["accounts"]}
+        assert rows[2]["enteredBy"] == "engine"
+        assert s._build_status_payload()["active"]["enteredBy"] == "engine"
+
+    def test_with_no_engine_running_one_line_says_nothing_watches(self, temp_home, capsys):
+        s = self._engine_key(temp_home)
+        notes = _notes(s)
+        assert "Auto-switch entered #2 ci and is not running, so nothing watches its limit" in notes
+        assert "To go back: qswap switch 1" in notes
+        capsys.readouterr()
+        s.list_accounts(fetch=set())
+        out = capsys.readouterr().out
+        assert "nothing watches its limit" in " ".join(out.split())
+        _fits(out)
+        snap = s.accounts_snapshot(fetch=set())
+        assert snap.key_entered_by == "engine"
+        assert "nothing watches its limit" in " ".join(snap.key_notes)
+        check = _check("claude.key_watch")
+        assert check is not None and check.status == "warn"
+        assert check.fix == "qswap switch 1"
+
+    def test_the_menu_bar_and_the_dashboard_say_it(self, temp_home):
+        from ai_quota_swap import menubar, menubar_data
+        from ai_quota_swap.tui import data as tui_data
+
+        s = self._engine_key(temp_home)
+        snap = s.accounts_snapshot(fetch=set())
+        states = {a.number: a for a in menubar_data.account_states(snap, "claude", {}, now=time.time())}
+        row = menubar.account_row(states["2"], now=time.time(), stale_after_s=600)
+        assert "by auto-switch" in row.text
+        view = tui_data.ProviderView(provider="claude", snapshot=snap)
+        block = tui_data.block_for(view, view.account("2"))
+        from ai_quota_swap import display as d
+
+        assert "by auto-switch" in d.header_parts(block).plain()
+
+    def test_a_key_the_user_chose_says_nothing_of_the_sort(self, temp_home, capsys):
+        s = _fleet()
+        _activate(s)
+        capsys.readouterr()
+        s.list_accounts()
+        out = capsys.readouterr().out
+        assert "auto-switch" not in out
+        assert _check("claude.key_watch") is None
+        rows = {r["number"]: r for r in s.list_accounts(json_output=True)["accounts"]}
+        assert rows[5]["enteredBy"] == "user"
