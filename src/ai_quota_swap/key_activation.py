@@ -503,11 +503,14 @@ class KeyActivationMixin:
         followed its removal failed, so the failed switch moves no session.
         ``state`` is key_helper.json as it stood before. Reads no Keychain
         (a locked one may be the cause). Raises :class:`SwitchError` naming
-        both failures when the line cannot be put back."""
+        both failures when the line cannot be put back; the run profiles
+        given a copy on the way are then given their sharing back, since no
+        line is in."""
         try:
             with FileLock(self.lock_file):
                 shared = self.isolate_run_profiles()
                 if shared is None or shared:
+                    self.restore_run_profiles(force=True)
                     raise OSError(self._profiles_unisolated_reason(shared))
                 try:
                     claude_settings.install(number)
@@ -520,8 +523,9 @@ class KeyActivationMixin:
         except Exception as e:
             under = self.login_account_number()
             where = self.label(under, long=False) if under else "the live login"
+            what = str(cause) or "The switch was interrupted."
             raise SwitchError(
-                f"{cause} {self.label(number, long=False)} was left, and its key line "
+                f"{what} {self.label(number, long=False)} was left, and its key line "
                 f"could not be put back ({e}): running sessions are on {where}. To go "
                 f"back to the key: qswap switch {number}"
             ) from cause

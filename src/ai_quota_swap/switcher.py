@@ -4406,6 +4406,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if identity is None:
             raise ConfigError("No active Claude account found. Please log in first.")
         current_email, current_org_uuid, current_account_uuid = identity
+        # Under an active key the login saved here is the one underneath:
+        # sessions stay on the key, and activeAccountNumber keeps naming it.
+        key = self.helper_account()
 
         # When no slot specified and account already exists, refresh credentials in place
         if slot is None and self._account_exists(current_email, current_org_uuid):
@@ -4461,7 +4464,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if alias is not None:
                 seq["accounts"][account_num]["alias"] = alias
 
-            seq["activeAccountNumber"] = int(account_num)
+            if key is None:
+                seq["activeAccountNumber"] = int(account_num)
             seq["lastUpdated"] = get_timestamp()
             self._write_json(self.sequence_file, seq)
 
@@ -4469,6 +4473,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             print(
                 f"{accent('Updated')} the saved login of {self.label(account_num)}"
             )
+            self._say_key_still_active(key, account_num)
             return
 
         # Determine slot number and collect confirmation decisions
@@ -4631,7 +4636,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if int(account_num) not in data["sequence"]:
             data["sequence"].append(int(account_num))
             data["sequence"].sort()
-        data["activeAccountNumber"] = int(account_num)
+        if key is None:
+            data["activeAccountNumber"] = int(account_num)
         data["lastUpdated"] = get_timestamp()
 
         self._write_json(self.sequence_file, data)
@@ -4639,6 +4645,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if migrate_from:
             print(dimmed(f"Moved from slot {migrate_from} → {slot}"))
         print(f"{accent('Added')} {self.label(account_num)}")
+        self._say_key_still_active(key, account_num)
+
+    def _say_key_still_active(self, key: str | None, number: str) -> None:
+        """Decision B7: after saving the login under an active key, say that
+        sessions stay on the key and name the switch onto that login."""
+        if key is None or str(key) == str(number):
+            return
+        from ai_quota_swap import display
+
+        for line in display.key_still_active(self.label(key, long=False), number):
+            print(line)
 
     def add_account_from_token(
         self,
@@ -7270,13 +7287,12 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     self._switch_result_from_op(op, strategy_label, warnings)
                     if json_output else None
                 )
-            # No subscription underneath: leave the key and rotate onto a
-            # subscription. A plain rotation, also for ``best``: what is
-            # left under the line (no login, or a key saved the older way)
-            # is not a place to stay.
-            self._leave_key()
-            strategy = None
-            models = ()
+            # No subscription underneath: a plain rotation from the key, also
+            # for ``best``, whose target is picked before the line is touched.
+            return self._rotate_from_key(
+                key, strategy_label=strategy_label, warnings=warnings,
+                json_output=json_output,
+            )
 
         identity = self._get_current_account()
 
@@ -7699,6 +7715,111 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if json_output else None
         )
 
+    def _rotate_from_key(
+        self, key: str, *, strategy_label: str, warnings: list[str], json_output: bool,
+    ) -> dict | None:
+        """A rotation on the key ``key`` with no subscription logged in
+        underneath (no login at all, one qswap does not manage, or a key saved
+        the older way). Decision B1: the target is picked with the line still
+        in, as a plain rotation from the key's place in the sequence picks it,
+        and only then is the key left, through :meth:`_leave_key_to`, which
+        puts the line back when the login switch fails. With nothing to
+        rotate to, the key stays and the next step is said. A rotation never
+        lands on a key."""
+        key_ref = account_ref(int(key), self.account_email(key))
+        label = self.label(key, long=False)
+        identity = self._get_current_account()
+        if identity is not None and not self._account_exists(identity[0], identity[1]):
+            # A login qswap does not manage is underneath: a rotation from
+            # it would not move either (it is added, or reported), and the
+            # key stays.
+            if json_output:
+                return self._switch_noop(
+                    strategy=strategy_label, reason="unmanaged-account", to_ref=key_ref,
+                    warnings=warnings,
+                    message=(
+                        f"You stay on {label}: the login underneath, {identity[0]}, "
+                        "is not managed. Add it with: qswap add"
+                    ),
+                )
+            print(
+                f"{accent('Notice:')} The login underneath {label}, {identity[0]}, "
+                "was not managed."
+            )
+            self.add_account()
+            return None
+
+        data = self._get_sequence_data() or {}
+        sequence = [str(n) for n in data.get("sequence", [])]
+        relogin = self.relogin_reasons()
+        keys = self._api_key_numbers()
+        start = sequence.index(str(key)) if str(key) in sequence else -1
+        skipped: dict[str, list[str]] = {
+            "relogin": [], "disabled": [], "broken": [], "api_key": [],
+        }
+        target: str | None = None
+        for offset in range(1, len(sequence) + 1):
+            candidate = sequence[(start + offset) % len(sequence)]
+            if candidate == str(key):
+                continue
+            if candidate in keys:
+                if not self._disabled_from_data(data, candidate):
+                    skipped["api_key"].append(candidate)
+                continue
+            if self._disabled_from_data(data, candidate):
+                skipped["disabled"].append(candidate)
+                self._skip_line(warnings, json_output, candidate, "(disabled)", "disabled")
+                continue
+            if not self._account_is_switchable(candidate):
+                skipped["broken"].append(candidate)
+                self._skip_line(
+                    warnings, json_output, candidate, "(no stored credentials/config)",
+                    f"no saved login; re-add it with: qswap add --slot {candidate}",
+                )
+                continue
+            if candidate in relogin:
+                skipped["relogin"].append(candidate)
+                self._skip_line(warnings, json_output, candidate, "(needs re-login)",
+                                "needs re-login")
+                continue
+            target = candidate
+            break
+        if target is not None:
+            op = self._leave_key_to(target, emit_output=not json_output)
+            return self._switch_result_from_op(op, strategy_label, warnings) if json_output else None
+
+        steps = []
+        if skipped["relogin"]:
+            steps.append(
+                "log in to one that needs re-login in Claude Code (/login), then run: "
+                "qswap add"
+            )
+        if skipped["disabled"]:
+            steps.append(f"bring a disabled one back: qswap enable {skipped['disabled'][0]}")
+        if skipped["broken"]:
+            steps.append(f"re-add one: qswap add --slot {skipped['broken'][0]}")
+        if not (skipped["relogin"] or skipped["disabled"] or skipped["broken"]):
+            steps.append(
+                "add a subscription: log in to it in Claude Code (/login), then run: "
+                "qswap add"
+            )
+        if skipped["api_key"]:
+            steps.append(
+                "use another API-key account by naming it: "
+                f"qswap switch {skipped['api_key'][0]}"
+            )
+        head = f"No subscription can take over, so you stay on {label}."
+        tail = "To move, " + "; or ".join(steps)
+        if json_output:
+            return self._switch_noop(
+                strategy=strategy_label,
+                reason="api-key-only" if skipped["api_key"] else "no-valid-target",
+                to_ref=key_ref, warnings=warnings, message=f"{head} {tail}",
+            )
+        say(dimmed(head))
+        say(dimmed(tail))
+        return None
+
     # -- API-key accounts and running sessions (docs/design/api-key-sessions.md) --
 
     def shared_login_scan(self) -> tuple[list, int]:
@@ -8054,9 +8175,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 force_activate=force,
                 provenance=provenance,
             )
-        except Exception as e:
-            # The line came out for this switch: a switch that failed moves
-            # no session, so it goes back in.
+        except BaseException as e:
+            # The line came out for this switch: a switch that failed (or was
+            # interrupted, Ctrl-C included) moves no session, so it goes back.
             if left_key is not None:
                 self._restore_key(*left_key, e)
             raise
@@ -8114,8 +8235,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 shown_from=self.label(key, long=False) if key else None,
                 followup_override=display.key_leave_followup(target_label, login_switch=True),
             )
-        except Exception as e:
-            # A switch that failed moves no session: the line goes back in.
+        except BaseException as e:
+            # A switch that failed, or was interrupted (Ctrl-C included),
+            # moves no session: the line goes back in.
             if key:
                 self._restore_key(key, key_state, e)
             raise

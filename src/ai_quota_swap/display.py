@@ -1166,6 +1166,15 @@ def key_leave_followup(target: str, *, login_switch: bool = False) -> list[str]:
     return wrap(f"Running Claude Code sessions are back on {target} within a few seconds.")
 
 
+def key_still_active(key: str, number: str | int) -> list[str]:
+    """After ``qswap add`` saved the login while a key is active: sessions
+    keep the key, and the switch that puts them on that login."""
+    return wrap(
+        f"{key} is still the active API key; Claude Code sessions use it, not this "
+        f"login. To use this login: qswap switch {number}"
+    )
+
+
 def key_helper_refusal(
     target: str, number: str | int, reason: str, sessions: int = 0, *,
     from_key: str | None = None, prefix: str = "Error: ", records: Sequence[str] = (),
