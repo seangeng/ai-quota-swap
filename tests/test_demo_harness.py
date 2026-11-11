@@ -459,6 +459,19 @@ class TestScenarioStates:
         assert "✓ #5 ci · API key · over #1 personal · no usage recorded\n" in r.stdout
         assert "#1 personal · underneath · 5h 46% · 7d 38%" in r.stdout
 
+    def test_last_resort_moves_to_the_key_with_a_budget(self):
+        # Every subscription at its limit, the key with a budget and a fresh
+        # spend figure: auto-switch's last resort, and what the surfaces say
+        # about a key it entered while no engine runs.
+        r = _run(["last-resort", "--width", "80", "--", "auto", "--once", "++", "status"])
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "Switched #1 personal → #5 ci · 5h limit reached\n" in r.stdout
+        assert "#5 ci · active · API key · over #1 personal · by auto-switch" in r.stdout
+        assert "nothing watches its limit" in r.stdout
+        r = _run(["last-resort", "--", "budget", "5", "off", "++", "auto", "--once"])
+        assert r.returncode == 3, r.stdout + r.stderr
+        assert "#5 ci has no budget or credit; set one" in r.stdout
+
     def test_trouble_seeds_a_quarantine_the_engine_honours(self):
         # After `list` reads it, the quarantined account (4) has a fresh,
         # readable reading with headroom, and auto still finds no candidate:

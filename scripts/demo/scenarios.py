@@ -1062,6 +1062,40 @@ SHOWCASE = Scenario(
 )
 
 
+# -- an API key as the last resort ----------------------------------------------
+
+
+def _last_resort_accounts() -> tuple[ClaudeAccount | CodexAccount, ...]:
+    a1, a2, a3, a4, key, *codex = _showcase_accounts()
+    return (
+        # Every subscription at its limit, none holding a usage reset.
+        replace(a1, five_hour=Window(100, 1 * H + 12 * M), models=(), resets=Resets(grants=())),
+        replace(a2, five_hour=Window(100, 2 * H + 40 * M), extra_usage=None),
+        replace(a3, five_hour=Window(100, 38 * M), models=(), resets=Resets(grants=())),
+        a4,
+        key,  # ci, with the $40 budget and the showcase's spend in the ledger
+        *codex,
+    )
+
+
+LAST_RESORT = Scenario(
+    name="last-resort",
+    title="Every subscription at its limit; auto-switch may use the API key",
+    clock=CLOCK,
+    accounts=_last_resort_accounts(),
+    active=1,
+    codex_active=1,
+    settings={**_DARK, "autoswitch": {"includeApiKeyAccounts": True}},
+    warmup=2 * M,
+    ledger=SHOWCASE.ledger,
+    notes=(
+        "Claude: 1, 2 and 3 at 100% of their 5-hour windows with no resets, 4 "
+        "disabled, 5 an API key with a $40 budget and the showcase's spend. "
+        "autoswitch.includeApiKeyAccounts is on."
+    ),
+)
+
+
 # -- first run: nothing managed yet ---------------------------------------------
 
 _FIRST_LOGIN = ClaudeAccount(
@@ -1203,7 +1237,7 @@ TROUBLE = Scenario(
 
 SCENARIOS: dict[str, Scenario] = {
     s.name: s for s in (
-        FLEET, AUTOSWITCH, RESET, RESET_AFTER, USAGE, SHOWCASE, NEW_KEYS,
+        FLEET, AUTOSWITCH, RESET, RESET_AFTER, USAGE, SHOWCASE, NEW_KEYS, LAST_RESORT,
         EMPTY, EMPTY_CLAUDE, EMPTY_CLAUDE_CODEX, TROUBLE,
     )
 }

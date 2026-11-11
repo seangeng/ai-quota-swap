@@ -121,6 +121,11 @@ disabled flags, settings, and optionally a session history.
   read into the ledger while seeding (as an earlier `qswap usage` would have),
   so `list` shows the key's spend against its budget and the dashboard's cost
   line and usage screen have numbers.
+- `last-resort`: the `showcase` fleet with every subscription at 100% of its
+  5-hour window and no usage resets, and `autoswitch.includeApiKeyAccounts`
+  on, so `auto --once` moves to the API key (which has its $40 budget and
+  the showcase's spend) and `status`, `list` and `--menubar` after it show a
+  key auto-switch entered.
 - `empty`, `empty-claude`, `empty-claude-codex`: the first run. Nothing is
   managed and there is no `settings.json`; the variants add a live Claude Code
   login, then a live Codex login as well.
