@@ -26,8 +26,10 @@ It needs Python 3.12 or newer and runs on macOS, Linux (WSL included) and Window
 
 ```text
 $ qswap --version
-qswap 0.1.0
+qswap 0.1.0 (fdeb279)
 ```
+
+The part in brackets is the commit you installed; `qswap upgrade` names it too, so you can tell a new build of the same version from no change.
 
 ## 2. Save your first account
 

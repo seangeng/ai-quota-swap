@@ -17,6 +17,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - Read-only commands never ask; a question is only asked on a terminal, and without one the command stops with a line naming `--yes` (now on `remove`, `purge`, `add --slot`, `add-token --slot` and `qswap codex remove`). Cancelling `purge` changes nothing, the menu bar included.
 - Usage errors exit 64 (not 2, which `auto --once` uses for "nothing to do"); every `--json` failure is the error envelope, and every payload carries `schemaVersion`. `priority --json` is new.
 - Messages fit 80 columns and name commands by verb, never by a legacy flag. `qswap budget` and `qswap api org` output are not yet wrapped or worded this way.
+- `qswap upgrade` names the build before and after, with the commit of a git install, so a new commit of the same version reads as an upgrade (`ai-quota-swap upgraded: 0.1.0 (ad03d17) -> 0.1.0 (fdeb279)`) and no change as `ai-quota-swap is still at 0.1.0 (fdeb279).`; `qswap --version` adds the commit too (`qswap 0.1.0 (fdeb279)`). A PyPI install reads as before.
 
 ### Dashboard
 

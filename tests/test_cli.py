@@ -94,6 +94,20 @@ class TestCLI:
         assert result.returncode == 0
         assert __version__ in result.stdout
 
+    @pytest.mark.parametrize(
+        ("source", "printed"),
+        [("fdeb279" + "b" * 33, "qswap 0.1.0 (fdeb279)\n"), (None, "qswap 0.1.0\n")],
+        ids=["git-install", "pypi-install"],
+    )
+    def test_version_names_the_commit_of_a_git_install(self, source, printed, capsys):
+        identity = {"version": "0.1.0", "source": source}
+        with patch("ai_quota_swap.update_check.install_identity", return_value=identity), \
+             patch.object(sys, "argv", ["qswap", "--version"]):
+            with pytest.raises(SystemExit) as excinfo:
+                cli.main()
+        assert excinfo.value.code == 0
+        assert capsys.readouterr().out == printed
+
     def test_help_flag(self):
         """Test --help flag."""
         result = subprocess.run(
