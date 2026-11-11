@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ai_quota_swap import display, launch_agent, oauth
-from ai_quota_swap.exceptions import ClaudeSwitchError, ProviderError
+from ai_quota_swap.exceptions import ClaudeSwitchError, ProviderError, SessionsRunningError
 from ai_quota_swap.fsutil import atomic_write_text
 from ai_quota_swap.labels import account_label
 from ai_quota_swap.menubar_engines import (  # noqa: F401  (re-exported)
@@ -1391,6 +1391,29 @@ def relogin_confirmation(refusal: str) -> str:
     return text.replace("; not switched.", ".", 1)
 
 
+#: The button that goes ahead with a switch to an API-key account while
+#: Claude Code sessions are running (``--log-out-sessions``).
+API_KEY_SWITCH_BUTTON = display.API_KEY_SWITCH_BUTTON
+
+
+def api_key_switch_question(error: BaseException | None) -> tuple[str, str, str] | None:
+    """What a manual switch asks before going ahead, or None when it does not.
+
+    A switch from the menu to an API-key account while Claude Code sessions
+    are running is refused by the switcher exactly as on the command line;
+    here the same explanation becomes a question: ``(title, message, button)``
+    where ``button`` (:data:`API_KEY_SWITCH_BUTTON`) goes ahead and Cancel is
+    the default. The message drops the "To switch anyway" lines the button
+    stands for. Anything else is not a question (None)."""
+    if not isinstance(error, SessionsRunningError):
+        return None
+    return (
+        display.api_key_question_title(error.sessions),
+        display.api_key_question(str(error)),
+        API_KEY_SWITCH_BUTTON,
+    )
+
+
 def codex_toggle_message(threshold: float | None, *, restart_daemon: bool = True) -> str:
     """The confirmation before Codex's auto-switch turns on."""
     from ai_quota_swap.autoswitch import pct_label
@@ -1503,6 +1526,11 @@ def manual_switch_followup(provider: str, result: Mapping | None, *, backend: st
                 "new sessions use this account."
             )
         return "New codex sessions use this account."
+    followup = (result or {}).get("followup") if isinstance(result, Mapping) else None
+    if followup:
+        # A switch with an API-key account on either side says what the
+        # running sessions do; the lines below hold for subscriptions only.
+        return " ".join(str(line) for line in followup)
     if backend == "file":
         return "Claude Code uses the new account from its next message."
     return "Claude Code picks up the new account within 30 seconds; restart it to apply now."

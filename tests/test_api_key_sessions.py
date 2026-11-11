@@ -711,3 +711,193 @@ class TestWidths:
                 if line.startswith("  qswap "):
                     continue  # a command to copy stays whole
                 assert len(line) <= 80, line
+
+
+# -- the auto-switch engine ------------------------------------------------------------
+
+from ai_quota_swap.autoswitch import NoSwitchEvent, TickOutcome  # noqa: E402
+from ai_quota_swap.menubar_notify import Notifier  # noqa: E402
+from tests.test_autoswitch import EngineHarness, _usage  # noqa: E402
+
+
+class TestEngine:
+    def _harness(self, temp_home):
+        h = EngineHarness(temp_home, include_api_key_accounts=True)
+        h.seed(1, "a@example.com")
+        h.seed(2, "key@token.local")
+        h.seed(3, "c@example.com")
+        h.make_live("a@example.com", 1)
+        data = h.switcher._get_sequence_data()
+        data["accounts"]["2"]["kind"] = "api_key"
+        data["accounts"]["2"]["alias"] = "ci"
+        h.switcher._write_json(h.switcher.sequence_file, data)
+        return h
+
+    EXHAUSTED = {"1": _usage(100), "2": "api key", "3": _usage(100)}
+
+    def test_never_lands_on_a_key_while_sessions_run_and_notifies_once(
+        self, temp_home, alive
+    ):
+        h = self._harness(temp_home)
+        _write_sessions(temp_home, PIDS)
+        alive.update(PIDS)
+        notifier = Notifier()
+        notes = []
+        for _ in range(3):
+            outcome = h.tick_with_usage(self.EXHAUSTED)
+            assert outcome is TickOutcome.BLOCKED
+            assert h.active_number() == 1
+        held = [
+            e for e in h.events
+            if isinstance(e, NoSwitchEvent) and e.reason == "api-key-sessions"
+        ]
+        assert len(held) == 3
+        assert held[0].to_json()["reason"] == "api-key-sessions"
+        assert held[0].human() == (
+            "Not switching to #2 ci: it is an API-key account and 6 running "
+            "sessions could not follow"
+        )
+        for event in h.events:
+            note = notifier.event("claude", event, both=False, now=0.0)
+            if note is not None:
+                notes.append(note.body)
+        assert notes == [held[0].human()]
+
+    def test_a_new_episode_notifies_again(self, temp_home, alive):
+        h = self._harness(temp_home)
+        _write_sessions(temp_home, PIDS)
+        alive.update(PIDS)
+        notifier = Notifier()
+        h.tick_with_usage(self.EXHAUSTED)
+        h.tick_with_usage({"1": _usage(10), "2": "api key", "3": _usage(100)})
+        h.tick_with_usage(self.EXHAUSTED)
+        notes = [
+            n for n in (notifier.event("claude", e, both=False, now=0.0) for e in h.events)
+            if n is not None
+        ]
+        assert len(notes) == 2
+
+    def test_with_no_sessions_the_key_is_still_the_last_resort(self, temp_home, alive):
+        h = self._harness(temp_home)
+        _write_sessions(temp_home, [4101])  # a stale record: its process is gone
+        assert h.tick_with_usage(self.EXHAUSTED) is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_a_refusal_at_switch_time_is_the_same_decision(self, temp_home, alive):
+        """Sessions that start between the decision and the switch."""
+        h = self._harness(temp_home)
+        real = h.switcher.shared_login_sessions
+        calls = {"n": 0}
+
+        def sessions_after_the_decision():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return []
+            _write_sessions(temp_home, [4101])
+            alive.add(4101)
+            return real()
+
+        with patch.object(h.switcher, "shared_login_sessions", sessions_after_the_decision):
+            outcome = h.tick_with_usage(self.EXHAUSTED)
+        assert outcome is TickOutcome.BLOCKED
+        assert h.active_number() == 1
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)][-1] == (
+            "api-key-sessions"
+        )
+
+
+# -- the menu bar ------------------------------------------------------------------
+
+from ai_quota_swap import menubar  # noqa: E402
+
+
+class TestMenuBar:
+    def _refusal(self, sessions=6):
+        return SessionsRunningError(
+            display.api_key_refusal("#5 ci", 5, sessions), number="5", sessions=sessions,
+        )
+
+    def test_a_refused_key_switch_asks_with_the_same_explanation(self):
+        title, message, button = menubar.api_key_switch_question(self._refusal())
+        assert title == "Log out 6 running sessions?"
+        assert button == "Switch and log out sessions"
+        assert message == (
+            "#5 ci is an API-key account, and 6 Claude Code sessions are running on "
+            "the shared login. A running session cannot move to an API key: about 30 "
+            'seconds after the switch each one stops with "Not logged in" until you '
+            "switch back or restart it. Sessions started after the switch use the key."
+        )
+        assert "--log-out-sessions" not in message
+
+    def test_other_errors_ask_nothing(self):
+        from ai_quota_swap.exceptions import SwitchError
+
+        assert menubar.api_key_switch_question(SwitchError("no")) is None
+        assert menubar.api_key_switch_question(None) is None
+
+    def test_the_real_refusal_becomes_the_question(self, temp_home, block_real_keychain, alive):
+        s = _fleet()
+        _write_sessions(temp_home, PIDS)
+        alive.update(PIDS)
+        with pytest.raises(SessionsRunningError) as caught:
+            s.switch_to("5", json_output=True)
+        title, _message, _button = menubar.api_key_switch_question(caught.value)
+        assert title == "Log out 6 running sessions?"
+
+    def test_followup_for_a_key_never_says_the_generic_line(self):
+        result = {"switched": True, "followup": [
+            '6 running sessions will stop with "Not logged in" within about 30 seconds.',
+            "Restart a session to put it on the key. Sessions started from now on use it.",
+        ]}
+        text = menubar.manual_switch_followup("claude", result, backend="keychain")
+        assert "picks up the new account" not in text
+        assert text.startswith("6 running sessions will stop")
+        # A subscription switch keeps the usual words.
+        assert "picks up the new account" in menubar.manual_switch_followup("claude", {})
+
+
+# -- the dashboard -------------------------------------------------------------------
+
+from tests.test_tui import FakeSwitcher, make_account, make_app, settle  # noqa: E402
+
+
+class _KeyFake(FakeSwitcher):
+    """Account 5 is an API-key account and six sessions are running."""
+
+    def switch_to(self, identifier, json_output=False, force=False, log_out_sessions=False):
+        if str(identifier) == "5" and not log_out_sessions:
+            self.calls.append(("refused", "5"))
+            raise SessionsRunningError(
+                display.api_key_refusal("#5 ci", 5, 6), number="5", sessions=6,
+            )
+        self.calls.append(("log-out", str(identifier), log_out_sessions))
+        return super().switch_to(identifier, json_output=json_output, force=force)
+
+
+@pytest.mark.asyncio
+class TestDashboard:
+    async def test_refused_with_an_explicit_log_out_choice(self, tmp_path):
+        from textual.widgets import Static
+
+        from ai_quota_swap.tui.modals import ConfirmModal
+
+        fake = _KeyFake([make_account(1, active=True), make_account(5, alias="ci")], tmp_path)
+        app = make_app(fake)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            app.do_switch("claude", "5")
+            await settle(pilot)
+            assert isinstance(app.screen, ConfirmModal)
+            assert app.screen._title == "Log out 6 running sessions?"
+            assert app.screen._yes_label == "Switch and log out sessions"
+            body = app.screen.query_one(".modal-body", Static).render().plain
+            assert body.startswith("#5 ci is an API-key account, and 6 Claude Code")
+            await pilot.press("enter")  # the focus starts on Cancel
+            await settle(pilot)
+            assert ("log-out", "5", True) not in fake.calls
+            app.do_switch("claude", "5")
+            await settle(pilot)
+            await pilot.press("y")
+            await settle(pilot)
+            assert ("log-out", "5", True) in fake.calls
+            assert fake.active == "5"

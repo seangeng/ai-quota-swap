@@ -21,7 +21,12 @@ import threading
 import time
 
 from ai_quota_swap import launch_agent
-from ai_quota_swap.exceptions import CredentialReadError, ProviderError, SwitchError
+from ai_quota_swap.exceptions import (
+    CredentialReadError,
+    ProviderError,
+    SessionsRunningError,
+    SwitchError,
+)
 from ai_quota_swap.menubar import (
     ENGINE_HOST_LABEL,
     ICON,
@@ -37,6 +42,7 @@ from ai_quota_swap.menubar import (
     Row,
     _set_tooltip,
     _usage_log_key,
+    api_key_switch_question,
     build_menu,
     codex_login_help,
     codex_toggle_message,
@@ -445,6 +451,12 @@ def run_app(switcher, rumps, AppKit) -> int:
             self._activate()
             return rumps.alert(title=title, message=message, ok=ok, cancel="Cancel") == 1
 
+        def _confirm_cancel_default(self, title: str, message: str, go: str) -> bool:
+            """A question whose default button (Return) is Cancel: ``go`` is
+            the other one, and only it answers yes."""
+            self._activate()
+            return rumps.alert(title=title, message=message, ok="Cancel", cancel=go) == 0
+
         def dispatch(self, action: Action):
             """Run a row's handler. No error ever escapes to rumps: a provider
             error shows the command line's words, anything else its type."""
@@ -514,7 +526,7 @@ def run_app(switcher, rumps, AppKit) -> int:
                 return
             guarded(lambda: done(result), alert=self._alert)
 
-        def _do_switch(self, a: Action, anyway: bool = False):
+        def _do_switch(self, a: Action, anyway: bool = False, log_out_sessions: bool = False):
             sw = self._switcher_for(a.provider)
             acc = next((x for x in self._state(a.provider).accounts if x.number == a.number), None)
             check = acc is None or not acc.active
@@ -528,7 +540,14 @@ def run_app(switcher, rumps, AppKit) -> int:
                         if anyway:
                             raise
                         return ("refused", str(e), [])
-                return ("done", sw.switch_to(str(a.number), json_output=True), notes)
+                extra = {"log_out_sessions": True} if log_out_sessions else {}
+                try:
+                    result = sw.switch_to(str(a.number), json_output=True, **extra)
+                except SessionsRunningError as e:
+                    # An API-key account with sessions running: the command
+                    # line refuses without --log-out-sessions; here it asks.
+                    return ("ask", api_key_switch_question(e), notes)
+                return ("done", result, notes)
 
             def done(outcome):
                 kind, value, notes = outcome
@@ -537,6 +556,11 @@ def run_app(switcher, rumps, AppKit) -> int:
                     # --anyway; here the same explanation asks first.
                     if self._confirm("Switch anyway?", relogin_confirmation(value), "Switch anyway"):
                         self._do_switch(a, anyway=True)
+                    return
+                if kind == "ask":
+                    title, message, go = value
+                    if self._confirm_cancel_default(title, message, go):
+                        self._do_switch(a, anyway=anyway, log_out_sessions=True)
                     return
                 self._after_switch(a.provider, value, notes)
 

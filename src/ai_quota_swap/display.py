@@ -828,6 +828,28 @@ def api_key_refusal(
     ])
 
 
+#: The button (menu bar, dashboard) that goes ahead with such a switch.
+API_KEY_SWITCH_BUTTON = "Switch and log out sessions"
+
+
+def api_key_question(refusal: str) -> str:
+    """:func:`api_key_refusal` as the body of a question whose button goes
+    ahead: the explanation, without "not switched." and without the
+    ``--log-out-sessions`` lines the button stands for; one paragraph."""
+    kept = [
+        line.strip() for line in refusal.splitlines()
+        if line.strip() and not line.startswith("To switch anyway")
+        and not line.strip().startswith("qswap switch")
+    ]
+    text = " ".join(kept).replace("not switched. ", "", 1)
+    return text[:1].upper() + text[1:]
+
+
+def api_key_question_title(sessions: int) -> str:
+    """``Log out 6 running sessions?``"""
+    return f"Log out {sessions} running session{'' if sessions == 1 else 's'}?"
+
+
 def api_key_skip_reason(sessions: int) -> str:
     """Why a rotation passed over an API-key account (``Skipped #5 ci: …``)."""
     are = "is" if sessions == 1 else "are"

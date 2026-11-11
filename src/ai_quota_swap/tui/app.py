@@ -357,11 +357,16 @@ class QswapApp(App):
 
     # -- switching ------------------------------------------------------------------
 
-    def do_switch(self, provider: str, number: str, *, anyway: bool = False) -> None:
+    def do_switch(
+        self, provider: str, number: str, *, anyway: bool = False,
+        log_out_sessions: bool = False,
+    ) -> None:
         """Switch ``provider`` to account ``number``. A target that needs
         re-login is refused with the command line's message and an explicit
         "switch anyway" (``--anyway``); a stale or unreadable one switches
-        with a warning."""
+        with a warning. An API-key account while Claude Code sessions are
+        running is refused the same way, with an explicit "switch and log out
+        sessions" (``--log-out-sessions``)."""
         sw = self.switcher_for(provider)
         if sw is None:
             return
@@ -372,7 +377,8 @@ class QswapApp(App):
             check = getattr(sw, "check_switch_target", None)
             if check is not None and str(number) != sw.current_account_number():
                 notes = list(check(str(number), anyway=anyway) or [])
-            payload = sw.switch_to(str(number), json_output=True)
+            extra = {"log_out_sessions": True} if log_out_sessions else {}
+            payload = sw.switch_to(str(number), json_output=True, **extra)
             if isinstance(payload, dict) and notes:
                 payload["warnings"] = [*notes, *payload.get("warnings", [])]
             return payload
@@ -380,6 +386,15 @@ class QswapApp(App):
         def done(result: ActionResult) -> bool:
             if not result.ok and not anyway and result.error and display.NEEDS_RELOGIN in result.error:
                 self._offer_switch_anyway(provider, str(number), result.error)
+                return True
+            if (
+                not result.ok and not log_out_sessions and result.error
+                and result.error_type == "SessionsRunningError"
+            ):
+                sessions = int((result.error_fields or {}).get("sessions") or 0)
+                self._offer_log_out_sessions(
+                    provider, str(number), result.error, sessions, anyway,
+                )
                 return True
             if not result.ok:
                 return False
@@ -402,13 +417,31 @@ class QswapApp(App):
             lambda yes: self.do_switch(provider, number, anyway=True) if yes else None,
         )
 
+    def _offer_log_out_sessions(
+        self, provider: str, number: str, error: str, sessions: int, anyway: bool
+    ) -> None:
+        # The command line's refusal as a question; the button is what
+        # "qswap switch N --log-out-sessions" says to run. Cancel is the focus.
+        self.push_screen(
+            ConfirmModal(
+                display.api_key_question(error),
+                title=display.api_key_question_title(sessions) if sessions else "API-key account",
+                yes_label=display.API_KEY_SWITCH_BUTTON,
+                default_no=True,
+            ),
+            lambda yes: self.do_switch(
+                provider, number, anyway=anyway, log_out_sessions=True,
+            ) if yes else None,
+        )
+
     def _report_switch(self, provider: str, payload: dict) -> None:
         warnings = [str(w) for w in payload.get("warnings") or []]
         if payload.get("switched"):
             to = payload.get("to") or {}
             number = to.get("number")
             name = self.label(provider, str(number)) if number is not None else (to.get("email") or "")
-            self.notify("\n".join([f"Switched to {name}", *warnings]),
+            followup = [str(line) for line in payload.get("followup") or []]
+            self.notify("\n".join([f"Switched to {name}", *followup, *warnings]),
                         severity="warning" if warnings else "information")
         else:
             message = str(payload.get("message") or payload.get("reason") or "No switch was made")

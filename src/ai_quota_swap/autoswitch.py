@@ -56,6 +56,7 @@ from ai_quota_swap.exceptions import (
     CredentialFormatError,
     ProviderError,
     RetryableSwitchError,
+    SessionsRunningError,
 )
 from ai_quota_swap.json_output import (
     SCHEMA_VERSION,
@@ -416,6 +417,8 @@ class NoSwitchEvent(AutoSwitchEvent):
     binding: BindingWindow | None = _human_only()
     account: str | None = _human_only()
     wait_s: float | None = _human_only()
+    # api-key-sessions: how many Claude Code sessions ran on the shared login.
+    sessions: int | None = _human_only()
 
     def _fields(self) -> dict:
         return {"reason": self.reason, "detail": self.detail}
@@ -426,6 +429,20 @@ class NoSwitchEvent(AutoSwitchEvent):
         from ai_quota_swap import autolog
 
         return autolog.no_switch_sentence(self)
+
+
+def _api_key_sessions_event(number: str, sessions: int) -> NoSwitchEvent:
+    """The engine stayed rather than land on the API-key account ``number``
+    while ``sessions`` Claude Code sessions run on the shared login."""
+    return NoSwitchEvent(
+        reason="api-key-sessions",
+        detail=(
+            f"account {number} is an API-key account and {sessions} running "
+            "sessions could not follow"
+        ),
+        account=str(number),
+        sessions=sessions,
+    )
 
 
 @dataclass(frozen=True)
@@ -2168,6 +2185,13 @@ class AutoSwitchEngine:
             # Last resort when we must move: metered API-key accounts
             # (unmeasurable headroom). Never for a below-threshold consume-first
             # nudge — those API-key accounts have no weekly window to consume.
+            # And never while Claude Code sessions run on the shared login: a
+            # running session cannot move to a key and would stop with "Not
+            # logged in" (docs/design/api-key-sessions.md).
+            running = self._shared_session_count()
+            if running:
+                self._emit(_api_key_sessions_event(api_key_candidates[0], running))
+                return TickOutcome.BLOCKED
             ordered = api_key_candidates
 
         if not ordered:
@@ -3211,6 +3235,11 @@ class AutoSwitchEngine:
 
             try:
                 result = self.switcher.switch_to(number, json_output=True)
+            except SessionsRunningError as e:
+                # Sessions started between the decision and the switch: the
+                # same refusal the decision makes, and nothing changed.
+                self._emit(_api_key_sessions_event(number, e.sessions))
+                return TickOutcome.BLOCKED
             except RetryableSwitchError as e:
                 # Nothing changed, and the provider says a later try is safe
                 # (Codex: a running Codex may be renewing the live token right
@@ -3558,6 +3587,17 @@ class AutoSwitchEngine:
         if earliest is None:
             return None
         return datetime.fromtimestamp(earliest, tz=timezone.utc)
+
+    def _shared_session_count(self) -> int:
+        """How many Claude Code sessions run on the provider's shared login;
+        0 for a provider that cannot tell (Codex) or when reading fails."""
+        reader = getattr(self.switcher, "shared_login_sessions", None)
+        if not callable(reader):
+            return 0
+        try:
+            return len(reader() or ())
+        except Exception:
+            return 0
 
     def _emit(self, event: AutoSwitchEvent) -> None:
         # Every event carries this tick's context for its human text (an
