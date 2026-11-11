@@ -3,7 +3,7 @@
     uv run python scripts/demo/capture.py html        # CLI shots -> docs/shots/*.html
     uv run python scripts/demo/capture.py shots       # raw PNGs (CLI pages + served TUI)
     uv run python scripts/demo/capture.py frame       # ScreenFramed, when configured
-    uv run python scripts/demo/capture.py record      # dashboard recordings (LittleDemo)
+    uv run python scripts/demo/capture.py record      # the GIFs in assets/demos (LittleDemo)
     uv run python scripts/demo/capture.py index       # docs/shots/index.html
 
 ``build.py`` runs html, shots, frame and index in order. Every qswap run
@@ -607,7 +607,9 @@ def record(name: str, *, mode: str, upload: bool) -> dict:
                 url, steps, tmp / "frames", width=viewport[0], height=viewport[1], fps=8,
                 ready=f"!!document.querySelector({json.dumps(story.ready)})",
             ))
-            frames_to_gif(frames, gif, crop=crop)
+            cut = story.trim_ms / 1000
+            kept = [(t - cut, png) for t, png in frames if t >= cut] or frames[-1:]
+            frames_to_gif(kept, gif, crop=crop)
             result["recorder"] = "DevTools protocol frame grabs (cdp.record_frames), GIF made with ffmpeg"
     result["gif"] = str(gif.relative_to(REPO))
     result["gifBytes"] = gif.stat().st_size

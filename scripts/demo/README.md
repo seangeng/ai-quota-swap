@@ -19,6 +19,7 @@ Run everything from the repository root with the dev dependencies installed
     uv run python scripts/demo/run.py fleet --menubar          # the menu bar's menu, as an outline
     uv run python scripts/demo/run.py showcase --menubar --html menu.html   # ... and as a picture
     uv run python scripts/demo/build.py                        # regenerate all shots
+    uv run python scripts/demo/capture.py record               # remake all recordings
 
 `run.py <scenario> --menubar` prints the macOS menu bar's menu for the
 scenario as an indented outline. Every row the menu bar shows comes from one
@@ -32,7 +33,10 @@ active.
 `++` to run them one after another on the same state, for example
 `run.py reset -- reset ++ reset 1 --yes`. Add `--html <file>` to render the
 output as a terminal-window page, `--theme light` for the light palette, and
-`--width` to set the terminal's column count. Whether Claude Code and Codex
+`--width` to set the terminal's column count. With `--typing` as well, the
+page types each command and then shows its output, one after another, on a
+screen of `--height` lines (`--zoom` scales it); the quick start recording
+plays that page. Whether Claude Code and Codex
 are installed is the harness's choice, not this machine's: both are, unless
 `--without-cli claude` (or `codex`) says otherwise, so output is the same on a
 laptop with both CLIs and a CI runner with neither.
@@ -76,7 +80,7 @@ each engine's first check, so `Auto-switch running for Claude Code and Codex`
 is what a running engine shows. Each check then waits until the picture of
 its result is drawn.
 
-For a recording, `--frames DIR` writes three files after each check:
+For the menu bar recording, `--frames DIR` writes three files after each check:
 `frame-NN.html` (open, or as `--open` and `--closed` say), `frame-NN-closed.html`
 and `frame-NN.txt`, the outline. On a scenario with time compression the
 checks come one scenario minute apart, a few real seconds each:
@@ -184,6 +188,12 @@ disabled flags, settings, and optionally a session history.
 - `empty`, `empty-claude`, `empty-claude-codex`: the first run. Nothing is
   managed and there is no `settings.json`; the variants add a live Claude Code
   login, then a live Codex login as well.
+- `quickstart`: the quick start's second step. `#1 personal` is saved, and
+  Claude Code is logged in to `maya@northwind.example.com`, which qswap does
+  not manage yet (a scenario's `live` login with managed accounts is a
+  `/login` since the last `qswap add`). `qswap add --alias work` saves it as
+  `#2 work`, the active account, so the recording switches back with
+  `qswap switch 1`.
 - `trouble`: failure states. Claude: the active account at 100% with no
   resets, a dead saved login (expired token, refused refresh), a usage
   endpoint answering 503, an account quarantined by the auto-switch engine,
@@ -246,23 +256,77 @@ still exists.
   writes `~/.screenframed.json`, or `SCREENFRAMED_API_KEY`). Without both it
   prints what is missing and does nothing. `--background` and `--device` pick
   the frame (defaults: `midnight`, no device).
-- `capture.py record [autoswitch reset]` records the dashboard storyboards in
-  `stories.py` with LittleDemo's local recorder (`npx @littledemo/cli record`),
-  which drives a local Chrome against the loopback server, then writes a GIF
-  (960 px, under 1.5 MB) to `assets/demos/` with ffmpeg. The MP4 stays local.
-  `--mode local` skips LittleDemo and grabs frames through the DevTools
-  protocol instead. LittleDemo's recorder runs the page at a third of real
-  speed and speeds the video up, so the harness slows the server-side clock
-  by the same factor to keep the storyboard's pacing.
+- `capture.py record [names]` makes the recordings in `stories.py` (all of
+  them by default) with LittleDemo's local recorder
+  (`npx @littledemo/cli record`), which drives a local Chrome against a
+  loopback server, then writes a GIF to `assets/demos/` with ffmpeg. The MP4
+  stays local. `--mode local` skips LittleDemo and grabs frames through the
+  DevTools protocol instead. See Recordings, below.
 - `capture.py upload [names]` hosts recordings already in `assets/demos/` on
   LittleDemo (it creates an `ai-quota-swap` project the first time) and records
   the share, embed, GIF and thumbnail URLs in `assets/demos/recordings.json`.
-  Recording and hosting are separate so nothing is published unseen.
+  Recording and hosting are separate so nothing is published unseen; a new
+  recording drops the record of a copy hosted earlier, which shows the old
+  one.
 - `capture.py index` writes `docs/shots/index.html`.
 
 `build.py` runs html, shots, frame and index; add `--record local` or
 `--record littledemo --upload` to remake the recordings too, and `--only` to
 limit it to some shots.
+
+## Recordings
+
+Each GIF in `assets/demos/` is 960 px wide at most, under 1.5 MB and about
+14 to 15 seconds. `capture.py record NAME` remakes one; `recordings.json`
+records how each was made.
+
+| GIF | Scenario | Shows | Storyboard |
+|---|---|---|---|
+| `menubar.gif` | `autoswitch` | The menu open on `#1 personal` at 86%; the bar magnified while the title's 5-hour figure climbs to 88% and changes to `work` when the menu bar's own engine switches at 91%; then the menu open on Switch history (`#1 personal → #2 work · 2026-11-10 14:22`) | a played page (`player_page.py`) |
+| `quickstart.gif` | `quickstart` | `qswap add --alias work`, `qswap list`, `qswap switch 1`, `qswap status`, typed and answered with their real output | a played page (`run.py --typing`) |
+| `dashboard.gif` | `showcase` | The dashboard's main view, then `w` (watch), `g` (the auto view, in dry run) and `u` (usage), each closed with `esc` | keys into the served dashboard, 100x40 cells |
+| `autoswitch.gif` | `autoswitch` | The auto view goes live; `#1 personal` climbs from 86% and the engine switches to `#2 work` at 92% | keys into the served dashboard |
+| `reset.gif` | `reset` | The auto view goes live, spends the Fable reset on `#1 personal` and Fable drops from 100% to 0% | keys into the served dashboard |
+
+Two kinds of storyboard drive the recorder:
+
+- Keys into the dashboard served by `run.py --serve` (`Story.steps`). A story
+  can size the terminal in cells (`cells`, fitted as `tour.py` fits them) and
+  cut the first moments of the video (`trim_ms`), while the dashboard still
+  draws its footer. The dashboard's clock runs in real time while LittleDemo
+  plays the page at a third of real speed, so a storyboard that ran much past
+  a minute of real time would show readings aging into "as of 3m ago".
+- A page the harness writes and plays (`Story.page`), saved as
+  `docs/shots/recording-<name>.html`. It shows its first frame until a key
+  press, then follows a timeline computed in Python and embedded in the page,
+  so the same scenario state gives the same page. `typing` is
+  `run.py <scenario> --typing` with the story's commands: the output is the
+  commands' own, rendered as `render.py` renders the CLI shots, and only the
+  typing is animated. It opens on its last screen (a good first frame) and
+  ends there, so the GIF loops without a jump. `menubar` is `player_page.py` over the
+  drawings `run.py --menubar --auto-switch --frames` makes: three guarded runs
+  of the same deterministic scenario, one to find the widest drawing (Switch
+  history open) and two to draw every frame at that size. Each shot is a
+  whole `menubar_page` drawing, embedded unchanged (`<iframe srcdoc>`); the
+  player adds cross-fades and can show a drawing magnified on the bar's
+  right-hand end, and adds no row or title of its own.
+
+The recorder adds time after each step: 500 ms after typed text and 1.3 s
+after a pressed key (its key overlay, then its delay), which the storyboards
+count. The stage page and the played pages hide LittleDemo's pointer and key
+overlays. To make the GIF, ffmpeg crops a served dashboard to its window plus
+8 px of the stage, scales to 960 px, drops frames that repeat the one before
+(`mpdecimate` with strict thresholds, so every step of a fade is kept) and
+holds the last frame to the video's end. Played pages are drawn about 1.5
+times larger than the GIF and scaled down, which keeps text sharp through the
+video's colour subsampling.
+
+To check a recording, take one frame a second and look at each one:
+
+    mkdir -p frames && ffmpeg -i assets/demos/menubar.gif -vf fps=1 frames/s%02d.png
+
+Text should read at 960 px, each state should stay long enough to read, and
+no frame should be blank or half drawn.
 
 ## Review tour
 
@@ -284,5 +348,7 @@ dashboard redraws its footer keys only while its terminal is focused).
 The storyboards type into the TUI through xterm.js. The served page keeps
 xterm's input textarea focused, and the LittleDemo steps insert plain text
 (no selector, since the recorder would try to click the off-screen textarea
-first). The recording page hides LittleDemo's pointer overlay, as there is
-nothing to point at.
+first). The recording page hides LittleDemo's pointer and key overlays, as
+there is nothing to point at and the key overlay would show `esc` but not the
+letters typed. A played page starts on any key, which the storyboard presses
+once.
