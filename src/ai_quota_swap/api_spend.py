@@ -51,6 +51,11 @@ LINK_FIELDS = ("apiKeyId", "apiOrg", "apiKeyHint")
 MIN_HINT_TAIL = 4
 # A ledger figure older than this gets an "as of" line.
 LEDGER_STALE_S = 3600.0
+#: The note of a reading whose ledger exists but could not be read (an
+#: unknown schema version, no meta table, a sqlite or OS error): its spend is
+#: unknown, never zero. "No ledger file yet" is not this: nothing was ever
+#: scanned, so nothing is recorded.
+LEDGER_UNREADABLE = "this machine's usage ledger could not be read; run: qswap usage"
 _HINT_SEPARATORS = ("...", "…")
 _KEY_PREFIX = "sk-ant-"
 
@@ -366,6 +371,7 @@ def readings(
     """
     from ai_quota_swap.ledger import spend as ledger_spend
     from ai_quota_swap.ledger.pricing import PriceTable
+    from ai_quota_swap.ledger.store import DB_FILENAME
 
     if not infos:
         return {}
@@ -443,8 +449,10 @@ def readings(
             )
             if ls is not None:
                 reading = _blank(SOURCE_LEDGER, ls.month, ls.today, ls.unpriced_tokens, ls.last_scan_at)
+            elif not note and (root / DB_FILENAME).exists():
+                note = LEDGER_UNREADABLE
         if reading is None:
-            if budget is None and not orgs:
+            if budget is None and not orgs and not note:
                 continue
             reading = _blank(None, None, None, 0, None)
         spend = reading["spend"]
@@ -505,13 +513,22 @@ def _age(seconds: float) -> str:
     return f"{seconds // 86400}d ago"
 
 
+def spend_unknown(reading: object) -> bool:
+    """Whether the ledger exists but could not be read (:data:`LEDGER_UNREADABLE`)."""
+    return isinstance(reading, dict) and reading.get("source") is None and (
+        reading.get("note") == LEDGER_UNREADABLE
+    )
+
+
 def nothing_recorded(reading: object) -> bool:
     """Whether the figure qswap has for an API-key account shows no usage:
     this machine's estimate is zero today and this month with no unpriced
     tokens, or there is no figure yet only because nothing was ever scanned
-    (no ledger, no organization in the way: no note). An Admin API figure is
-    never "nothing recorded": its zeros are Anthropic's, and are shown as they
-    are. No reading at all (no budget, no organization, no ledger) counts too."""
+    (no ledger file, no organization in the way: no note). An Admin API
+    figure is never "nothing recorded": its zeros are Anthropic's, and are
+    shown as they are; nor is a ledger that could not be read
+    (:func:`spend_unknown`). No reading at all (no budget, no organization,
+    no ledger file) counts too."""
     if reading is None:
         return True
     if not isinstance(reading, dict):
@@ -539,6 +556,11 @@ def spend_text(reading: dict) -> str:
     spend = reading.get("spend") or {}
     used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
     parts = ["API key"]
+    if spend_unknown(reading):
+        from ai_quota_swap.display import API_KEY_SPEND_UNKNOWN
+
+        parts.append(f"{API_KEY_SPEND_UNKNOWN}: {LEDGER_UNREADABLE}")
+        return " · ".join(parts)
     if nothing_recorded(reading):
         if limit is not None:
             parts.append(_nothing_spent(limit))
@@ -580,9 +602,10 @@ def detail_text(reading: dict, now: float | None = None) -> str | None:
             what = "as of" if empty else "estimate as of"
             return f"{what} the last qswap usage, {_age(now - as_of)}"
         return None
-    if empty:
+    if empty or spend_unknown(reading):
         # Nothing scanned yet reads as nothing recorded, as it will after
         # the first scan of an unused key: the same state, the same words.
+        # An unreadable ledger says so on the line above already.
         return None
     if source == SOURCE_ADMIN:
         if note:
@@ -616,6 +639,10 @@ def menu_text(reading: dict) -> str:
 
     spend = reading.get("spend") or {}
     used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
+    if spend_unknown(reading):
+        from ai_quota_swap.display import API_KEY_SPEND_UNKNOWN
+
+        return API_KEY_SPEND_UNKNOWN
     if nothing_recorded(reading):
         return _nothing_spent(limit) or API_KEY_NO_USAGE_SHORT
     if used is None:

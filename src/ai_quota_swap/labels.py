@@ -43,6 +43,7 @@ def account_label(
     email: str = "",
     provider: str | None = None,
     long: bool = False,
+    stored: bool = False,
 ) -> str:
     """``#2 work`` / ``#2 maya@example.com``; ``long`` gives ``#2 work (maya@example.com)``.
 
@@ -50,9 +51,10 @@ def account_label(
     the alias or the email alone. ``provider`` is a provider id (``"claude"``,
     ``"codex"``); pass it only where both providers appear together. A
     placeholder email reads as its name (``#5 api-key-5``) and the long form
-    leaves it out.
+    leaves it out. ``stored`` spells the email as stored (placeholder
+    included), for a JSON field that has always carried it.
     """
-    name = alias or shown_email(email)
+    name = alias or (email if stored else shown_email(email))
     parts: list[str] = []
     if provider:
         parts.append(PROVIDER_SHORT.get(provider, provider))
@@ -61,6 +63,6 @@ def account_label(
     if name:
         parts.append(name)
     label = " ".join(parts) or "account"
-    if long and alias and email and not is_placeholder(email):
+    if long and alias and email and (stored or not is_placeholder(email)):
         label += f" ({email})"
     return label

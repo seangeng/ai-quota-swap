@@ -8,11 +8,16 @@ ACCOUNT [--grant ID] [--yes]``, ``qswap codex reset …`` and the menu bar's
    surface or an engine meanwhile is invisible in the stored reading) and
    pick the reset from the fresh numbers (:func:`choose`);
 2. ask, when the caller asks (``confirm``);
-3. claim it (:func:`claim`): a pending record holding the request id first
-   (reused when an earlier attempt on that grant never got an answer, so a
-   retry cannot spend a second one), then the claim, which re-reads the
-   account's usage once the server decided, then the final record, which
-   also enters a decided claim in the reset log as a manual use.
+3. claim it (:func:`claim`): a pending record holding the request id first,
+   reserved under the state lock as the engine reserves its own
+   (``autoswitch.reserve_reset_claim``): refused while another claim on the
+   account (the engine's, another window's) is in flight for a different
+   grant, and reusing the stored request id when an earlier attempt on this
+   grant never got an answer, so a retry cannot spend a second one. Then the
+   claim, which re-reads the account's usage once the server decided, then
+   the final record, which also enters a decided claim in the reset log as a
+   manual use. A final record that cannot be written is logged, never allowed
+   to hide the server's answer: the pending record still holds the request id.
 
 The texts that describe a reset before it is spent (:func:`describe`) are the
 command line's, so the menu bar's confirmation says what ``qswap reset``
@@ -21,11 +26,23 @@ says. Nothing here prints.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ai_quota_swap.exceptions import ValidationError
 from ai_quota_swap.printer import bolded, dimmed, yellowed
+
+_logger = logging.getLogger("ai-quota-swap")
+
+#: Claim results that do not say whether the reset was spent (a transport
+#: failure, an answer qswap cannot read): the brake counts them as spent.
+UNKNOWN_RESULTS = frozenset({"error", "unavailable"})
+
+
+class ResetBusy(ValidationError):
+    """Another claim on the account is in flight; nothing was sent."""
 
 
 def noun_for(codex: bool) -> str:
@@ -51,6 +68,8 @@ class Choice:
     now: float
     threshold: float
     codex: bool = False
+    #: When the reading the choice rests on was taken (None: unknown).
+    fetched_at: float | None = None
 
     @property
     def reset_name(self) -> str:
@@ -75,7 +94,6 @@ def choose(switcher, account: str, grant_id: str | None = None, *,
     :class:`ValidationError` with the command line's words when nothing can
     be spent (needs re-login, unreadable, none held, not usable now)."""
     from ai_quota_swap import display, resets
-    from ai_quota_swap.exceptions import ValidationError
 
     noun, command = noun_for(codex), command_for(codex)
     num, email, _org = switcher.resolve_account(account)
@@ -126,42 +144,50 @@ def choose(switcher, account: str, grant_id: str | None = None, *,
         raise ValidationError(
             f"that {noun} cannot be used right now ({display.grant_state(unusable)})"
         )
-    return Choice(num, email, name, grant, last_good, status, now, threshold, codex)
+    fetched_at = getattr(entry, "fetched_at", None)
+    return Choice(num, email, name, grant, last_good, status, now, threshold, codex, fetched_at)
 
 
 def claim(switcher, choice: Choice, *, started: Callable[[], None] | None = None):
-    """Claim ``choice``'s reset: the pending record with its request id, the
-    claim (which re-reads the account once the server decided), the final
-    record. ``started`` runs once the pending record is written, just before
-    the request (the command line's "interrupted mid-claim" point). Returns
-    the :class:`resets.ClaimResult`."""
+    """Claim ``choice``'s reset (module docstring, step 3). ``started`` runs
+    once the pending record is written, just before the request: from then
+    on the reset may have been used whatever happens. Returns the
+    :class:`resets.ClaimResult`; raises :class:`ResetBusy` (nothing sent)
+    while another claim on the account is in flight for a different grant."""
     from ai_quota_swap.autoswitch import (
         STATE_FILENAME,
-        _read_state_file,
         record_reset_claim,
-        reset_request_id,
+        reserve_reset_claim,
+        reset_claim_in_flight,
     )
 
     num, grant = choice.number, choice.grant
-    state = _read_state_file(switcher.backup_dir / STATE_FILENAME)
-    claims = state.get("resetClaims") if isinstance(state.get("resetClaims"), dict) else {}
-    request_id = reset_request_id(claims.get(num), grant["id"], switcher)
-    base = {
-        "at": time.time(),
-        "grantId": grant["id"],
-        "requestId": request_id,
-        "reason": "manual",
-        "auto": False,
-    }
-    record_reset_claim(switcher.backup_dir, num, {**base, "result": "pending", "settled": False})
+    now = time.time()
+
+    def admit(_state: dict, previous: object) -> bool:
+        busy = reset_claim_in_flight(previous, choice.fetched_at, now)
+        return not (busy and previous.get("grantId") != grant["id"])  # type: ignore[union-attr]
+
+    reserved = reserve_reset_claim(
+        switcher.backup_dir / STATE_FILENAME, num, grant["id"],
+        at=now, reason="manual", auto=False, host=switcher, admit=admit,
+    )
+    if reserved is None:
+        raise ResetBusy(
+            f"A {noun_for(choice.codex)} on {choice.name} is already being used; "
+            "try again in a moment."
+        )
     if started is not None:
         started()
-    result = switcher.claim_usage_reset(num, grant["id"], request_id)
-    record_reset_claim(
-        switcher.backup_dir, num,
-        {**base, "result": result.result, "settled": result.settled,
-         "detail": result.reason or result.detail},
-    )
+    result = switcher.claim_usage_reset(num, grant["id"], reserved["requestId"])
+    try:
+        record_reset_claim(
+            switcher.backup_dir, num,
+            {**reserved, "result": result.result, "settled": result.settled,
+             "detail": result.reason or result.detail},
+        )
+    except Exception as e:  # the pending record still holds the request id
+        _logger.warning("could not record usage reset claim on account %s: %r", num, e)
     return result
 
 
@@ -180,8 +206,6 @@ def spend(
     asked with the fresh choice before anything is claimed; False keeps the
     reset and returns None. ``settings`` is the ``resets`` section when the
     caller has it. Raises :class:`ValidationError` when nothing can be spent."""
-    from ai_quota_swap.exceptions import ValidationError
-
     rs = settings if settings is not None else switcher.reset_settings()
     if not rs.enabled:
         raise ValidationError(
@@ -205,14 +229,29 @@ def describe(choice: Choice, *, name: str | None = None) -> str:
     fn = describe_credit if choice.codex else describe_reset
     return fn(
         choice.number, choice.email, choice.grant, choice.last_good, choice.status,
-        choice.now, threshold=choice.threshold, name=name,
+        choice.now, threshold=choice.threshold, name=name, fetched_at=choice.fetched_at,
     )
+
+
+def staleness(fetched_at: float | None, now: float) -> str | None:
+    """``usage as of 12m ago; it could not be refreshed`` when the reading a
+    reset is chosen on is older than the engine would spend on
+    (``autoswitch.RESET_FRESH_READ_S``); None while it is fresh. A manual
+    spend is not refused for it, only told."""
+    from ai_quota_swap import display
+    from ai_quota_swap.autoswitch import RESET_FRESH_READ_S
+
+    if not isinstance(fetched_at, (int, float)) or now - fetched_at <= RESET_FRESH_READ_S:
+        return None
+    return f"usage {display.as_of(now - fetched_at)}; it could not be refreshed"
 
 
 def outcome_text(spent: Spent, who: str) -> str:
     """The notification after a claim, in the auto log's words: ``Used a
-    Fable reset on #1 personal · Fable refilled · 2 left on this grant`` or
-    ``Did not use a Fable reset on #1 personal: refused (cooldown)``."""
+    Fable reset on #1 personal · Fable refilled · 2 left on this grant``,
+    ``Did not use a Fable reset on #1 personal: refused (cooldown)``, or,
+    when the answer does not say (a timeout, an unreadable answer), that it
+    may have been used (:func:`may_have_been_used_text`)."""
     from ai_quota_swap import resets
 
     result = spent.result
@@ -225,16 +264,35 @@ def outcome_text(spent: Spent, who: str) -> str:
         ) or "usage"
         left = f" · {result.resets_left} left on this grant" if result.resets_left is not None else ""
         return f"Used {what} on {who} · {cleared} refilled{left}"
+    if result.result in UNKNOWN_RESULTS:
+        return may_have_been_used_text(
+            what, who, _outcome_words(result.result, result.reason or result.detail),
+            codex=spent.choice.codex,
+        )
     return not_used_text(what, who, result.result, result.reason or result.detail)
+
+
+def _outcome_words(outcome: str, detail: str | None = None) -> str:
+    outcome = str(outcome).replace("_", " ")
+    detail = str(detail or "").replace("_", " ")
+    return outcome + (f" ({detail})" if detail and detail != outcome else "")
 
 
 def not_used_text(what: str, who: str, outcome: str, detail: str | None = None) -> str:
     """``Did not use a Fable reset on #1 personal: refused (cooldown)``
-    (:func:`autolog.reset_sentence`'s form)."""
-    outcome = str(outcome).replace("_", " ")
-    detail = str(detail or "").replace("_", " ")
-    return f"Did not use {what} on {who}: {outcome}" + (
-        f" ({detail})" if detail and detail != outcome else ""
+    (:func:`autolog.reset_sentence`'s form). Only for what is known not to
+    have been spent: an answer that says so, or a failure before the
+    request."""
+    return f"Did not use {what} on {who}: {_outcome_words(outcome, detail)}"
+
+
+def may_have_been_used_text(what: str, who: str, reason: str, *, codex: bool = False) -> str:
+    """``A Fable reset on #1 personal may have been used: error (network).
+    Run qswap reset to see where things stand.``: for any failure once the
+    request has started."""
+    return (
+        f"{what[:1].upper()}{what[1:]} on {who} may have been used: {reason}. "
+        f"Run {command_for(codex)} to see where things stand."
     )
 
 
@@ -243,7 +301,7 @@ def not_used_text(what: str, who: str, outcome: str, detail: str | None = None) 
 
 def describe_reset(
     num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float,
-    *, threshold: float = 95.0, name: str | None = None,
+    *, threshold: float = 95.0, name: str | None = None, fetched_at: float | None = None,
 ) -> str:
     """What spending ``grant`` would do, in the terms Claude Code uses, and
     what it trades when it is broader than the limit reached. ``name`` is
@@ -257,6 +315,9 @@ def describe_reset(
     reset_name = resets.reset_name(grant)
     who = name or account_label(num, email=email)
     lines = [bolded(f"{who} · {reset_name}"), dimmed(f"  id {grant['id']}")]
+    old = staleness(fetched_at, now)
+    if old:
+        lines.append(yellowed(f"  {old[:1].upper()}{old[1:]}"))
     if grant.get("label"):
         lines.append(dimmed(f"  {grant['label']}"))
     phrase = resets.clears_phrase(grant)
@@ -306,7 +367,7 @@ def describe_reset(
 
 def describe_credit(
     num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float,
-    *, threshold: float = 95.0, name: str | None = None,
+    *, threshold: float = 95.0, name: str | None = None, fetched_at: float | None = None,
 ) -> str:
     """What spending one Codex usage reset credit would do, before asking."""
     from ai_quota_swap import resets
@@ -314,6 +375,9 @@ def describe_credit(
 
     who = name or account_label(num, email=email)
     lines = [bolded(f"{who} · reset credit"), dimmed(f"  id {grant['id']}")]
+    old = staleness(fetched_at, now)
+    if old:
+        lines.append(yellowed(f"  {old[:1].upper()}{old[1:]}"))
     if grant.get("label"):
         lines.append(dimmed(f"  {grant['label']}"))
     reset_name = resets.reset_name(grant)

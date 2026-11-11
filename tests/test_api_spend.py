@@ -416,6 +416,105 @@ class TestNothingRecorded:
         assert api_spend.detail_text(reading, NOW) == "key not found in a registered organization"
 
 
+def _break_ledger(how: str, email: str) -> None:
+    """The ledger states that are not "nothing recorded"."""
+    import sqlite3
+
+    db = data_root() / DB_FILENAME
+    if how == "no-ledger":
+        return
+    if how == "no-meta":
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE other (x)")
+        conn.commit()
+        conn.close()
+        return
+    _ledger(email, [(NOW - 60, OPUS, 120_000_000, 0)])  # $480 this month, readable
+    if how == "schema":
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE meta SET value = '999' WHERE key = 'schema_version'")
+        conn.commit()
+        conn.close()
+    elif how == "corrupt":
+        for extra in (db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+            extra.unlink(missing_ok=True)
+        db.write_bytes(b"not a sqlite database" * 64)
+
+
+class TestUnreadableLedger:
+    """Only "no ledger file yet" reads as nothing recorded; a ledger that
+    exists but cannot be read is spend unknown, never "$0 of …"."""
+
+    UNKNOWN = "spend unknown: this machine's usage ledger could not be read; run: qswap usage"
+
+    def _fleet(self):
+        s = make_switcher()
+        email = seed_api_key(s, 3, KEY_A)
+        set_record(s, 3, budget=500)
+        return s, email
+
+    @pytest.mark.parametrize("how", ["no-meta", "schema", "corrupt"])
+    def test_spend_unknown_on_every_surface(self, env, capsys, how):
+        from ai_quota_swap import menubar, menubar_data
+
+        s, email = self._fleet()
+        _break_ledger(how, email)
+        reading = _readings(s)["3"]
+        assert reading["spend"]["used"] is None and api_spend.spend_unknown(reading)
+        assert not api_spend.nothing_recorded(reading)
+        assert api_spend.spend_text(reading) == f"API key · {self.UNKNOWN}"
+        assert api_spend.detail_text(reading, NOW) is None
+        assert api_spend.budget_state(reading) is None  # the brake has no figure
+        capsys.readouterr()
+        # qswap list: the sentence, wrapped with the command whole.
+        make_switcher().list_accounts()
+        out = capsys.readouterr().out
+        assert "$0" not in out and "no usage recorded" not in out
+        joined = " ".join(out.split())
+        assert self.UNKNOWN in joined
+        assert "\n     qswap usage\n" in out or "run: qswap usage\n" in out
+        # qswap budget.
+        run_main(["budget"])
+        budget = capsys.readouterr().out
+        assert f"3: api-key-3  budget $500 · {self.UNKNOWN}" in budget and "$0" not in budget
+        # The dashboard's one-line row and the menu bar's row: the state.
+        snap = s.accounts_snapshot()
+        acc = {a.number: a for a in snap.accounts}["3"]
+        row = TestTuiAndMenuBar._drawn(acc, row=True)
+        assert row.endswith("   spend unknown") and "$0" not in row
+        accs = {a.number: a for a in menubar_data.account_states(snap, "claude", {}, now=NOW)}
+        menu_row = menubar.account_row(accs["3"], now=NOW, stale_after_s=900)
+        assert menu_row.text == "#3 api-key-3 · API key · spend unknown"
+        assert self.UNKNOWN in " ".join(menu_row.tooltip.split())
+
+    def test_no_ledger_file_yet_is_nothing_recorded(self, env, capsys):
+        from ai_quota_swap import menubar, menubar_data
+
+        s, email = self._fleet()
+        _break_ledger("no-ledger", email)
+        reading = _readings(s)["3"]
+        assert api_spend.nothing_recorded(reading) and not api_spend.spend_unknown(reading)
+        capsys.readouterr()
+        make_switcher().list_accounts()
+        assert "$0 of $500 this month · no usage recorded on this machine" in capsys.readouterr().out
+        run_main(["budget"])
+        assert "3: api-key-3  $0 of $500 this month · no usage recorded on this machine" in (
+            capsys.readouterr().out)
+        snap = s.accounts_snapshot()
+        acc = {a.number: a for a in snap.accounts}["3"]
+        assert TestTuiAndMenuBar._drawn(acc, row=True).endswith("   $0 of $500 this month")
+        accs = {a.number: a for a in menubar_data.account_states(snap, "claude", {}, now=NOW)}
+        assert menubar.account_row(accs["3"], now=NOW, stale_after_s=900).text == (
+            "#3 api-key-3 · API key · $0 of $500 this month")
+
+    def test_without_a_budget_an_unreadable_ledger_still_says_so(self, env, capsys):
+        s = make_switcher()
+        email = seed_api_key(s, 3, KEY_A)
+        _break_ledger("schema", email)
+        reading = _readings(s)["3"]  # a reading now, where "no ledger" gives none
+        assert api_spend.spend_text(reading) == f"API key · {self.UNKNOWN}"
+
+
 class TestNoDataAndBudgets:
     def test_nothing_known_keeps_the_old_row(self, env):
         s = make_switcher()

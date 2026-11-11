@@ -466,6 +466,9 @@ def import_accounts(
     overwritten = 0
     replaced = 0
     written_slots: set[str] = set()
+    # Slots written because their saved login was refused (a dead-token
+    # verdict): for the active one, the live login is the broken copy.
+    dead_slots: set[str] = set()
 
     # Track where the envelope's active account ended up locally. We can't
     # just look up envelope_active in the final account map afterwards: the
@@ -478,6 +481,7 @@ def import_accounts(
     resolved_active_slot: str | None = None
 
     for entry in normalized:
+        had_strike = False
         is_envelope_active = (
             envelope_active_str is not None
             and entry["exported_num"] == envelope_active_str
@@ -594,6 +598,8 @@ def import_accounts(
         if is_envelope_active:
             resolved_active_slot = target_num
         written_slots.add(target_num)
+        if outcome == "replaced" or (outcome == "overwrote" and had_strike):
+            dead_slots.add(target_num)
 
         if outcome == "overwrote":
             _eprint(f"Overwrote {entry['email']} (slot {target_num})")
@@ -651,20 +657,28 @@ def import_accounts(
         summary += f", {replaced} replaced (dead token)"
     _eprint(summary)
 
-    # One of the imported accounts is the login in use on this machine. That
-    # login keeps working as it is: Claude Code refreshes it, so it is at
-    # least as fresh as the exported copy, and the next switch away saves it
-    # over the imported one. `qswap switch N --force` would do the opposite
-    # (stash the live login and write the exported copy over it), so say
-    # that nothing needs doing rather than point at it.
+    # One of the imported accounts is the login in use on this machine.
+    # Healthy, that login keeps working as it is: Claude Code refreshes it,
+    # so it is at least as fresh as the exported copy, and the next switch
+    # away saves it over the imported one; `qswap switch N --force` would do
+    # the opposite (stash the live login and write the exported copy over
+    # it), so nothing needs doing. But when import wrote the slot because its
+    # login was refused (a dead-token verdict), the live login is the broken
+    # one and the imported copy is the fix: there, and only there, loading
+    # it over the live login is the step (issue #79).
     identity = switcher._get_current_account()
     if identity is not None and final is not None:
         live_slot = switcher._find_account_slot(final, identity[0], identity[1])
         if live_slot is not None and live_slot in written_slots:
-            _eprint(
-                f"{switcher.label(live_slot, identity[0])} is already the active "
-                "account; nothing needs doing."
-            )
+            name = switcher.label(live_slot, identity[0])
+            if live_slot in dead_slots:
+                _eprint(
+                    f"{name} is the active account and its login was not working. "
+                    "Load the imported copy, which replaces the live login, with: "
+                    f"qswap switch {live_slot} --force"
+                )
+            else:
+                _eprint(f"{name} is already the active account; nothing needs doing.")
 
 
 def import_usage(

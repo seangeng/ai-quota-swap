@@ -299,10 +299,20 @@ class TestCodexReset:
         assert two.consumed[1][2] == two.consumed[0][2] == pending["requestId"]
 
     def test_a_failed_spend(self, two, capsys):
+        # No decided answer: the credit may have been spent, so it is never
+        # reported as not used.
         two.answer = ClaimResult("error", detail="network")
         code, _, err = run(["codex", "reset", "2", "--yes"], capsys)
         assert code == 1
-        assert "Credit not used: error (network)" in err
+        err = " ".join(err.split())
+        assert "The reset credit may have been used: error (network). qswap codex reset shows where things stand." in err
+        assert "not used" not in err
+
+    def test_a_refused_spend_says_not_used(self, two, capsys):
+        two.answer = ClaimResult("already_used")
+        code, _, err = run(["codex", "reset", "2", "--yes"], capsys)
+        assert code == 1
+        assert "Credit not used: already used" in err
 
     def test_an_unknown_credit(self, two, capsys):
         code, _, err = run(["codex", "reset", "2", "--grant", "nope", "--yes"], capsys)

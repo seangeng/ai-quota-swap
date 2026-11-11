@@ -414,6 +414,57 @@ class TestConflictPolicy:
         live = json.loads(live_file.read_text())
         assert live["claudeAiOauth"]["accessToken"] == "sk-exported"
 
+    @staticmethod
+    def _active_slot_with_a_dead_login(s, temp_home: Path):
+        """Slot 2 (bob) is the live login; the live bytes are what the usage
+        collector found refused (a strike bound to the live generation)."""
+        from ai_quota_swap import oauth
+
+        _seed_account(s, 1, "carol@example.com")
+        _seed_account(s, 2, "bob@example.com")
+        dead = json.dumps({"claudeAiOauth": {
+            "accessToken": "sk-dead", "refreshToken": "rt-dead", "expiresAt": 9999999999000}})
+        s._write_json(s._get_claude_config_path(), {"oauthAccount": {
+            "emailAddress": "bob@example.com", "accountUuid": "acct-2",
+            "organizationUuid": "", "organizationName": ""}})
+        s._store._write_active_credentials_file(dead)
+        s._write_account_credentials("2", "bob@example.com", dead)
+        s._usage_store.record(
+            {"2": FetchRecord(error="invalid_grant", struck_fp=oauth.credential_fingerprint(dead))},
+            {"2": ("bob@example.com", "")},
+        )
+        out = temp_home / "bob.qswap"
+        export_accounts(s, str(out), account="2")
+        env = json.loads(out.read_text())
+        env["accounts"][0]["credentials"] = {"claudeAiOauth": {
+            "accessToken": "sk-good", "refreshToken": "rt-good", "expiresAt": 9999999999000}}
+        out.write_text(json.dumps(env))
+        assert s.current_account_number() == "2" and s._slot_token_dead("2", "bob@example.com")
+        return out, dead
+
+    @pytest.mark.parametrize("force", [False, True])
+    def test_import_over_an_active_login_that_was_not_working_says_how_to_load_it(
+        self, temp_home: Path, capsys, force
+    ):
+        """Written because its login was refused ("replaced", or --force on a
+        struck slot): the live login is the broken copy, so the note gives the
+        command that loads the imported one, and says it replaces the live
+        login. Following it does exactly that."""
+        s = _linux_switcher(temp_home)
+        out, dead = self._active_slot_with_a_dead_login(s, temp_home)
+        capsys.readouterr()
+
+        import_accounts(s, str(out), force=force)
+
+        err = " ".join(capsys.readouterr().err.split())
+        assert ("#2 bob@example.com is the active account and its login was not working. "
+                "Load the imported copy, which replaces the live login, with: "
+                "qswap switch 2 --force") in err
+        assert "nothing needs doing" not in err
+        assert s._read_credentials() == dead  # import itself leaves the live login alone
+        s.switch_to("2", force=True)
+        assert json.loads(s._read_credentials())["claudeAiOauth"]["refreshToken"] == "rt-good"
+
     def test_import_without_matching_live_login_prints_no_hint(
         self, temp_home: Path, capsys
     ):

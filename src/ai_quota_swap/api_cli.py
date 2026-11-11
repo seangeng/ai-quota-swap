@@ -288,6 +288,11 @@ def _budget_line(reading: dict | None, budget: float | None) -> str:
 
     if reading is None:
         reading = {"spend": {"used": None, "limit": budget}, "source": None}
+    if api_spend.spend_unknown(reading):
+        from ai_quota_swap.display import API_KEY_SPEND_UNKNOWN
+
+        head = "no budget" if budget is None else f"budget {api_spend.budget_money(budget)}"
+        return f"{head} · {API_KEY_SPEND_UNKNOWN}: {api_spend.LEDGER_UNREADABLE}"
     if api_spend.nothing_recorded(reading):
         # qswap list's words for the same state.
         if budget is None:

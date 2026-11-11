@@ -48,6 +48,9 @@ NOT_READ_YET = "usage not read yet"
 #: usage. The block's words, and a one-line row's (``api_key_summary``).
 API_KEY_NO_USAGE = "no usage recorded on this machine"
 API_KEY_NO_USAGE_SHORT = "no usage recorded"
+#: An API-key account whose ledger exists but could not be read: a one-line
+#: row says this much; the block adds why and the next step.
+API_KEY_SPEND_UNKNOWN = "spend unknown"
 
 #: Provider ids to the names a sentence uses.
 PROVIDER_NAMES = {"claude": "Claude Code", "codex": "Codex"}
@@ -196,11 +199,14 @@ def held_compact(counts: Sequence[tuple[str, int]], provider: str | None = "clau
 def api_key_summary(block: "AccountBlock") -> str:
     """An API-key account's state in a one-line row (the menu bar, the
     dashboard), after its ``API key`` fact: the block's first line, except
-    that nothing recorded is said in two words (``no usage recorded``) and a
-    budget with nothing spent as ``$0 of $500 this month``."""
+    that nothing recorded is said in two words (``no usage recorded``), a
+    budget with nothing spent as ``$0 of $500 this month``, and a ledger that
+    could not be read as ``spend unknown``."""
     note = block.notes[0] if block.notes else API_KEY_NO_USAGE
     if note == API_KEY_NO_USAGE:
         return API_KEY_NO_USAGE_SHORT
+    if note.startswith(f"{API_KEY_SPEND_UNKNOWN}: "):
+        return API_KEY_SPEND_UNKNOWN  # the state; the block says why
     return note.removesuffix(f" · {API_KEY_NO_USAGE}")
 
 

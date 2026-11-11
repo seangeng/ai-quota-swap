@@ -47,10 +47,9 @@ from ai_quota_swap.menubar import (
     health_row,
     manual_switch_followup,
     parse_token_entry,
+    change_resets_setting,
     relogin_confirmation,
     remove_dialog,
-    resets_auto_confirmation,
-    resets_setting,
     use_reset,
     wanted_engines,
 )
@@ -74,6 +73,8 @@ _ACCOUNT_REF = re.compile(r"Account-(\d+)(?: \([^)]*\))?")
 _ACTION_DONE = object()
 #: Marks the result of a *Use a reset* claim in the event queue.
 _RESET_DONE = object()
+#: Marks work a worker needs done on the main thread (a dialog).
+_ON_MAIN = object()
 
 
 def run_app(switcher, rumps, AppKit) -> int:
@@ -299,10 +300,14 @@ def run_app(switcher, rumps, AppKit) -> int:
                 if provider is _ACTION_DONE:
                     self._finish_action(*ev)
                     continue
+                if provider is _ON_MAIN:
+                    guarded(ev, alert=self._alert)
+                    continue
                 if provider is _RESET_DONE:
-                    self._notify(ev)
+                    if ev is not None:  # None: the question was answered Cancel
+                        self._notify(ev)
+                        self.refresh_async()  # show the refilled window
                     self.rebuild_menu()  # the account's rows are usable again
-                    self.refresh_async()  # and show the refilled window
                     continue
                 kind = getattr(ev, "kind", "")
                 if kind == "engine-stopped":
@@ -685,31 +690,55 @@ def run_app(switcher, rumps, AppKit) -> int:
             self.rebuild_menu()
 
         def _do_resets_auto(self, a: Action):
-            # Off → on can spend something irreversible: ask once.
-            question = resets_auto_confirmation(self._resets.auto, str(a.value))
-            if question and not self._confirm("Use resets automatically", question, "Turn on"):
-                return
-            self._write_reset_setting(a)
+            self._change_resets(a)
 
         def _do_toggle_weekly_for_model(self, a: Action):
-            self._write_reset_setting(a)
+            self._change_resets(a)
 
-        def _write_reset_setting(self, a: Action):
-            """The key `qswap config set` writes, through the same writer.
-            Running engines read resets.* from settings.json on every tick
-            (switcher.reset_settings), so nothing is restarted."""
-            key, value = resets_setting(a, self._resets)
+        def _change_resets(self, a: Action):
+            """Off → on can spend something irreversible: ask once, judged on
+            settings.json as it is now (a terminal may have changed it since
+            the menu was drawn). The key `qswap config set` writes, through
+            the same writer. Running engines read resets.* from settings.json
+            on every check (switcher.reset_settings), so nothing restarts."""
             try:
-                set_setting(data_root, key, value)
+                current = load_reset_settings(data_root)
+            except Exception:
+                current = self._resets
+            try:
+                change_resets_setting(
+                    a, current, codex=self._both(),
+                    confirm=lambda title, question: self._confirm(title, question, "Turn on"),
+                    write=lambda key, value: set_setting(data_root, key, value),
+                )
             except Exception as e:
-                self._alert(f"Couldn't change {key}: {error_text(e) if isinstance(e, ProviderError) else e}")
+                self._alert(f"Couldn't change the reset setting: {error_text(e) if isinstance(e, ProviderError) else e}")
                 return
             self.rebuild_menu()
+
+        def _ask_on_main(self, title: str, message: str) -> bool:
+            """The Use a reset question, asked from the worker once it has
+            read the account again: shown on the main thread, Cancel by
+            default; the worker waits for the answer."""
+            if threading.current_thread() is threading.main_thread():
+                return self._confirm_cancel_default(title, message, "Use reset")
+            answer = {"ok": False}
+            done = threading.Event()
+
+            def show():
+                try:
+                    answer["ok"] = self._confirm_cancel_default(title, message, "Use reset")
+                finally:
+                    done.set()
+
+            self._queue_event(_ON_MAIN, show)
+            done.wait()
+            return answer["ok"]
 
         def _do_use_reset(self, a: Action):
             started = use_reset(
                 self._menu_input(), a,
-                confirm=lambda title, message: self._confirm_cancel_default(title, message, "Use reset"),
+                confirm=self._ask_on_main,
                 run=lambda provider, number, grant_id, **kw: self._reset_runner.run(
                     self._switcher_for(provider), provider, number, grant_id, **kw,
                 ),

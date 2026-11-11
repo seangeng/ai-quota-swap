@@ -944,6 +944,15 @@ def _reset_command(argv: list[str]) -> None:
                 )
                 for line in display.render_block(block)[1:]:
                     print(line)
+        elif result.result in manual_reset.UNKNOWN_RESULTS:
+            # No decided answer (a timeout, an answer qswap cannot read):
+            # the reset may have been spent, so never say it was not.
+            detail = (result.reason or result.detail or "").replace("_", " ")
+            error(
+                f"The {noun} may have been used: {result.result.replace('_', ' ')}"
+                + (f" ({detail})" if detail else "")
+                + f". {command} shows where things stand."
+            )
         else:
             detail = (result.reason or result.detail or "").replace("_", " ")
             error(
@@ -957,6 +966,9 @@ def _reset_command(argv: list[str]) -> None:
             print(json.dumps(error_envelope(e), indent=2))
         else:
             error(f"Error: {e}")
+            if in_flight:
+                # The request was sent: the reset may have been used.
+                print(yellowed(f"The {noun} may have been used. {command} shows where things stand."))
         sys.exit(1)
     except KeyboardInterrupt:
         if in_flight:
