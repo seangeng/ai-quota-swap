@@ -125,7 +125,7 @@ MEANINGS: dict[str, str] = {
         "`resets.threshold`, and spend it there instead of moving at the line. With "
         "`resets.threshold` 100 the account is at its limit until the next check "
         "spends the reset. No effect under `off` and `last-resort`; see "
-        "[resets.md](resets.md#when-auto-mode-spends-one)."
+        "[resets.md](resets.md#before-switching)."
     ),
     "codex.restartDaemon": (
         "After `qswap codex switch`, restart Codex's background server so new "

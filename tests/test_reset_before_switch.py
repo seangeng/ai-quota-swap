@@ -16,6 +16,8 @@ faked and never claimed.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from ai_quota_swap import autolog, claude_settings
@@ -27,6 +29,7 @@ from ai_quota_swap.autoswitch import (
 )
 from ai_quota_swap.resets import ClaimResult
 from ai_quota_swap.settings import ResetSettings, load_reset_settings, set_setting
+from tests.test_autoswitch import EngineHarness
 from tests.test_engine_money import _fleet, _switches, _tick_resets
 from tests.test_resets import _grant
 from tests.test_resets import _usage as _rusage
@@ -320,3 +323,68 @@ class TestConfig:
         line = next(ln for ln in out.splitlines() if ln.startswith("resets.beforeSwitch"))
         assert line.split()[1] == "false" and "(default)" in line
         assert self._run(["get", "resets.beforeSwitch"], capsys)[1] == "false\n"
+
+
+# -- the documents quote what the code prints ------------------------------------------
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _page(name: str) -> str:
+    return (REPO / name).read_text(encoding="utf-8")
+
+
+def _documents_fleet(temp_home) -> EngineHarness:
+    """The documents' accounts: #1 personal (active, holding one weekly
+    reset), #2 work and #3 night-shift; a switch line of 98."""
+    h = EngineHarness(temp_home, threshold=98.0)
+    for n, email in ((1, "maya@example.com"), (2, "maya.work@example.com"),
+                     (3, "ops@example.net")):
+        h.seed(n, email)
+    h.make_live("maya@example.com", 1)
+    data = h.switcher._get_sequence_data()
+    for n, alias in (("1", "personal"), ("2", "work"), ("3", "night-shift")):
+        data["accounts"][n]["alias"] = alias
+    h.switcher._write_json(h.switcher.sequence_file, data)
+    return h
+
+
+def test_the_documents_quote_the_hold_as_the_code_prints_it(temp_home):
+    h = _documents_fleet(temp_home)
+    _settings(h)
+    usage = {
+        "1": _rusage(h5=10, d7=98, reset_in=3 * 86400, grants=[_week()]),
+        "2": _rusage(h5=12, d7=21),
+        "3": _rusage(h5=40, d7=60),
+    }
+    outcome, _ = _tick_resets(h, usage)
+    assert outcome is TickOutcome.NO_ACTION
+    lines: list[str] = []
+    log = autolog.AutoLog(lines.append, clock=lambda: "14:20:00", width=80)
+    for event in h.events:
+        log(event)
+    log.flush()
+    block = "\n".join(line for chunk in lines for line in chunk.splitlines())
+    assert f"```text\n{block}\n```" in _page("docs/resets.md"), block
+    (held,) = _held(h)
+    assert f"`{held.human()}`" in _page("docs/resets.md"), held.human()
+    fragment, _tone = autolog.no_switch_fragment(held)
+    assert f"`{fragment}`" in _page("docs/auto-switch.md"), fragment
+    assert "`reset-ahead`" in _page("docs/json-output.md")
+
+
+def test_the_documents_quote_the_config_note():
+    from ai_quota_swap.cli import _config_set_note
+    from ai_quota_swap.settings import setting_spec
+
+    note = _config_set_note(Path("/nonexistent"), setting_spec("resets.beforeSwitch"), True)
+    assert f"$ qswap config set resets.beforeSwitch true\nresets.beforeSwitch = true\n{note}\n" in (
+        _page("docs/resets.md"))
+
+
+def test_the_menu_bar_page_names_the_toggle():
+    from ai_quota_swap import menubar
+
+    page = _page("docs/menubar.md")
+    assert f"*{menubar.BEFORE_SWITCH_LABEL}* is `resets.beforeSwitch`" in page
+    assert f"| `resets.beforeSwitch` | `false` | *{menubar.BEFORE_SWITCH_LABEL}*" in page
