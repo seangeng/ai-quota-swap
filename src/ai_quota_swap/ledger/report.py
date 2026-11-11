@@ -117,6 +117,9 @@ class Row:
     head: str = ""
     tail: str = ""
     cut: str = "end"
+    #: The label JSON carries when it differs from the text one: an account
+    #: named by a placeholder keeps its stored address there.
+    json_label: str | None = None
 
 
 @dataclass
@@ -196,7 +199,8 @@ class Accounts:
         return self.by_owner.get(owner) if owner else None
 
     def describe(
-        self, key: str, provider: str | None = "claude", *, show_provider: bool = False
+        self, key: str, provider: str | None = "claude", *, show_provider: bool = False,
+        stored: bool = False,
     ) -> tuple[str, dict | None, str]:
         """``(label, JSON info, tail)`` for an account key in ``provider``'s
         usage. ``show_provider`` prefixes the provider's name (``Claude #2
@@ -211,13 +215,15 @@ class Accounts:
         info = self.by_key.get((provider or "", key))
         if info is not None:
             num = info["number"]
-            label = account_label(num, alias=info["alias"] or None, email=email, provider=prefix)
+            label = account_label(num, alias=info["alias"] or None, email=email,
+                                  provider=prefix, stored=stored)
             return label, {"number": num, "email": email}, ""
         found: dict = {"number": None, "email": email}
         num = self.former_numbers.get(provider or "", {}).get(key)
         if num is not None:
             found["formerNumber"] = num
-        return account_label(None, email=email, provider=prefix) + NOT_MANAGED, found, NOT_MANAGED
+        label = account_label(None, email=email, provider=prefix, stored=stored)
+        return label + NOT_MANAGED, found, NOT_MANAGED
 
 
 def _profile_sessions(
@@ -365,6 +371,8 @@ def _label(row: Row, by: str, accounts: Accounts, *, show_provider: bool = False
     elif by == "account":
         prov, key = row.key  # type: ignore[misc]
         row.label, info, row.tail = accounts.describe(key, prov, show_provider=show_provider)
+        stored = accounts.describe(key, prov, show_provider=show_provider, stored=True)[0]
+        row.json_label = stored if stored != row.label else None
         row.extra["account"] = info
         row.extra["provider"] = prov
     elif by == "project":
@@ -394,7 +402,7 @@ def report_to_json(report: Report, scan: dict | None = None) -> dict:
             key = row.key[1]  # type: ignore[index]
         else:
             key = row.key
-        entry = {"key": key, "label": row.label, **row.totals.to_json()}
+        entry = {"key": key, "label": row.json_label or row.label, **row.totals.to_json()}
         if report.by == "account":
             entry["key"] = row.key[1] or None  # type: ignore[index]
             entry["account"] = row.extra.get("account")

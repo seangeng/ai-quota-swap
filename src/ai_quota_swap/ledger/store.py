@@ -108,6 +108,23 @@ class LedgerStore:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        #: The file could not be opened as a database and was started afresh.
+        self.rebuilt = False
+        try:
+            self._open()
+        except sqlite3.DatabaseError as e:
+            if isinstance(e, sqlite3.OperationalError):
+                raise  # locked, busy, unreachable: not a damaged file
+            # Not a database (truncated, overwritten, damaged). The ledger is
+            # a cache of session files still on disk, so it is rebuilt, as
+            # one with another schema version is.
+            self.close()
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(self.path) + suffix).unlink(missing_ok=True)
+            self._open()
+            self.rebuilt = True
+
+    def _open(self) -> None:
         self.conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")

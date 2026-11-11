@@ -21,6 +21,7 @@ from ai_quota_swap.exceptions import (
     TransferError,
 )
 from ai_quota_swap.fsutil import atomic_write_text
+from ai_quota_swap.labels import shown_email
 from ai_quota_swap.json_output import SCHEMA_VERSION as JSON_SCHEMA_VERSION
 from ai_quota_swap.json_output import usage_from_json
 from ai_quota_swap.models import Platform, get_timestamp, normalize_alias
@@ -466,6 +467,9 @@ def import_accounts(
     overwritten = 0
     replaced = 0
     written_slots: set[str] = set()
+    # What each written slot received, for the note about the live login.
+    written_creds: dict[str, str] = {}
+    live_creds, live_dead = _live_login_state(switcher)
 
     # Track where the envelope's active account ended up locally. We can't
     # just look up envelope_active in the final account map afterwards: the
@@ -526,7 +530,7 @@ def import_accounts(
                 outcome = "replaced"
             else:
                 _eprint(
-                    f"Skipped {entry['email']} (already exists, use --force)"
+                    f"Skipped {shown_email(entry['email'])} (already exists, use --force)"
                 )
                 skipped += 1
                 # Even when skipped, the envelope's active account exists
@@ -542,7 +546,7 @@ def import_accounts(
             live_pids = switcher._live_session_pids(target_num, entry["email"])
             if live_pids:
                 _eprint(
-                    f"Warning: {entry['email']} (slot {target_num}) has a live "
+                    f"Warning: {shown_email(entry['email'])} (slot {target_num}) has a live "
                     f"session-mode instance (PID {', '.join(map(str, live_pids))}); "
                     "its session profile keeps the pre-import credentials until "
                     "it is restarted via 'qswap run'."
@@ -594,9 +598,10 @@ def import_accounts(
         if is_envelope_active:
             resolved_active_slot = target_num
         written_slots.add(target_num)
+        written_creds[target_num] = entry["creds_text"]
 
         if outcome == "overwrote":
-            _eprint(f"Overwrote {entry['email']} (slot {target_num})")
+            _eprint(f"Overwrote {shown_email(entry['email'])} (slot {target_num})")
             if had_strike:
                 # Store-fact wording on purpose: import rewrites the backup,
                 # so for the active slot the next poll may still exercise the
@@ -618,12 +623,12 @@ def import_accounts(
             # Describe the observed trigger (the quarantine verdict), not the
             # token itself — a stale verdict can sit over newer working creds.
             _eprint(
-                f"Replaced {entry['email']} (slot {target_num} was "
+                f"Replaced {shown_email(entry['email'])} (slot {target_num} was "
                 "quarantined: refresh token dead)"
             )
             replaced += 1
         else:
-            _eprint(f"Imported {entry['email']} → slot {target_num}")
+            _eprint(f"Imported {shown_email(entry['email'])} → slot {target_num}")
             imported += 1
 
     # Migration UX: if the destination has no recorded active account
@@ -651,18 +656,71 @@ def import_accounts(
         summary += f", {replaced} replaced (dead token)"
     _eprint(summary)
 
-    # If we just rewrote the stored backup for the account that is the current
-    # live login, a plain switch would back the (possibly stale) live
-    # credentials up over it (issue #79) — point at the explicit activation
-    # path instead.
+    # One of the imported accounts is the login in use on this machine.
+    # Import rewrote only its saved copy; Claude Code keeps using the live one.
+    # - An OAuth login that works keeps working as it is: Claude Code
+    #   refreshes it, so it is at least as fresh as the exported copy, and the
+    #   next switch away saves it over the imported one. `qswap switch N
+    #   --force` would do the opposite (stash it and write the exported copy
+    #   over it), so nothing needs doing, even when the saved copy was the
+    #   broken one that import replaced.
+    # - When the dead-token verdict binds the LIVE credential itself, the
+    #   live login is the broken one and the imported copy is the fix: there,
+    #   and only there, loading it over the live login is the step (#79).
+    # - An API key is never refreshed: a different imported key is lost at
+    #   the next switch away unless it is loaded now.
     identity = switcher._get_current_account()
     if identity is not None and final is not None:
         live_slot = switcher._find_account_slot(final, identity[0], identity[1])
         if live_slot is not None and live_slot in written_slots:
-            _eprint(
-                f"Note: {identity[0]} is your current live login — activate the "
-                f"imported credentials with: qswap switch {live_slot} --force"
-            )
+            name = switcher.label(live_slot, identity[0])
+            record = (final.get("accounts") or {}).get(live_slot) or {}
+            if record.get("kind") == "api_key":
+                same = (live_creds or "").strip() == (written_creds.get(live_slot) or "").strip()
+                if same:
+                    _eprint(f"{name} is already the active account; nothing needs doing.")
+                else:
+                    _eprint(
+                        f"The saved key for {name} was replaced; Claude Code is still using "
+                        "the previous one. Load the new key, which replaces the live key, "
+                        f"with: qswap switch {live_slot} --force"
+                    )
+            elif live_dead:
+                _eprint(
+                    f"{name} is the active account and its login was not working. "
+                    "Load the imported copy, which replaces the live login, with: "
+                    f"qswap switch {live_slot} --force"
+                )
+            else:
+                _eprint(f"{name} is already the active account; nothing needs doing.")
+
+
+def _live_login_state(switcher) -> tuple[str | None, bool]:
+    """``(live credential, its login is dead)`` before import writes
+    anything: dead only when the slot's dead-token verdict binds the live
+    credential itself, not an older generation or the saved copy alone. An
+    unreadable live credential is never called dead."""
+    from ai_quota_swap.oauth import credential_fingerprint
+
+    try:
+        live = switcher._read_credentials()
+        identity = switcher._get_current_account()
+        data = switcher._get_sequence_data() or {}
+    except Exception:
+        return None, False
+    if live is None or identity is None:
+        return live, False
+    slot = switcher._find_account_slot(data, identity[0], identity[1])
+    if slot is None:
+        return live, False
+    org = ((data.get("accounts") or {}).get(slot) or {}).get("organizationUuid", "") or ""
+    try:
+        entry = switcher._usage_store.entries({slot: (identity[0], org)}).get(slot)
+    except Exception:
+        return live, False
+    if entry is None:
+        return live, False
+    return live, entry.token_dead(stored_fp=credential_fingerprint(live))
 
 
 def import_usage(

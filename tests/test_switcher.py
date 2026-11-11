@@ -5910,7 +5910,9 @@ class TestAddAccountFromToken:
         data = switcher._get_sequence_data()
         assert data["accounts"]["1"]["email"] == "setup-token-1@token.local"
         out = capsys.readouterr().out
-        assert "setup-token-1@token.local" in out
+        # A placeholder is a name, not an address: labels show it without
+        # its domain (labels.shown_email); the record keeps the full value.
+        assert "#1 setup-token-1" in out and "@token.local" not in out
 
     def test_default_email_with_explicit_slot(self, temp_home):
         """Default email should derive from explicit --slot when one is given."""

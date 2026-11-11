@@ -52,8 +52,8 @@ Sessions need a subscription login, so an API-key account is refused:
 
 ```
 $ qswap run 5
-Error: #5 ci (api-key-5@token.local) is an API-key account; qswap run does not
-  support API-key accounts yet.
+Error: #5 ci is an API-key account; qswap run does not support API-key accounts
+  yet.
 Make it the active login instead: qswap switch 5
 ```
 

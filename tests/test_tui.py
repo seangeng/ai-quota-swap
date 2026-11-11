@@ -612,6 +612,21 @@ class TestRows:
         unread = make_account(6, entry=UsageEntry())
         assert self._row(unread, 100).endswith("usage not read yet")
 
+    def test_an_unused_api_key_says_so_in_two_words(self):
+        # The menu bar's row and this one say the same; no address for a placeholder.
+        from dataclasses import replace
+
+        entry = UsageEntry(sentinel=USAGE_API_KEY)
+        acc = make_account(5, kind="api_key", email="api-key-5@token.local", entry=entry)
+        row = self._row(acc, 100)
+        assert row.startswith("#5 api-key-5 · API key") and "token.local" not in row
+        assert row.endswith("   no usage recorded")
+        zero = {"spend": {"used": 0.0, "limit": 500.0, "pct": 0.0}, "today": 0.0,
+                "source": "ledger", "as_of": time.time(), "unpriced_tokens": 0}
+        acc = make_account(5, kind="api_key", email="api-key-5@token.local",
+                           entry=replace(entry, api_spend=zero))
+        assert self._row(acc, 100).endswith("   $0 of $500 this month")
+
     def test_a_limit_is_said_in_words(self):
         acc = make_account(1, entry=make_entry(100.0, 64.0))
         assert self._row(acc, 100).endswith("5h 100% · 7d 64% · limit reached")

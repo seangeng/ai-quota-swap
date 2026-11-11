@@ -30,7 +30,7 @@ Importing a claude-swap 1.1.0b1 export with three accounts into an empty qswap:
 $ qswap import ~/claude-swap-export.json
 Imported a@example.com → slot 1
 Imported b@example.com → slot 2
-Imported api-key-3@token.local → slot 3
+Imported api-key-3 → slot 3
 Done: 3 imported, 0 overwritten, 0 skipped
 ```
 
@@ -38,7 +38,7 @@ An export carries each account's login (or the key of an API-key account), its e
 
 It does not carry settings, disabled accounts, per-account switch lines, priorities, directory mappings, `cswap run` profiles, usage readings or menu bar settings.
 
-If the account Claude Code is logged in to is in the file, the import ends with a note suggesting `qswap switch N --force`. Skip it here: claude-swap exported that account's login from Claude Code itself, and `--force` would write that copy back over a login Claude Code may have refreshed since.
+If the account Claude Code is logged in to is in the file, the import ends with a note about it. Usually it says the account is already the active one and nothing needs doing: Claude Code keeps using its own login, which is at least as fresh as the exported copy. Only when that login was not working (its refresh was refused), or for an API-key account whose key changed, does the note give `qswap switch N --force`, which loads the imported copy over the live one.
 
 If an account shows `needs re-login` in `qswap list` after the import, a refresh had already replaced the login it was exported with. Log in with that account in Claude Code and run `qswap add`.
 

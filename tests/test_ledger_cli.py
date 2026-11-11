@@ -475,3 +475,64 @@ class TestProgress:
         show = tty_progress(out)
         show(ScanStats(files_seen=3, bytes_read=2_000_000, events=5), 10)
         assert "3/10 files" in out.getvalue() and "5 new responses" in out.getvalue()
+
+
+class TestPlaceholderNamesInJson:
+    """Labels show a placeholder (setup-token-1@token.local) by its name in
+    text; JSON keeps the stored value, byte for byte as before the change."""
+
+    def _seed(self):
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
+
+        s = ClaudeAccountSwitcher()
+        s._setup_directories()
+        s._init_sequence_file()
+        with patch.object(s, "_write_account_credentials"), patch.object(s, "_write_account_config"):
+            s.add_account_from_token("tok", assume_yes=True)  # setup-token-1@token.local
+        (Path.home() / ".claude.json").write_text(json.dumps({
+            "oauthAccount": {"emailAddress": "setup-token-1@token.local", "accountUuid": ""},
+        }))
+        # Active since before the history, so its sessions are attributed to it.
+        record_activation(paths.get_backup_root(), number=1, email="setup-token-1@token.local",
+                          org="", now=time.time() - 3 * 86400)
+        return s
+
+    @staticmethod
+    def _unshortened(monkeypatch):
+        # Labels as they were: a placeholder is an address like any other.
+        from ai_quota_swap import display, labels, menubar
+
+        for mod in (labels, display, menubar):
+            if hasattr(mod, "shown_email"):
+                monkeypatch.setattr(mod, "shown_email", lambda e: e or "")
+            if hasattr(mod, "is_placeholder"):
+                monkeypatch.setattr(mod, "is_placeholder", lambda e: False)
+
+    @staticmethod
+    def _stable(text: str) -> str:
+        doc = json.loads(text)
+        doc.pop("scan", None)  # how long the scan took
+        for acc in doc.get("accounts") or ():
+            acc.pop("usageAgeSeconds", None)
+        return json.dumps(doc, sort_keys=True)
+
+    def test_usage_json_label_keeps_the_stored_value(self, history, capsys, monkeypatch):
+        self._seed()
+        capsys.readouterr()
+        code, out, err = run_cli("--json", "--by", "account", capsys=capsys)
+        assert code == 0, err
+        labels = [r["label"] for r in json.loads(out)["rows"]]
+        assert "Claude #1 setup-token-1@token.local" in labels
+        _code, text, _ = run_cli("--by", "account", capsys=capsys)
+        assert "Claude #1 setup-token-1 " in text and "token.local" not in text
+        self._unshortened(monkeypatch)
+        _code, before, _ = run_cli("--json", "--by", "account", capsys=capsys)
+        assert self._stable(out) == self._stable(before)
+
+    def test_list_json_keeps_the_stored_value(self, temp_home, capsys, monkeypatch):
+        s = self._seed()
+        payload = json.dumps(s.list_accounts(json_output=True), sort_keys=True)
+        assert '"email": "setup-token-1@token.local"' in payload
+        self._unshortened(monkeypatch)
+        before = json.dumps(s.list_accounts(json_output=True), sort_keys=True)
+        assert self._stable(payload) == self._stable(before)

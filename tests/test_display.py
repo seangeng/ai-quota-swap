@@ -73,6 +73,16 @@ class TestPhrases:
         )
         assert display.held_resets([("full", 1)], "codex") == "1 reset credit"
 
+    def test_held_compact_is_one_phrase(self):
+        # A compact row (the menu bar's) writes several kinds as one fact,
+        # and one kind as the sentence form does.
+        assert display.held_compact([("Fable", 3), ("weekly", 1)]) == "resets: 3 Fable, 1 weekly"
+        assert display.held_compact([("Fable", 1)]) == "1 Fable reset"
+        assert display.held_compact([("weekly", 2)]) == "2 weekly resets"
+        assert display.held_compact([("five-hour", 1)]) == "1 five-hour reset"
+        assert display.held_compact([("full", 1), ("full", 1)], "codex") == "2 reset credits"
+        assert display.held_compact([]) == ""
+
     def test_one_wording_for_a_reset_that_needs_a_limit(self):
         # list and reset used to say "not usable now" and "needs a limit hit first".
         assert display.grant_state("needs a limit hit first") == "usable once a limit is reached"
@@ -151,7 +161,29 @@ class TestBlock:
         block = _block(Reading(sentinel=USAGE_API_KEY), kind="api_key", alias="ci")
         lines = display.render_block(block)
         assert lines[0] == "  #1 ci (maya@example.com) · API key"
-        assert lines[1] == "     no quota; billed per token"
+        assert lines[1] == "     no usage recorded on this machine"
+
+    def test_api_key_with_nothing_recorded_in_a_row(self):
+        def block(*notes):
+            return AccountBlock(number=5, email="api-key-5@token.local", kind="api_key",
+                                state="api-key", notes=notes)
+
+        assert display.api_key_summary(block()) == "no usage recorded"
+        assert display.api_key_summary(block("no usage recorded on this machine")) == (
+            "no usage recorded"
+        )
+        assert display.api_key_summary(block(
+            "$0 of $500 this month · no usage recorded on this machine")) == "$0 of $500 this month"
+        spent = "$4.12 today · $212.40 this month · estimate"
+        assert display.api_key_summary(block(spent, "a detail line")) == spent
+
+    def test_a_placeholder_header_shows_the_name(self):
+        plain = display.header_parts(AccountBlock(number=5, email="api-key-5@token.local",
+                                                  kind="api_key")).plain()
+        assert plain == "#5 api-key-5 · API key"
+        aliased = display.header_parts(AccountBlock(number=5, alias="ci", email="api-key-5@token.local",
+                                                    kind="api_key")).plain()
+        assert aliased == "#5 ci · API key"
 
     def test_a_provider_note(self):
         block = _block(Reading(sentinel=USAGE_TOKEN_EXPIRED),

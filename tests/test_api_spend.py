@@ -355,6 +355,198 @@ class TestLedgerSource:
         assert api_spend.detail_text(reading, NOW) == "estimate as of the last qswap usage, 3h ago"
 
 
+class TestNothingRecorded:
+    """An unused key reads the same with no ledger and after the first scan."""
+
+    def test_zero_estimate_without_a_budget(self, env):
+        s = make_switcher()
+        seed_api_key(s, 3, KEY_A)
+        _ledger("someone-else@example.com", [(NOW - 60, OPUS, 1_000_000, 0)])
+        reading = _readings(s)["3"]
+        assert reading["source"] == "ledger" and reading["spend"]["used"] == 0
+        assert api_spend.nothing_recorded(reading)
+        assert api_spend.spend_text(reading) == "API key · no usage recorded on this machine"
+        assert api_spend.detail_text(reading, NOW) is None
+        assert api_spend.menu_text(reading) == "no usage recorded"
+
+    def test_zero_estimate_with_a_budget(self, env):
+        s = make_switcher()
+        seed_api_key(s, 3, KEY_A)
+        set_record(s, 3, budget=500)
+        _ledger("someone-else@example.com", [])
+        reading = _readings(s)["3"]
+        assert api_spend.spend_text(reading) == (
+            "API key · $0 of $500 this month · no usage recorded on this machine"
+        )
+        assert api_spend.menu_text(reading) == "$0 of $500 this month"
+        assert api_spend.budget_state(reading) == (0.0, 500.0)  # still enforced as before
+
+    def test_an_old_zero_estimate_says_how_old_without_estimate(self, env):
+        s = make_switcher()
+        seed_api_key(s, 3, KEY_A)
+        _ledger("someone-else@example.com", [], scanned_at=NOW - 3 * 3600)
+        reading = _readings(s)["3"]
+        assert api_spend.detail_text(reading, NOW) == "as of the last qswap usage, 3h ago"
+
+    def test_spend_uses_the_existing_wording(self, env):
+        s = make_switcher()
+        email = seed_api_key(s, 3, KEY_A)
+        _ledger(email, [(NOW - 60, OPUS, 1_000_000, 0)])
+        reading = _readings(s)["3"]
+        assert not api_spend.nothing_recorded(reading)
+        assert api_spend.spend_text(reading) == "API key · $4.00 today · $4.00 this month · estimate"
+
+    def test_unpriced_tokens_are_usage(self):
+        reading = {"spend": {"used": 0.0, "limit": None}, "today": 0.0, "source": "ledger",
+                   "unpriced_tokens": 120}
+        assert not api_spend.nothing_recorded(reading)
+        assert api_spend.spend_text(reading).endswith("$0.00+ this month · estimate")
+
+    def test_admin_api_zeros_are_shown_as_they_are(self):
+        reading = {"spend": {"used": 0.0, "limit": None}, "today": 0.0,
+                   "source": "admin-api", "unpriced_tokens": 0}
+        assert not api_spend.nothing_recorded(reading)
+        assert api_spend.spend_text(reading) == "API key · $0.00 today · $0.00 this month"
+
+    def test_an_organization_problem_is_not_nothing_recorded(self):
+        reading = {"spend": {"used": None, "limit": None}, "today": None, "source": None,
+                   "unpriced_tokens": 0, "note": "key not found in a registered organization"}
+        assert not api_spend.nothing_recorded(reading)
+        assert api_spend.spend_text(reading) == "API key · no spend data yet"
+        assert api_spend.detail_text(reading, NOW) == "key not found in a registered organization"
+
+
+def _break_ledger(how: str, email: str) -> None:
+    """The ledger states that are not "nothing recorded"."""
+    import sqlite3
+
+    db = data_root() / DB_FILENAME
+    if how == "no-ledger":
+        return
+    if how == "no-meta":
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE other (x)")
+        conn.commit()
+        conn.close()
+        return
+    _ledger(email, [(NOW - 60, OPUS, 120_000_000, 0)])  # $480 this month, readable
+    if how == "schema":
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE meta SET value = '999' WHERE key = 'schema_version'")
+        conn.commit()
+        conn.close()
+    elif how == "corrupt":
+        for extra in (db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+            extra.unlink(missing_ok=True)
+        db.write_bytes(b"not a sqlite database" * 64)
+
+
+class TestUnreadableLedger:
+    """Only "no ledger file yet" reads as nothing recorded; a ledger that
+    exists but cannot be read is spend unknown, never "$0 of …"."""
+
+    UNKNOWN = "spend unknown: this machine's usage ledger could not be read; run: qswap usage"
+
+    def _fleet(self):
+        s = make_switcher()
+        email = seed_api_key(s, 3, KEY_A)
+        set_record(s, 3, budget=500)
+        return s, email
+
+    @pytest.mark.parametrize("how", ["no-meta", "schema", "corrupt"])
+    def test_spend_unknown_on_every_surface(self, env, capsys, how):
+        from ai_quota_swap import menubar, menubar_data
+
+        s, email = self._fleet()
+        _break_ledger(how, email)
+        reading = _readings(s)["3"]
+        assert reading["spend"]["used"] is None and api_spend.spend_unknown(reading)
+        assert not api_spend.nothing_recorded(reading)
+        assert api_spend.spend_text(reading) == f"API key · {self.UNKNOWN}"
+        assert api_spend.detail_text(reading, NOW) is None
+        assert api_spend.budget_state(reading) is None  # the brake has no figure
+        capsys.readouterr()
+        # qswap list: the sentence, wrapped with the command whole.
+        make_switcher().list_accounts()
+        out = capsys.readouterr().out
+        assert "$0" not in out and "no usage recorded" not in out
+        joined = " ".join(out.split())
+        assert self.UNKNOWN in joined
+        assert "\n     qswap usage\n" in out or "run: qswap usage\n" in out
+        # qswap budget.
+        run_main(["budget"])
+        budget = capsys.readouterr().out
+        assert f"3: api-key-3  budget $500 · {self.UNKNOWN}" in budget and "$0" not in budget
+        # The dashboard's one-line row and the menu bar's row: the state.
+        snap = s.accounts_snapshot()
+        acc = {a.number: a for a in snap.accounts}["3"]
+        row = TestTuiAndMenuBar._drawn(acc, row=True)
+        assert row.endswith("   spend unknown") and "$0" not in row
+        accs = {a.number: a for a in menubar_data.account_states(snap, "claude", {}, now=NOW)}
+        menu_row = menubar.account_row(accs["3"], now=NOW, stale_after_s=900)
+        assert menu_row.text == "#3 api-key-3 · API key · spend unknown"
+        assert self.UNKNOWN in " ".join(menu_row.tooltip.split())
+
+    def test_no_ledger_file_yet_is_nothing_recorded(self, env, capsys):
+        from ai_quota_swap import menubar, menubar_data
+
+        s, email = self._fleet()
+        _break_ledger("no-ledger", email)
+        reading = _readings(s)["3"]
+        assert api_spend.nothing_recorded(reading) and not api_spend.spend_unknown(reading)
+        capsys.readouterr()
+        make_switcher().list_accounts()
+        assert "$0 of $500 this month · no usage recorded on this machine" in capsys.readouterr().out
+        run_main(["budget"])
+        assert "3: api-key-3  $0 of $500 this month · no usage recorded on this machine" in (
+            capsys.readouterr().out)
+        snap = s.accounts_snapshot()
+        acc = {a.number: a for a in snap.accounts}["3"]
+        assert TestTuiAndMenuBar._drawn(acc, row=True).endswith("   $0 of $500 this month")
+        accs = {a.number: a for a in menubar_data.account_states(snap, "claude", {}, now=NOW)}
+        assert menubar.account_row(accs["3"], now=NOW, stale_after_s=900).text == (
+            "#3 api-key-3 · API key · $0 of $500 this month")
+
+    @pytest.mark.parametrize("keep", [0, 100, "half"])
+    def test_running_qswap_usage_fixes_every_unreadable_state(self, env, capsys, keep):
+        # The advice holds even for a file that is not a database: qswap
+        # usage rebuilds it (the ledger is derived from the session files).
+        s, email = self._fleet()
+        _break_ledger("schema", email)
+        db = data_root() / DB_FILENAME
+        conn_data = db.read_bytes()
+        for extra in (db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+            extra.unlink(missing_ok=True)
+        size = len(conn_data) // 2 if keep == "half" else keep
+        db.write_bytes(conn_data[:size] if size else b"\0" * 64)  # truncated or zeroed
+        assert api_spend.spend_unknown(_readings(s)["3"])
+        capsys.readouterr()
+        run_main(["usage"])
+        out = capsys.readouterr().out
+        assert "could not be read as a database, so it was rebuilt from the session files." in (
+            " ".join(out.split()))
+        after = _readings(make_switcher())["3"]
+        assert not api_spend.spend_unknown(after) and api_spend.nothing_recorded(after)
+        # The no-meta and schema states recover through the same command.
+        run_main(["usage"])
+        assert "rebuilt" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("how", ["no-meta", "schema"])
+    def test_running_qswap_usage_fixes_a_ledger_without_its_schema(self, env, capsys, how):
+        s, email = self._fleet()
+        _break_ledger(how, email)
+        assert api_spend.spend_unknown(_readings(s)["3"])
+        run_main(["usage"])
+        assert not api_spend.spend_unknown(_readings(make_switcher())["3"])
+
+    def test_without_a_budget_an_unreadable_ledger_still_says_so(self, env, capsys):
+        s = make_switcher()
+        email = seed_api_key(s, 3, KEY_A)
+        _break_ledger("schema", email)
+        reading = _readings(s)["3"]  # a reading now, where "no ledger" gives none
+        assert api_spend.spend_text(reading) == f"API key · {self.UNKNOWN}"
+
+
 class TestNoDataAndBudgets:
     def test_nothing_known_keeps_the_old_row(self, env):
         s = make_switcher()
@@ -368,7 +560,12 @@ class TestNoDataAndBudgets:
         reading = _readings(s)["3"]
         assert reading["spend"]["used"] is None and reading["spend"]["limit"] == 500.0
         assert reading["spend"]["pct"] is None
-        assert api_spend.spend_text(reading) == "API key · no spend data yet · budget $500 a month"
+        # No ledger yet reads as nothing recorded, as the first scan of an
+        # unused key will: the same state in the same words.
+        assert api_spend.spend_text(reading) == (
+            "API key · $0 of $500 this month · no usage recorded on this machine"
+        )
+        assert api_spend.detail_text(reading, NOW) is None
         assert api_spend.budget_state(reading) is None
 
     def test_budget_set_and_unset(self, env):
@@ -444,13 +641,14 @@ class TestListText:
         # The header says "API key"; the line under it is the spend.
         assert "· API key" in out
         assert "$10.00 today · $14.00 this month of $20 (70%)" in out
-        assert "no quota; billed per token" not in out
+        assert "no usage recorded" not in out
 
-    def test_without_a_reading_the_row_is_unchanged(self, env, capsys):
+    def test_without_a_reading_nothing_is_recorded(self, env, capsys):
         s = make_switcher()
         seed_api_key(s, 3, KEY_A)
         s.list_accounts()
-        assert "no quota; billed per token" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "  #3 api-key-3 · API key\n     no usage recorded on this machine\n" in out
 
 
 class TestListJson:
@@ -545,7 +743,7 @@ class TestTuiAndMenuBar:
         accs = {a.number: a for a in menubar_data.account_states(snap, "claude", {}, now=NOW)}
         row = menubar.account_row(accs["3"], now=NOW, stale_after_s=900)
         # qswap list's words, cut to the row limit; the tooltip has them whole.
-        assert row.text.startswith("#3 api-key-3@token.local · API key · $10.00 today · $14.00")
+        assert row.text.startswith("#3 api-key-3 · API key · $10.00 today · $14.00")
         assert len(row.text) <= menubar.ROW_LIMIT
         assert "$10.00 today · $14.00 this month of $20 (70%)" in row.tooltip
         assert not row.attention  # under budget
@@ -558,13 +756,13 @@ class TestBudgetCommand:
         run_main(["budget", "3", "500"])
         assert record(make_switcher(), 3)["budget"] == 500.0
         out = capsys.readouterr().out
-        assert "Set a monthly budget of $500 for #3 api-key-3@token.local" in out
+        assert "Set a monthly budget of $500 for #3 api-key-3." in out
         assert "not a cap at Anthropic" in out
         run_main(["budget", "3", "$1,200.50"])
         assert record(make_switcher(), 3)["budget"] == 1200.5
         run_main(["budget", "3", "off"])
         assert "budget" not in record(make_switcher(), 3)
-        assert "Removed the budget for #3 api-key-3@token.local" in capsys.readouterr().out
+        assert "Removed the budget for #3 api-key-3." in capsys.readouterr().out
         run_main(["budget", "3", "off"])
         assert "has no budget" in capsys.readouterr().out
 
@@ -608,11 +806,13 @@ class TestBudgetCommand:
         finally:
             mod.time.time = orig
         assert "Monthly budgets for API-key accounts" in out
-        assert f"3: {email}  $4.00 of $8 this month (50%) (estimate)" in out
-        assert "4: ci@example.com  no budget · $0.00 this month (estimate)" in out
+        assert email == "api-key-3@token.local"
+        assert "3: api-key-3  $4.00 of $8 this month (50%) (estimate)" in out
+        assert "4: ci@example.com  no budget · no usage recorded on this machine" in out
         assert "sub@example.com" not in out
         assert [a["number"] for a in doc["accounts"]] == [3, 4]
         assert doc["accounts"][0]["budget"] == 8.0
+        assert doc["accounts"][0]["email"] == "api-key-3@token.local"  # JSON keeps the stored value
         assert doc["accounts"][0]["apiSpend"]["used"] == 4.0
 
     def test_list_with_no_api_key_accounts(self, env, capsys):

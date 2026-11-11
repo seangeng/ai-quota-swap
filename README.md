@@ -122,7 +122,7 @@ Group by day, account, model, project, provider or session with `--by`. A subscr
 Add a Console API key as an account with `qswap add-token sk-ant-api03-...`. Its row shows what it spent today and this month instead of usage windows, and `qswap budget 5 40` gives it a monthly budget:
 
 ```text
-  #5 ci (api-key-5@token.local) · API key
+  #5 ci · API key
      $2.06 today · $25.16 this month of $40 (63%) · estimate
 ```
 

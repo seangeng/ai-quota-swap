@@ -32,6 +32,7 @@ import stat
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -569,7 +570,8 @@ class CodexSwitcher:
         return login, ""
 
     def claim_usage_reset(
-        self, account_num: str, grant_id: str, request_id: str
+        self, account_num: str, grant_id: str, request_id: str,
+        *, before_send: Callable[[], None] | None = None,
     ) -> resets.ClaimResult:
         """Spend reset credit ``grant_id`` on an account, then re-read its usage.
 
@@ -588,6 +590,8 @@ class CodexSwitcher:
         if login is None:
             result = resets.ClaimResult("auth_error", detail=why)
         else:
+            if before_send is not None:
+                before_send()  # immediately before the request
             result = codex_usage.consume_reset_credit(
                 login.access_token, login.account_id, grant_id, request_id
             )

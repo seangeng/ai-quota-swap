@@ -920,6 +920,87 @@ def reset_request_id(record: object, grant_id: str, host: object = None) -> str:
     return new_id()
 
 
+def reserve_reset_claim(
+    state_path: Path,
+    number: str,
+    grant_id: str,
+    *,
+    at: float,
+    reason: str,
+    auto: bool,
+    host: object = None,
+    admit: Callable[[dict, object], bool],
+    keep_auto_on_retry: bool = False,
+) -> dict | None:
+    """Reserve a claim of ``grant_id`` on account ``number`` before any POST.
+
+    Under the state lock: ``admit(state, previous)`` decides against the
+    CURRENT file (``previous`` is the account's last claim record); when it
+    does, the pending record is written with the request id taken from that
+    same locked read (:func:`reset_request_id`: the stored one for an
+    unanswered attempt on this grant, else a fresh one). Returns the record,
+    or None when ``admit`` refused, in which case nothing is added to the
+    file. The engine and the manual path (``manual_reset.claim``) both
+    reserve through here.
+
+    ``keep_auto_on_retry`` (the manual path): when the request id is the
+    previous record's (a retry of a claim whose outcome is unknown), the
+    record keeps that claim's ``auto`` and is marked ``manual: true``, so an
+    engine claim retried by hand still counts toward the automatic daily cap.
+    """
+    reserved: dict = {}
+
+    def reserve(st: dict) -> None:
+        claims = st.get("resetClaims")
+        previous = claims.get(str(number)) if isinstance(claims, dict) else None
+        if not admit(st, previous):
+            return
+        if not isinstance(claims, dict):
+            claims = st["resetClaims"] = {}
+        request_id = reset_request_id(previous, grant_id, host)
+        record = {
+            "at": at,
+            "grantId": grant_id,
+            "requestId": request_id,
+            "reason": reason,
+            "auto": auto,
+            "result": "pending",
+            "settled": False,
+        }
+        if (
+            keep_auto_on_retry
+            and isinstance(previous, dict)
+            and previous.get("requestId") == request_id
+        ):
+            record["auto"] = bool(previous.get("auto"))
+            record["manual"] = True
+        claims[str(number)] = record
+        reserved.update(record)
+
+    _mutate_state_file(state_path, reserve)
+    return reserved or None
+
+
+#: A claim record's results that leave its outcome open: still pending (a
+#: POST out, or a crash after it), or answered with no decided outcome.
+_OPEN_RESULTS = frozenset({"pending", "error", "unavailable"})
+
+
+def reset_claim_in_flight(record: object, fetched_at: float | None, now: float) -> bool:
+    """Whether an account's last claim may still be on its way: its outcome
+    is open (:data:`_OPEN_RESULTS`, and not settled) and it has not yet been
+    followed by a reading and the retry gap (:func:`reset_claim_settled`). A
+    decided claim (a reset, a refusal) is never in flight, nor one that was
+    never sent (``auth_error``, ``rate_limited``)."""
+    if not isinstance(record, dict):
+        return False
+    if record.get("result") not in _OPEN_RESULTS or record.get("settled"):
+        return False
+    if record.get("detail") == "no_credit":
+        return False  # Codex: decided, there was no credit to spend
+    return not reset_claim_settled(record, fetched_at, now)
+
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
@@ -1368,30 +1449,14 @@ class AutoSwitchEngine:
         # bar, the TUI, a cron --once — may have claimed since this tick's
         # snapshot), take the request id from that fresh record, and write
         # the pending record before any POST.
-        reserved: dict = {}
-
-        def reserve(st: dict) -> None:
-            if reset_claims_today(st, now) >= MAX_AUTO_RESETS_PER_DAY:
-                return
-            current_claims = st.get("resetClaims")
-            if not isinstance(current_claims, dict):
-                current_claims = st["resetClaims"] = {}
-            previous = current_claims.get(plan.account)
-            if not reset_claim_settled(previous, fetched_at, now):
-                return
-            record = {
-                "at": now,
-                "grantId": plan.grant_id,
-                "requestId": reset_request_id(previous, plan.grant_id, self.switcher),
-                "reason": plan.reason,
-                "auto": True,
-                "result": "pending",
-                "settled": False,
-            }
-            current_claims[plan.account] = record
-            reserved.update(record)
-
-        _mutate_state_file(self.state_path, reserve)
+        reserved = reserve_reset_claim(
+            self.state_path, plan.account, plan.grant_id,
+            at=now, reason=plan.reason, auto=True, host=self.switcher,
+            admit=lambda st, previous: (
+                reset_claims_today(st, now) < MAX_AUTO_RESETS_PER_DAY
+                and reset_claim_settled(previous, fetched_at, now)
+            ),
+        )
         if not reserved:
             return None
         result = self.switcher.claim_usage_reset(

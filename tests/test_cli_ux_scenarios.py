@@ -127,7 +127,8 @@ class TestOutputShapes:
         r = qswap("fleet", "list")
         assert "     Holds 1 Fable reset · usable once a limit is reached · use by Dec 28" in r.stdout
         assert "├ extra   18%" in r.stdout
-        assert "  #5 ci (api-key-5@token.local) · API key" in r.stdout
+        assert "  #5 ci · API key\n     no usage recorded on this machine\n" in r.stdout
+        assert "token.local" not in r.stdout
         assert "Account-" not in r.stdout and "$$" not in r.stdout and "resets:" not in r.stdout
         assert _fits(r.stdout)
 
