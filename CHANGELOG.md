@@ -27,6 +27,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - A first run says how to log in or offers `Add <email>` first; the add menu lists what each provider can add, `qswap codex login` included. No menu offers an action that cannot work.
 - Nothing wraps at 80 columns: emails give way before aliases and plans before figures, and a crowded screen keeps every account on one line before it folds any.
 - Switching to an account that needs re-login is refused with the command line's message and a "Switch anyway" choice; removing asks what `qswap remove` asks. Errors read as on the command line, never as a traceback. `esc` goes back on every screen, and `q` quits from every screen outside a dialog.
+- The dashboard and the command line have qswap's own colours: a violet accent on cool ink backgrounds, in dark and light.
 
 ### Codex (experimental)
 

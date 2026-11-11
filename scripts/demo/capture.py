@@ -440,7 +440,7 @@ def write_index() -> Path:
   table {{ border-collapse: collapse; width: 100%; }}
   td, th {{ text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2dfd8; vertical-align: top; }}
   code {{ font: 13px "SF Mono", Menlo, Consolas, monospace; white-space: nowrap; }}
-  a {{ color: #954c2a; }}
+  a {{ color: #5b3fd1; }}
 </style></head>
 <body>
 <h1>qswap demo shots</h1>

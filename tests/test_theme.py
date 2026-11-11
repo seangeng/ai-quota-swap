@@ -1,6 +1,9 @@
 """Tests for the Palette value object and the light/dark themes."""
 from __future__ import annotations
 
+import pytest
+
+from ai_quota_swap import printer
 from ai_quota_swap.tui import theme
 from ai_quota_swap.tui.theme import QSWAP_DARK, QSWAP_LIGHT, Palette
 
@@ -48,20 +51,85 @@ def _contrast(hex_a: str, hex_b: str) -> float:
     return (lb + 0.05) / (la + 0.05)
 
 
-def test_light_text_meets_AA_on_all_backgrounds():
+# The roles as the constants name them; a theme's constant is ROLE + suffix
+# ("" for qswap-dark, "_LIGHT" for qswap-light).
+_THEMES = pytest.mark.parametrize("suffix", ["", "_LIGHT"], ids=["dark", "light"])
+_TEXT = ("ACCENT", "FOREGROUND", "MUTED", "SEV_OK", "SEV_WARN", "SEV_CRIT")
+_ROWS = ("BACKGROUND", "SURFACE", "PANEL")
+_FILLS = ("SEV_OK", "SEV_WARN", "SEV_CRIT")
+
+
+def _colour(role: str, suffix: str) -> str:
+    return getattr(theme, role + suffix)
+
+
+@_THEMES
+def test_text_meets_AA_on_all_backgrounds(suffix):
     # Accent and severity colors render as PERCENTAGE TEXT on highlighted
-    # ($surface) and flash ($panel) rows, not just the base background — so
+    # ($surface) and flash ($panel) rows, not just the base background, so
     # every text color must clear the 4.5:1 text bar against all three.
-    from ai_quota_swap.tui import theme
-    text_colors = (
-        theme.FOREGROUND_LIGHT,
-        theme.MUTED_LIGHT,
-        theme.ACCENT_LIGHT,
-        theme.SEV_OK_LIGHT,
-        theme.SEV_WARN_LIGHT,
-        theme.SEV_CRIT_LIGHT,
-    )
-    backgrounds = (theme.BACKGROUND_LIGHT, theme.SURFACE_LIGHT, theme.PANEL_LIGHT)
-    for color in text_colors:
-        for bg in backgrounds:
-            assert _contrast(color, bg) >= 4.5, f"{color} on {bg}"
+    for role in _TEXT:
+        for row in _ROWS:
+            ratio = _contrast(_colour(role, suffix), _colour(row, suffix))
+            assert ratio >= 4.5, f"{role}{suffix} on {row}{suffix}: {ratio:.2f}"
+
+
+@_THEMES
+def test_background_on_accent_meets_AA(suffix):
+    # The LIVE badge and a focused dialog button draw $background text on a
+    # $primary block.
+    ratio = _contrast(_colour("BACKGROUND", suffix), _colour("ACCENT", suffix))
+    assert ratio >= 4.5, f"BACKGROUND{suffix} on ACCENT{suffix}: {ratio:.2f}"
+
+
+@_THEMES
+def test_bar_fills_stand_out_from_the_track_and_the_row(suffix):
+    # A bar's fill ends where its track starts, on any row background: the
+    # fill needs the 3:1 non-text bar against both.
+    for fill in _FILLS:
+        for against in ("TRACK", *_ROWS):
+            ratio = _contrast(_colour(fill, suffix), _colour(against, suffix))
+            assert ratio >= 3.0, f"{fill}{suffix} against {against}{suffix}: {ratio:.2f}"
+
+
+def _printed_colour(code: str):
+    """The colour Rich reads from one of printer's escapes."""
+    from rich.text import Text
+
+    (span,) = Text.from_ansi(f"{code}x\033[0m").spans
+    return span.style.color
+
+
+def test_command_line_accent_is_the_dashboard_accent():
+    from rich.color import Color
+
+    assert Color.from_ansi(141).get_truecolor().hex == "#af87ff"
+    dark = printer._PALETTES["dark"]["accent"]
+    assert dark == "\033[38;5;141m"
+    assert _printed_colour(dark).get_truecolor().hex == theme.ACCENT
+
+
+def test_light_command_line_colours_are_the_light_palette():
+    expected = {
+        "accent": theme.ACCENT_LIGHT,
+        "muted": theme.MUTED_LIGHT,
+        "red": theme.SEV_CRIT_LIGHT,
+        "yellow": theme.SEV_WARN_LIGHT,
+    }
+    light = printer._PALETTES["light"]
+    assert {key: _printed_colour(code).triplet.hex for key, code in light.items()} == expected
+
+
+# What each printer colour stands for in the dashboard.
+_PRINTER_ROLE = {"accent": "accent", "muted": "muted", "red": "sev_crit", "yellow": "sev_warn"}
+
+
+@pytest.mark.parametrize("table", ["dark", "light"])
+@pytest.mark.parametrize("target", [QSWAP_DARK, QSWAP_LIGHT], ids=["dark", "light"])
+def test_from_printer_maps_every_printer_colour(table, target):
+    palette = Palette.from_theme(target)
+    codes = printer._PALETTES[table]
+    assert set(codes) == set(_PRINTER_ROLE), "a printer colour from_printer does not know"
+    for key, code in codes.items():
+        styles = [str(s.style) for s in theme.from_printer(f"{code}x\033[0m", palette).spans]
+        assert styles == [getattr(palette, _PRINTER_ROLE[key])], f"{table} {key}"
