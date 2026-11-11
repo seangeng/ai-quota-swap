@@ -2286,7 +2286,7 @@ class TestShareHistoryPosix:
         blocker = ClaudeSession(
             pid=63802,
             session_id="abc",
-            cwd="/Users/matt/Documents/GitHub/soribashi",
+            cwd="/Users/maya/dev/webapp",
             started_at=1785041704563,
             kind="interactive",
             entrypoint="cli",
@@ -2299,7 +2299,7 @@ class TestShareHistoryPosix:
 
         out = capsys.readouterr().out
         assert "63802" in out
-        assert "soribashi" in out
+        assert "webapp" in out
         # Sharing is the default, so the command to repeat is the plain one.
         assert "then relaunch:  qswap run 2\n" in out
         # Pin the epoch-ms -> local-time conversion itself, not just the

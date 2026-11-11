@@ -307,7 +307,7 @@ class TestCliVersion:
 
 
 class TestClaim:
-    ORG = "afe328c4-182f-494d-bf00-aabf45bd8fc3"
+    ORG = "00000000-0000-4000-8000-00000000000a"
 
     def _run(self, response=None, error=None):
         seen = {}
@@ -1034,7 +1034,7 @@ class TestReviewRegressions:
             raise http.client.IncompleteRead(b"")
 
         with patch("urllib.request.urlopen", boom):
-            result = resets.claim("tok", "afe328c4-182f-494d-bf00-aabf45bd8fc3", "g", "r")
+            result = resets.claim("tok", "00000000-0000-4000-8000-00000000000a", "g", "r")
         assert result.result == "error" and not result.settled
 
     def test_far_future_expiry_displays(self):
