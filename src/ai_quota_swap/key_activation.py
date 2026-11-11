@@ -128,6 +128,27 @@ def _tombstones(record: dict) -> dict:
     return dict(left) if isinstance(left, dict) else {}
 
 
+#: How long a tombstone counts (decision SS3): a line of qswap's for its
+#: number within this time after qswap took it out came back, and keeps who
+#: had entered it; after it, a line for that number is the user's.
+TOMBSTONE_TTL_S = 24 * 3600
+
+
+def live_tombstone(record: dict, key: str, now: float | None = None) -> dict | None:
+    """The tombstone for ``key`` while it counts: under a day old, measured
+    from its ``at``. One with no readable ``at`` is old. None otherwise."""
+    import math
+
+    tomb = _tombstones(record).get(key)
+    if not isinstance(tomb, dict):
+        return None
+    at = tomb.get("at")
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
+        return None
+    now = time.time() if now is None else now
+    return tomb if now - at < TOMBSTONE_TTL_S else None
+
+
 def effective_record(record: object, line_number: str | None) -> dict:
     """key_helper.json as it stands for the line in the settings. From one
     key to another the new record is written before the line with the old
@@ -153,14 +174,15 @@ def effective_record(record: object, line_number: str | None) -> dict:
     return rest
 
 
-def entered_by_of(record: dict, key: str) -> tuple[str, bool]:
+def entered_by_of(record: dict, key: str, *, now: float | None = None) -> tuple[str, bool]:
     """``(enteredBy, came_back)`` for qswap's line for ``key``, from the
     effective record: its own record's; a tombstone's when the line came
-    back after qswap took it out (decision B5); else the user's."""
+    back after qswap took it out (decision B5), within a day of that
+    (:func:`live_tombstone`, decision SS3); else the user's."""
     entered = str(record["number"]) if record.get("number") is not None else None
     if entered == key and record.get("enteredBy") in ENTERED_BY:
         return record["enteredBy"], False
-    tomb = _tombstones(record).get(key)
+    tomb = live_tombstone(record, key, now)
     if entered != key and isinstance(tomb, dict):
         by = tomb.get("enteredBy")
         return (by if by in ENTERED_BY else "user"), True

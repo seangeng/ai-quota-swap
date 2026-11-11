@@ -194,7 +194,7 @@ Because only the sessions started after a saved-key switch use the key, `qswap u
 - A line for an account that no longer exists, or is not an API-key account, fails: new sessions get no key ("apiKeyHelper script is failing"), and running ones keep the key they have until the settings change. The fix is `qswap switch N` to the account underneath, which removes the line.
 - A line that does not answer fails: it runs a qswap that is no longer there (a reinstall moved it), a program that is not executable, or an interpreter that cannot import qswap. `qswap switch 5` writes the line again for this qswap.
 - Run profiles left with a settings copy after the line is gone (qswap stopped between the two steps), or still sharing the settings while the line is in, fail, and `qswap switch N` repairs them.
-- A line that came back after qswap took it out (another program wrote an older copy of the settings) warns, with the switch that leaves it.
+- A line that came back after qswap took it out (another program wrote an older copy of the settings) warns, with the switch that leaves it. That holds for 24 hours after qswap took it out; a line for that account written later is yours, as any line qswap has no record of.
 - A key qswap made active whose line is no longer in the file (another program wrote an older copy the other way) warns, and so does `activeAccountNumber` naming it; the next `qswap switch` clears both.
 - A key auto-switch entered while no auto-switch is running warns: nothing watches its limit.
 - `~/.claude/settings.json` that cannot be parsed while qswap's record names a key fails, with the fix.

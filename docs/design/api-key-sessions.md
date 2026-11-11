@@ -245,7 +245,9 @@ What the code does where this part leaves room, or where it had to differ:
 - **Who entered the key** (the user or the engine) and whether qswap created the settings
   file are kept in `<data dir>/key_helper.json`. Leaving a key keeps a tombstone there
   (number, time, who had entered it). A line of qswap's with no record but a tombstone for
-  its number "came back": another program wrote an older copy of the settings. Claude Code
+  its number "came back": another program wrote an older copy of the settings. A tombstone
+  counts for 24 hours from its time (one with no readable time is old); after that a line
+  for that number is the user's. Claude Code
   is one (read in the 2.1.322 binary): a session that saves a setting within about a second
   of qswap's write merges into the copy it read before. The line keeps who had entered it,
   and every surface names the way out. A line with neither counts as the
