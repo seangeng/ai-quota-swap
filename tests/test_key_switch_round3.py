@@ -892,9 +892,10 @@ class TestAddTokenWhileTheSettingsCannotBeRead:
         code, out, err = run(s, "add-token", NEW_KEY, "--slot", "5", "--yes")
         assert code == 1
         text = " ".join((out + err).split())
+        # The parser's own words in the brackets differ between Pythons.
+        assert f"{WHERE} cannot be read (line 1: " in text
         assert (
-            f"{WHERE} cannot be read (line 1: Illegal trailing comma before end of "
-            "object); qswap last made #5 ci the active API key there, and its key line "
+            "); qswap last made #5 ci the active API key there, and its key line "
             f"may still be in it. Fix the JSON in {WHERE}, then retry."
         ) in text
         assert "Added" not in text and "Updated" not in text
