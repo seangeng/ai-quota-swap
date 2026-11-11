@@ -26,7 +26,7 @@ them, so the Claude switcher defines none.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -142,9 +142,12 @@ class EngineHost(Protocol):
         ...
 
     def claim_usage_reset(
-        self, account_num: str, grant_id: str, request_id: str
+        self, account_num: str, grant_id: str, request_id: str,
+        *, before_send: Callable[[], None] | None = None,
     ) -> resets.ClaimResult:
-        """Spend one usage reset of ``grant_id`` on an account."""
+        """Spend one usage reset of ``grant_id`` on an account; ``before_send``
+        runs immediately before the request (nothing is sent without it
+        having run)."""
         ...
 
     def switch_to(

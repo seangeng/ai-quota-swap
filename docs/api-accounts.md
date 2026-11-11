@@ -12,7 +12,7 @@ Added #6 build@example.com (from API key)
 `qswap add-token` detects the kind of token. Any value that starts with `sk-ant-` and is not an OAuth token (`sk-ant-oat...`, `sk-ant-ort...`) is stored as an API key: workspace keys (`sk-ant-api03-...`), personal keys (`sk-ant-usr-...`) and the other Console key families. Anything else is stored as a setup-token (below).
 
 - `-` reads the token from standard input (`pbpaste | qswap add-token -`). With no token at all, qswap asks for it at a hidden prompt on a terminal. Both keep the key out of your shell history.
-- `--email` labels the account. Without it the label is `api-key-N@token.local`, N being the account number.
+- `--email` labels the account. Without it the account is stored as `api-key-N@token.local`, N being the account number, and named `#N api-key-N` wherever qswap names it (`--json` keeps the stored value).
 - `--slot N` stores it in slot N; `--yes` replaces an account already in that slot without asking.
 - Adding makes no request to Anthropic. The key is stored like a saved login (see [../SECURITY.md](../SECURITY.md)).
 
@@ -24,13 +24,13 @@ A setup-token is the long-lived token `claude setup-token` prints. It is added w
 
 ```text
 $ qswap add-token sk-ant-oat01-...
-Added #7 setup-token-7@token.local (from token)
+Added #7 setup-token-7 (from token)
 ```
 
 The usage endpoint does not answer setup-tokens, so by default their row reads:
 
 ```text
-  #7 setup-token-7@token.local
+  #7 setup-token-7
      usage unavailable (setup-tokens cannot read usage;
      `qswap config set usage.headerProbe true` reads it from a 1-token request)
 ```
@@ -44,7 +44,7 @@ With `usage.headerProbe` on, qswap reads the 5-hour, weekly and Fable windows fr
 ```text
 $ qswap list
 ...
-  #5 ci (api-key-5@token.local) · API key
+  #5 ci · API key
      $2.06 today · $25.16 this month of $40 (63%) · estimate
 ...
 ```
@@ -58,8 +58,10 @@ Months and days are UTC, as in Anthropic's reports, so the month starts again at
 | `... this month of $20 (126%, over budget)` | At or past the budget |
 | `$25.16+ this month` | Some of the tokens are from a model with no price, and are left out |
 | `· estimate` at the end | The figure comes from this machine's session files, not from Anthropic ([Where the figure comes from](#where-the-figure-comes-from)) |
-| `no spend data yet · budget $500 a month` | A budget, but no figure yet. A second line says how to get one |
-| `no quota; billed per token` | No budget, no registered organization, and `qswap usage` has never run |
+| `no usage recorded on this machine` | The estimate is $0 today and this month, or nothing has been scanned yet (no usage ledger on this machine). A one-line row (menu bar, dashboard) says `no usage recorded` |
+| `$0 of $500 this month · no usage recorded on this machine` | The same, with a budget. A one-line row says `$0 of $500 this month` |
+| `spend unknown: this machine's usage ledger could not be read; run: qswap usage` | The ledger exists but could not be read (written by another version, or damaged). Never shown as $0. A one-line row says `spend unknown` |
+| `no spend data yet` | A registered organization could not give a figure (for example, the key is not in it), and there is no estimate either. A second line says why |
 
 A second line, when there is one, says why the figure is not Anthropic's (`key not found in a registered organization; estimate from this machine's transcripts`), how old an estimate is once it is more than an hour old (`estimate as of the last qswap usage, 3h ago`), or how old Anthropic's figure is while it cannot be refreshed (`Admin key rejected, figures from 12m ago`).
 
@@ -68,7 +70,7 @@ A second line, when there is one, says why the figure is not Anthropic's (`key n
 ```text
 $ qswap budget
 Monthly budgets for API-key accounts (UTC month):
-  5: ci (api-key-5@token.local)  $25.16 of $40 this month (63%) (estimate) · $2.06 today
+  5: ci  $25.16 of $40 this month (63%) (estimate) · $2.06 today
 A budget is a brake inside qswap, not a cap at Anthropic: auto-switch stops using the account at its budget. For a hard cap, set a workspace spend limit in the Console.
 ```
 
@@ -78,7 +80,7 @@ A budget is a brake inside qswap, not a cap at Anthropic: auto-switch stops usin
 
 ```text
 $ qswap budget 5 500
-Set a monthly budget of $500 for #5 api-key-5@token.local.
+Set a monthly budget of $500 for #5 api-key-5.
   A budget is a brake inside qswap, not a cap at Anthropic: auto-switch stops using the account at its budget. For a hard cap, set a workspace spend limit in the Console.
 ```
 

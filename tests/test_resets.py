@@ -1101,3 +1101,110 @@ class TestEngineReview:
         event = next(e for e in h.events if isinstance(e, ResetEvent))
         assert event.plan["reason"] == "active-limit"
         assert h.active_number() == 1
+
+
+# -- the shared reservation decides exactly as the engine's own closure did --------------
+
+
+def _old_engine_reserve(state_path, account, grant_id, reason, now, fetched_at, host):
+    """The engine's reservation closure before it moved into
+    ``reserve_reset_claim``, verbatim (autoswitch.py before 90c39d4)."""
+    from ai_quota_swap.autoswitch import (
+        MAX_AUTO_RESETS_PER_DAY,
+        _mutate_state_file,
+        reset_claim_settled,
+        reset_claims_today,
+        reset_request_id,
+    )
+
+    reserved: dict = {}
+
+    def reserve(st: dict) -> None:
+        if reset_claims_today(st, now) >= MAX_AUTO_RESETS_PER_DAY:
+            return
+        current_claims = st.get("resetClaims")
+        if not isinstance(current_claims, dict):
+            current_claims = st["resetClaims"] = {}
+        previous = current_claims.get(account)
+        if not reset_claim_settled(previous, fetched_at, now):
+            return
+        record = {
+            "at": now,
+            "grantId": grant_id,
+            "requestId": reset_request_id(previous, grant_id, host),
+            "reason": reason,
+            "auto": True,
+            "result": "pending",
+            "settled": False,
+        }
+        current_claims[account] = record
+        reserved.update(record)
+
+    _mutate_state_file(state_path, reserve)
+    return reserved or None
+
+
+def test_the_shared_reservation_decides_and_writes_as_the_old_engine_closure(tmp_path):
+    import itertools
+
+    from ai_quota_swap import autoswitch as a
+
+    class Host:
+        def __init__(self):
+            self.n = 0
+
+        def new_reset_request_id(self):
+            self.n += 1
+            return f"fresh-{self.n}"
+
+    def new_reserve(path, now, fetched_at, host):
+        return a.reserve_reset_claim(
+            path, "1", "G", at=now, reason="on-limit", auto=True, host=host,
+            admit=lambda st, previous: (
+                a.reset_claims_today(st, now) < a.MAX_AUTO_RESETS_PER_DAY
+                and a.reset_claim_settled(previous, fetched_at, now)
+            ),
+        )
+
+    prevs = [
+        None,
+        {"at": NOW - 60, "grantId": "G", "requestId": "R1", "result": "pending", "settled": False, "auto": False},
+        {"at": NOW - 3600, "grantId": "G", "requestId": "R1", "result": "error", "settled": False, "auto": False},
+        {"at": NOW - 3600, "grantId": "H", "requestId": "R2", "result": "error", "settled": False, "auto": True},
+        {"at": NOW - 1200, "grantId": "G", "requestId": "R3", "result": "reset", "settled": True, "auto": True},
+        {"at": NOW - 4000, "grantId": "G", "requestId": "R4", "result": "cooldown", "settled": True, "auto": False},
+        {"at": "bad"},
+        "notadict",
+    ]
+    logs = [None, [], [{"at": NOW - 10, "result": "reset", "auto": True}] * 3,
+            [{"at": NOW - 10, "result": "reset", "auto": False}] * 3]
+    others = [None, {"at": NOW - 10, "grantId": "X", "requestId": "Q", "result": "pending",
+                     "settled": False, "auto": True}]
+    cases = itertools.product(prevs, logs, ("dict", "missing", "list"), others,
+                              (None, NOW - 5000, NOW - 1, NOW - 30))
+    for n, (prev, log, shape, other, fetched) in enumerate(cases):
+        st: dict = {"schemaVersion": a.STATE_SCHEMA_VERSION}
+        if log is not None:
+            st["resetLog"] = log
+        if shape == "dict":
+            st["resetClaims"] = {k: v for k, v in (("1", prev), ("2", other)) if v is not None}
+        elif shape == "list":
+            st["resetClaims"] = [prev]
+        old_path, new_path = tmp_path / f"{n}-old" / "s.json", tmp_path / f"{n}-new" / "s.json"
+        for path in (old_path, new_path):
+            path.parent.mkdir()
+            path.write_text(json.dumps(st))
+        case = (prev, log, shape, other, fetched)
+        assert _old_engine_reserve(old_path, "1", "G", "on-limit", NOW, fetched, Host()) == (
+            new_reserve(new_path, NOW, fetched, Host())), case
+        assert json.loads(old_path.read_text()) == json.loads(new_path.read_text()), case
+
+
+def test_a_refused_reservation_adds_nothing_to_the_state_file(tmp_path):
+    from ai_quota_swap import autoswitch as a
+
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({"resetLog": [{"at": NOW - 10, "result": "reset", "auto": True}] * 3}))
+    assert a.reserve_reset_claim(path, "1", "G", at=NOW, reason="on-limit", auto=True,
+                                 admit=lambda st, previous: False) is None
+    assert "resetClaims" not in json.loads(path.read_text())

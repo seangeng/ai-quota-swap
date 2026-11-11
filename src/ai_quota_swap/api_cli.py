@@ -284,8 +284,20 @@ def _org_remove(switcher, name: str) -> None:
 
 
 def _budget_line(reading: dict | None, budget: float | None) -> str:
+    from ai_quota_swap.display import API_KEY_NO_USAGE
+
     if reading is None:
         reading = {"spend": {"used": None, "limit": budget}, "source": None}
+    if api_spend.spend_unknown(reading):
+        from ai_quota_swap.display import API_KEY_SPEND_UNKNOWN
+
+        head = "no budget" if budget is None else f"budget {api_spend.budget_money(budget)}"
+        return f"{head} · {API_KEY_SPEND_UNKNOWN}: {api_spend.LEDGER_UNREADABLE}"
+    if api_spend.nothing_recorded(reading):
+        # qswap list's words for the same state.
+        if budget is None:
+            return f"no budget · {API_KEY_NO_USAGE}"
+        return f"$0 of {api_spend.budget_money(budget)} this month · {API_KEY_NO_USAGE}"
     spend = reading.get("spend") or {}
     used, pct = spend.get("used"), spend.get("pct")
     estimate = " (estimate)" if reading.get("source") == api_spend.SOURCE_LEDGER else ""
@@ -405,9 +417,11 @@ def _budget_list(switcher, account: str | None, *, as_json: bool) -> None:
         ))
         return
     print(bolded("Monthly budgets for API-key accounts (UTC month):"))
+    from ai_quota_swap.labels import account_label
+
     for num, info, budget, reading in rows:
-        alias = info[6]
-        who = f"{alias} ({info[1]})" if alias else info[1]
+        # "alias (email)" or the email; a placeholder by its name alone.
+        who = account_label(None, alias=info[6] or None, email=info[1], long=True)
         line = _budget_line(reading, budget)
         paint = warning if reading and api_spend.over_budget(reading) else None
         text = f"  {num}: {who}  {line}"

@@ -625,39 +625,12 @@ def extend_unified_list(payload, *, json_output: bool):
 # -- reset credits: Codex wording for cli's reset command ---------------------------
 
 
-def describe_credit(
-    num: str, email: str, grant: dict, usage: dict | None, status: dict, now: float,
-    *, threshold: float = 95.0, name: str | None = None,
-) -> str:
-    """What spending one Codex usage reset credit would do, before asking."""
-    from ai_quota_swap import resets
-    from ai_quota_swap.labels import account_label
+def describe_credit(*args, **kwargs) -> str:
+    """What spending one Codex usage reset credit would do, before asking
+    (:func:`manual_reset.describe_credit`)."""
+    from ai_quota_swap import manual_reset
 
-    who = name or account_label(num, email=email)
-    lines = [bolded(f"{who} · reset credit"), dimmed(f"  id {grant['id']}")]
-    if grant.get("label"):
-        lines.append(dimmed(f"  {grant['label']}"))
-    name = resets.reset_name(grant)
-    lines.append(f"  {name[:1].upper()}{name[1:]}: {resets.clears_phrase(grant)}")
-    trade = resets.trade_note(grant, usage, threshold)
-    if trade:
-        lines.append(f"  {trade}")
-    refills = []
-    for key in grant.get("clears") or ():
-        label = resets.WINDOW_LABELS.get(key) or key
-        window = (usage or {}).get(key)
-        pct = window.get("pct") if isinstance(window, dict) else None
-        refills.append(f"{label} (now {pct:.0f}%)" if isinstance(pct, (int, float)) else label)
-    if refills:
-        lines.append(f"  Resets {', '.join(refills)} to 0%")
-    end = resets.use_by(resets.parse_ts(grant.get("ends_at")), year=True)
-    lines.append(f"  Expires {end}" if end else "  Does not expire")
-    others = max(0, resets.total_left(status, now) - 1)
-    lines.append(dimmed(
-        f"  {others} other credit{'' if others == 1 else 's'} on this account · "
-        "a spent credit cannot be undone"
-    ))
-    return "\n".join(lines)
+    return manual_reset.describe_credit(*args, **kwargs)
 
 
 def print_credit_used(switcher, num: str, email: str, grant: dict) -> None:

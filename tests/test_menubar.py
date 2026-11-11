@@ -443,7 +443,8 @@ def test_row_past_its_own_line_is_orange_without_a_countdown():
 def test_row_held_resets_last_and_compact():
     far = _NOW + 120 * 86400
     usage = _reset_usage(grants=[fable("a", ends=far), weekly("w", ends=far)])
-    assert _row(_acct(usage=usage)).text == "#1 maya@example.com · 7d 30% · 1 Fable · 1 weekly resets"
+    # Several kinds read as one phrase, not as separate facts.
+    assert _row(_acct(usage=usage)).text == "#1 maya@example.com · 7d 30% · resets: 1 Fable, 1 weekly"
     usage = _reset_usage(grants=[fable("a", ends=far, left=2)])
     assert _row(_acct(usage=usage)).text.endswith("· 7d 30% · 2 Fable resets")
     usage = _reset_usage(grants=[session("s", ends=far)])
@@ -486,16 +487,42 @@ def test_row_api_key_over_budget_is_never_cut_where_it_matters():
     assert row.attention
     # The name gives way first (its number stays); the budget stays whole.
     assert row.text == "#7 ci@x… · API key · $4.12 today · $520.00/$500 (104%, over budget) est."
+    # A placeholder name is one word: it stays whole or goes, never "api-…".
     long_name = _acct(number="5", email="api-key-5@token.local", kind="api_key",
                       entry=Reading(sentinel=USAGE_API_KEY, api_spend=_api_reading(used=520.0)))
     text = _row(long_name).text
-    assert text == "#5 api-… · API key · $4.12 today · $520.00/$500 (104%, over budget) est."
+    assert text == "#5 · API key · $4.12 today · $520.00/$500 (104%, over budget) est."
     assert len(text) <= menubar.ROW_LIMIT
+
+
+def test_row_placeholder_name_is_never_an_address_or_cut_mid_word():
+    # The maintainer's first-day menu: three unused keys added without an email.
+    for n in ("5", "6", "7"):
+        acc = _acct(number=n, email=f"api-key-{n}@token.local", kind="api_key",
+                    entry=Reading(sentinel=USAGE_API_KEY))
+        row = _row(acc)
+        assert row.text == f"#{n} api-key-{n} · API key · no usage recorded"
+        assert "token.local" not in row.tooltip
+    # After a scan: a zero estimate reads the same; with a budget, $0 of it.
+    zero = _api_reading(used=0.0, limit=None, today=0.0)
+    acc = _acct(number="5", email="api-key-5@token.local", kind="api_key",
+                entry=Reading(sentinel=USAGE_API_KEY, api_spend=zero))
+    assert _row(acc).text == "#5 api-key-5 · API key · no usage recorded"
+    budget = _api_reading(used=0.0, limit=500.0, today=0.0)
+    acc = _acct(number="5", email="api-key-5@token.local", kind="api_key",
+                entry=Reading(sentinel=USAGE_API_KEY, api_spend=budget))
+    assert _row(acc).text == "#5 api-key-5 · API key · $0 of $500 this month"
+    # A setup-token placeholder with held resets keeps its whole name or none.
+    far = _NOW + 120 * 86400
+    usage = _reset_usage(grants=[fable("a", ends=far, left=3), weekly("w", ends=far)])
+    acc = _acct(number="3", email="setup-token-3@token.local", usage=usage)
+    assert _row(acc).text == "#3 setup-token-3 · 7d 30% · resets: 3 Fable, 1 weekly"
+    assert menubar.fit_row(["#3 setup-token-3", "x" * 60], whole_name=True) == "#3 · " + "x" * 60
 
 
 def test_row_api_key_without_a_reading():
     acc = _acct(number="5", kind="api_key", entry=Reading(sentinel=USAGE_API_KEY))
-    assert _row(acc).text == "#5 maya@example.com · API key · no quota; billed per token"
+    assert _row(acc).text == "#5 maya@example.com · API key · no usage recorded"
 
 
 def test_row_not_read_yet():
@@ -576,7 +603,7 @@ def test_fleet_rows_are_short():
         "#2 work · 5h 12% · 7d 21% · extra 18%",
         "#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset",
         "#4 side · disabled · 5h 0% · 7d 9%",
-        "#5 ci · API key · $0.00 today · $0.00 this month · estimate",
+        "#5 ci · API key · no usage recorded",
         "#1 maya@example.com · 5h 22% · 7d 47%",
         "#2 work · 5h 8% · 7d 15% · 1 reset credit",
     ]
@@ -701,6 +728,12 @@ def test_format_title_scoped_and_truncation():
     assert menubar.format_title("loc@example.com", usage, s) == "⇄ 42% · 18% · Fable 55% · Opus 7%"
     s = MenuBarSettings(show_account_name=True, title_pct="off")
     assert menubar.format_title("averylonglocalpart@example.com", None, s) == "⇄ averylonglo*"
+
+
+def test_format_title_shows_a_placeholder_name_whole():
+    s = MenuBarSettings(show_account_name=True, title_pct="off")
+    assert menubar.format_title("setup-token-13@token.local", None, s) == "⇄ setup-token-13"
+    assert menubar.format_title("api-key-5@token.local", None, s) == "⇄ api-key-5"
 
 
 def test_format_title_reflects_a_passed_weekly_reset():
@@ -1059,7 +1092,7 @@ def test_trouble_menu():
     assert rows[2].text == "#3 o@x.com · usage unavailable (HTTP 503), retrying"
     assert rows[3].text == "#4 s@x.com · needs re-login"
     assert rows[4].text == "#5 l@x.com · 5h 46% · 7d 38% · as of 3h 0m ago (timed out)"
-    assert rows[5].text == "#6 f@x.com · 7d 30% · 1 Fable · 1 weekly resets"
+    assert rows[5].text == "#6 f@x.com · 7d 30% · resets: 1 Fable, 1 weekly"
     assert all(len(r.text) <= menubar.ROW_LIMIT for r in rows)
     words = " ".join(r.text for r in rows)
     for banned in ("quarantined", "usage unknown", "Account-", "$$", "(!)", "rejected"):
@@ -1862,3 +1895,572 @@ def test_ledger_stamp_changes_with_the_ledger(tmp_path):
 
 def test_scan_interval_is_modest():
     assert 5 * 60 <= menubar_data.COST_SCAN_INTERVAL_S <= 60 * 60
+
+
+# --- usage resets: the automatic mode (Settings → Use resets automatically) -------------
+
+import inspect  # noqa: E402
+
+from ai_quota_swap import manual_reset, menubar_app  # noqa: E402
+from ai_quota_swap.resets import ClaimResult  # noqa: E402
+from ai_quota_swap.settings import (  # noqa: E402
+    RESET_AUTO_MODES,
+    ResetSettings,
+    load_reset_settings,
+    set_setting,
+)
+from tests.test_manual_reset import FakeSwitcher  # noqa: E402
+from tests.test_reset_kinds import full  # noqa: E402
+from tests.test_resets import _grant as _reset_grant  # noqa: E402
+
+_MODE_LABELS = [
+    "Off",
+    "When the active account reaches its limit",
+    "As a last resort, when no account can take over",
+    "When any account reaches its limit",
+]
+
+
+def _resets_submenu(menu=None, **rs):
+    menu = menu or menubar.build_menu(_inp(_claude(_C1), resets=ResetSettings(**rs)))
+    return menu.find("Use resets automatically")
+
+
+def _choices(sub):
+    return [r for r in sub.children if r.action is not None and r.action.kind == "resets-auto"]
+
+
+@pytest.mark.parametrize("mode, label", list(zip(RESET_AUTO_MODES, _MODE_LABELS)))
+def test_resets_submenu_checks_the_one_mode(mode, label):
+    sub = _resets_submenu(auto=mode)
+    choices = _choices(sub)
+    assert [r.text for r in choices] == _MODE_LABELS
+    assert [r.action.value for r in choices] == list(RESET_AUTO_MODES)
+    assert [r.text for r in choices if r.checked] == [label]
+    # Each choice's tooltip is qswap reset's "Auto:" line for it.
+    assert choices[3].tooltip == "on-limit · when any account reaches 95%"
+    assert choices[0].tooltip == "off · only qswap reset N spends one"
+
+
+def test_resets_submenu_names_codex_only_when_codex_is_managed():
+    # Claude Code alone: the menu never mentions Codex.
+    assert sub_first(_resets_submenu()) == "Off"
+    both = _resets_submenu(_both_menu())
+    first = both.children[0]
+    assert first.text == "Applies to Claude Code and Codex" and first.disabled
+
+
+def sub_first(sub):
+    return sub.children[0].text
+
+
+def test_resets_submenu_weekly_toggle():
+    sub = _resets_submenu()
+    toggle = sub.children[-1]
+    assert sub.children[-2].separator
+    assert toggle.text == "Use a weekly reset for a single model's limit"
+    assert toggle.action == Action("toggle-weekly-for-model") and not toggle.checked
+    on = _resets_submenu(weekly_for_model_limit=True).children[-1]
+    assert on.checked
+    assert menubar.resets_setting(toggle.action, ResetSettings()) == ("resets.weeklyForModelLimit", "true")
+    assert menubar.resets_setting(on.action, ResetSettings(weekly_for_model_limit=True)) == (
+        "resets.weeklyForModelLimit", "false")
+    assert menubar.resets_setting(Action("resets-auto", value="active"), ResetSettings()) == (
+        "resets.auto", "active")
+
+
+def test_resets_submenu_sits_with_the_auto_switch_settings_for_both_providers():
+    for menu in (menubar.build_menu(_inp(_claude(_C1))), _both_menu()):
+        texts = [r.text for r in menu.find("Settings").children]
+        assert texts.index("Use resets automatically") == texts.index("Start at login") - 2
+    off = _resets_submenu(enabled=False)
+    assert off.children[0].text == "Usage resets are not read (resets.enabled is off)"
+
+
+def test_turning_automatic_use_on_asks_once():
+    assert menubar.resets_auto_confirmation("off", "on-limit", codex=True) == (
+        "Whenever auto-switch runs, it will spend a usage reset or Codex reset credit by "
+        "itself when any account reaches its limit, at most three in 24 hours per provider."
+    )
+    # Claude Code alone: usage resets only, nothing about Codex.
+    assert menubar.resets_auto_confirmation("off", "active") == (
+        "Whenever auto-switch runs, it will spend a usage reset by itself when the active "
+        "account reaches its limit, at most three in 24 hours."
+    )
+    assert "as a last resort, when no account can take over" in (
+        menubar.resets_auto_confirmation("off", "last-resort"))
+    # Only from off: moving between automatic modes, or turning it off, asks nothing.
+    assert menubar.resets_auto_confirmation("last-resort", "on-limit") is None
+    assert menubar.resets_auto_confirmation("active", "off") is None
+    assert menubar.resets_auto_confirmation("off", "off") is None
+
+
+def _change(action, resets, *, answer=True, codex=False):
+    asked, wrote = [], []
+    changed = menubar.change_resets_setting(
+        action, resets, codex=codex,
+        confirm=lambda title, question: asked.append((title, question)) or answer,
+        write=lambda key, value: wrote.append((key, value)),
+    )
+    return changed, asked, wrote
+
+
+def test_off_to_on_asks_first_and_cancel_writes_nothing():
+    on = Action("resets-auto", value="on-limit")
+    changed, asked, wrote = _change(on, ResetSettings(auto="off"), answer=False)
+    assert not changed and len(asked) == 1 and wrote == []
+    assert asked[0][0] == "Use resets automatically"
+    changed, asked, wrote = _change(on, ResetSettings(auto="off"))
+    assert changed and len(asked) == 1 and wrote == [("resets.auto", "on-limit")]
+    # Between automatic modes, to off, and the toggle: no question.
+    for action, current in ((on, "last-resort"), (Action("resets-auto", value="off"), "active"),
+                            (Action("toggle-weekly-for-model"), "off")):
+        changed, asked, wrote = _change(action, ResetSettings(auto=current))
+        assert changed and asked == [] and len(wrote) == 1
+
+
+def test_a_terminal_change_to_off_since_the_menu_was_drawn_still_asks(tmp_path: Path):
+    # The menu was drawn with last-resort; `qswap config set resets.auto off`
+    # ran since. The click is judged on the file, so it asks.
+    drawn = ResetSettings(auto="last-resort")
+    set_setting(tmp_path, "resets.auto", "off")
+    assert menubar.resets_auto_confirmation(drawn.auto, "on-limit") is None  # the stale view
+    changed, asked, _wrote = _change(Action("resets-auto", value="on-limit"),
+                                     load_reset_settings(tmp_path), answer=False)
+    assert not changed and len(asked) == 1
+    # The app hands it the file as it is at the click.
+    source = inspect.getsource(menubar_app.run_app)
+    body = source[source.index("def _change_resets"):source.index("def _ask_on_main")]
+    assert body.index("current = load_reset_settings(data_root)") < body.index("change_resets_setting(")
+    assert "a, current, codex=self._both()," in body
+
+
+def test_the_writer_is_the_one_qswap_config_set_uses(tmp_path: Path):
+    # The menu's choice and `qswap config set resets.auto active` write the
+    # same key in the same file, through settings.set_setting.
+    menu_dir, cli_dir = tmp_path / "menu", tmp_path / "cli"
+    key, value = menubar.resets_setting(Action("resets-auto", value="active"), ResetSettings())
+    set_setting(menu_dir, key, value)
+    set_setting(cli_dir, "resets.auto", "active")
+    assert (menu_dir / "settings.json").read_text() == (cli_dir / "settings.json").read_text()
+    assert json.loads((menu_dir / "settings.json").read_text())["resets"] == {"auto": "active"}
+    key, value = menubar.resets_setting(Action("toggle-weekly-for-model"), load_reset_settings(menu_dir))
+    set_setting(menu_dir, key, value)
+    assert json.loads((menu_dir / "settings.json").read_text())["resets"] == {
+        "auto": "active", "weeklyForModelLimit": True}
+    assert "write=lambda key, value: set_setting(data_root, key, value)," in (
+        inspect.getsource(menubar_app.run_app))
+
+
+def test_a_value_changed_from_the_command_line_shows_at_the_next_build(tmp_path: Path):
+    set_setting(tmp_path, "resets.auto", "on-limit")  # qswap config set resets.auto on-limit
+    sub = _resets_submenu(menubar.build_menu(_inp(_claude(_C1), resets=load_reset_settings(tmp_path))))
+    assert [r.text for r in sub.children if r.checked] == ["When any account reaches its limit"]
+
+
+def test_a_running_engine_reads_the_new_mode_without_a_restart(temp_home):
+    # The engine asks its switcher for resets.* on every tick.
+    from ai_quota_swap.switcher import ClaudeAccountSwitcher
+
+    sw = ClaudeAccountSwitcher()
+    sw._setup_directories()
+    assert sw.reset_settings().auto == "last-resort"
+    set_setting(sw.backup_dir, "resets.auto", "off")
+    assert sw.reset_settings().auto == "off"
+
+
+# --- the app's guards on the irreversible path (menubar_app imports without rumps) ----------
+
+
+class _FakeAlert:
+    def __init__(self, kit):
+        self.kit, self.buttons = kit, []
+
+    def init(self):
+        return self
+
+    def setMessageText_(self, t):
+        self.kit.title = t
+
+    def setInformativeText_(self, t):
+        self.kit.message = t
+
+    def addButtonWithTitle_(self, t):
+        self.buttons.append(t)
+
+    def runModal(self):
+        self.kit.buttons = list(self.buttons)
+        # NSAlert: the Nth button added answers 1000 + (N - 1); Return presses the first.
+        return 1000 + self.buttons.index(self.kit.press) if self.kit.press in self.buttons else 1000
+
+
+class _FakeAppKit:
+    NSAlertFirstButtonReturn, NSAlertSecondButtonReturn = 1000, 1001
+
+    def __init__(self, press):
+        self.press = press
+        kit = self
+
+        class NSAlert:
+            @staticmethod
+            def alloc():
+                return _FakeAlert(kit)
+
+        self.NSAlert = NSAlert
+
+
+def test_cancel_is_the_default_button_and_only_ok_spends():
+    kit = _FakeAppKit(press="<Return>")  # Return presses the first (default) button
+    assert menubar_app._ask_cancel_default(kit, "Use this Fable reset?", "m", "Use reset") is False
+    assert kit.buttons == ["Cancel", "Use reset"]  # the first button is the default
+    assert kit.title == "Use this Fable reset?" and kit.message == "m"
+    assert menubar_app._ask_cancel_default(_FakeAppKit("Cancel"), "t", "m", "Use reset") is False
+    assert menubar_app._ask_cancel_default(_FakeAppKit("Use reset"), "t", "m", "Use reset") is True
+
+
+def test_the_app_wires_the_real_spend_the_lock_and_both_questions():
+    source = inspect.getsource(menubar_app.run_app)
+    assert "ResetRunner(\n                manual_reset.spend," in source
+    assert "lock=self._action_lock," in source
+    assert "confirm=self._ask_on_main," in source
+    assert source.count('self._confirm_cancel_default(title, message, "Use reset")') == 2
+    assert 'confirm=lambda title, question: self._confirm(title, question, "Turn on"),' in source
+
+
+# --- usage resets: Use a reset ------------------------------------------------------------
+
+_FAR = _NOW + 120 * 86400
+
+
+def _waiting(gid="wk", **kw):
+    """A weekly reset that needs a limit hit first."""
+    return weekly(gid, ends=_FAR, usable=False, use_requires_limit=True, **kw)
+
+
+def _holder(grants, number="1", alias="personal", provider="claude", usage_kw=None,
+            email="maya@example.com", **kw):
+    usage = _reset_usage(grants=grants, **(usage_kw or {}))
+    return _acct(number, email, alias=alias, provider=provider, usage=usage, **kw)
+
+
+def _use_rows(*claude, codex=(), **kw):
+    menu = menubar.build_menu(_inp(_claude(*claude), _codex(*codex), **kw))
+    sub = menu.find("Use a reset")
+    return sub.children if sub is not None else None
+
+
+def test_use_a_reset_one_row_per_kind():
+    acc = _holder([fable("fb", ends=_FAR, left=2), _waiting(), fable("fb2", ends=_FAR - 86400)])
+    rows = _use_rows(acc)
+    assert [r.text for r in rows] == [
+        "#1 personal · Fable reset · clears Fable usage only",
+        # 72 columns: what it clears goes before the reason; the tooltip has it all.
+        "#1 personal · weekly reset · usable once a limit is reached",
+    ]
+    assert rows[1].tooltip == (
+        "#1 personal · weekly reset · clears all weekly usage · usable once a limit is reached")
+    # The usable Fable grant that expires first is the one spent.
+    assert rows[0].action == Action("use-reset", "claude", "1", "fb2")
+    assert rows[1].disabled
+
+
+def test_use_a_reset_split_by_provider():
+    claude = _holder([fable("fb", ends=_FAR)], active=True)
+    codex = _holder([full("cr", ends=_FAR)], alias="", provider="codex")
+    rows = _use_rows(claude, codex=(codex,))
+    assert [r.text for r in rows] == [
+        "Claude #1 personal · Fable reset · clears Fable usage only",
+        "",
+        "Codex #1 maya@example.com · reset credit · clears all usage",
+    ]
+    assert rows[1].separator
+    assert rows[2].action == Action("use-reset", "codex", "1", "cr")
+
+
+def test_use_a_reset_unknown_and_unusable_rows_are_greyed():
+    odd = _reset_grant("u", clears=["five_hour", "seven_day_overage_included"], gives_back=False,
+                       type="session", ends=_FAR)
+    rows = _use_rows(_holder([odd]), _holder([_waiting()], number="2", alias="work"))
+    assert rows[0].text == "#1 personal · reset · clears 5h, Fable" and rows[0].disabled
+    assert "qswap reset 1 --grant u" in rows[0].tooltip
+    assert rows[1].text.endswith("· usable once a limit is reached") and rows[1].disabled
+    relogin = _holder([fable("fb", ends=_FAR)], set_aside="invalid_grant")
+    assert _use_rows(relogin)[0].text.endswith("· needs re-login")
+
+
+def test_use_a_reset_rows_in_progress_are_greyed():
+    acc = _holder([fable("fb", ends=_FAR), _waiting()])
+    rows = _use_rows(acc, resets_busy=frozenset({("claude", "1")}))
+    assert all(r.text.endswith("· in progress") and r.disabled for r in rows)
+
+
+def test_use_a_reset_rows_fit_the_row_limit():
+    long = _holder([_waiting()], number="12", alias="", email="maya.longname@example-corp.example.com")
+    codex = _holder([full("cr", ends=_FAR)], alias="", provider="codex")
+    rows = _use_rows(long, codex=(codex,))
+    row = rows[0]
+    assert len(row.text) <= menubar.ROW_LIMIT
+    # The name gives way first (number and provider kept), then what it
+    # clears; the kind and the reason a greyed row gives are kept.
+    assert row.text.startswith("Claude #12 m")
+    assert row.text.endswith("· weekly reset · usable once a limit is reached")
+    assert row.tooltip == (
+        "Claude #12 maya.longname@example-corp.example.com · weekly reset · clears all weekly "
+        "usage · usable once a limit is reached"
+    )
+    # A placeholder name is never cut mid-word.
+    token = _holder([fable("fb", ends=_FAR)], number="3", alias="", email="setup-token-3@token.local")
+    assert _use_rows(token)[0].text == "#3 setup-token-3 · Fable reset · clears Fable usage only"
+    assert menubar.fit_reset_row("#3 setup-token-3", "weekly reset", "clears all weekly usage",
+                                 "usable once a limit is reached", floor=16, limit=64) == (
+        "#3 setup-token-3 · weekly reset · usable once a limit is reached")
+
+
+def test_use_a_reset_is_absent_when_nothing_is_held():
+    assert _use_rows(_C1, _C2) is None
+    assert _use_rows(_holder([fable("fb", ends=_NOW - 60)])) is None  # expired
+    assert _use_rows(_holder([fable("fb", ends=_FAR)]), resets=ResetSettings(enabled=False)) is None
+
+
+def _choice_of(acc, grant_id, *, codex=False, fetched_at=_NOW, now=_NOW):
+    usage = acc.usage()
+    grant = next(g for g in usage["resets"]["grants"] if g["id"] == grant_id)
+    return manual_reset.Choice(acc.number, acc.email, acc.label(long=False), grant, usage,
+                               usage["resets"], now, 95.0, codex=codex, fetched_at=fetched_at)
+
+
+def test_use_a_reset_dialog_for_a_narrow_reset():
+    acc = _holder([fable("fb", ends=_FAR)], usage_kw={"fable": 100.0, "d7": 31.0})
+    title, message = menubar.reset_dialog(_choice_of(acc, "fb"), name="#1 personal (maya@example.com)")
+    assert title == "Use this Fable reset?"
+    lines = message.splitlines()
+    assert lines[0] == "#1 personal (maya@example.com) · Fable reset"
+    assert "Clears Fable usage only" in lines
+    assert lines[-1].endswith("a used reset cannot be undone")
+    assert "only Fable is at its limit" not in message and "could not be refreshed" not in message
+
+
+def test_use_a_reset_dialog_for_a_broad_reset_on_a_narrow_limit():
+    acc = _holder([weekly("wk", ends=_FAR)], usage_kw={"fable": 100.0, "d7": 31.0})
+    choice = _choice_of(acc, "wk")
+    title, message = menubar.reset_dialog(choice, name="#1 personal (maya@example.com)")
+    assert title == "Use this weekly reset?"
+    assert "This weekly reset clears all weekly usage; only Fable is at its limit (7d is at 31%)." in (
+        message.splitlines())
+    assert message.splitlines()[-1].endswith("a used reset cannot be undone")
+    # Word for word what `qswap reset 1` prints before asking.
+    cli_text = manual_reset.describe(choice, name="#1 personal (maya@example.com)")
+    assert message == "\n".join(menubar._ANSI.sub("", ln).strip() for ln in cli_text.splitlines())
+
+
+def test_use_a_reset_dialog_for_a_codex_credit():
+    acc = _holder([full("cr", ends=_FAR)], alias="", provider="codex")
+    title, message = menubar.reset_dialog(_choice_of(acc, "cr", codex=True),
+                                          name="Codex #1 maya@example.com")
+    assert title == "Use this reset credit?"
+    assert message.splitlines()[0] == "Codex #1 maya@example.com · reset credit"
+    assert message.splitlines()[-1].endswith("a spent credit cannot be undone")
+
+
+def test_use_a_reset_dialog_says_when_the_reading_could_not_be_refreshed():
+    acc = _holder([fable("fb", ends=_FAR)], usage_kw={"fable": 100.0})
+    _title, message = menubar.reset_dialog(_choice_of(acc, "fb", fetched_at=_NOW - 12 * 60),
+                                           name="#1 personal")
+    assert "Usage as of 12m ago; it could not be refreshed" in message.splitlines()
+    # Within the engine's freshness limit: nothing said.
+    _title, message = menubar.reset_dialog(_choice_of(acc, "fb", fetched_at=_NOW - 60), name="#1 personal")
+    assert "could not be refreshed" not in message
+    # The command line's confirmation says the same.
+    choice = _choice_of(acc, "fb", fetched_at=_NOW - 12 * 60)
+    assert "Usage as of 12m ago; it could not be refreshed" in menubar._ANSI.sub(
+        "", manual_reset.describe(choice, name="#1 personal"))
+
+
+def _click(inp, action, *, answer=True):
+    asked, ran = [], []
+
+    def run(provider, number, grant_id, **kw):
+        ran.append((provider, number, grant_id, {k: v for k, v in kw.items() if k != "ask"}))
+        acc = next(a for a in inp.provider(provider).accounts if a.number == number)
+        kw["ask"](_choice_of(acc, grant_id, codex=provider == "codex"))  # the worker asks
+        return True
+
+    started = menubar.use_reset(
+        inp, action,
+        confirm=lambda title, message: asked.append((title, message)) or answer,
+        run=run,
+    )
+    return started, asked, ran
+
+
+def test_use_a_reset_click_hands_the_spend_to_the_worker_which_asks():
+    acc = _holder([fable("fb", ends=_FAR)])
+    action = Action("use-reset", "claude", "1", "fb")
+    started, asked, ran = _click(_inp(_claude(acc)), action)
+    assert started and ran == [("claude", "1", "fb", {"who": "#1 personal", "what": "a Fable reset"})]
+    assert asked[0][0] == "Use this Fable reset?"
+    assert asked[0][1].splitlines()[0] == "#1 personal (maya@example.com) · Fable reset"
+    # In flight: nothing at all; a grant the menu no longer shows: nothing.
+    started, asked, ran = _click(_inp(_claude(acc), resets_busy=frozenset({("claude", "1")})), action)
+    assert not started and asked == [] and ran == []
+    started, asked, ran = _click(_inp(_claude(acc)), Action("use-reset", "claude", "1", "gone"))
+    assert not started and ran == []
+
+
+# The worker with the real shared function (manual_reset.spend) over a fake switcher.
+
+
+def _real_runner(tmp_path, answer, *, start=None):
+    usage = _reset_usage(fable=100.0, grants=[fable("fb", ends=_NOW + 40 * 86400)])
+    sw = FakeSwitcher(tmp_path, usage, answer)
+    queued, notes = [], []
+    runner = menubar_engines.ResetRunner(manual_reset.spend, notes.append,
+                                         start=start or queued.append)
+    return sw, runner, queued, notes
+
+
+@pytest.fixture
+def _reset_clock(monkeypatch):
+    monkeypatch.setattr(manual_reset.time, "time", lambda: _NOW)
+
+
+def test_confirm_calls_the_shared_function_once_and_cancel_calls_nothing(tmp_path, _reset_clock):
+    ok = ClaimResult("reset", resets_left=0, cleared=("seven_day_overage_included",))
+    sw, runner, queued, notes = _real_runner(tmp_path, ok)
+    asked = []
+    assert runner.run(sw, "claude", "1", "fb", who="#1 personal", what="a Fable reset",
+                      ask=lambda choice: asked.append(choice) or True)
+    assert runner.busy() == {("claude", "1")}
+    # A second click while it is in flight does nothing.
+    assert not runner.run(sw, "claude", "1", "fb", who="#1 personal", what="a Fable reset",
+                          ask=lambda choice: True)
+    assert len(queued) == 1 and sw.calls == []
+    queued[0]()  # the worker: re-read, ask, claim
+    assert [c[0] for c in sw.calls] == ["resolve", "refresh", "claim"]
+    assert sw.calls[2][1:3] == ("1", "fb") and asked[0].grant["id"] == "fb"
+    assert runner.busy() == frozenset()
+    assert [n.body for n in notes] == ["Used a Fable reset on #1 personal · Fable refilled · 0 left on this grant"]
+    # Cancel: re-read and asked, nothing claimed, no notification.
+    sw, runner, queued, notes = _real_runner(tmp_path / "b", ok)
+    (tmp_path / "b").mkdir()
+    runner.run(sw, "claude", "1", "fb", who="#1 personal", what="a Fable reset", ask=lambda c: False)
+    queued[0]()
+    assert [c[0] for c in sw.calls] == ["resolve", "refresh"] and notes == [None]
+
+
+class _FakeSpend:
+    """manual_reset.spend's seam: records each call, answers what it is given."""
+
+    def __init__(self, answer, *, after_start=False):
+        self.answer = answer
+        self.after_start = after_start
+        self.calls: list = []
+
+    def __call__(self, switcher, number, grant_id, *, codex=False, confirm=None, started=None):
+        self.calls.append((switcher, number, grant_id, codex))
+        if self.after_start and started is not None:
+            started()
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+
+def _runner(answer, **kw):
+    queued, notes = [], []
+    spend = _FakeSpend(answer, **kw)
+    runner = menubar_engines.ResetRunner(spend, notes.append, start=queued.append)
+    return runner, spend, queued, notes
+
+
+def _spent(result, grant=None, codex=False):
+    grant = grant or fable("fb", ends=_FAR)
+    choice = manual_reset.Choice("1", "maya@example.com", "#1 personal", grant, None, {}, _NOW, 95.0,
+                                 codex=codex)
+    return manual_reset.Spent(choice, result)
+
+
+def test_reset_runner_codex_and_refusal():
+    runner, spend, queued, notes = _runner(_spent(ClaimResult("cooldown"), codex=True))
+    assert runner.run("sw", "codex", "2", "cr", who="Codex #2 work", what="a reset credit")
+    queued[0]()
+    assert spend.calls == [("sw", "2", "cr", True)]
+    assert notes[0].body == "Did not use a reset credit on Codex #2 work: cooldown"
+
+
+def test_reset_runner_an_unanswered_claim_may_have_been_used():
+    runner, _spend, queued, notes = _runner(_spent(ClaimResult("error", detail="network")))
+    runner.run("sw", "claude", "1", "fb", who="#1 personal", what="a Fable reset")
+    queued[0]()
+    assert notes[0].body == (
+        "A Fable reset on #1 personal may have been used: error (network). "
+        "Run qswap reset to see where things stand."
+    )
+
+
+def test_reset_runner_says_why_the_command_line_refused():
+    from ai_quota_swap.exceptions import ValidationError
+
+    runner, _spend, queued, notes = _runner(ValidationError(
+        "that reset cannot be used right now (usable once a limit is reached)"))
+    runner.run("sw", "claude", "1", "fb", who="#1 personal", what="a Fable reset")
+    queued[0]()
+    assert notes[0].body == (
+        "Did not use a Fable reset on #1 personal: that reset cannot be used right now "
+        "(usable once a limit is reached)"
+    )
+    runner, _spend, queued, notes = _runner(ValidationError(
+        "#1 personal needs re-login; nothing was spent.\nLog in to it in Claude Code (/login), then run: qswap add"))
+    runner.run("sw", "claude", "1", "fb", who="Claude #1 personal", what="a Fable reset")
+    queued[0]()
+    assert notes[0].body.startswith(
+        "Did not use a Fable reset on Claude #1 personal: needs re-login; nothing was spent. Log in")
+    busy = manual_reset.ResetBusy("A reset on #1 personal is already being used; try again in a moment.")
+    runner, _spend, queued, notes = _runner(busy)
+    runner.run("sw", "claude", "1", "fb", who="#1 personal", what="a Fable reset")
+    queued[0]()
+    assert notes[0].body == "A reset on #1 personal is already being used; try again in a moment."
+
+
+def test_reset_runner_a_failure_after_the_request_started_may_have_been_used():
+    runner, _spend, queued, notes = _runner(OSError("disk full"), after_start=True)
+    runner.run("sw", "claude", "1", "fb", who="#1 personal", what="a Fable reset")
+    queued[0]()
+    assert notes[0].body == (
+        "A Fable reset on #1 personal may have been used: error (OSError: disk full). "
+        "Run qswap reset to see where things stand."
+    )
+    assert "Did not use" not in notes[0].body
+    from ai_quota_swap.exceptions import LockError
+
+    runner, _spend, queued, notes = _runner(LockError("Failed to acquire lock"), after_start=True)
+    runner.run("sw", "codex", "1", "cr", who="Codex #1 maya@example.com", what="a reset credit")
+    queued[0]()
+    assert notes[0].body.startswith("A reset credit on Codex #1 maya@example.com may have been used: ")
+    assert notes[0].body.endswith("Run qswap codex reset to see where things stand.")
+
+
+def test_reset_runner_never_lets_an_exception_out():
+    runner, _spend, queued, notes = _runner(RuntimeError("boom"))
+    runner.run("sw", "claude", "1", "fb", who="#1 personal", what="a Fable reset")
+    queued[0]()  # does not raise
+    assert notes[0].body == "Did not use a Fable reset on #1 personal: error (RuntimeError: boom)"
+    assert runner.busy() == frozenset()
+
+    def broken_report(_note):
+        raise OSError("notification center gone")
+
+    runner = menubar_engines.ResetRunner(_FakeSpend(RuntimeError("x")), broken_report, start=lambda fn: fn())
+    assert runner.run("sw", "claude", "1", "fb", who="#1 personal", what="a Fable reset")
+    assert runner.busy() == frozenset()
+
+
+def test_reset_runner_holds_the_lock_while_spending():
+    lock, seen = threading.Lock(), []
+
+    def spend(switcher, number, grant_id, *, codex=False, confirm=None, started=None):
+        seen.append(lock.locked())
+        return None
+
+    runner = menubar_engines.ResetRunner(spend, lambda note: None, start=lambda fn: fn(), lock=lock)
+    assert runner.run("sw", "claude", "1", "fb", who="#1 personal", what="a Fable reset")
+    assert seen == [True] and not lock.locked()

@@ -41,7 +41,7 @@ from pathlib import Path
 from ai_quota_swap import display, launch_agent, oauth
 from ai_quota_swap.exceptions import ClaudeSwitchError, ProviderError
 from ai_quota_swap.fsutil import atomic_write_text
-from ai_quota_swap.labels import account_label
+from ai_quota_swap.labels import account_label, is_placeholder, shown_email
 from ai_quota_swap.menubar_engines import (  # noqa: F401  (re-exported)
     EngineStoppedEvent,
     engine_exit_applies,
@@ -52,6 +52,7 @@ from ai_quota_swap.menubar_notify import (  # noqa: F401  (re-exported)
     should_surface_engine_error,
 )
 from ai_quota_swap.printer import warning
+from ai_quota_swap.settings import RESET_AUTO_MODES, ResetSettings
 from ai_quota_swap.switcher import SENTINEL_NOTES, USAGE_API_KEY, USAGE_RELOGIN_REQUIRED  # noqa: F401
 
 ICON = "⇄"
@@ -442,21 +443,11 @@ def usage_summary(
     return " · ".join(parts) if parts else display.USAGE_UNAVAILABLE
 
 
-def held_compact(counts: Sequence[tuple[str, int]], provider: str | None = "claude") -> str:
-    """Held usage resets for a row: ``1 Fable reset``, ``2 weekly resets``,
-    ``1 reset credit`` (:func:`display.held_resets`); several kinds by count,
-    ``2 Fable · 1 weekly resets``."""
-    if not counts:
-        return ""
-    if provider == "codex" or len(counts) == 1:
-        return display.held_resets(counts, provider)
-    return " · ".join(f"{n} {label}" for label, n in counts) + " resets"
-
-
 def _local_part(email: str, limit: int = 12) -> str:
-    """Email text before '@', truncated with a trailing '*' marker."""
+    """Email text before '@', truncated with a trailing '*' marker. A
+    placeholder name (``setup-token-13``) is shown whole: it is one word."""
     local = email.split("@", 1)[0]
-    if len(local) > limit:
+    if len(local) > limit and not is_placeholder(email):
         return local[: limit - 1] + "*"
     return local
 
@@ -715,6 +706,10 @@ class MenuInput:
     start_at_login: bool = False
     thresholds: Mapping[str, float] = field(default_factory=dict)
     can_add_token: bool = True
+    #: The shared ``resets`` section of settings.json (both providers').
+    resets: ResetSettings = field(default_factory=ResetSettings)
+    #: Accounts with a *Use a reset* claim in flight, as ``(provider, number)``.
+    resets_busy: frozenset = frozenset()
 
     def provider(self, provider: str) -> ProviderState:
         return self.codex if provider == "codex" else self.claude
@@ -950,7 +945,7 @@ def account_row(
             # budget") must never be what the row limit cuts.
             parts.append(api_spend.menu_text(reading))
         else:
-            parts.append(block.notes[0] if block.notes else display.API_KEY_NO_QUOTA)
+            parts.append(display.api_key_summary(block))
         attention = api_spend.over_budget(reading)
     elif state == "not-read":
         parts.append(display.NOT_READ_YET)
@@ -966,7 +961,7 @@ def account_row(
             if block.error:
                 stale += f" ({display.error_label(block.error)})"
             parts.append(stale)
-        held = held_compact(resets.counts_by_kind(usage.get("resets"), now), acc.provider)
+        held = display.held_compact(resets.counts_by_kind(usage.get("resets"), now), acc.provider)
         if held:
             parts.append(held)
     if state != "needs-relogin":
@@ -975,7 +970,8 @@ def account_row(
             parts.append(note)
             attention = attention or note == display.NEEDS_RELOGIN
     return Row(
-        fit_row(parts), action=action, checked=acc.active,
+        fit_row(parts, whole_name=not acc.alias and is_placeholder(acc.email)),
+        action=action, checked=acc.active,
         attention=attention, tooltip=block_text(block),
     )
 
@@ -984,16 +980,21 @@ def account_row(
 LABEL_FLOOR = 7
 
 
-def fit_row(parts: Sequence[str], limit: int = ROW_LIMIT) -> str:
+def fit_row(parts: Sequence[str], limit: int = ROW_LIMIT, *, whole_name: bool = False) -> str:
     """``parts`` joined with `` · `` within ``limit`` columns. The label
     (``parts[0]``) gives way first, down to :data:`LABEL_FLOOR` (its number
     stays, the full name is in the tooltip); only then is the end cut. Both
-    cuts are :func:`display.fit`'s."""
+    cuts are :func:`display.fit`'s. ``whole_name``: the label's name is one
+    word that must not be cut (a placeholder such as ``api-key-5``), so it
+    stays whole or goes altogether, leaving the number."""
     text = " · ".join(parts)
     if len(text) <= limit or not parts:
         return text
     over = len(text) - limit
     label = parts[0]
+    if whole_name:
+        number = label.rsplit(" ", 1)[0] if " " in label else label
+        return display.fit(" · ".join([number, *parts[1:]]), limit)
     room = max(LABEL_FLOOR, len(label) - over)
     if room < len(label):
         text = " · ".join([display.fit(label, room), *parts[1:]])
@@ -1284,6 +1285,240 @@ def _threshold_menu(inp: MenuInput, provider: str, title: str) -> Row:
     ))
 
 
+# -- usage resets: the automatic mode and spending one by hand ------------------------
+
+#: When each ``resets.auto`` mode spends a reset by itself (settings.py,
+#: README "Usage resets"). The submenu's choices are these, capitalized.
+_RESET_AUTO_WHEN = {
+    "active": "when the active account reaches its limit",
+    "last-resort": "as a last resort, when no account can take over",
+    "on-limit": "when any account reaches its limit",
+}
+RESET_AUTO_LABELS = {
+    "off": "Off",
+    **{mode: when[:1].upper() + when[1:] for mode, when in _RESET_AUTO_WHEN.items()},
+}
+RESETS_APPLY_TO = "Applies to Claude Code and Codex"
+RESETS_OFF_NOTE = "Usage resets are not read (resets.enabled is off)"
+WEEKLY_FOR_MODEL_LABEL = "Use a weekly reset for a single model's limit"
+_NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five"}
+
+
+def _resets_menu(inp: MenuInput) -> Row:
+    """*Use resets automatically*: one checked choice per ``resets.auto``
+    mode, then the ``resets.weeklyForModelLimit`` toggle. Each choice's
+    tooltip is ``qswap reset``'s ``Auto:`` line for it."""
+    rs = inp.resets
+    # Shared by both providers; said only where Codex is part of the menu.
+    rows: list[Row] = [Row(RESETS_APPLY_TO)] if inp.codex_shown else []
+    if not rs.enabled:
+        rows.append(Row(RESETS_OFF_NOTE))
+    for mode in RESET_AUTO_MODES:
+        rows.append(Row(
+            RESET_AUTO_LABELS[mode], action=Action("resets-auto", value=mode),
+            checked=rs.auto == mode, tooltip=display.reset_mode_line(mode, rs.threshold),
+        ))
+    rows.append(SEPARATOR)
+    rows.append(Row(
+        WEEKLY_FOR_MODEL_LABEL, action=Action("toggle-weekly-for-model"),
+        checked=rs.weekly_for_model_limit,
+        tooltip="resets.weeklyForModelLimit: automatic use may spend a weekly or full "
+                "reset when only a per-model limit such as Fable's is reached",
+    ))
+    return Row("Use resets automatically", children=tuple(rows))
+
+
+def resets_auto_confirmation(current: str, chosen: str, *, codex: bool = False) -> str | None:
+    """The one sentence asked before automatic use turns on (``off`` to any
+    other mode); None when nothing needs asking. ``codex``: Codex manages
+    accounts too, so the sentence names its reset credits and the cap per
+    provider."""
+    from ai_quota_swap.autoswitch import MAX_AUTO_RESETS_PER_DAY
+
+    when = _RESET_AUTO_WHEN.get(chosen)
+    if current != "off" or when is None:
+        return None
+    cap = _NUMBER_WORDS.get(MAX_AUTO_RESETS_PER_DAY, str(MAX_AUTO_RESETS_PER_DAY))
+    what = "a usage reset or Codex reset credit" if codex else "a usage reset"
+    per = " per provider" if codex else ""
+    return (
+        f"Whenever auto-switch runs, it will spend {what} by itself {when}, "
+        f"at most {cap} in 24 hours{per}."
+    )
+
+
+def change_resets_setting(action: Action, resets: ResetSettings, *, codex: bool, confirm, write) -> bool:
+    """A *Use resets automatically* click. ``resets`` is the section as it is
+    on disk at the click (not the menu's last read, so a value set to off in
+    a terminal since still asks). From off to another mode, ``confirm(title,
+    question)`` decides first; then ``write(key, value)`` (``settings.set_setting``)
+    writes what ``qswap config set`` would. Returns whether it wrote."""
+    if action.kind == "resets-auto":
+        question = resets_auto_confirmation(resets.auto, str(action.value), codex=codex)
+        if question and not confirm("Use resets automatically", question):
+            return False
+    key, value = resets_setting(action, resets)
+    write(key, value)
+    return True
+
+
+def resets_setting(action: Action, resets: ResetSettings) -> tuple[str, str]:
+    """The ``settings.json`` key a *Use resets automatically* click writes and
+    the value, spelled as ``qswap config set KEY VALUE`` takes it."""
+    if action.kind == "resets-auto":
+        return "resets.auto", str(action.value)
+    if action.kind == "toggle-weekly-for-model":
+        return "resets.weeklyForModelLimit", "false" if resets.weekly_for_model_limit else "true"
+    raise ValueError(f"not a resets setting: {action.kind}")
+
+
+def _reset_noun(grant: dict, codex: bool) -> str:
+    from ai_quota_swap import resets
+
+    return "reset credit" if codex else resets.reset_name(grant)
+
+
+def _account_reset_rows(acc: AccountState, inp: MenuInput) -> list[Row]:
+    """One row per kind of reset ``acc`` holds: ``Claude #1 personal · Fable
+    reset · clears Fable usage only``. Usable: clicking spends one (the
+    usable grant of that kind that expires first). Otherwise greyed with
+    why, in ``qswap reset``'s words; a kind qswap cannot name is greyed."""
+    from ai_quota_swap import manual_reset, resets
+
+    usage = acc.usage()
+    status = usage.get("resets") if isinstance(usage, dict) else None
+    grants = resets.unused_grants(status, inp.now)
+    if not grants:
+        return []
+    codex = acc.provider == "codex"
+    label = acc.label(provider_prefix=inp.codex_shown, long=False)
+    kinds: dict[tuple[str, str], list[dict]] = {}
+    for g in grants:
+        kinds.setdefault((_reset_noun(g, codex), resets.clears_phrase(g)), []).append(g)
+
+    def order(item):
+        key, gs = item
+        return (resets.SCOPE_BREADTH[resets.grant_scope(gs[0])], grants.index(gs[0]))
+
+    busy = (acc.provider, acc.number) in inp.resets_busy
+    # The account's number (and provider) stay when its name gives way.
+    floor = len(acc.label(provider_prefix=inp.codex_shown, long=False)) - len(
+        acc.alias or shown_email(acc.email)) + 2
+    if not acc.alias and is_placeholder(acc.email):
+        floor = len(label)  # a placeholder name is one word: never cut
+    rows: list[Row] = []
+    for (noun, phrase), gs in sorted(kinds.items(), key=order):
+        full = f"{label} · {noun} · {phrase}"
+        by_end = sorted(gs, key=lambda g: resets.parse_ts(g.get("ends_at")) or float("inf"))
+        usable = [g for g in by_end if resets.grant_unusable_reason(g, inp.now) is None]
+        command = f"{manual_reset.command_for(codex)} {acc.number} --grant {by_end[0]['id']}"
+        reason = ""
+        action = None
+        tooltip = ""
+        if busy:
+            reason = "in progress"
+        elif acc.needs_relogin:
+            reason = display.NEEDS_RELOGIN
+        elif not status.get("eligible"):
+            reason = "not eligible"
+        elif resets.grant_scope(gs[0]) == "unknown":
+            tooltip = f"qswap cannot tell what it clears; to spend it anyway: {command}"
+        elif usable:
+            action = Action("use-reset", acc.provider, acc.number, usable[0]["id"])
+        else:
+            reason = display.grant_state(resets.grant_unusable_reason(by_end[0], inp.now))
+        text = fit_reset_row(label, noun, phrase, reason, floor=floor)
+        whole = f"{full} · {reason}" if reason else full
+        rows.append(Row(text, action=action, tooltip=tooltip or (whole if text != whole else "")))
+    return rows
+
+
+def fit_reset_row(label: str, noun: str, phrase: str, reason: str = "", *,
+                  floor: int = LABEL_FLOOR, limit: int = ROW_LIMIT) -> str:
+    """A *Use a reset* row within ``limit`` columns, as an account row fits:
+    the account's name gives way first (down to ``floor``, its number kept),
+    then what the reset clears goes whole; the kind and, for a greyed row,
+    the reason why are kept. Only then is the end cut."""
+    tail = [reason] if reason else []
+    for facts in ([noun, phrase, *tail], [noun, *tail]):
+        rest = " · " + " · ".join(facts)
+        room = limit - len(rest)
+        if len(label) <= room:
+            return label + rest
+        if room >= floor:
+            return display.fit(label, room) + rest
+    return display.fit(display.fit(label, floor) + " · " + " · ".join([noun, *tail]), limit)
+
+
+def use_reset_rows(inp: MenuInput) -> list[Row]:
+    """*Use a reset*'s rows: every account's kinds, Claude Code's then
+    Codex's, a separator between them when both have some."""
+    groups = []
+    for state in (inp.claude, inp.codex):
+        if state.provider == "codex" and not inp.codex_shown:
+            continue
+        rows = [row for acc in state.accounts for row in _account_reset_rows(acc, inp)]
+        if rows:
+            groups.append(rows)
+    out: list[Row] = []
+    for i, rows in enumerate(groups):
+        if i:
+            out.append(SEPARATOR)
+        out.extend(rows)
+    return out
+
+
+def _use_reset_menu(inp: MenuInput) -> Row | None:
+    """*Use a reset*, shown only while some account holds one (and resets
+    are read at all)."""
+    if not inp.resets.enabled:
+        return None
+    rows = use_reset_rows(inp)
+    return Row("Use a reset", children=tuple(rows)) if rows else None
+
+
+def reset_dialog(choice, *, name: str) -> tuple[str, str]:
+    """``(title, message)`` before spending ``choice``'s reset: the question
+    ``qswap reset`` asks, and what it prints before asking, from the same
+    freshly read choice (what the reset clears, the trade when a broad one
+    meets a narrow limit, a reading that could not be refreshed, that it
+    cannot be undone). ``name`` is the account's long label."""
+    from ai_quota_swap import manual_reset
+
+    text = manual_reset.describe(choice, name=name)
+    lines = [_ANSI.sub("", line).strip() for line in text.splitlines()]
+    return manual_reset.question(choice), "\n".join(line for line in lines if line)
+
+
+def use_reset(inp: MenuInput, action: Action, *, confirm, run) -> bool:
+    """A click on a *Use a reset* row: hand the spend to ``run(provider,
+    number, grant_id, who=…, what=…, ask=…)``
+    (:class:`menubar_engines.ResetRunner`), whose worker reads the account
+    again and then calls ``ask(choice)``: ``confirm(title, message)`` (the
+    app's dialog, Cancel by default) with :func:`reset_dialog`'s words.
+    Nothing happens while that account's claim is in flight, or for a grant
+    the menu no longer shows. Returns whether a spend started."""
+    provider, number, grant_id = action.provider or "claude", str(action.number), str(action.value)
+    if (provider, number) in inp.resets_busy:
+        return False
+    acc = next((a for a in inp.provider(provider).accounts if a.number == number), None)
+    usage = acc.usage() if acc is not None else None
+    status = usage.get("resets") if isinstance(usage, dict) else None
+    grant = next((g for g in (status or {}).get("grants") or () if g.get("id") == grant_id), None)
+    if grant is None:
+        return False
+    name = acc.label(provider_prefix=inp.codex_shown)
+
+    def ask(choice) -> bool:
+        return bool(confirm(*reset_dialog(choice, name=name)))
+
+    who = acc.label(provider_prefix=inp.codex_shown, long=False)
+    return bool(run(
+        provider, number, grant_id, who=who,
+        what=f"a {_reset_noun(grant, provider == 'codex')}", ask=ask,
+    ))
+
+
 def _settings_menu(inp: MenuInput) -> Row:
     s = inp.settings
     rows: list[Row] = [
@@ -1313,6 +1548,7 @@ def _settings_menu(inp: MenuInput) -> Row:
         rows.append(_threshold_menu(inp, "codex", "Codex threshold"))
     else:
         rows.append(_threshold_menu(inp, "claude", "Auto-switch threshold"))
+    rows.append(_resets_menu(inp))
     rows.append(SEPARATOR)
     # Checked = the plist sits in ~/Library/LaunchAgents, where launchd scans
     # at login; read from disk on every rebuild so a CLI change shows here.
@@ -1345,13 +1581,15 @@ def build_menu(inp: MenuInput) -> Menu:
     if inp.claude.accounts:
         sections.append(Section("switch", tuple(_strategy_rows(inp))))
     refresh = "Refresh current credentials" + (" (Claude Code)" if inp.codex_shown else "")
-    sections.append(Section("manage", (
+    use_reset_menu = _use_reset_menu(inp)
+    sections.append(Section("manage", tuple(row for row in (
         _add_menu(inp),
         _accounts_submenu(inp, "Disable / enable account", "toggle-disabled"),
         _accounts_submenu(inp, "Remove account", "remove"),
+        use_reset_menu,
         Row(refresh, action=Action("refresh-creds", "claude")),
         _history_menu(inp),
-    )))
+    ) if row is not None)))
     sections.append(Section("app", (
         _settings_menu(inp),
         Row("Refresh now", action=Action("refresh-now")),
@@ -1489,6 +1727,7 @@ ACTION_KINDS = frozenset({
     "toggle-disabled", "refresh-creds", "open-log", "restart-engines", "toggle-name",
     "title-follows", "title-pct", "toggle-scoped", "interval", "toggle-auto",
     "threshold", "toggle-login", "refresh-now", "quit",
+    "resets-auto", "toggle-weekly-for-model", "use-reset",
 })
 
 

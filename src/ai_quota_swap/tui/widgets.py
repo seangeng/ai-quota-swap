@@ -350,8 +350,7 @@ def _summary_core(block: display.AccountBlock, *, over_budget: bool) -> list[tup
         return [(display.usage_unavailable(block.error, retry_in_s=block.retry_in_s,
                                            retrying=retrying), "dim")]
     if block.state == "api-key":
-        text = block.notes[0] if block.notes else display.API_KEY_NO_QUOTA
-        return [(text, "warn-text" if over_budget else "dim")]
+        return [(display.api_key_summary(block), "warn-text" if over_budget else "dim")]
     if block.state == "not-read":
         return [(display.NOT_READ_YET, "dim")]
     if block.state == "note":

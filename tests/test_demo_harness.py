@@ -311,8 +311,10 @@ class TestScenarioStates:
     def test_fleet_has_an_api_key_account_and_two_codex_accounts(self):
         r = _run(["fleet", "--", "list"])
         assert r.returncode == 0, r.stderr
-        assert "#5 ci (api-key-5@token.local) · API key" in r.stdout
-        assert "no quota; billed per token" in r.stdout
+        # The placeholder email is a name: never shown as an address.
+        assert "#5 ci · API key" in r.stdout and "token.local" not in r.stdout
+        # No ledger yet: nothing recorded, as after the menu bar's first scan.
+        assert "no usage recorded on this machine" in r.stdout
         codex = r.stdout.split("\nCodex accounts\n", 1)[1]
         assert "#1 maya@example.com · active · Plus" in codex
         assert "47%" in codex  # the live account's weekly figure
@@ -414,9 +416,9 @@ class TestScenarioStates:
         assert "✓ #1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset\n" in out
         assert "#3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset\n" in out
         assert "#2 work · 5h 8% · 7d 15% · 1 reset credit\n" in out
-        # After the menu bar's ledger scan the API-key account has a spend
-        # figure, as `qswap list` has after `qswap usage`.
-        assert "#5 ci · API key · $0.00 today · $0.00 this month · estimate\n" in out
+        # After the menu bar's ledger scan the unused API-key account has a
+        # zero estimate, which reads as `qswap list` reads with no ledger yet.
+        assert "#5 ci · API key · no usage recorded\n" in out
         assert "Codex #2 work (maya@northwind.example.com)" in out  # submenus keep long labels
         assert all(len(row) <= 72 for row in self._account_rows(out))
         r = _run(["trouble", "--menubar"])
