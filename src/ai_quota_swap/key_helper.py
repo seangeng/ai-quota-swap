@@ -7,8 +7,11 @@ moves to the key and again when its cached value expires. So it:
 
 - prints the key and one newline on standard output, and nothing else ever:
   no log line, no update notice, no warning;
-- on any failure prints one line on standard error and exits non-zero, with
-  nothing on standard output;
+- on any failure prints one line on standard error and nothing on standard
+  output, and exits 1 (64 for a usage error: a missing or extra argument);
+- with ``--check`` prints nothing at all and exits 0 when the key can be
+  read (``qswap doctor`` and a switch to the active key run the line that
+  way to learn whether it answers), and fails as above when it cannot;
 - imports only the standard library and two leaf modules (``fsutil`` is not
   even needed; ``macos_keychain`` for the Keychain read), never the switcher,
   the dashboard, the menu bar or anything that opens a connection;
@@ -38,21 +41,47 @@ from pathlib import Path
 SECURITY_SERVICE = "ai-quota-swap"
 _OAUTH_TOKEN_PREFIXES = ("sk-ant-oat", "sk-ant-ort")
 
-USAGE = "usage: qswap key-helper N [--data-dir DIR]"
+USAGE = "usage: qswap key-helper N [--data-dir DIR] [--check]"
 HELP = f"""{USAGE}
 
 Print the saved key of API-key account N, for Claude Code.
 
 qswap writes this command into Claude Code's settings (apiKeyHelper) while an
 API-key account is active, and into the --settings of a qswap run session on a
-key. It prints the key and nothing else; on a failure it prints one line on
-standard error and exits 1. You do not need to run it yourself. --data-dir
-names qswap's data directory when XDG_DATA_HOME set it, since Claude Code may
-run the command without that variable.
+key. It prints the key and nothing else, and exits 0. When the key cannot be
+read it prints one line on standard error and exits 1; a usage error exits 64.
+You do not need to run it yourself.
 
-Example:
+options:
+  --data-dir DIR  qswap's data directory. On Linux the line always names it,
+                  since Claude Code may run the command with another
+                  XDG_DATA_HOME.
+  --check         print nothing, and exit 0 only when the key can be read
+
+examples:
   qswap key-helper 5
+  qswap key-helper 5 --check
 """
+
+
+def _parse_args(argv: list[str]) -> tuple[str, Path | None, bool] | None:
+    """``(number, data directory, check)`` from ``N [--data-dir DIR]
+    [--check]`` (the options in any order after N), or None for a usage
+    error."""
+    if not argv or not argv[0].isdigit():
+        return None
+    root: Path | None = None
+    check = False
+    rest = argv[1:]
+    while rest:
+        flag = rest.pop(0)
+        if flag == "--check" and not check:
+            check = True
+        elif flag == "--data-dir" and root is None and rest and rest[0]:
+            root = Path(rest.pop(0))
+        else:
+            return None
+    return str(int(argv[0])), root, check
 
 
 class HelperFailure(Exception):
@@ -180,18 +209,17 @@ def read_key(number: str, root: Path | None = None) -> str:
 
 
 def main(argv: list[str]) -> int:
-    """Run ``qswap key-helper ARGV``; the exit status."""
+    """Run ``qswap key-helper ARGV``; the exit status: 0 when the key was
+    printed (with ``--check``: could be read), 1 when it cannot be read, 64
+    for a usage error. Every failure is one line on standard error."""
     if argv in (["-h"], ["--help"]):
         sys.stdout.write(HELP)
         return 0
-    root = None
-    if len(argv) == 3 and argv[1] == "--data-dir" and argv[2]:
-        root = Path(argv[2])
-        argv = argv[:1]
-    if len(argv) != 1 or not argv[0].isdigit():
-        sys.stderr.write(f"qswap key-helper: needs one account number\n{USAGE}\n")
+    parsed = _parse_args(argv)
+    if parsed is None:
+        sys.stderr.write(f"qswap key-helper: {USAGE}\n")
         return 64
-    number = str(int(argv[0]))
+    number, root, check = parsed
     try:
         key = read_key(number, root)
     except HelperFailure as e:
@@ -200,6 +228,8 @@ def main(argv: list[str]) -> int:
     except Exception as e:  # never a traceback into Claude Code's output
         sys.stderr.write(f"qswap key-helper: failed ({type(e).__name__})\n")
         return 1
+    if check:
+        return 0
     try:
         sys.stdout.write(key + "\n")
         sys.stdout.flush()

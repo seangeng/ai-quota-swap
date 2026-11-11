@@ -312,17 +312,55 @@ class TestKeyHelper:
         assert err.startswith("qswap key-helper: ") and err.count("\n") == 1
         assert KEY_5 not in err
 
-    @pytest.mark.parametrize("argv", [[], ["x"], ["5", "6"], ["-5"]])
-    def test_a_bad_argument_is_a_usage_error(self, argv):
+    @pytest.mark.parametrize("argv", [
+        [], ["x"], ["5", "6"], ["-5"], ["--check"], ["5", "--data-dir"],
+        ["5", "--check", "--check"], ["5", "--data-dir", "/a", "--data-dir", "/b"],
+        ["5", "--other"],
+    ])
+    def test_a_bad_argument_is_a_usage_error_in_one_line(self, argv):
+        """Claude Code shows the helper's standard error as it is: one line,
+        exit 64 (E1)."""
         code, out, err = _helper(argv)
         assert (code, out) == (64, "")
+        assert err.count("\n") == 1 and err.startswith("qswap key-helper: ")
         assert "usage: qswap key-helper N" in err
+        assert len(err.rstrip("\n")) <= display.WIDTH
 
     def test_help(self):
         code, out, err = _helper(["--help"])
         assert code == 0 and err == ""
         assert out.startswith("usage: qswap key-helper N")
-        assert "Example:" in out
+        assert "examples:" in out  # as every other verb's help
+        assert "--check" in out
+        # The exit status of each outcome is stated (E1).
+        assert "exits 1" in out and "64" in out
+        assert "exits 1" in key_helper.__doc__ and "64" in key_helper.__doc__
+
+    def test_check_says_nothing_when_the_key_can_be_read(self, temp_home, monkeypatch):
+        monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
+        root = key_helper.data_dir()
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        assert _helper(["5", "--check"]) == (0, "", "")
+        # Any order after the number, as doctor appends it to the line.
+        assert _helper(["5", "--data-dir", str(root), "--check"]) == (0, "", "")
+        assert _helper(["5", "--check", "--data-dir", str(root)]) == (0, "", "")
+
+    @pytest.mark.parametrize("case", ["missing", "no-key", "subscription"])
+    def test_check_fails_in_one_line_when_the_key_cannot_be_read(
+        self, temp_home, monkeypatch, case
+    ):
+        monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
+        root = key_helper.data_dir()
+        accounts = {"5": {"email": EMAIL_5, "kind": "api_key"}, "1": {"email": MAYA}}
+        if case == "missing":
+            _seed_data(root, {"1": {"email": MAYA}})
+        else:
+            _seed_data(root, accounts, {f".creds-1-{MAYA}.enc": '{"claudeAiOauth": {}}'})
+        number = "1" if case == "subscription" else "5"
+        code, out, err = _helper([number, "--check"])
+        assert (code, out) == (1, "")
+        assert err.startswith("qswap key-helper: ") and err.count("\n") == 1
 
     def test_hidden_from_the_main_help_map(self):
         from ai_quota_swap import helptext
