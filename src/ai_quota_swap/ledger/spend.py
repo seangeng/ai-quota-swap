@@ -13,7 +13,10 @@ the ledger up to date). So the read:
   ``qswap run`` session sharing the default history) belongs to that account
   and is left out here. API-key accounts never own such a session (the stamp
   names an account uuid, which they do not have), so nothing is added;
-- prices tokens when read, with the same table and ``pricing.json``;
+- prices tokens when read, with the same table and ``pricing.json``; tokens
+  of a model with no price are charged at the table's dearest rate for their
+  kind (``PriceTable.dearest``), since these figures hold an API key to its
+  budget and credit: an unknown model never counts as zero;
 - remembers its answer in this process until the ledger, the activation log
   or the price file changes, so a dashboard repainting every few seconds
   costs one query per change.
@@ -42,6 +45,8 @@ class LedgerSpend:
     last_scan_at: float | None
     # Spend since ``since_start`` (a credit's start), when one was asked for.
     since: float | None = None
+    # Tokens with no price since ``since_start`` (counted at the dearest rate).
+    unpriced_since: int = 0
 
 
 _memo: dict[tuple, LedgerSpend] = {}
@@ -62,14 +67,23 @@ class _Sessions:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def sessions(self, provider: str) -> dict[str, tuple[str | None, float | None]]:
-        return {
-            row[0]: (row[1], row[2])
-            for row in self.conn.execute(
-                "SELECT session, owner, first_ts FROM sessions WHERE provider = ?",
+    def sessions(self, provider: str) -> dict[str, tuple[str | None, float | None, int | None]]:
+        try:
+            rows = self.conn.execute(
+                "SELECT session, owner, first_ts, owner_early FROM sessions WHERE provider = ?",
                 (provider,),
-            )
-        }
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # A ledger from before owner_early, read without migrating it
+            # (read-only): its owners read as early, as they always did.
+            rows = [
+                (*row, None)
+                for row in self.conn.execute(
+                    "SELECT session, owner, first_ts FROM sessions WHERE provider = ?",
+                    (provider,),
+                )
+            ]
+        return {row[0]: (row[1], row[2], row[3]) for row in rows}
 
 
 def account_spend(
@@ -166,8 +180,9 @@ def _read(
     finally:
         conn.close()
     prices = PriceTable.load(root)
+    dearest = None
     month = today = since = 0.0
-    unpriced = 0
+    unpriced = unpriced_since = 0
     for hour, model, session, *toks in rows:
         owner = moved.get(session)
         if owner is not None and owner != account:
@@ -180,10 +195,14 @@ def _read(
                 continue
         found = prices.lookup(model)
         if found is None:
+            dearest = dearest or prices.dearest()
+            cost = dearest.cost(*toks)
             if hour >= month_hour:
                 unpriced += sum(toks)
-            continue
-        cost = found[1].cost(*toks)
+            if since_hour is not None and hour >= since_hour:
+                unpriced_since += sum(toks)
+        else:
+            cost = found[1].cost(*toks)
         if hour >= month_hour:
             month += cost
             if hour >= day_hour:
@@ -194,4 +213,5 @@ def _read(
         month=round(month, 6), today=round(today, 6),
         unpriced_tokens=unpriced, last_scan_at=last_scan_at,
         since=None if since_hour is None else round(since, 6),
+        unpriced_since=unpriced_since,
     )

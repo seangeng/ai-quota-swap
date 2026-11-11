@@ -243,7 +243,9 @@ def _held(cursor: tuple | None, path: str, st: os.stat_result) -> bool:
 class _Batch:
     def __init__(self) -> None:
         self.events: list[tuple[str, Event]] = []
-        self.owners: dict[str, str] = {}
+        # session -> (owner, early): early when no event of the session came
+        # before the owner line in its file.
+        self.owners: dict[str, tuple[str, int]] = {}
         self.cursors: dict[str, tuple] = {}
         self.bytes = 0
 
@@ -276,6 +278,9 @@ class Scanner:
         self._batch = _Batch()
         self._last_progress = 0.0
         self._total_files = 0
+        # Claude sessions with a counted event in the ledger, read when a
+        # file is resumed mid-way (an owner line there came late).
+        self._counted: set[str] | None = None
 
     def _refresh_logs(self) -> None:
         """(Re)load an activation log whose file changed, so a switch made
@@ -403,6 +408,9 @@ class Scanner:
                     offset = 0  # rewritten in place: read it again; dedupe absorbs it
                 f.seek(offset)
             pos = offset
+            # Sessions with an event earlier in this file: an owner line
+            # after one came late (store.py, owner_early).
+            with_events: set[str] = set()
             for raw in f:
                 if not raw.endswith(b"\n"):
                     break  # a line still being written: leave it for next time
@@ -413,10 +421,16 @@ class Scanner:
                 if item is None:
                     pass
                 elif isinstance(item, OwnerNote):
-                    self._batch.owners.setdefault(item.session, item.owner)
+                    if item.session not in self._batch.owners:
+                        early = item.session not in with_events and not (
+                            offset and item.session in self._counted_sessions()
+                        )
+                        self._batch.owners[item.session] = (item.owner, int(early))
                 else:
                     if account is not None:
                         item.account = account
+                    if item.session:
+                        with_events.add(item.session)
                     self._batch.events.append(("claude", item))
                 if self._batch_full():
                     # Mid-file: no size, so the next scan never mistakes the
@@ -426,6 +440,11 @@ class Scanner:
                     self._maybe_progress()
             self._batch.cursors[path] = ("claude", inode, size, mtime, pos, None)
         self._maybe_progress()
+
+    def _counted_sessions(self) -> set[str]:
+        if self._counted is None:
+            self._counted = self.store.counted_sessions("claude")
+        return self._counted
 
     # -- Codex ----------------------------------------------------------------
 
@@ -618,13 +637,15 @@ class Scanner:
                 store.put_seen(seen_rows)
             if buckets:
                 store.add_buckets([(*k, *v) for k, v in buckets.items()])
-            sessions = {s: [o, None] for s, o in batch.owners.items()}
+            sessions = {s: [o, None, early] for s, (o, early) in batch.owners.items()}
             for s, t in first_ts.items():
-                sessions.setdefault(s, [None, None])[1] = t
+                sessions.setdefault(s, [None, None, None])[1] = t
             if sessions:
                 store.note_sessions(
-                    [("claude", s, o, t) for s, (o, t) in sessions.items()]
+                    [("claude", s, o, t, early) for s, (o, t, early) in sessions.items()]
                 )
+                if self._counted is not None:
+                    self._counted.update(first_ts)
             for path, (provider, inode, size, mtime, pos, state) in batch.cursors.items():
                 store.put_cursor(path, provider, inode, size, mtime, pos, state)
             store.commit()

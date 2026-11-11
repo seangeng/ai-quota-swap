@@ -2006,6 +2006,7 @@ def _harness(temp_home, **settings) -> EngineHarness:
     data["accounts"]["2"]["alias"] = "ci"
     h.switcher._write_json(h.switcher.sequence_file, data)
     h.switcher._write_account_credentials("2", "key@token.local", "sk-ant-api03-" + "kk" * 20)
+    h.limit_key(2)  # the engine enters only a key with a budget or credit
     return h
 
 
@@ -2045,6 +2046,7 @@ class TestEngine:
             TickOutcome.NO_ACTION
         )
         assert h.switcher.current_account_number() == "2"
+        h.clock.advance(h.settings.cooldown_seconds)  # the minimum stay on the key
         assert h.tick_with_usage({"1": _usage(100), "2": "api key", "3": _usage(10)}) is (
             TickOutcome.SWITCHED
         )
@@ -2124,8 +2126,8 @@ class TestEngine:
         switches = [e for e in h.events if isinstance(e, SwitchEvent)]
         assert len(switches) == 1
         assert switches[-1].human() == (
-            "Switched #2 ci → #1 a@example.com · monthly budget reached; no subscription "
-            "has room, so back to the account underneath"
+            "Switched #2 ci → #1 a@example.com · monthly budget reached (estimate); no "
+            "subscription has room, so back to the account underneath"
         )
 
     def test_at_its_budget_it_leaves_for_an_unmanaged_login_underneath(self, temp_home):
@@ -2150,8 +2152,8 @@ class TestEngine:
         )
         switch = [e for e in h.events if isinstance(e, SwitchEvent)][-1]
         assert switch.human() == (
-            "Switched #2 ci → x@example.com · monthly budget reached; no subscription "
-            "has room, so back to the account underneath"
+            "Switched #2 ci → x@example.com · monthly budget reached (estimate); no "
+            "subscription has room, so back to the account underneath"
         )
 
     def test_at_its_budget_with_no_login_underneath_it_stays(self, temp_home):
@@ -2169,7 +2171,7 @@ class TestEngine:
         assert h.tick_with_entries(entries) is TickOutcome.BLOCKED
         assert h.switcher.helper_account() == "2"
         held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
-        assert held.reason == "no-candidates"
+        assert held.reason == "stuck-on-key"  # said once per episode (the notifier)
 
     def test_will_not_move_to_a_key_whose_credit_is_spent(self, temp_home):
         h = _harness(temp_home)
@@ -2205,11 +2207,13 @@ class TestLeavingForTheLoginUnderneath:
         data["accounts"]["2"]["kind"] = "api_key"
         h.switcher._write_json(h.switcher.sequence_file, data)
         h.switcher._write_account_credentials("2", "key@token.local", "sk-ant-api03-" + "kk" * 20)
+        h.limit_key(2)  # the engine enters only a key with a budget or credit
         h.switcher._write_credentials(
             h.switcher._read_account_credentials("1", "a@example.com")
         )
         assert h.tick_with_usage(EXHAUSTED) is TickOutcome.SWITCHED
         assert h.switcher.key_entered_by() == "engine"
+        h.clock.advance(h.settings.cooldown_seconds)  # the minimum stay on the key
         return h, exp
 
     @staticmethod
@@ -2291,8 +2295,9 @@ class TestCredit:
         reading = api_spend.credit_reading(c, 36.4, "admin-api", NOW + 60)
         assert reading["left"] == pytest.approx(1150.6)
         assert api_spend.credit_text(reading) == "$1,150 of $1,187 credit left"
-        full = {"spend": {"used": 36.4, "limit": None}, "source": "admin-api", "credit": reading}
-        assert api_spend.spend_text(full) == "API key · $1,150 of $1,187 credit left"
+        full = {"spend": {"used": 36.4, "limit": None}, "source": "admin-api", "credit": reading,
+                "as_of": NOW + 60}
+        assert api_spend.spend_text(full, now=NOW + 60) == "API key · $1,150 of $1,187 credit left"
         assert api_spend.limit_reason(full) is None
 
     def test_spent(self):
@@ -2393,7 +2398,7 @@ class TestCredit:
         run_main(["credit", "5", "1187", "--expires", "2026-12-31"])
         out = capsys.readouterr().out
         assert out.splitlines()[0] == (
-            "Recorded $1,187 of credit for #5 ci as of now, usable until 2026-12-31."
+            "Recorded $1,187 of credit for #5 ci, usable until 2026-12-31 UTC."
         )
         _fits(out)
         run_main(["credit", "--json"])

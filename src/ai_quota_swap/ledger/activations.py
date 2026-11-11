@@ -258,16 +258,6 @@ class ActivationLog:
         i = bisect.bisect_right(self._times, ts) - 1
         return self.activations[i].account if i >= 0 else ""
 
-    def _runs(self) -> list[tuple[int, int]]:
-        """``(first, last)`` indices of each run of lines for one account."""
-        runs: list[tuple[int, int]] = []
-        for i, a in enumerate(self.activations):
-            if runs and self.activations[runs[-1][0]].account == a.account:
-                runs[-1] = (runs[-1][0], i)
-            else:
-                runs.append((i, i))
-        return runs
-
     def saved_key_periods(self) -> bool:
         """Whether any line activated an API key as a saved key."""
         return any(a.how == "saved-key" for a in self.activations)
@@ -279,28 +269,41 @@ class ActivationLog:
         instead, under the saved-key rule (docs/design/api-key-sessions.md):
         in a ``saved-key`` period only sessions started after the activation
         used the key, so a session whose first event is before it stays with
-        the account live before. None when the rule does not apply."""
+        the account live before. None when the rule does not apply.
+
+        Each line starts its own period, also within a run of lines for one
+        account: the ``how`` in force at the bucket's time decides (a line
+        with none continues the one before it). A bucket is an hour, so the
+        rule applies only when every line of ``account`` in force during the
+        hour is a saved-key one: any part of the hour under the helper line
+        (or a login) keeps the usage on the key, the side that counts the
+        key's spend high. The session is compared with the earliest of those
+        periods, and its usage goes to the account in force just before that
+        period, unless that is ``account`` itself (a helper line before the
+        saved-key one: the session was on the key all along)."""
         if session_start is None:
             return None
         lo, hi = hour * 3600, (hour + 1) * 3600
         acts = self.activations
-        found: tuple[int, int] | None = None
-        runs = self._runs()
-        for n, (first, last) in enumerate(runs):
-            if acts[first].account != account:
-                continue
-            run_end = acts[runs[n + 1][0]].ts if n + 1 < len(runs) else float("inf")
-            if acts[first].ts < hi and run_end > lo:
-                found = (first, last)
-        if found is None:
+        hows: list[str] = []
+        starts: list[int] = []
+        for i, a in enumerate(acts):
+            how, start = a.how, i
+            if not how and i > 0 and acts[i - 1].account == a.account:
+                how, start = hows[i - 1], starts[i - 1]
+            hows.append(how)
+            starts.append(start)
+        in_force = [
+            i for i, a in enumerate(acts)
+            if a.account == account and a.ts < hi and (i + 1 == len(acts) or acts[i + 1].ts > lo)
+        ]
+        if not in_force or any(hows[i] != "saved-key" for i in in_force):
             return None
-        first, last = found
-        decisive = next(
-            (acts[i] for i in range(last, first - 1, -1) if acts[i].how), acts[first]
-        )
-        if decisive.how != "saved-key" or session_start >= decisive.ts:
+        first = min(starts[i] for i in in_force)
+        if session_start >= acts[first].ts:
             return None
-        return acts[first - 1].account if first > 0 else ""
+        before = acts[first - 1].account if first > 0 else ""
+        return None if before == account else before
 
     def numbers(self) -> dict[str, int]:
         """Last known account number per identity, for accounts since removed."""

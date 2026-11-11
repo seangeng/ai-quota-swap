@@ -107,6 +107,8 @@ class EngineHarness:
         # freshness/claims/poll scheduling are deterministic in tests.
         self.switcher._usage_store.clock = self.clock
         self.engine = self._make_engine()
+        # API keys given a budget by ``limit_key``: number -> (used, budget).
+        self.key_readings: dict[str, tuple[float, float]] = {}
 
     def _make_engine(self, **kwargs) -> AutoSwitchEngine:
         return AutoSwitchEngine(
@@ -163,7 +165,31 @@ class EngineHarness:
         }
         return self.tick_with_entries(entries)
 
+    def limit_key(self, num: int | str, budget: float = 500.0, used: float = 10.0) -> None:
+        """Give the API-key account ``num`` a monthly budget and, on every
+        tick, a fresh spend figure under it: the engine enters a key only
+        with both (docs/api-accounts.md)."""
+        from ai_quota_swap import api_spend
+
+        api_spend.set_budget(self.switcher, str(num), budget)
+        self.key_readings[str(num)] = (used, budget)
+
+    def _with_key_readings(self, entries: dict[str, UsageEntry]) -> dict[str, UsageEntry]:
+        out = dict(entries)
+        for num, (used, budget) in self.key_readings.items():
+            entry = out.get(num)
+            if entry is None or entry.sentinel != "api key" or entry.api_spend is not None:
+                continue
+            out[num] = replace(entry, api_spend={
+                "spend": {"used": used, "limit": budget, "pct": used / budget * 100,
+                          "currency": "USD"},
+                "today": 0.0, "source": "ledger", "month": "2026-11",
+                "as_of": self.clock.now, "unpriced_tokens": 0,
+            })
+        return out
+
     def tick_with_entries(self, entries: dict[str, UsageEntry]) -> TickOutcome:
+        entries = self._with_key_readings(entries)
         with patch.object(
             self.switcher, "usage_entries_by_account", return_value=entries
         ):
@@ -1932,6 +1958,7 @@ class TestApiKeyAccounts:
         h.seed(3, "c@example.com")
         h.make_live("a@example.com", 1)
         self._mark_api_key(h, 2)
+        h.limit_key(2)  # the engine enters only a key with a budget or credit
         outcome = h.tick_with_usage({
             "1": _usage(100), "2": "api key", "3": _usage(100),
         })

@@ -15,6 +15,7 @@ import json
 import plistlib
 import sqlite3
 import sys
+import time
 import threading
 from pathlib import Path
 
@@ -461,8 +462,9 @@ def test_row_codex_reset_credits():
 
 def _api_reading(used=212.40, limit=500.0, today=4.12, source="ledger"):
     pct = used / limit * 100 if limit else None
+    # Measured just now: a budget is held only with a fresh figure (A4).
     return {"spend": {"used": used, "limit": limit, "pct": pct}, "today": today,
-            "source": source, "as_of": _NOW, "unpriced_tokens": 0}
+            "source": source, "as_of": time.time(), "unpriced_tokens": 0}
 
 
 def test_row_api_key_with_a_budget_is_compact():

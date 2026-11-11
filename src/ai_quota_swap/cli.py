@@ -1534,6 +1534,7 @@ def _auto_command(argv: list[str]) -> None:
         code = engine.run_loop()
         if human_log is not None:
             human_log.flush()
+        _say_unwatched_key(switcher, args.json)
         sys.exit(code)
     except ProviderError as e:
         if args.json:
@@ -1548,7 +1549,24 @@ def _auto_command(argv: list[str]) -> None:
             f"\n{dimmed('Auto-switch stopped.')}",
             file=sys.stderr if args.json else sys.stdout,
         )
+        _say_unwatched_key(locals().get("switcher"), args.json)
         sys.exit(130)
+
+
+def _say_unwatched_key(switcher, as_json: bool) -> None:
+    """A stopping qswap auto on a key it entered says that nothing watches
+    the key's limit now, and how to go back (autoswitch.unwatched_key_notice)."""
+    if switcher is None:
+        return
+    from ai_quota_swap.autoswitch import unwatched_key_notice
+
+    text = unwatched_key_notice(switcher, host="qswap auto")
+    if text:
+        from ai_quota_swap.display import wrap
+
+        for line in wrap(text):
+            print(yellowed(line) if not as_json else line,
+                  file=sys.stderr if as_json else sys.stdout)
 
 
 def _config_command(argv: list[str]) -> None:

@@ -968,9 +968,7 @@ def account_row(
             parts.append(display.over_fact(acc.over))
         if acc.by_engine:
             parts.append(display.BY_ENGINE)
-        if api_spend.budget_state(reading) is not None or (
-            isinstance(reading, dict) and isinstance(reading.get("credit"), dict)
-        ):
+        if api_spend.has_limit(reading):
             # With a budget or a credit, the compact form: the figure (and
             # "over budget", "credit spent") must never be what the row
             # limit cuts.

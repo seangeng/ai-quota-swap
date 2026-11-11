@@ -13,8 +13,13 @@ Tables (see docs/design/ledger.md):
 - ``buckets``: token sums per provider, UTC epoch hour, account, model,
   project and session. Rows are added to, never rewritten.
 - ``sessions``: per session, the account that started it as Claude Code
-  records it (``session-owner``), and its first counted event time. Used at
-  report time to attribute ``qswap run`` sessions to their profile's account.
+  records it (``session-owner``), its first counted event time, and
+  ``owner_early``: whether that owner line came before the session's first
+  event in its file (1), or after it (0: Claude Code stamps a session started
+  under an API key's helper line only once the line is gone, with the login's
+  account). Used at report time to attribute ``qswap run`` sessions to their
+  profile's account, which only an early owner line marks. NULL in a ledger
+  written before the column existed, read as early: its attribution is kept.
 - ``meta``: schema version and scan bookkeeping.
 
 Costs are not stored: they are computed when a report is printed.
@@ -82,6 +87,7 @@ CREATE TABLE IF NOT EXISTS sessions(
     session TEXT NOT NULL,
     owner TEXT,
     first_ts REAL,
+    owner_early INTEGER,
     PRIMARY KEY(provider, session)
 ) WITHOUT ROWID;
 """
@@ -145,10 +151,18 @@ class LedgerStore:
             # incompatible one is rebuilt rather than migrated.
             self._drop_all()
         self.conn.executescript(_SCHEMA)
+        self._migrate()
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
+
+    def _migrate(self) -> None:
+        """Columns added within schema version 1, for a ledger written before
+        them: added empty, so existing rows read as they did."""
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(sessions)")}
+        if "owner_early" not in columns:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN owner_early INTEGER")
 
     def _drop_all(self) -> None:
         for table in ("files", "seen", "buckets", "sessions", "meta"):
@@ -240,17 +254,25 @@ class LedgerStore:
         """Rows: ``(provider, hour, account, model, project, session, *TOKEN_FIELDS)``."""
         self.conn.executemany(_UPSERT_BUCKET, rows)
 
-    def note_sessions(self, rows: list[tuple[str, str, str | None, float | None]]) -> None:
-        """``(provider, session, owner, first_ts)``: keeps the first owner and
-        the earliest counted event time."""
+    def note_sessions(self, rows: list[tuple]) -> None:
+        """``(provider, session, owner, first_ts[, owner_early])``: keeps the
+        first owner, whether that one came early, and the earliest counted
+        event time. A row without ``owner_early`` says early (1) for an owner."""
+        full = [
+            (*row[:4], row[4] if len(row) > 4 else (1 if row[2] is not None else None))
+            for row in rows
+        ]
         self.conn.executemany(
-            "INSERT INTO sessions(provider, session, owner, first_ts) VALUES (?, ?, ?, ?) "
+            "INSERT INTO sessions(provider, session, owner, first_ts, owner_early) "
+            "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(provider, session) DO UPDATE SET "
+            "owner_early = CASE WHEN sessions.owner IS NULL THEN excluded.owner_early "
+            "ELSE sessions.owner_early END, "
             "owner = COALESCE(sessions.owner, excluded.owner), "
             "first_ts = CASE WHEN sessions.first_ts IS NULL THEN excluded.first_ts "
             "WHEN excluded.first_ts IS NULL THEN sessions.first_ts "
             "ELSE MIN(sessions.first_ts, excluded.first_ts) END",
-            rows,
+            full,
         )
 
     def query_buckets(
@@ -273,11 +295,22 @@ class LedgerStore:
             args.append(provider)
         return list(self.conn.execute(sql, args))
 
-    def sessions(self, provider: str) -> dict[str, tuple[str | None, float | None]]:
+    def sessions(self, provider: str) -> dict[str, tuple[str | None, float | None, int | None]]:
+        """``{session: (owner, first_ts, owner_early)}``."""
         return {
-            row[0]: (row[1], row[2])
+            row[0]: (row[1], row[2], row[3])
             for row in self.conn.execute(
-                "SELECT session, owner, first_ts FROM sessions WHERE provider = ?",
+                "SELECT session, owner, first_ts, owner_early FROM sessions WHERE provider = ?",
+                (provider,),
+            )
+        }
+
+    def counted_sessions(self, provider: str) -> set[str]:
+        """The sessions with a counted event already."""
+        return {
+            row[0]
+            for row in self.conn.execute(
+                "SELECT session FROM sessions WHERE provider = ? AND first_ts IS NOT NULL",
                 (provider,),
             )
         }

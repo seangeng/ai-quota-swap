@@ -25,14 +25,19 @@ from tests.test_autoswitch import EngineHarness, _entry_for, _usage
 
 
 def _reading(used: float | None, limit: float | None, month: str = "2026-11",
-             source: str = "admin-api") -> dict:
+             source: str = "admin-api", as_of: float | None = None) -> dict:
     pct = None if used is None or limit is None else used / limit * 100
     return {
         "spend": {"used": used, "limit": limit, "pct": pct, "currency": "USD"},
         "today": 0.0 if used is not None else None,
         "source": source,
         "month": month,
+        "as_of": as_of,
     }
+
+
+#: The harness's clock: a figure read now is fresh (api_spend.SPEND_FRESH_S).
+FRESH = 1_000_000.0
 
 
 def _api(used: float | None, limit: float | None, **kw) -> UsageEntry:
@@ -82,7 +87,7 @@ class TestCandidates:
     def test_under_budget_candidate_is_still_the_last_resort(self, temp_home):
         h = _harness(temp_home, 1, (2,), include_api_key_accounts=True)
         outcome = h.tick_with_entries(_entries(h, {
-            "1": _usage(100), "2": _api(100, 500), "3": _usage(100),
+            "1": _usage(100), "2": _api(100, 500, as_of=FRESH), "3": _usage(100),
         }))
         assert outcome is TickOutcome.SWITCHED and h.active_number() == 2
 
@@ -132,7 +137,6 @@ class TestNoBudgetNoChange:
     @pytest.mark.parametrize("entry", [
         UsageEntry(sentinel="api key"),
         _api(10_000, None),           # a figure, no budget
-        _api(None, 500),              # a budget, no figure
     ])
     def test_active_api_key_still_idles(self, temp_home, entry):
         h = _harness(temp_home, 1, (1,))
@@ -141,9 +145,22 @@ class TestNoBudgetNoChange:
         assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == ["active-api-key"]
         assert not [e for e in h.events if isinstance(e, BudgetWarningEvent)]
 
+    @pytest.mark.parametrize("entry", [
+        _api(None, 500),                   # a budget, no figure
+        _api(100, 500),                    # a figure of unknown age
+        _api(100, 500, as_of=FRESH - 1260),  # 21 minutes old
+    ])
+    def test_a_budget_without_a_fresh_figure_counts_as_reached(self, temp_home, entry):
+        """No fresh figure is no brake: the engine leaves the key as at its
+        budget (spend-unknown)."""
+        h = _harness(temp_home, 1, (1,))
+        outcome = h.tick_with_entries(_entries(h, {"1": entry, "2": _usage(10)}))
+        assert outcome is TickOutcome.SWITCHED and h.active_number() == 2
+
     def test_under_budget_active_still_idles(self, temp_home):
         h = _harness(temp_home, 1, (1,))
-        outcome = h.tick_with_entries(_entries(h, {"1": _api(100, 500), "2": _usage(10)}))
+        outcome = h.tick_with_entries(_entries(h, {"1": _api(100, 500, as_of=FRESH),
+                                                   "2": _usage(10)}))
         assert outcome is TickOutcome.NO_ACTION
         assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == ["active-api-key"]
 

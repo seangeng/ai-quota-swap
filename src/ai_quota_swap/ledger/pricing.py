@@ -16,10 +16,23 @@ Sources (fetched 2026-11-10):
   https://platform.openai.com/docs/pricing): "Flagship models", Standard
   tier, short context; "Specialized models" for gpt-5.3-codex.
 
+- Anthropic's "Model pricing" table and "Long context pricing" section
+  (fetched again 2026-11-11): Claude Haiku 5.5 is priced by prompt length; a
+  request whose prompt (all of its input tokens, cache reads and writes
+  included) is over 100,000 tokens pays the higher prices. The Claude reader
+  tags such a request ``/long`` (:data:`LONG_SUFFIX`), as it tags fast mode
+  ``/fast``. The same page lists fast-mode prices only for Fable 5.2, Mythos
+  5.2, Opus 5.5, Opus 5 and Opus 4.8: fast mode on any other model has no
+  price here.
+
+Tokens of a model the table does not price count at :meth:`PriceTable.dearest`
+toward an API key's budget and credit (api_spend): never as zero.
+
 What the table does not model (the report says these are estimates):
 
-- Long-context and prompt-length tiers use the base tier: Claude Haiku 5.5
-  prompts over 100,000 tokens, and OpenAI requests over 272K input tokens.
+- OpenAI requests over 272K input tokens use the base tier, and so does
+  Claude Haiku 5.5 in the Admin API's usage report, which has no prompt
+  length to price by.
 - Batch, Flex and data-residency (US-only inference, regional endpoints)
   pricing. Claude Code and Codex do not use the Batch API.
 - OpenAI Fast (priority) processing: Codex rollouts do not record the tier.
@@ -48,6 +61,9 @@ OVERRIDE_FILENAME = "pricing.json"
 
 # Suffix the Claude reader appends to a model id for a fast-mode request.
 FAST_SUFFIX = "/fast"
+# Suffix it appends for a request whose prompt is over the model's
+# prompt-length tier (LONG_PROMPT_MODELS).
+LONG_SUFFIX = "/long"
 
 
 @dataclass(frozen=True)
@@ -140,6 +156,15 @@ ANTHROPIC_FAST: dict[str, Price] = {
     "claude-opus-4-8": _a(10, 12.50, 20, 1, 50),
 }
 
+# Anthropic "Model pricing", Claude Haiku 5.5 "for prompts over 100,000
+# tokens", 2026-11-11 (https://platform.claude.com/docs/en/about-claude/pricing).
+ANTHROPIC_LONG: dict[str, Price] = {
+    "claude-haiku-5-5": _a(0.50, 0.625, 1, 0.05, 2.50),
+}
+# Models priced by prompt length: a prompt of more tokens than this pays the
+# ANTHROPIC_LONG price.
+LONG_PROMPT_MODELS: dict[str, int] = {"claude-haiku-5-5": 100_000}
+
 # OpenAI Standard tier, short context, 2026-11-10.
 OPENAI: dict[str, Price] = {
     "gpt-6-astra": _o(10, 1, 50, 12.50, 25),
@@ -193,6 +218,16 @@ def normalize_model(model: str) -> str:
     return m
 
 
+def long_prompt_tier(model: str) -> int | None:
+    """The prompt length over which ``model`` pays its long-prompt price
+    (:data:`LONG_PROMPT_MODELS`), or None when its price does not depend on it."""
+    base = normalize_model(model)
+    for key, tokens in LONG_PROMPT_MODELS.items():
+        if _matches(base, key):
+            return tokens
+    return None
+
+
 def _matches(model: str, key: str) -> bool:
     if key.endswith("*"):
         return model.startswith(key[:-1])
@@ -213,6 +248,7 @@ class PriceTable:
     ):
         self.prices: dict[str, Price | None] = dict(BUNDLED if prices is None else prices)
         self.fast: dict[str, Price] = dict(ANTHROPIC_FAST if fast is None else fast)
+        self.long: dict[str, Price] = dict(ANTHROPIC_LONG)
         self.warnings: list[str] = list(warnings or [])
         self.override_path = override_path
         self.overridden: set[str] = set()
@@ -272,9 +308,20 @@ class PriceTable:
         """``(matched entry, price)`` for a ledger model id, or None if unpriced."""
         if model in self._cache:
             return self._cache[model]
+        if model.endswith(LONG_SUFFIX):
+            # A user entry for the exact "<model>/long" id wins; otherwise
+            # the long-prompt table, never the base price (that undercounts).
+            base = normalize_model(model[: -len(LONG_SUFFIX)])
+            user = self.prices.get(base + LONG_SUFFIX)
+            result = (base + LONG_SUFFIX, user) if user is not None else None
+            if result is None:
+                found = self._best(base, self.long)
+                result = (found[0] + LONG_SUFFIX, found[1]) if found is not None else None
+            self._cache[model] = result
+            return result
         fast = model.endswith(FAST_SUFFIX)
         base = normalize_model(model[: -len(FAST_SUFFIX)] if fast else model)
-        result: tuple[str, Price] | None = None
+        result = None
         if fast:
             # A user entry for the exact "<model>/fast" id wins; otherwise the
             # fast table, never the standard price (that would undercount).
@@ -287,6 +334,28 @@ class PriceTable:
             result = self._best(base, self.prices)
         self._cache[model] = result
         return result
+
+    def dearest(self, prefix: str = "claude") -> Price:
+        """The dearest price in the table for each kind of token, over the
+        entries for ``prefix`` models (the user's overrides included): what
+        a token of a model with no price is charged toward an API key's
+        budget and credit, so it never counts as zero. Invents no price:
+        each field is one the table holds."""
+        rows = [
+            price
+            for table in (self.prices, self.fast, self.long)
+            for key, price in table.items()
+            if price is not None and key.startswith(prefix)
+        ]
+        if not rows:  # an override file that unpriced every model
+            rows = [p for p in (*ANTHROPIC.values(), *ANTHROPIC_FAST.values())]
+        return Price(
+            input=max(p.input for p in rows),
+            output=max(p.output for p in rows),
+            cache_read=max(p.cache_read for p in rows),
+            cache_write_5m=max(p.cache_write_5m for p in rows),
+            cache_write_1h=max(p.cache_write_1h for p in rows),
+        )
 
     @staticmethod
     def _best(model: str, table: dict[str, Price | None]) -> tuple[str, Price] | None:

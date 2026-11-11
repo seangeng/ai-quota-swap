@@ -7050,6 +7050,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             budget = _record_budget(data, key)
             if budget is not None:
                 active["budget"] = budget
+            if (credit := _record_credit(data, key)) is not None:
+                active["credit"] = credit  # as list rows carry it
             if entry.api_spend is not None:
                 active["apiSpend"] = api_spend_to_json(entry.api_spend)
             out = {
@@ -7111,6 +7113,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         budget = _record_budget(data, account_num)
         if budget is not None:
             active["budget"] = budget
+        if (credit := _record_credit(data, account_num)) is not None:
+            active["credit"] = credit  # as list rows carry it
         if entry.api_spend is not None:
             active["apiSpend"] = api_spend_to_json(entry.api_spend)
         if usage is not None:

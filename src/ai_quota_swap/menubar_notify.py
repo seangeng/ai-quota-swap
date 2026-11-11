@@ -33,7 +33,10 @@ ENGINE_ERROR_REPEAT_S = 3600.0
 #: The engine holds that a notification says once per episode: it will not
 #: move onto an API key because sessions could not follow (no key helper) or
 #: because the key helper cannot be added (docs/design/api-key-sessions.md).
-_KEY_HOLDS = ("api-key-sessions", "key-helper-unavailable")
+_KEY_HOLDS = (
+    "api-key-sessions", "key-helper-unavailable", "key-no-limit", "spend-unknown",
+    "key-unusable", "stuck-on-key",
+)
 
 
 @dataclass(frozen=True)
@@ -233,6 +236,9 @@ class Notifier:
                 return None
             label = _ref_label(account, context)
             return Notification(_prefix(event.human(), label, provider, both))
+        if kind == "key-unwatched":
+            # An engine stopped while sessions are on a key it entered.
+            return Notification(_prefix(event.human(), "", provider, both))
         if kind == "config-warning":
             # Both engines read the same autoswitch.* settings and may warn
             # about one value: say it once.

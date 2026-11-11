@@ -691,7 +691,12 @@ def import_accounts(
 
         data.setdefault("accounts", {})
         data.setdefault("sequence", [])
+        # Overwriting a slot keeps the user's settings on it (budget, credit,
+        # threshold, ...): an export does not carry them, and dropping a
+        # budget or credit would take a brake off without a word.
+        prior = data["accounts"].get(target_num) if outcome != "imported" else None
         new_record = {
+            **switcher._carried_settings(prior if isinstance(prior, dict) else None),
             "email": entry["email"],
             "uuid": entry["uuid"],
             "organizationUuid": entry["org_uuid"],

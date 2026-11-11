@@ -47,6 +47,32 @@ class EngineStoppedEvent:
         return self.error or "the engine loop ended on its own"
 
 
+@dataclass(frozen=True)
+class KeyUnwatchedEvent:
+    """Queued when the menu bar stops an engine while sessions are on a key
+    it entered (autoswitch.unwatched_key_notice): said once, as is."""
+
+    kind: ClassVar[str] = "key-unwatched"
+    text: str
+
+    def human(self) -> str:
+        return self.text
+
+
+def _unwatched_notice(engine) -> str | None:
+    """What stopping ``engine`` leaves unwatched, in words; never raises."""
+    try:
+        from ai_quota_swap.autoswitch import unwatched_key_notice
+
+        switcher = getattr(engine, "switcher", None)
+        if switcher is None:
+            return None
+        return unwatched_key_notice(switcher, host=getattr(engine, "host_label", None))
+    except Exception:
+        _logger.debug("could not tell whether a key is left unwatched", exc_info=True)
+        return None
+
+
 def engine_exit_applies(current, stopped) -> bool:
     """Whether a stopped engine is the one the menu bar currently hosts.
 
@@ -138,22 +164,30 @@ class EngineSupervisor:
         finally:
             self._on_event(provider, EngineStoppedEvent(engine, error))
 
-    def stop(self, provider: str) -> None:
+    def stop(self, provider: str, *, notify: bool = True) -> str | None:
         """Stop the provider's engine (its thread ends after its current tick)
-        and forget any failure: off is not stopped."""
+        and forget any failure: off is not stopped. When sessions are on a
+        key that engine entered and nothing else watches it, a
+        :class:`KeyUnwatchedEvent` says so (``notify``); returns its text."""
         engine = self._engines.pop(provider, None)
+        text = None
         if engine is not None:
             try:
                 engine.stop()
             except Exception:
                 _logger.debug("engine stop failed", exc_info=True)
+            if notify:
+                text = _unwatched_notice(engine)
+                if text:
+                    self._on_event(provider, KeyUnwatchedEvent(text))
         self._failures.pop(provider, None)
+        return text
 
     def restart(self, provider: str) -> str | None:
         """Apply changed settings to a running engine by replacing it."""
         if provider not in self._engines:
             return None
-        self.stop(provider)
+        self.stop(provider, notify=False)  # it carries on: nothing to say
         return self.start(provider)
 
     def retry_failed(self) -> dict[str, str | None]:
@@ -191,13 +225,19 @@ class EngineSupervisor:
         self._failures[provider] = event.human()
         return True
 
-    def stop_all(self, *, join_timeout: float | None = None) -> None:
-        """Stop every engine; with ``join_timeout``, wait for their threads."""
+    def stop_all(self, *, join_timeout: float | None = None) -> list[str]:
+        """Stop every engine; with ``join_timeout``, wait for their threads.
+        Returns what stopping them left unwatched, for an app that quits
+        before its event queue is read."""
+        said = []
         for provider in list(self._engines):
-            self.stop(provider)
+            text = self.stop(provider)
+            if text:
+                said.append(text)
         self._failures.clear()
         if join_timeout is not None:
             self.join(join_timeout)
+        return said
 
     def join(self, timeout: float) -> bool:
         """Wait for every engine thread to end; True when all have."""

@@ -58,6 +58,7 @@ from ai_quota_swap.exceptions import (
     ProviderError,
     RetryableSwitchError,
     SessionsRunningError,
+    SwitchError,
 )
 from ai_quota_swap.json_output import (
     SCHEMA_VERSION,
@@ -156,6 +157,20 @@ HORIZON_HEADROOM_RATIO = 2.0
 # the no-return bar's release asks the account we left to have gained at least
 # this much.
 SPENT_HEADROOM_PCT = 3.0
+# While an API key with a budget or credit is active, the engine scans the
+# ledger this often, so its spend figure stays well inside
+# api_spend.SPEND_FRESH_S (20 minutes) when nothing else scans.
+SPEND_SCAN_INTERVAL_S = 5 * 60.0
+# Before entering a key it scans again unless a scan ran this recently.
+SPEND_SCAN_MIN_GAP_S = 60.0
+# The way back from a key the engine entered: a subscription is a target
+# only with at least this many points of room in every window it is judged
+# by (and under its own lines), and only once the engine's cooldown has run
+# since the key was entered. Without the margin a subscription a sliver
+# under its line takes every session back, crosses the line on its first
+# requests and sends them onto the key again. Leaving at the budget, the
+# credit or spend-unknown ignores both.
+RETURN_ROOM_PCT = 5.0
 
 
 def _all_above_margin_met(candidate_headroom: float, active_headroom: float) -> bool:
@@ -396,6 +411,13 @@ class SwitchEvent(AutoSwitchEvent):
     # went back to the account underneath.
     limit_reason: str | None = _human_only()
     back_underneath: bool = _human_only(False)
+    # Entering a key with resets.auto off: which account holds a reset that
+    # was not spent, and the command that spends it ("#1 personal holds 1
+    # weekly reset: qswap reset 1").
+    reset_note: str | None = _human_only()
+    # Where the figure behind ``limit_reason`` came from (``ledger``: an
+    # estimate, said so).
+    limit_source: str | None = _human_only()
 
     def _fields(self) -> dict:
         return {
@@ -429,6 +451,10 @@ class NoSwitchEvent(AutoSwitchEvent):
     # and the session records that could not be read.
     sessions: int | None = _human_only()
     records: tuple[str, ...] = _human_only(default=())
+    # stuck-on-key: why the key is at its limit, and a subscription the user
+    # can leave it for by hand.
+    limit_reason: str | None = _human_only()
+    way_off: str | None = _human_only()
 
     def _fields(self) -> dict:
         return {"reason": self.reason, "detail": self.detail}
@@ -672,6 +698,31 @@ def _mutate_state_file(state_path: Path, mutator: Callable[[dict], None]) -> dic
         return state
 
 
+# -- API keys: limits reached stay reached ----------------------------------------
+
+#: The limits the engine latches once reached (``limitLatch``); an expired
+#: credit is decided by its date and needs no latch.
+LATCHED_REASONS = frozenset({"budget", "credit-spent"})
+
+
+def clear_limit_latch(backup_dir: Path, number: str, *, state_path: Path | None = None) -> bool:
+    """Forget that the API-key account ``number`` reached its budget or
+    credit: ``qswap budget`` and ``qswap credit`` call this when either is set
+    again. Returns whether there was one. Never called with another lock held."""
+    path = state_path or (Path(backup_dir) / STATE_FILENAME)
+    latches = _read_state_file(path).get("limitLatch")
+    if not isinstance(latches, dict) or str(number) not in latches:
+        return False
+
+    def drop(state: dict) -> None:
+        stored = state.get("limitLatch")
+        if isinstance(stored, dict):
+            stored.pop(str(number), None)
+
+    _mutate_state_file(path, drop)
+    return True
+
+
 # -- heartbeat ------------------------------------------------------------------
 #
 # Where a running engine says it is alive, for `qswap status` and `qswap
@@ -734,6 +785,81 @@ def engine_running(beat: dict | None, now: float, *, grace_s: float = HEARTBEAT_
     if not isinstance(next_at, (int, float)):
         return False
     return now <= next_at + grace_s
+
+
+# -- a key the engine entered, and who watches it -------------------------------
+#
+# docs/design/api-key-sessions.md, "As built": who entered the active key is
+# in key_helper.json. When the engine stops while sessions are on a key it
+# entered (Ctrl-C on qswap auto, auto-switch turned off, the menu bar quit),
+# it says so: sessions stay on the key, nothing watches its limit now, and
+# how to go back. It does not move them on the way out; ``enteredBy`` stays
+# ``engine``, so a restarted engine carries on managing the key. The surfaces
+# (status, list, the menu bar, the dashboard, doctor) use :func:`unwatched_key`.
+
+
+def unwatched_key(switcher, *, now: float | None = None, host: str | None = None) -> dict | None:
+    """The active API key the engine entered, or None: ``{"number",
+    "enteredBy", "engineRunning", "underneath", "back"}``. ``engineRunning``
+    is whether an engine other than ``host`` ticks (its heartbeat is live);
+    ``back`` the command that goes back (``qswap switch N`` to the account
+    underneath, else to the first subscription), or None. Never raises."""
+    try:
+        helper = getattr(switcher, "helper_account", None)
+        entered = getattr(switcher, "key_entered_by", None)
+        if not callable(helper) or not callable(entered):
+            return None
+        number = helper()
+        if number is None or entered() != "engine":
+            return None
+        under_of = getattr(switcher, "underneath_account_number", None)
+        under = under_of() if callable(under_of) else None
+        target = under
+        if target is None:
+            target = next(
+                (
+                    n for n in switcher.switchable_account_numbers()
+                    if switcher.account_kind_for(n) != "api_key"
+                ),
+                None,
+            )
+        now = time.time() if now is None else now
+        beat = read_heartbeat(Path(switcher.backup_dir))
+        running = engine_running(beat, now) and (
+            host is None or not isinstance(beat, dict) or beat.get("host") != host
+        )
+        return {
+            "number": str(number),
+            "enteredBy": "engine",
+            "engineRunning": bool(running),
+            "underneath": under,
+            "back": f"qswap switch {target}" if target is not None else None,
+        }
+    except Exception:
+        return None
+
+
+def unwatched_key_notice(
+    switcher, *, now: float | None = None, host: str | None = None,
+) -> str | None:
+    """What a stopping engine says while sessions are on a key it entered
+    and no other engine runs; None otherwise. ``host`` is the stopping
+    engine's own heartbeat label."""
+    key = unwatched_key(switcher, now=now, host=host)
+    if key is None or key["engineRunning"]:
+        return None
+    try:
+        who = switcher.label(key["number"], long=False)
+    except Exception:
+        who = f"#{key['number']}"
+    back = (
+        f"To go back: {key['back']}" if key["back"]
+        else "To leave it, log in to a subscription (claude, then /login), then run: qswap add"
+    )
+    return (
+        f"Sessions stay on {who}, which auto-switch entered; nothing watches its "
+        f"limit now. {back}"
+    )
 
 
 def set_aside_accounts(
@@ -879,6 +1005,11 @@ def preview_reset_plan(
     quarantined = set(state.get("quarantine") or {}) if isinstance(state.get("quarantine"), dict) else set()
     claims = state.get("resetClaims") if isinstance(state.get("resetClaims"), dict) else {}
     current = switcher.current_account_number()
+    entered_by = getattr(switcher, "key_entered_by", None)
+    if current is not None and callable(entered_by) and entered_by() == "engine":
+        # As the engine plans: the subscription underneath its key.
+        under = getattr(switcher, "underneath_account_number", None)
+        current = (under() if callable(under) else None) or current
     policies = switcher.account_policies()
     thresholds = ThresholdMap(
         {n: p.threshold for n, p in policies.items() if p.threshold is not None},
@@ -1271,6 +1402,9 @@ def rotation_candidates(
 
 # `_maybe_use_reset`'s answer in a dry run that planned a reset: the tick ends.
 _RESET_PLANNED = object()
+# `_perform`'s answer for a target that turned out unusable (an API-key slot
+# that cannot give a key): nothing changed, try the next candidate.
+_SKIPPED = object()
 
 
 def _headroom_by_account(
@@ -1359,6 +1493,14 @@ class AutoSwitchEngine:
         # reason quotes. Neither is ever serialized or read by a decision.
         self._context: EventContext | None = None
         self._tick_cause: dict = {}
+        # The account records as this tick read them (budgets, credits).
+        self._tick_records: dict = {}
+        # Limits reached and latched (``limitLatch``), as this tick read them;
+        # a dry run keeps its own in memory.
+        self._latches: dict = {}
+        self._dry_latches: dict = {}
+        # Whether this tick claimed a usage reset (free before paid).
+        self._reset_claimed = False
 
     # -- state file ---------------------------------------------------------
 
@@ -1421,6 +1563,10 @@ class AutoSwitchEngine:
             n for n in self.switcher.switchable_account_numbers()
             if n not in quarantined and self.switcher.account_kind_for(n) != "api_key"
         ]
+        # On a key the engine entered, the account underneath stands for the
+        # active one (the active and last-resort policies key on it), so a
+        # reset that becomes usable there is claimed and the return follows.
+        current = self._reset_planning_account(current, rotation)
         accounts = rotation if current in rotation else [current, *rotation]
 
         def plan_on(entries_now: dict, usage_now: dict, claims: dict, at: float):
@@ -1489,6 +1635,8 @@ class AutoSwitchEngine:
         )
         if not reserved:
             return None
+        # Free before paid: whatever the answer, this tick enters no key.
+        self._reset_claimed = True
         result = self.switcher.claim_usage_reset(
             plan.account, plan.grant_id, reserved["requestId"]
         )
@@ -1513,6 +1661,65 @@ class AutoSwitchEngine:
         entries = self.switcher.usage_entries_by_account(fetch=set())
         usage = {num: entry.decision_value() for num, entry in entries.items()}
         return entries, usage, _headroom_by_account(usage, self._models)
+
+    def _reset_planning_account(self, current: str, rotation: Sequence[str]) -> str:
+        """The account the reset planner treats as active: the subscription
+        underneath a key the engine entered, else ``current``. On a key the
+        user entered nothing changes (only the expiry runway spends)."""
+        if self._helper_key_mode(current) != "engine":
+            return current
+        underneath_of = getattr(self.switcher, "underneath_account_number", None)
+        try:
+            under = underneath_of() if callable(underneath_of) else None
+        except Exception:
+            under = None
+        return under if under is not None and under in rotation else current
+
+    def _reset_in_flight(self, state: dict, entries: Mapping[str, object]) -> bool:
+        """Whether a usage reset claim on any account may still be on its way."""
+        claims = state.get("resetClaims")
+        if not isinstance(claims, dict):
+            return False
+        now = self.clock()
+        return any(
+            reset_claim_in_flight(
+                record, getattr(entries.get(str(num)), "fetched_at", None), now
+            )
+            for num, record in claims.items()
+        )
+
+    def _unspent_reset_note(self, usage: Mapping[str, object], quarantined: set[str]) -> str | None:
+        """With ``resets.auto`` off, the first rotation account holding a reset
+        usable now, as the words a switch onto a key adds; None otherwise."""
+        from ai_quota_swap import resets
+
+        try:
+            rs = self.switcher.reset_settings()
+        except Exception:
+            return None
+        if rs.enabled and rs.auto != "off":
+            return None
+        now = self.clock()
+        for num in self.switcher.switchable_account_numbers():
+            if num in quarantined or self.switcher.account_kind_for(num) == "api_key":
+                continue
+            value = usage.get(num)
+            status = value.get("resets") if isinstance(value, dict) else None
+            usable = [
+                g for g in resets.unused_grants(status, now)
+                if resets.grant_unusable_reason(g, now) is None
+            ]
+            if not usable:
+                continue
+            counts = resets.counts_by_kind({"grants": usable}, now)
+            held = " and ".join(
+                f"{n} {label} reset{'' if n == 1 else 's'}" for label, n in counts
+            )
+            from ai_quota_swap.autolog import number_label
+
+            who = number_label(num, self.switcher.account_email(num) or "", self._context)
+            return f"{who} holds {held}: qswap reset {num}"
+        return None
 
     # -- quarantine -----------------------------------------------------------
 
@@ -1849,6 +2056,7 @@ class AutoSwitchEngine:
         self._blocked_wait_long = False
         self._idle_hold_slow = False
         self._tick_cause = {}
+        self._reset_claimed = False
         self._context = EventContext(
             provider=self._provider_id(), names=self._alias_names()
         )
@@ -1963,10 +2171,22 @@ class AutoSwitchEngine:
         if refilled is not None:
             entries, usage, headroom = refilled
 
-        # API-key budgets (docs/api-accounts.md): one warning per account per
-        # month, and an active account at its budget is at its limit.
+        # API-key budgets and credits (docs/api-accounts.md): one warning per
+        # account per month, and an active key at its budget, its credit, or
+        # with no fresh figure for either, is at its limit. While such a key
+        # is active the engine keeps its figure fresh itself.
+        self._tick_records = self._read_account_records()
+        latches = state.get("limitLatch")
+        self._latches = {**(latches if isinstance(latches, dict) else {}), **self._dry_latches}
+        current_is_key = self.switcher.account_kind_for(current) == "api_key"
+        if current_is_key and self._key_limited(current, entries):
+            entries = self._keep_spend_fresh(
+                state, dict(entries), {current}, every=SPEND_SCAN_INTERVAL_S
+            )
+        self._note_reached_limits(entries)
         self._warn_budgets(state, entries)
-        active_over_budget = _over_budget(entries.get(current))
+        active_limit = self._key_brake(current, entries) if current_is_key else None
+        active_over_budget = active_limit is not None
 
         # An API key active through the helper line (docs/design/
         # api-key-sessions.md): one the engine entered is left as soon as a
@@ -1976,11 +2196,11 @@ class AutoSwitchEngine:
         if key_mode is not None:
             return self._leave_key_tick(
                 current, key_mode, entries, usage, headroom, thresholds, settings,
-                quarantined, policies,
+                quarantined, policies, state=state,
             )
 
         if (
-            self.switcher.account_kind_for(current) == "api_key"
+            current_is_key
             and not settings.include_api_key_accounts
             and not active_over_budget
         ):
@@ -2091,6 +2311,8 @@ class AutoSwitchEngine:
             "binding": active_binding,
             "over_budget": active_over_budget,
             "policies": policies,
+            "limit_reason": active_limit,
+            "limit_source": self._spend_source(current, entries),
         }
 
         if trigger in ("proactive", "consume-first", "priority") and self._in_cooldown(state):
@@ -2113,7 +2335,11 @@ class AutoSwitchEngine:
         )
         candidates = list(picked.considered)
         oauth_candidates = list(picked.oauth)
-        api_key_candidates = list(picked.api_key)
+        # Never from one key to another, in any branch (a key made active
+        # the older way included): from a key the way out is a subscription.
+        api_key_candidates = (
+            [] if self.switcher.account_kind_for(current) == "api_key" else list(picked.api_key)
+        )
         if (
             trigger in ("consume-first", "priority")
             and not oauth_candidates
@@ -2286,12 +2512,15 @@ class AutoSwitchEngine:
         held_for_sessions = False
         if (
             not ordered and api_key_candidates
-            and trigger not in ("consume-first", "priority")
+            and trigger == "at-limit"
             and not priority_active_ready
         ):
             # Last resort when we must move: metered API-key accounts
-            # (unmeasurable headroom). Never for a below-threshold consume-first
-            # nudge — those API-key accounts have no weekly window to consume.
+            # (unmeasurable headroom). Only at the limit: the active
+            # subscription has no room left. Never on the proactive trigger
+            # (its last points come first) or on unreadable usage (no
+            # evidence any subscription is out), and never for a consume-first
+            # nudge — API-key accounts have no weekly window to consume.
             # Through the key helper, running sessions follow the move, so
             # they do not hold it. Where the helper cannot be installed the
             # engine does not take the saved-key path by itself, and a
@@ -2300,7 +2529,15 @@ class AutoSwitchEngine:
             # saved key and would stop with "Not logged in"
             # (docs/design/api-key-sessions.md).
             helper = self._key_helper_ready()
-            if helper is False:
+            if self._reset_claimed or self._reset_in_flight(state, entries):
+                # Free before paid: a reset claimed this tick, or one whose
+                # answer is still out, may give a subscription room.
+                self._emit(NoSwitchEvent(
+                    reason="reset-pending",
+                    detail="a usage reset was claimed; its refill comes before an API key",
+                ))
+                held_for_sessions = True
+            elif helper is False:
                 self._emit(NoSwitchEvent(
                     reason="key-helper-unavailable",
                     detail=(
@@ -2316,7 +2553,12 @@ class AutoSwitchEngine:
                 ))
                 held_for_sessions = True
             else:
-                ordered = api_key_candidates
+                ordered, entries = self._enterable_keys(state, entries, api_key_candidates)
+                held_for_sessions = not ordered
+                if ordered:
+                    self._tick_cause["reset_note"] = self._unspent_reset_note(
+                        usage, quarantined
+                    )
 
         if held_for_sessions:
             # The way out was a key the engine cannot move to now. When every
@@ -2426,6 +2668,7 @@ class AutoSwitchEngine:
             ),
         )
         transient_failure = False
+        skipped_keys = False
         systemic = ""
         for num in ordered:
             email = self.switcher.account_email(num)
@@ -2488,8 +2731,21 @@ class AutoSwitchEngine:
                 continue
             if status == "skip-live-session":
                 continue
-            return self._perform(num, email, trigger, left_snapshot)
+            outcome = self._perform(num, email, trigger, left_snapshot)
+            if outcome is _SKIPPED:
+                skipped_keys = True
+                continue
+            return outcome
 
+        if skipped_keys and not (systemic or transient_failure):
+            # Every key left was turned down: the same hold as no key at all
+            # (said by the refusal above, once per episode), not an error.
+            candidate_headrooms = [headroom.get(n) for n in oauth_candidates]
+            if bool(candidate_headrooms) and all(
+                h is not None and h <= 0 for h in candidate_headrooms
+            ):
+                return self._all_exhausted(usage)
+            return TickOutcome.BLOCKED
         if systemic or transient_failure:
             self._emit(
                 ErrorEvent(
@@ -3353,7 +3609,9 @@ class AutoSwitchEngine:
         # state lock.
         with self._state_lock():
             state = self._read_state()
-            if trigger in ("proactive", "consume-first", "priority") and self._in_cooldown(state):
+            if trigger in (
+                "proactive", "consume-first", "priority", "key-return",
+            ) and self._in_cooldown(state):
                 self._emit(
                     NoSwitchEvent(reason="cooldown", wait_s=self._cooldown_left(state))
                 )
@@ -3391,6 +3649,17 @@ class AutoSwitchEngine:
                 # and the next tick asks again. Claude Code never raises it.
                 self._emit(NoSwitchEvent(reason="switch-deferred", detail=str(e)))
                 return TickOutcome.NO_ACTION
+            except SwitchError as e:
+                if self.switcher.account_kind_for(number) != "api_key":
+                    raise
+                # A slot that cannot give a key (its saved credential is not
+                # a key, or none is saved): nothing changed. Like any
+                # unavailable candidate, the next one is tried; said once
+                # per episode.
+                self._emit(NoSwitchEvent(
+                    reason="key-unusable", detail=str(e), account=str(number),
+                ))
+                return _SKIPPED
             if not result or not result.get("switched"):
                 self._emit(
                     NoSwitchEvent(
@@ -3518,6 +3787,8 @@ class AutoSwitchEngine:
             "priority_up": priority_up,
             "limit_reason": cause.get("limit_reason"),
             "back_underneath": bool(cause.get("back_underneath")),
+            "reset_note": cause.get("reset_note"),
+            "limit_source": cause.get("limit_source"),
         }
 
     def _account_views(
@@ -3734,6 +4005,239 @@ class AutoSwitchEngine:
             return None
         return datetime.fromtimestamp(earliest, tz=timezone.utc)
 
+    # -- API keys: the spend brake ---------------------------------------------
+    #
+    # docs/api-accounts.md: the engine holds an API key to its budget or
+    # credit. It enters a key only when the key has one (a key with neither
+    # is the user's to use by hand), with a spend figure no older than
+    # api_spend.SPEND_FRESH_S; without one the key counts as at its limit
+    # (spend-unknown). It scans the ledger itself before entering a key and
+    # every SPEND_SCAN_INTERVAL_S while a key with a limit is active, so the
+    # figure stays fresh when no menu bar or dashboard runs.
+
+    def _account_record(self, num: str) -> dict | None:
+        """The account record of ``num`` as this tick read it."""
+        records = self._tick_records
+        record = records.get(str(num)) if isinstance(records, dict) else None
+        return record if isinstance(record, dict) else None
+
+    def _read_account_records(self) -> dict:
+        reader = getattr(self.switcher, "_get_sequence_data", None)
+        if not callable(reader):
+            return {}
+        try:
+            data = reader() or {}
+        except Exception:
+            return {}
+        accounts = data.get("accounts") if isinstance(data, dict) else None
+        return accounts if isinstance(accounts, dict) else {}
+
+    def _key_limited(self, num: str, entries: Mapping[str, object]) -> bool:
+        """Whether the API key ``num`` has a budget or a credit."""
+        from ai_quota_swap import api_spend
+
+        reading = getattr(entries.get(num), "api_spend", None)
+        return api_spend.has_limit(reading, self._account_record(num))
+
+    def _key_brake(self, num: str, entries: Mapping[str, object]) -> str | None:
+        """Why the engine treats the API key ``num`` as at its limit, or None:
+        its budget or credit reached (now, or earlier and still latched), or
+        ``spend-unknown`` (a budget or credit with no fresh figure)."""
+        from ai_quota_swap import api_spend
+
+        reading = getattr(entries.get(num), "api_spend", None)
+        reason = api_spend.limit_reason(reading)
+        if reason in LATCHED_REASONS:
+            self._remember_latch(num, reason, reading)
+        elif reason is None:
+            reason = self._latched_reason(num, reading)
+        if reason is not None:
+            return reason
+        return api_spend.engine_limit_reason(
+            reading, now=self.clock(), limited=self._key_limited(num, entries)
+        )
+
+    # A limit that was reached stays reached: a later reading under it whose
+    # source got worse (the Admin API's figure replaced by the ledger's lower
+    # estimate, a rescan that attributes less) does not let the key back in.
+    # ``limitLatch`` in the state file: account number -> what was reached
+    # (the budget's month and amount, or the credit's identity). It lapses
+    # when the month rolls over, when the budget changes or the credit is
+    # recorded again, and ``qswap budget`` / ``qswap credit`` clear it.
+
+    def _latch_identity(self, num: str, reason: str, reading: object) -> dict | None:
+        from ai_quota_swap import api_spend
+        from ai_quota_swap.ledger.activations import parse_ts
+
+        record = self._account_record(num)
+        reading = reading if isinstance(reading, dict) else {}
+        if reason == "budget":
+            month = reading.get("month")
+            if not isinstance(month, str) or not month:
+                month = datetime.fromtimestamp(self.clock(), tz=timezone.utc).strftime("%Y-%m")
+            limit = api_spend.budget_from_record(record)
+            if limit is None:
+                spend = reading.get("spend") if isinstance(reading.get("spend"), dict) else {}
+                limit = spend.get("limit")
+            if not isinstance(limit, (int, float)) or isinstance(limit, bool):
+                return None
+            return {"reason": reason, "month": month, "limit": float(limit)}
+        if reason == "credit-spent":
+            credit = api_spend.credit_from_record(record)
+            if credit is not None:
+                since, amount = credit["since"], credit["amount"]
+            else:
+                shown = reading.get("credit") if isinstance(reading.get("credit"), dict) else {}
+                since, amount = parse_ts(shown.get("since")), shown.get("amount")
+            if since is None or not isinstance(amount, (int, float)):
+                return None
+            return {"reason": reason, "credit": f"{int(since)}|{float(amount)}"}
+        return None
+
+    def _note_reached_limits(self, entries: Mapping[str, object]) -> None:
+        """Latch every API key this tick's readings show at its budget or
+        credit, candidates included (the census drops those unasked)."""
+        from ai_quota_swap import api_spend
+
+        for num, entry in entries.items():
+            reading = getattr(entry, "api_spend", None)
+            reason = api_spend.limit_reason(reading)
+            if reason in LATCHED_REASONS:
+                self._remember_latch(str(num), reason, reading)
+
+    def _remember_latch(self, num: str, reason: str, reading: object) -> None:
+        ident = self._latch_identity(num, reason, reading)
+        if ident is None or self._latches.get(num) == ident:
+            return
+        self._latches[num] = ident
+        if self.dry_run:
+            self._dry_latches[num] = ident
+            return
+
+        def store(state: dict) -> None:
+            latches = state.get("limitLatch")
+            if not isinstance(latches, dict):
+                latches = state["limitLatch"] = {}
+            latches[num] = ident
+
+        try:
+            self._mutate_state(store)
+        except Exception as e:  # held in memory for this engine all the same
+            _logger.warning("Could not record that account %s reached its limit: %r", num, e)
+
+    def _latched_reason(self, num: str, reading: object) -> str | None:
+        stored = self._latches.get(num)
+        if not isinstance(stored, dict) or stored.get("reason") not in LATCHED_REASONS:
+            return None
+        if not isinstance(reading, dict):
+            return stored["reason"]  # nothing new to judge it by: it stands
+        if self._latch_identity(num, stored["reason"], reading) == stored:
+            return stored["reason"]
+        # Another month, another budget, another credit: it no longer applies.
+        self._latches.pop(num, None)
+        self._dry_latches.pop(num, None)
+        if not self.dry_run:
+            try:
+                clear_limit_latch(Path(self.switcher.backup_dir), num, state_path=self.state_path)
+            except Exception as e:
+                _logger.debug("Could not clear a lapsed limit latch: %r", e)
+        return None
+
+    def _enterable_keys(
+        self, state: dict, entries: Mapping[str, object], candidates: Sequence[str],
+    ) -> tuple[list[str], Mapping[str, object]]:
+        """The API keys the engine may enter now, in rotation order, with the
+        entries read again after a ledger scan. A key needs a budget or a
+        credit and a fresh figure under it. When none qualifies the first
+        candidate's reason is said (once per episode, by the notifier) and
+        the list is empty."""
+        entries = self._keep_spend_fresh(
+            state, dict(entries), set(candidates), every=SPEND_SCAN_MIN_GAP_S
+        )
+        from ai_quota_swap import api_spend
+
+        ok: list[str] = []
+        first: tuple[str, str] | None = None
+        for num in candidates:
+            brake = self._key_brake(num, entries)
+            if not self._key_limited(num, entries):
+                why = "key-no-limit"
+            elif brake == api_spend.SPEND_UNKNOWN:
+                why = "spend-unknown"
+            elif brake is not None:
+                continue  # at its limit, as one the census already left out
+            else:
+                ok.append(num)
+                continue
+            if first is None:
+                first = (num, why)
+        if not ok and first is not None:
+            num, why = first
+            self._emit(NoSwitchEvent(
+                reason=why,
+                detail=(
+                    f"account {num} has no budget or credit" if why == "key-no-limit"
+                    else f"account {num}'s spend has no figure from the last 20 minutes"
+                ),
+                account=num,
+            ))
+        return ok, entries
+
+    @staticmethod
+    def _spend_source(num: str, entries: Mapping[str, object]) -> str | None:
+        reading = getattr(entries.get(num), "api_spend", None)
+        return reading.get("source") if isinstance(reading, dict) else None
+
+    def _scans_ledger(self) -> bool:
+        """Only Claude Code's API keys are counted from the local ledger."""
+        return self._provider_id() == "claude" and hasattr(self.switcher, "backup_dir")
+
+    def _keep_spend_fresh(
+        self,
+        state: dict,
+        entries: dict,
+        nums: Collection[str],
+        *,
+        every: float,
+    ) -> dict:
+        """Scan the ledger (at most once per ``every`` seconds across engines
+        and processes: ``spendScanAt`` in the state file), then read the API
+        keys ``nums`` again. Returns ``entries`` with theirs replaced. Never
+        raises; a dry run never scans (the scan writes the ledger)."""
+        if self.dry_run or not nums or not self._scans_ledger():
+            return entries
+        now = self.clock()
+        last = state.get("spendScanAt")
+        if (
+            isinstance(last, (int, float)) and not isinstance(last, bool)
+            and 0 <= now - last < every
+        ):
+            return entries
+        from ai_quota_swap.ledger import usage as ledger_usage
+
+        try:
+            ledger_usage.scan_recent(
+                Path(self.switcher.backup_dir),
+                registry=self.switcher._get_sequence_data(),
+            )
+        except Exception as e:  # the figure stays as old as it was
+            _logger.warning("Could not scan the usage ledger for API-key spend: %r", e)
+        state["spendScanAt"] = now
+
+        def remember(s: dict) -> None:
+            s["spendScanAt"] = now
+
+        try:
+            self._mutate_state(remember)
+        except Exception as e:
+            _logger.debug("Could not record the ledger scan: %r", e)
+        try:
+            fresh = self.switcher.usage_entries_by_account(fetch=set(nums))
+        except Exception as e:
+            _logger.debug("Could not re-read API-key spend after a scan: %r", e)
+            return entries
+        return {**entries, **{n: fresh[n] for n in nums if n in fresh}}
+
     def _key_helper_ready(self) -> bool | None:
         """Whether the provider can move onto an API key through the key
         helper now: True, False (another helper is set, or the settings file
@@ -3773,16 +4277,25 @@ class AutoSwitchEngine:
         settings: AutoSwitchSettings,
         quarantined: set[str],
         policies,
+        *,
+        state: dict | None = None,
     ) -> TickOutcome:
         """One tick while an API key is active through the helper line.
 
-        At its budget, or with its credit spent or expired, the key is left
+        At its budget, with its credit spent or expired, or with no fresh
+        spend figure for either (``spend-unknown``), the key is left at once
         for the subscription with the most room, else for the account
-        underneath (said once, by the switch). Otherwise a key the user
-        entered is kept, and one the engine entered is left as soon as a
-        subscription has room: below its switch lines, with readable usage.
+        underneath (said once, by the switch). A key the engine entered that
+        has neither a budget nor a credit is left the same way: the engine
+        would not have entered it. Otherwise a key the user entered is kept,
+        and one the engine entered is left as soon as a subscription has
+        room: below its switch lines, with readable usage.
         """
-        reason = _limit_reason(entries.get(current))
+        from ai_quota_swap import api_spend
+
+        reason = self._key_brake(current, entries)
+        if reason is None and key_mode == "engine" and not self._key_limited(current, entries):
+            reason = api_spend.NO_LIMIT
         if reason is None and key_mode == "user":
             self._emit(NoSwitchEvent(
                 reason="active-api-key",
@@ -3792,16 +4305,39 @@ class AutoSwitchEngine:
                 ),
             ))
             return TickOutcome.NO_ACTION
+        source = self._spend_source(current, entries)
+        self._tick_cause = {
+            "binding": None, "over_budget": reason is not None, "policies": policies,
+            "limit_reason": reason, "back_underneath": False, "limit_source": source,
+        }
+        if self._unmanaged_login_underneath():
+            # A live login qswap does not manage is under the key (a /login
+            # not yet added): a login switch would overwrite it. At the
+            # key's limit only the line comes out; otherwise the engine
+            # stays, as it does on such a login without a key.
+            if reason is not None:
+                left_for_login = self._leave_key_for_unmanaged_login(current, reason)
+                if left_for_login is not None:
+                    return left_for_login
+                return self._stuck_on_key(current, reason)
+            self._emit(NoSwitchEvent(
+                reason="unmanaged-active-account",
+                detail=f"run '{self._add_command()}' to include it in rotation",
+            ))
+            return TickOutcome.NO_ACTION
         switchable = self.switcher.switchable_account_numbers()
         picked = rotation_candidates(
             switchable, current, set_aside=quarantined,
             kind_of=self.switcher.account_kind_for,
             include_api_key_accounts=False, entries=entries,
         )
+        # At the limit any subscription with room will do; the way back
+        # needs RETURN_ROOM_PCT of it in every window.
+        floor = 0.0 if reason is not None else RETURN_ROOM_PCT
         roomy = []
         for num in picked.oauth:
             room = headroom.get(num)
-            if room is None or room <= 0:
+            if room is None or room <= 0 or room < floor:
                 continue
             binding = self._binding(usage.get(num), settings, thresholds[num])
             if binding is not None and binding.over:
@@ -3809,42 +4345,38 @@ class AutoSwitchEngine:
             roomy.append((room, num))
         roomy.sort(key=lambda r: (-r[0], int(r[1]) if r[1].isdigit() else 0))
         ordered = [num for _room, num in roomy]
-        back_underneath = False
+        if ordered and reason is None:
+            # A minimum stay: not back before the cooldown has run since the
+            # engine entered the key (its last switch).
+            state = self._read_state() if state is None else state
+            if self._in_cooldown(state):
+                self._emit(NoSwitchEvent(reason="cooldown", wait_s=self._cooldown_left(state)))
+                return TickOutcome.NO_ACTION
         underneath_of = getattr(self.switcher, "underneath_account_number", None)
         under = underneath_of() if callable(underneath_of) else None
-        if not ordered:
-            if reason is None:
-                self._emit(NoSwitchEvent(
-                    reason="no-subscription-room",
-                    detail="staying on the API key until a subscription has room",
-                ))
-                return TickOutcome.NO_ACTION
-            if under is None:
-                # At its limit the key is left all the same when the login
-                # underneath is one qswap does not manage: removing the line
-                # returns the sessions to it.
-                left_for_login = self._leave_key_for_unmanaged_login(current, reason)
-                if left_for_login is not None:
-                    return left_for_login
-                self._emit(NoSwitchEvent(
-                    reason="no-candidates",
-                    detail="no subscription to return to from the API key",
-                ))
-                return TickOutcome.BLOCKED
-            ordered = [under]
-            back_underneath = True
-        self._tick_cause = {
-            "binding": None,
-            "over_budget": reason is not None,
-            "policies": policies,
-            "limit_reason": reason,
-            "back_underneath": back_underneath,
-        }
+        if not ordered and reason is None:
+            self._emit(NoSwitchEvent(
+                reason="no-subscription-room",
+                detail="staying on the API key until a subscription has room",
+            ))
+            return TickOutcome.NO_ACTION
         trigger = "at-limit" if reason is not None else "key-return"
         left = (None, float("inf"))
+
+        def cause(back: bool) -> dict:
+            return {
+                "binding": None,
+                "over_budget": reason is not None,
+                "policies": policies,
+                "limit_reason": reason,
+                "back_underneath": back,
+                "limit_source": source,
+            }
+
+        self._tick_cause = cause(False)
         for num in ordered:
             email = self.switcher.account_email(num)
-            if self.dry_run or back_underneath or num == under:
+            if self.dry_run or num == under:
                 # The account underneath is the live login: leaving for it
                 # only removes the line, and nothing copies a freshened
                 # backup into the live login, so its refresh token is never
@@ -3860,7 +4392,50 @@ class AutoSwitchEngine:
             if status in ("transient", "skip-live-session") or status in _SYSTEMIC_STATUSES:
                 continue
             return self._perform(num, email, trigger, left)
-        self._emit(NoSwitchEvent(reason="no-viable-target"))
+        if reason is None:
+            self._emit(NoSwitchEvent(reason="no-viable-target"))
+            return TickOutcome.BLOCKED
+        # At its limit the engine never stays on the key while a login is
+        # underneath: no subscription has room, or none could be activated,
+        # so back to the account underneath (the line only).
+        if under is not None:
+            self._tick_cause = cause(True)
+            return self._perform(under, self.switcher.account_email(under), trigger, left)
+        left_for_login = self._leave_key_for_unmanaged_login(current, reason)
+        if left_for_login is not None:
+            return left_for_login
+        return self._stuck_on_key(current, reason)
+
+    def _unmanaged_login_underneath(self) -> bool:
+        """Whether the live login under the active key is one qswap does not
+        manage (``login_account_number`` None while a login is live)."""
+        login_of = getattr(self.switcher, "login_account_number", None)
+        live = getattr(self.switcher, "has_live_login", None)
+        if not callable(login_of) or not callable(live):
+            return False
+        try:
+            return login_of() is None and bool(live())
+        except Exception:
+            return False
+
+    def _stuck_on_key(self, current: str, reason: str) -> TickOutcome:
+        """At its limit with no login at all to go back to: removing the line
+        would leave every session with nothing, so the engine stays, and
+        says so once per episode (the notifier) with the way off."""
+        way_off = next(
+            (
+                n for n in self.switcher.switchable_account_numbers()
+                if self.switcher.account_kind_for(n) != "api_key"
+            ),
+            None,
+        )
+        self._emit(NoSwitchEvent(
+            reason="stuck-on-key",
+            detail=f"account {current} is at its limit ({reason}) with no login underneath",
+            account=str(current),
+            limit_reason=reason,
+            way_off=way_off,
+        ))
         return TickOutcome.BLOCKED
 
     def _leave_key_for_unmanaged_login(
@@ -3875,11 +4450,22 @@ class AutoSwitchEngine:
         cause = {
             "binding": None, "over_budget": True, "priority_up": None,
             "limit_reason": reason, "back_underneath": True,
+            "limit_source": self._tick_cause.get("limit_source"),
         }
         if self.dry_run:
-            # Nothing is changed in a dry run, and this path has no
-            # read-only form: say what blocks a real switch.
-            return None
+            # Nothing is changed in a dry run: say what a real run would do
+            # (the line out, sessions back on the login underneath).
+            email_of = getattr(self.switcher, "live_login_email", None)
+            email = email_of() if callable(email_of) else None
+            if not email:
+                return None
+            self._emit(SwitchEvent(
+                trigger="at-limit",
+                from_ref=_ref(current, self.switcher.account_email(current) or ""),
+                to_ref={"number": None, "email": email},
+                dry_run=True, **cause,
+            ))
+            return TickOutcome.SWITCHED
         with self._state_lock():
             state = self._read_state()
             try:

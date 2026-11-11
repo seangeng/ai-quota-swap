@@ -32,7 +32,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 
-from ai_quota_swap.ledger.pricing import FAST_SUFFIX
+from ai_quota_swap.ledger.pricing import FAST_SUFFIX, LONG_SUFFIX, long_prompt_tier
 from ai_quota_swap.ledger.store import key_hash
 
 # Claude Code entrypoints that run on a login the desktop app supplies, not on
@@ -143,6 +143,12 @@ def parse_claude_line(raw: bytes) -> Event | OwnerNote | None:
         key = key_hash("claude-line", uid)
     if usage.get("speed") == "fast":
         model += FAST_SUFFIX
+    else:
+        # A model priced by prompt length (pricing.LONG_PROMPT_MODELS): the
+        # prompt is every input token, cache reads and writes included.
+        tier = long_prompt_tier(model)
+        if tier is not None and inp + read + w5 + w1 > tier:
+            model += LONG_SUFFIX
     entry = obj.get("entrypoint")
     return Event(
         key=key,

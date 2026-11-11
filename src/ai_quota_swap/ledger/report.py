@@ -35,6 +35,8 @@ from ai_quota_swap.ledger.activations import ActivationLog, identity_key
 from ai_quota_swap.ledger.pricing import (
     ANTHROPIC_SOURCE,
     FAST_SUFFIX,
+    LONG_SUFFIX,
+    long_prompt_tier,
     OPENAI_SOURCE,
     PRICES_FETCHED,
     PriceTable,
@@ -235,13 +237,18 @@ def _profile_sessions(
 ) -> dict[str, str]:
     """``{session: account}`` for Claude sessions started on a login other than
     the default one: ``qswap run`` sessions whose history went to the shared
-    tree."""
+    tree. Only an owner line that came before the session's first event
+    marks one (``owner_early``): Claude Code stamps a session started under an
+    API key's helper line only once the line is gone, with the login's
+    account, and that session's key-period usage stays on the key."""
     out: dict[str, str] = {}
     if not len(log):
         return out
-    for session, (owner, first_ts) in store.sessions("claude").items():
+    for session, (owner, first_ts, *rest) in store.sessions("claude").items():
         if first_ts is None:
             continue
+        if rest and rest[0] == 0:
+            continue  # stamped late: attribution by time
         owner_key = accounts.owner_key(owner)
         if owner_key is None:
             continue
@@ -397,14 +404,23 @@ def _short_path(path: str) -> str:
     return home_path(path) if path else "(no project)"
 
 
+def model_label(model: str) -> str:
+    """A ledger model id as a report row names it: ``claude-opus-5-5 (fast)``,
+    ``claude-haiku-5-5 (prompt over 100K)``."""
+    if model.endswith(FAST_SUFFIX):
+        return model[: -len(FAST_SUFFIX)] + " (fast)"
+    if model.endswith(LONG_SUFFIX):
+        base = model[: -len(LONG_SUFFIX)]
+        tier = long_prompt_tier(base)
+        return f"{base} (prompt over {fmt_tokens(tier)})" if tier else base
+    return model
+
+
 def _label(row: Row, by: str, accounts: Accounts, *, show_provider: bool = False) -> None:
     if by == "day":
         row.label = row.key.strftime("%a %Y-%m-%d")  # type: ignore[union-attr]
     elif by == "model":
-        model = str(row.key)
-        row.label = (
-            model[: -len(FAST_SUFFIX)] + " (fast)" if model.endswith(FAST_SUFFIX) else model
-        )
+        row.label = model_label(str(row.key))
     elif by == "account":
         prov, key = row.key  # type: ignore[misc]
         row.label, info, row.tail = accounts.describe(key, prov, show_provider=show_provider)

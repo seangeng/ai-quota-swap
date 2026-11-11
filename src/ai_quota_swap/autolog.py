@@ -438,14 +438,25 @@ def switch_reason(event: object) -> str:
         return "a subscription has room again"
     if trigger == "at-limit":
         if getattr(event, "over_budget", False):
+            from ai_quota_swap import api_spend
+
+            reason = getattr(event, "limit_reason", None) or ""
             words = {
                 "credit-spent": "credit spent",
                 "credit-expired": "credit expired",
-            }.get(getattr(event, "limit_reason", None) or "", "monthly budget reached")
+                api_spend.SPEND_UNKNOWN: api_spend.SPEND_UNKNOWN_WORDS,
+                api_spend.NO_LIMIT: api_spend.NO_LIMIT_WORDS,
+            }.get(reason, "monthly budget reached")
+            if reason in ("", "budget", "credit-spent") and (
+                getattr(event, "limit_source", None) == api_spend.SOURCE_LEDGER
+            ):
+                words += " (estimate)"  # this machine's count, not Anthropic's
             return words + back
+        note = getattr(event, "reset_note", None)
+        tail = f"; {note}" if note else ""
         if binding is not None and binding.pct >= 100.0:
-            return f"{binding.label} limit reached"
-        return "limit reached"
+            return f"{binding.label} limit reached{tail}"
+        return f"limit reached{tail}"
     if trigger == "failover":
         return "usage unreadable"
     if trigger == "consume-first":
@@ -472,6 +483,16 @@ def switch_sentence(event: object, *, src: str | None = None, dst: str | None = 
 
 
 # -- no switch, in words ---------------------------------------------------------------
+
+
+#: A key's limit as "past ..." reads it (stuck-on-key).
+_LIMIT_WORDS = {
+    "budget": "its monthly budget",
+    "credit-spent": "its credit",
+    "credit-expired": "its credit's expiry",
+    "spend-unknown": "its limit (its spend could not be measured)",
+    "no-limit": "its limit (it has no budget or credit)",
+}
 
 
 def _relogin_views(views: Iterable) -> list:
@@ -613,6 +634,10 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         return "on the API key until a subscription has room", "routine"
     if reason == "key-helper-unavailable":
         return "not moving to an API key, its helper cannot be added", "wait"
+    if reason == "reset-pending":
+        return "a usage reset comes before an API key", "wait"
+    # key-no-limit, spend-unknown, key-unusable and stuck-on-key need the
+    # user: the line is the whole sentence, with its command.
     if reason == "api-key-sessions":
         running = getattr(event, "sessions", None)
         if running and running > 0:
@@ -693,6 +718,42 @@ def no_switch_sentence(event: object) -> str:
         return (
             f"Not switching to {who}: qswap cannot add its key helper to Claude "
             "Code's settings. qswap doctor says why"
+        )
+    if reason == "reset-pending":
+        return (
+            "Not switching to an API key yet: a usage reset was claimed, and its "
+            "refill comes first"
+        )
+    if reason == "key-unusable":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "an API-key account"
+        return f"Not switching to {who}: {detail}" if detail else f"Not switching to {who}"
+    if reason == "stuck-on-key":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "the API key"
+        limit = _LIMIT_WORDS.get(getattr(event, "limit_reason", None) or "", "its limit")
+        way_off = getattr(event, "way_off", None)
+        step = (
+            f"Leave it with: qswap switch {way_off}" if way_off
+            else "Log in to Claude Code (claude, then /login), then run: qswap add"
+        )
+        return f"Staying on {who} past {limit}: no login is under the key to go back to. {step}"
+    if reason == "key-no-limit":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "the API-key account"
+        number = account if account else "N"
+        return (
+            f"Not switching to an API key: {who} has no budget or credit; set one "
+            f"with: qswap budget {number} AMOUNT"
+        )
+    if reason == "spend-unknown":
+        from ai_quota_swap import api_spend
+
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "an API-key account"
+        return (
+            f"Not switching to {who}: {api_spend.SPEND_UNKNOWN_WORDS}; check it "
+            "with: qswap usage"
         )
     if reason == "api-key-sessions":
         account = getattr(event, "account", None)
