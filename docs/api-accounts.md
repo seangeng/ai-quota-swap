@@ -142,13 +142,14 @@ saved key, so qswap cannot add the key line for #5 ci beside it.
 Remove apiKeyHelper from ~/.claude/settings.json, then: qswap switch 5
 ```
 
-A credential or provider variable in the file's `env` block (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`) comes before the line, so sessions would never use the key. The refusal names the variable, never its value:
+A credential or provider variable in the file's `env` block (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`) comes before the line, and the switch is refused. Beside a credential, sessions would still send the key with every request, so either could be billed ([what was measured](#what-qswap-doctor-checks)); with a provider variable, sessions would not use the key. The refusal names the variable, never its value:
 
 ```text
 $ qswap switch 5
 Error: not switched. ~/.claude/settings.json sets ANTHROPIC_API_KEY in its env
-block, which Claude Code obeys before any key line, so sessions would not use
-#5 ci.
+block, which Claude Code obeys before any key line, yet sessions would send
+the key of #5 ci with every request, beside the credential that variable sets,
+so either could be billed.
 Remove ANTHROPIC_API_KEY from the env block of ~/.claude/settings.json, then:
 qswap switch 5
 ```

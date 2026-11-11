@@ -291,3 +291,87 @@ class TestACredentialBesideTheActiveKey:
 
         s = self._over_the_key(temp_home, CLAUDE_CODE_USE_BEDROCK="1")
         assert "so sessions do not use #5 ci" in _notes(s)
+
+
+# == R4-3: the refusals for a credential variable say what happens ============================
+
+
+def _refusal(text: str) -> str:
+    return " ".join(text.split())
+
+
+class TestTheRefusalsForACredential:
+    """Decision R4-3: Claude Code sends the key from the line beside a
+    credential in the env block (the round 3 note), so the first-time
+    refusal and the refusal of the switch to the key already active say
+    that, in the tense that fits. A provider variable keeps "would not use"."""
+
+    @pytest.mark.parametrize("name", ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"])
+    def test_the_first_switch_says_the_key_would_be_sent_beside_it(
+        self, temp_home, run, name
+    ):
+        from tests.test_key_switch_round3 import _with_env
+
+        s = _fleet()
+        _with_env(temp_home, **{name: "made-up"})
+        code, out, err = run(s, "switch", "5")
+        assert code == 1
+        assert _refusal(err) == (
+            f"Error: not switched. {WHERE} sets {name} in its env block, which Claude "
+            "Code obeys before any key line, yet sessions would send the key of #5 ci "
+            "with every request, beside the credential that variable sets, so either "
+            f"could be billed. Remove {name} from the env block of {WHERE}, then: "
+            "qswap switch 5"
+        )
+        assert all(len(line) <= 80 for line in err.splitlines()), err
+        assert "made-up" not in out + err
+        assert s.current_account_number() == "1"
+
+    def test_with_a_base_url_the_first_switch_names_the_host(self, temp_home, run):
+        from tests.test_key_switch_round3 import _with_env
+
+        s = _fleet()
+        _with_env(temp_home, ANTHROPIC_AUTH_TOKEN="made-up",
+                  ANTHROPIC_BASE_URL="https://gateway.example.com/v1")
+        code, _out, err = run(s, "switch", "5")
+        assert code == 1
+        assert (
+            "yet sessions would send the key of #5 ci with every request to "
+            "gateway.example.com, beside the credential that variable sets, so either "
+            "could be billed."
+        ) in _refusal(err)
+
+    @pytest.mark.parametrize("name", ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"])
+    def test_the_switch_to_the_active_key_says_it_is_still_sent(self, temp_home, run, name):
+        from tests.test_key_switch_round3 import _with_env
+
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        _with_env(temp_home, **{name: "made-up"})
+        code, _out, err = run(s, "switch", "5")
+        assert code == 1
+        assert _refusal(err) == (
+            f"Error: not switched. {WHERE} sets {name} in its env block, which Claude "
+            "Code obeys before any key line, yet sessions still send the key of #5 ci "
+            "with every request, beside the credential that variable sets, so either "
+            f"may be billed. Remove {name} from the env block of {WHERE}, then: "
+            "qswap switch 5"
+        )
+        assert all(len(line) <= 80 for line in err.splitlines()), err
+
+    @pytest.mark.parametrize("active", [False, True])
+    def test_a_provider_variable_keeps_would_not_use(self, temp_home, run, active):
+        from tests.test_key_switch_round3 import _with_env
+
+        s = _fleet()
+        if active:
+            s.switch_to("5", json_output=True)
+        _with_env(temp_home, ANTHROPIC_AUTH_TOKEN="made-up", CLAUDE_CODE_USE_VERTEX="1")
+        code, _out, err = run(s, "switch", "5")
+        assert code == 1
+        text = _refusal(err)
+        assert (
+            "which Claude Code obeys before any key line, so sessions would not use "
+            "#5 ci."
+        ) in text
+        assert "billed" not in text

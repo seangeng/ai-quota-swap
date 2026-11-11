@@ -1382,14 +1382,22 @@ def key_line_defeated_fix(path: str, names: Sequence[str], number: str | int | N
 
 def key_line_defeated_refusal(
     target: str, number: str | int, path: str, names: Sequence[str], *,
-    prefix: str = "Error: ",
+    prefix: str = "Error: ", active: bool = False, host: str | None = None,
+    saved_key: bool = False,
 ) -> str:
     """The settings' ``env`` block sets a variable Claude Code obeys before
-    any key line (decision B6, F59): named, never its value."""
-    head = (
-        f"not switched. {key_line_defeated_clause(path, names)}, so sessions would "
-        f"not use {target}."
-    )
+    any key line (decision B6, F59): named, never its value. For a
+    credential, what the note says (:func:`key_line_outranked_consequence`,
+    decision R4-3): the key would be sent beside it (the first switch), or
+    still is (``active``: the switch to the key already active), to
+    ``host`` when ``ANTHROPIC_BASE_URL`` sends it there. A provider variable,
+    and the ``--log-out-sessions`` refusal (``saved_key``), keep "would not
+    use"."""
+    if saved_key or any(name in _PROVIDER_VARS for name in names):
+        what = f"so sessions would not use {target}"
+    else:
+        what = key_line_outranked_consequence(names, target, host, would=not active)
+    head = f"not switched. {key_line_defeated_clause(path, names)}, {what}."
     lines = wrap(prefix + head, WIDTH - 2)
     lines[0] = lines[0][len(prefix):]
     return "\n".join([*lines, *wrap(key_line_defeated_fix(path, names, number))])
@@ -1401,7 +1409,8 @@ _PROVIDER_VARS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_C
 
 
 def key_line_outranked_consequence(
-    names: Sequence[str], key: str | None, host: str | None = None,
+    names: Sequence[str], key: str | None, host: str | None = None, *,
+    would: bool = False,
 ) -> str:
     """What a variable in the env block does while the key line of ``key``
     is in. A credential (``ANTHROPIC_AUTH_TOKEN``, ``ANTHROPIC_API_KEY``)
@@ -1409,7 +1418,8 @@ def key_line_outranked_consequence(
     line in the other: measured on Claude Code 2.1.322 (x-api-key the key,
     the bearer the token), and to ``host`` when ``ANTHROPIC_BASE_URL`` sends
     it there. Which one Anthropic bills was not tested. Another provider
-    sends no key of Anthropic's. With no key active, no switch to one."""
+    sends no key of Anthropic's. With no key active, no switch to one.
+    ``would``: the same fact before the line is in (a refusal)."""
     if not key:
         return "so qswap does not switch to an API key"
     if any(name in _PROVIDER_VARS for name in names):
@@ -1418,9 +1428,10 @@ def key_line_outranked_consequence(
         "the credentials those variables set"
     )
     to = f" to {host}" if host else ""
+    send, may = ("would send", "could") if would else ("still send", "may")
     return (
-        f"yet sessions still send the key of {key} with every request{to}, beside "
-        f"{what}, so either may be billed"
+        f"yet sessions {send} the key of {key} with every request{to}, beside "
+        f"{what}, so either {may} be billed"
     )
 
 

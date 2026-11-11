@@ -166,8 +166,11 @@ return to it when the key is left.
   same file. A credential or provider variable there (`ANTHROPIC_AUTH_TOKEN`,
   `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`,
   `CLAUDE_CODE_USE_FOUNDRY`) would outrank the line, so the switch is refused, naming the
-  variable and never its value. `ANTHROPIC_BASE_URL` there sends the key elsewhere: the
-  switch goes ahead with one warning naming the host.
+  variable and never its value. For a credential the refusal states the measured fact of
+  the note below, in its tense: sessions would send the key beside it, so either could be
+  billed (the switch to the key already active: they still send it, so either may be); a
+  provider variable says sessions would not use the key. `ANTHROPIC_BASE_URL` there sends
+  the key elsewhere: the switch goes ahead with one warning naming the host.
 - **Run profiles.** A `qswap run` profile shares the user settings file through a link, so it
   would follow the helper. While qswap's helper line is installed, each run profile's link is
   replaced by a copy of the settings without the line; when the line is removed the links

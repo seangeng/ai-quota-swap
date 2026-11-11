@@ -753,7 +753,8 @@ class KeyActivationMixin:
     def _key_unavailable(
         self, number: str, reason: str, *, kind: str | None = None,
         names: tuple[str, ...] = (), log_out_sessions: bool = False,
-        profiles: list[Path] | None = None,
+        profiles: list[Path] | None = None, active: bool = False,
+        host: str | None = None,
     ) -> KeyHelperUnavailableError:
         """The refusal of a switch to the key ``number`` (decision B6):
         ``kind`` is what stopped it. Another helper (``foreign``), another
@@ -761,7 +762,9 @@ class KeyActivationMixin:
         data directory named: decision SS4) and a variable in the env block
         (``env``) are refused with the one way forward, removing it; anything
         else offers ``--log-out-sessions`` after the fix that keeps everyone
-        logged in."""
+        logged in. For ``env``: ``active`` is the switch to the key already
+        active, ``host`` where ``ANTHROPIC_BASE_URL`` sends the key
+        (decision R4-3)."""
         path = claude_settings.shown_path(claude_settings.settings_path())
         label = self.label(number, long=False)
         if kind in (claude_settings.FOREIGN, claude_settings.OTHER, "env"):
@@ -769,7 +772,10 @@ class KeyActivationMixin:
             if kind == claude_settings.OTHER:
                 other_dir = self.key_helper_state().data_dir
             text = (
-                display.key_line_defeated_refusal(label, number, path, names)
+                display.key_line_defeated_refusal(
+                    label, number, path, names, active=active, host=host,
+                    saved_key=log_out_sessions,
+                )
                 if kind == "env"
                 else display.key_helper_foreign_refusal(
                     label, number, path, log_out_sessions=log_out_sessions,
@@ -817,14 +823,16 @@ class KeyActivationMixin:
         )
 
     def _refuse_defeated_line(
-        self, number: str, state: claude_settings.HelperState | None = None,
+        self, number: str, state: claude_settings.HelperState | None = None, *,
+        active: bool = False,
     ) -> dict[str, str]:
         """Refuse a switch to the key ``number`` when its line cannot be
         written or would not be obeyed (decision B6): another helper or
         another qswap's line, a file qswap cannot use, a variable in the env
         block that outranks the line. The first switch to a key and the
-        switch to the key already active (decision SS9) say the same. Writes
-        nothing. Returns the env block, read once."""
+        switch to the key already active (``active``, decision SS9) say the
+        same, each in its tense (R4-3). Writes nothing. Returns the env
+        block, read once."""
         state = self.key_helper_state() if state is None else state
         if not state.installable:
             raise self._key_unavailable(
@@ -837,7 +845,7 @@ class KeyActivationMixin:
             raise self._key_unavailable(
                 number,
                 f"{state.shown_path()} sets {display.join_names(names)} in its env block",
-                kind="env", names=names,
+                kind="env", names=names, active=active, host=other_host(env),
             )
         return env
 

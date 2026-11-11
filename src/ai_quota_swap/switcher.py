@@ -8401,7 +8401,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             # Decision SS9: the key already active, with what outranks its
             # line since, is refused in the words of the first-time refusal,
             # before anything (a repair, the record) is written.
-            self._refuse_defeated_line(target_account)
+            self._refuse_defeated_line(target_account, active=True)
         repairs = self.reconcile_key_helper()
         if repairs and not json_output:
             for text in repairs:
@@ -8426,7 +8426,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 raise self._key_unavailable(
                     target_account,
                     f"{state.shown_path()} sets {display.join_names(names)} in its env block",
-                    kind="env", names=names,
+                    kind="env", names=names, log_out_sessions=True,
                 )
         if target_is_key and not log_out_sessions:
             if helper == target_account and not force:

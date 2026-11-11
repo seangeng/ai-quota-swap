@@ -463,7 +463,8 @@ class TestTheActiveKeyOutranked:
         assert "Already on" not in text
         assert (
             f"{WHERE} sets ANTHROPIC_API_KEY in its env block, which Claude Code obeys "
-            "before any key line, so sessions would not use #5 ci."
+            "before any key line, yet sessions still send the key of #5 ci with every "
+            "request, beside the credential that variable sets, so either may be billed."
         ) in text
         assert (
             f"Remove ANTHROPIC_API_KEY from the env block of {WHERE}, then: qswap switch 5"
