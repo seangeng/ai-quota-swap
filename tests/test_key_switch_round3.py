@@ -822,3 +822,58 @@ class TestAWayBackIsAlwaysNamed:
         assert " ".join(result["followup"]).endswith(
             "To go back, add that login first: qswap add"
         )
+
+
+# == DS17: add-token --slot while the settings cannot be read ======================
+
+
+NEW_KEY = "sk-ant-api03-" + "n5n5n5n5n5" * 4
+
+
+class TestAddTokenWhileTheSettingsCannotBeRead:
+    def _unreadable(self, temp_home):
+        from tests.test_key_helper_live import KEY_5
+
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        _settings(temp_home).write_text('{"apiKeyHelper": "x",}', encoding="utf-8")
+        assert s.key_line_unreadable() is not None
+        return s, KEY_5
+
+    def _written(self, s, home):
+        creds = sorted(
+            (p.name, p.read_bytes()) for p in Path(s.credentials_dir).iterdir()
+        ) if Path(s.credentials_dir).exists() else []
+        return (*_state_files(s, home), creds, s._read_account_credentials("5", s.account_email("5")))
+
+    def test_it_stops_with_the_shared_sentence_and_writes_nothing(self, temp_home, run):
+        s, key = self._unreadable(temp_home)
+        before = self._written(s, temp_home)
+        code, out, err = run(s, "add-token", NEW_KEY, "--slot", "5", "--yes")
+        assert code == 1
+        text = " ".join((out + err).split())
+        assert (
+            f"{WHERE} cannot be read (line 1: Illegal trailing comma before end of "
+            "object); qswap last made #5 ci the active API key there, and its key line "
+            f"may still be in it. Fix the JSON in {WHERE}, then retry."
+        ) in text
+        assert "Added" not in text and "Updated" not in text
+        from tests.test_key_helper_live import _fits
+
+        _fits(out + err)
+        assert self._written(s, temp_home) == before
+        assert s._read_account_credentials("5", s.account_email("5")) == key
+
+    def test_another_slot_is_not_the_key_lines(self, temp_home, run):
+        s, _key = self._unreadable(temp_home)
+        code, out, err = run(s, "add-token", NEW_KEY, "--slot", "8", "--yes")
+        assert code == 0, err
+        assert "Added #8" in out
+
+    def test_with_readable_settings_the_key_is_replaced_as_before(self, temp_home, run):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        code, out, err = run(s, "add-token", NEW_KEY, "--slot", "5", "--yes")
+        assert code == 0, err
+        assert "pick up the new key within 5 minutes" in " ".join(out.split())
+        assert s._read_account_credentials("5", s.account_email("5")) == NEW_KEY

@@ -112,7 +112,7 @@ If qswap created `~/.claude/settings.json` for the line, it removes the file aga
 
 ### Changing accounts while a key is active
 
-- `qswap add-token NEWKEY --slot 5 --yes` replaces the key of the active account. The line stays the same, so `Running Claude Code sessions pick up the new key within 5 minutes, or at once after a request is rejected.`
+- `qswap add-token NEWKEY --slot 5 --yes` replaces the key of the active account. The line stays the same, so `Running Claude Code sessions pick up the new key within 5 minutes, or at once after a request is rejected.` While `~/.claude/settings.json` cannot be read it stops instead, with the sentence every command that changes accounts gives then, and saves nothing ([troubleshooting.md](troubleshooting.md#the-key-line-was-left-behind-after-a-crash)).
 - `qswap add` after a `/login` saves the new login but leaves the sessions on the key, and says so: `#5 ci is still the active API key; Claude Code sessions use it, not this login. To use this login: qswap switch 8`.
 - `qswap remove 5` takes the line out first and says where sessions go. `qswap swap` and `qswap move` refuse to renumber the account the line names, and `add-token` never moves it to another slot.
 

@@ -4806,11 +4806,15 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 raise ConfigError("Slot number must be >= 1")
             account_num = str(slot)
             data = self._get_sequence_data()
-            if not is_api_key and self.key_line_number() == account_num:
+            if self.key_line_number() == account_num and (
+                not is_api_key or self.key_line_unreadable() is not None
+            ):
                 # Claude Code's settings name this slot as the active key: a
                 # login saved over it would leave every session with no key.
-                # Another key may replace it.
-                self._refuse_over_the_key(account_num, "token")
+                # Another key may replace it, except while the settings cannot
+                # be read: then the command stops with the shared sentence, as
+                # swap, move, remove and switch do (decision DS17).
+                self._refuse_over_the_key(account_num, "key" if is_api_key else "token")
 
             if self._account_exists(email, ""):
                 old_num = self._find_account_slot(data, email, "")
