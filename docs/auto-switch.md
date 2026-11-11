@@ -31,7 +31,7 @@ qswap auto --threshold 85 --weekly-threshold 97
 
 Flags override the [settings](#settings) for that run only. A value out of range is clamped, with a warning such as `Warning: --interval 5 is out of range; using 15s`.
 
-After a switch to a subscription account, a running Claude Code picks up the new login within about 30 seconds on macOS (its Keychain cache) and from its next message where the login is kept in a file. A move to an API key reaches running sessions within a few seconds, through the key line qswap adds to Claude Code's settings ([below](#api-key-accounts-and-budgets)). The default line is 90 rather than 95 to cover that delay and a heavy turn that keeps spending meanwhile. Switches take the same credential locks Claude Code uses, so a switch never lands in the middle of Claude Code refreshing its token.
+After a switch to a subscription account, a running Claude Code picks up the new login within about 30 seconds on macOS (its Keychain cache) and from its next message where the login is kept in a file. A move to an API key reaches running sessions about a second after qswap writes the key line into Claude Code's settings (measured on Claude Code 2.1.322; [below](#api-key-accounts-and-budgets)). The default line is 90 rather than 95 to cover that delay and a heavy turn that keeps spending meanwhile. Switches take the same credential locks Claude Code uses, so a switch never lands in the middle of Claude Code refreshing its token.
 
 ## How it picks the next account
 
@@ -89,33 +89,55 @@ Auto-switch also skips an account that a running `qswap run` session is using ([
 
 ## API-key accounts and budgets
 
-An API-key account has no usage windows, so auto-switch never ranks it against subscriptions, and the log lists it as `API key, not used`. By default, when you switched to an API-key account, the engine leaves it there: `#5 ci · on the API key you chose`.
+An API-key account has no usage windows, so auto-switch never ranks it against subscriptions, and the log lists it as `API key, not used`. By default, when you switched to an API-key account, the engine leaves it there: `#5 ci is an API key · on the API key you chose`.
 
-`--include-api-key-accounts` (or `autoswitch.includeApiKeyAccounts true`) makes API-key accounts a last resort: the engine moves to one only when it must leave the active account and no subscription has room. It moves through the key line in Claude Code's settings, so running sessions follow it, and they do not hold the move ([api-accounts.md](api-accounts.md#switch-to-an-api-key)).
+`--include-api-key-accounts` (or `autoswitch.includeApiKeyAccounts true`) makes API-key accounts a last resort. The engine moves to one through the key line in Claude Code's settings, so running sessions follow it and do not hold the move ([api-accounts.md](api-accounts.md#switch-to-an-api-key)). It does so only when all of these hold:
 
-Who moved to the key decides when the engine leaves it:
+- the active subscription is at its limit and no other subscription can take over. A switch line is not enough, and neither is usage that cannot be read;
+- no usage reset is being spent this check. With `resets.auto` off, a reset is not spent, and the switch says one is there: `Switched #1 personal → #5 ci · 7d limit reached; #1 personal holds 1 weekly reset: qswap reset 1`;
+- the key has a monthly budget or a credit. Without one it is never used, and the log says so once: `Not switching to an API key: #5 ci has no budget or credit; set one with: qswap budget 5 AMOUNT`;
+- its spend figure is no older than 20 minutes. The engine reads this machine's session files itself before it moves (and every 5 minutes while a key with a budget or credit is active), so this matters only when that fails or the figure comes from Anthropic and is late: `Not switching to #5 ci: its spend could not be measured for 20 minutes; check it with: qswap usage`.
 
-- A key the engine moved to is left as soon as a subscription has room again (`Switched #5 ci → #1 personal · a subscription has room again`; the trigger is `key-return` in JSON). Until then it logs `on the API key until a subscription has room` (`no-subscription-room`).
-- A key you switched to yourself is never left because a subscription has room: only at its budget, when its credit is spent or expired, or when you switch (`on the API key you chose`, `active-api-key`).
-- At its budget, or with its credit spent, the engine leaves either kind for the subscription with the most room, and when none has room, back to the account underneath, and says so once: `Switched #5 ci → #1 personal · monthly budget reached; no subscription has room, so back to the account underneath`.
-
-When qswap cannot add the key line (another `apiKeyHelper` is set, or the settings file cannot be parsed), the engine does not take the `--log-out-sessions` way by itself. It stays, logs `not moving to an API key, its helper cannot be added`, and the menu bar notifies once: `Not switching to #5 ci: qswap cannot add its key helper to Claude Code's settings. qswap doctor says why`. In JSON the reason is `key-helper-unavailable`.
-
-An API-key account made active the older way (`qswap switch 5 --log-out-sessions`) is not on the key line; there the engine counts its usage as unreadable with this setting on (`#5 ci is an API key · failover in 2 more checks`) and, after `autoswitch.unhealthyTicks` checks, moves to an account with room.
-
-A monthly budget (`qswap budget 5 500`), or a credit (`qswap credit 5 1187`, [api-accounts.md](api-accounts.md#record-a-prepaid-credit)), changes this for that account; whichever is reached first applies. From 80% of the budget the log prints one budget warning a month (`budget-warning` in JSON), for example `#5 ci has spent $25.16 of its $30.00 monthly budget (84%) (estimate)`. At or over the budget the account is never a target, and if it is active the engine leaves it as it leaves an account at its limit, without waiting for the cooldown. Here `#5 ci` is active with $25.16 spent against a $20 budget:
+Here every subscription is at its limit and `#5 ci` has a $40 budget:
 
 ```text
 $ qswap auto --once
-14:20:00  #5 ci has spent $25.16 of its $20.00 monthly budget (126%) (estimate)
-14:20:00  Switched #5 ci → #2 work · monthly budget reached
+14:20:00  Switched #1 personal → #5 ci · 5h limit reached
+            #2 work         5h 100% · 7d 21% · limit reached
+            #3 night-shift  5h 100% · 7d 81% · limit reached
+            #4 side         disabled
+            #5 ci           API key, used as a last resort
+```
+
+Who moved to the key decides when the engine leaves it:
+
+- A key the engine moved to is left for a subscription once that subscription is under its own lines with at least 5 points of room in every window, and the cooldown has passed since the move (`Switched #5 ci → #1 personal · a subscription has room again`; the trigger is `key-return` in JSON). Until then it logs `on the API key until a subscription has room` (`no-subscription-room`).
+- A key you switched to yourself is never left because a subscription has room (`on the API key you chose`, `active-api-key`).
+- Either kind is left at once, without waiting for the cooldown, at its budget, with its credit spent or expired, or when its spend has not been measured for 20 minutes (`spend-unknown`): for the subscription with the most room, and when none has room, back to the account underneath, said once: `Switched #5 ci → #1 personal · monthly budget reached (estimate); no subscription has room, so back to the account underneath`. A budget or credit once reached stays reached in the engine's state, even if a later figure reads lower, until the month rolls over or you set it again.
+- It never moves from one key to another, and never switches the login over a login qswap does not manage: under such a login, at the key's limit, it only removes the line.
+- With no login at all under the key, it stays and says so once, with the command that leaves: `Staying on #5 ci past its monthly budget: no login is under the key to go back to. Leave it with: qswap switch 1` (`stuck-on-key`).
+
+When qswap cannot add the key line (another `apiKeyHelper` is set, a credential variable is in the settings' `env` block, or the settings file cannot be parsed), the engine does not take the `--log-out-sessions` way by itself. It stays, logs `not moving to an API key, its key line cannot be added`, and the menu bar notifies once: `Not switching to #5 ci: qswap cannot add its key line to Claude Code's settings; see why with: qswap doctor`. In JSON the reason is `key-helper-unavailable`. A slot that cannot give a key (its saved credential is not one) is skipped for the next key, and reported once (`key-unusable`). When the settings file cannot be read while a key qswap made active is recorded, the engine stops switching and says so once (`settings-unreadable`; `auto --once` exits 3).
+
+Each check, except a dry run, first runs the same repair `qswap switch` runs: a run profile still sharing the settings gets its copy, a record whose line is gone is cleared, and so on ([api-accounts.md](api-accounts.md#what-qswap-doctor-checks)). A line that names another data directory (`--data-dir`) belongs to another qswap and is left alone. Each repair is written to qswap's log file ([troubleshooting.md](troubleshooting.md#where-the-log-file-is)); one made by a check that switches is also in that switch's `warnings`.
+
+When the engine stops on a key it entered (Ctrl-C, the menu bar's toggle off or quit), it moves nothing and says: `Sessions stay on #5 ci, which auto-switch entered; nothing watches its limit now. To go back: qswap switch 1`. A restarted engine carries on with the key. Until then `qswap status`, `qswap list`, the menu bar and `qswap doctor` say that nothing watches its limit.
+
+An API-key account made active the older way (`qswap switch 5 --log-out-sessions`) is not on the key line; there the engine counts its usage as unreadable with this setting on (`#5 ci is an API key · failover in 2 more checks`) and, after `autoswitch.unhealthyTicks` checks, moves to an account with room. Its budget and credit apply as above.
+
+A monthly budget (`qswap budget 5 500`), or a credit (`qswap credit 5 1187`, [api-accounts.md](api-accounts.md#record-a-prepaid-credit)), applies to a key you chose too; whichever is reached first applies. From 80% of the budget the log prints one budget warning a month (`budget-warning` in JSON), for example `#5 ci has spent $25.22 of its $30.00 monthly budget (84%) (estimate)`. Here `#5 ci` is active with $25.22 spent against a $20 budget:
+
+```text
+$ qswap auto --once
+14:20:00  #5 ci has spent $25.22 of its $20.00 monthly budget (126%) (estimate)
+14:20:00  Switched #5 ci → #2 work · monthly budget reached (estimate)
             #1 personal     5h 46% · 7d 38%
             #2 work         5h 12% · 7d 21%
             #3 night-shift  5h 93% · 7d 81% · over its switch line
             #4 side         disabled
 ```
 
-Without a budget, or before its spend is known, nothing changes. How spend is measured (`(estimate)` marks a figure worked out on this machine), and what a budget does not do, is in [api-accounts.md](api-accounts.md).
+How spend is measured (`(estimate)` marks a figure worked out on this machine), and what a budget does not do, is in [api-accounts.md](api-accounts.md).
 
 ## When something fails
 
@@ -140,9 +162,9 @@ $ qswap auto --once
 
 ## Reading the log
 
-Each check prints one line: the time, the active account, the window closest to its line against that line, and the decision. A switch gives its reason in words: `5h reached 91%` (a line), `limit reached`, `usage unreadable` (failover), `monthly budget reached`, `its weekly window resets sooner` (`consume-first`), or `higher priority` (`priority-consume-first`).
+Each check prints one line: the time, the active account, the window closest to its line against that line, and the decision. A switch gives its reason in words: `5h reached 91%` (a line), `limit reached`, `usage unreadable` (failover), `its weekly window resets sooner` (`consume-first`), `higher priority` (`priority-consume-first`), and for an API key `a subscription has room again`, `monthly budget reached`, `credit spent`, `credit expired` or `its spend could not be measured for 20 minutes`; `(estimate)` follows a figure worked out on this machine.
 
-The indented lines under a check give each other account's windows, or why it cannot be used: `over its switch line`, `limit reached`, `needs re-login`, `disabled`, `usage unavailable (HTTP 503), retrying`, `API key, not used`. They print on the first check, whenever a switch is being decided (the active account at or over its line, a switch, or no account able to take over), and on every check with `--verbose`.
+The indented lines under a check give each other account's windows, or why it cannot be used: `over its switch line`, `limit reached`, `needs re-login`, `disabled`, `usage unavailable (HTTP 503), retrying`, `API key, not used`, `API key, used as a last resort`. They print on the first check, whenever a switch is being decided (the active account at or over its line, a switch, or no account able to take over), and on every check with `--verbose`.
 
 Other events get a line of their own: errors (`Error: ... (will retry)`), long sleeps (`Sleeping 12m, until 14:32`), accounts set aside or back in rotation, usage resets spent, warnings and budget warnings. Lines fit 80 columns and carry no colour when the output is not a terminal.
 
@@ -211,7 +233,7 @@ Only a looping engine (`qswap auto`, `qswap codex auto` or the menu bar) counts 
 | `0` | `--once`: switched (with `--dry-run`: would switch). The loop: stopped by SIGTERM |
 | `1` | an error: the check failed (network trouble, no target's token could be refreshed), or qswap could not start (Codex with no accounts, run as root) |
 | `2` | `--once`: nothing to do: no switch needed, cooling down, a switch deferred, or no active account qswap manages |
-| `3` | `--once`: blocked: a switch is wanted but no account can take over |
+| `3` | `--once`: blocked: a switch is wanted but no account can take over, or the settings that hold the key line of a key qswap made active cannot be read |
 | `64` | a usage error: unknown flag, bad value |
 | `130` | interrupted with Ctrl-C |
 
@@ -238,7 +260,7 @@ Change one with `qswap config set autoswitch.cooldownSeconds 600`; remove it wit
 | `autoswitch.cooldownSeconds` | `300` | Least time between switches made at a line (0 to 86400). `--cooldown` |
 | `autoswitch.hysteresisPct` | `10` | Points of room a target must have over the active account for a switch at the line (0 to 50) |
 | `autoswitch.strategy` | `best` | `best`, `weekly-first`, `consume-first` or `priority-consume-first`. `--strategy` |
-| `autoswitch.includeApiKeyAccounts` | `false` | Allow API-key accounts as a last resort. `--include-api-key-accounts` |
+| `autoswitch.includeApiKeyAccounts` | `false` | Allow an API-key account with a budget or credit as a last resort, when every subscription is at its limit. `--include-api-key-accounts` |
 | `autoswitch.unhealthyTicks` | `3` | Checks in a row without a reading of the active account before failover (1 to 100) |
 | `autoswitch.model` | (none) | Per-model limits that also count, comma-separated, or `all`. `--model` |
 | `codex.threshold` | `99` | `qswap codex auto`'s switch line, in place of `autoswitch.threshold` (50 to 99.9) |
