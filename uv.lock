@@ -14,7 +14,7 @@ dependencies = [
 
 [package.optional-dependencies]
 menubar = [
-    { name = "rumps" },
+    { name = "rumps", marker = "sys_platform == 'darwin'" },
 ]
 
 [package.dev-dependencies]
@@ -29,7 +29,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "rumps", marker = "extra == 'menubar'", specifier = ">=0.4.0" },
+    { name = "rumps", marker = "sys_platform == 'darwin' and extra == 'menubar'", specifier = ">=0.4.0" },
     { name = "textual", specifier = ">=8.2.8,<9" },
     { name = "truststore", specifier = ">=0.10.4" },
     { name = "zstandard", marker = "python_full_version < '3.14'", specifier = ">=0.22" },

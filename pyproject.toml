@@ -58,7 +58,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-menubar = ["rumps>=0.4.0"]
+# rumps needs PyObjC, which builds only on macOS. The marker lets one install
+# line with the extra work on Linux and Windows too; there it adds nothing.
+menubar = ["rumps>=0.4.0; sys_platform == 'darwin'"]
 
 [project.urls]
 Homepage = "https://github.com/seangeng/ai-quota-swap"
