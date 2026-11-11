@@ -771,7 +771,9 @@ _LAUNCHD = _LaunchdGuard()
 
 
 def _names_launchctl(value: object) -> bool:
-    """Whether an argv, a shell command or an executable path starts launchctl."""
+    """Whether an argv, a shell command or an executable path starts launchctl.
+    In any case: a Mac volume is usually case-insensitive, so ``LAUNCHCTL`` and
+    ``/bin/Launchctl`` start the same binary."""
     if isinstance(value, (list, tuple)):
         return any(_names_launchctl(item) for item in value)
     try:
@@ -779,7 +781,7 @@ def _names_launchctl(value: object) -> bool:
     except TypeError:
         return False
     return any(
-        re.split(r"[\\/]", token)[-1] == "launchctl"
+        re.split(r"[\\/]", token)[-1].casefold() == "launchctl"
         for token in _LAUNCHCTL_TOKEN.split(text) if token
     )
 

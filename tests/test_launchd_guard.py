@@ -225,6 +225,14 @@ def test_doctor_reads_launchctl_print_as_not_loaded(spawned, launchctl_guard):
         ("os.spawn", (0, "/bin/launchctl", ["launchctl", "kickstart", "-k", "x"], {})),
         ("os.system", ("cd /tmp && /bin/launchctl bootout gui/501/x",)),
         ("pty.spawn", (["launchctl", "print", "x"],)),
+        # A Mac volume is usually case-insensitive: these start launchctl too.
+        ("subprocess.Popen", ("LAUNCHCTL", ["LAUNCHCTL", "bootout", "gui/501/x"], None, None)),
+        ("subprocess.Popen", ("/bin/Launchctl", ["/bin/Launchctl", "bootout", "gui/501/x"],
+                              None, None)),
+        ("subprocess.Popen", ("/bin/sh", ["/bin/sh", "-c", "LaunchCtl bootout gui/501/x"],
+                              None, None)),
+        ("os.posix_spawn", ("/BIN/LAUNCHCTL", ["LAUNCHCTL", "unload", "x.plist"], {})),
+        ("os.system", ("/usr/bin/env LAUNCHCTL remove x",)),
     ],
 )
 def test_the_audit_hook_refuses_to_start_launchctl_by_any_route(event, args, launchctl_guard):
