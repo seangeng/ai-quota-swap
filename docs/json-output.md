@@ -135,7 +135,7 @@ $ qswap doctor --json
 - Every payload and every event carries `schemaVersion`, now `1`. It changes only for a breaking change.
 - The contract is additive: payloads only gain fields, and new event kinds and `reason` values may appear. Ignore what you do not know.
 - stdout holds only JSON: one document, or with `auto` one object per line. Notices go to stderr, and the daily update check does not run. Parse the JSON rather than matching text; indentation differs between commands.
-- A command that fails prints an error envelope on stdout. `type` is the kind of error (`SwitchError`, `ConfigError`, `ValidationError`, `ConfirmationRequiredError` when a command needs `--yes` and has no terminal to ask on, `UsageError`, ...). Key scripts on `type` and the exit code; `message` is for people.
+- A command that fails prints an error envelope on stdout. `type` is the kind of error (`SwitchError`, `ConfigError`, `ValidationError`, `ConfirmationRequiredError` when a command needs `--yes` and has no terminal to ask on, `SessionsRunningError` when a switch to an API-key account would log running sessions out, `UsageError`, ...). An error may add facts of its own beside `type` and `message` (`sessions` for `SessionsRunningError`). Key scripts on `type` and the exit code; `message` is for people.
 - The strings in a switch result are for people too. `message` and a rotation's skip lines (`Skipped Account-2 (needs re-login)`) keep the `Account-N` spelling of earlier releases, while other warnings and error messages name accounts the way the text output does (`#3 night-shift: usage unavailable (HTTP 503); switching anyway`). Use `from`, `to` and `number` instead.
 
 A refused switch, to an account that needs re-login:
@@ -196,7 +196,7 @@ Codex rows differ: `organizationUuid` is the ChatGPT account or workspace id, `o
 
 ## Switch
 
-`switched`, `from` and `to` (`{number, email}`; equal when nothing switched), `strategy` (`direct` for `switch N`, `rotation`, `best`, `next-available`), `reason`, `message` and `warnings`. `reason` is `switched`, or for `switched: false`: `already-active`, `already-best`, `candidates-exhausted`, `no-valid-target`, `only-one-account`, `unmanaged-account` or `usage-unavailable`. A target that needs re-login is refused with a `SwitchError` envelope unless `--anyway`. A target whose usage is unreadable or old is switched to, with a line in `warnings`. A Codex switch may add `backgroundServer`: `{pid, restarted: true}`, or `{pid, restarted: false, reason}` when `codex.restartDaemon` is off or the restart failed.
+`switched`, `from` and `to` (`{number, email}`; equal when nothing switched), `strategy` (`direct` for `switch N`, `rotation`, `best`, `next-available`), `reason`, `message` and `warnings`. `reason` is `switched`, or for `switched: false`: `already-active`, `already-best`, `candidates-exhausted`, `no-valid-target`, `only-one-account`, `unmanaged-account` or `usage-unavailable`. A target that needs re-login is refused with a `SwitchError` envelope unless `--anyway`. An API-key target while Claude Code sessions are running on the shared login is refused with a `SessionsRunningError` envelope whose `error` adds `sessions` (how many) unless `--log-out-sessions`. A switch with an API-key account on either side adds `followup`: the lines the text output prints after `Switched`, about what the running sessions do now. A target whose usage is unreadable or old is switched to, with a line in `warnings`. A Codex switch may add `backgroundServer`: `{pid, restarted: true}`, or `{pid, restarted: false, reason}` when `codex.restartDaemon` is off or the restart failed.
 
 ## Reset
 
@@ -220,7 +220,7 @@ Each line has `schemaVersion`, `event` and `ts`. Account numbers inside `headroo
 | `config-warning` | `message` | a setting matches nothing, such as an `autoswitch.model` no account reports |
 | `error` | `message`, `transient` | a check failed |
 
-`no-switch` reasons: `below-threshold`, `cooldown`, `active-idle`, `active-usage-unknown`, `active-api-key`, `already-active`, `already-consuming-priority`, `already-consuming-soonest`, `no-active-account`, `no-candidates`, `no-comparison`, `no-qualifying-candidate`, `no-viable-target`, `reset-unknown`, `stale-usage`, `unmanaged-active-account`, and Codex's `switch-deferred` (Codex may be renewing the active login's token; the next check tries again). See [auto-switch.md](auto-switch.md).
+`no-switch` reasons: `below-threshold`, `cooldown`, `active-idle`, `active-usage-unknown`, `active-api-key`, `api-key-sessions` (an API-key account was the only way out, and Claude Code sessions are running on the shared login), `already-active`, `already-consuming-priority`, `already-consuming-soonest`, `no-active-account`, `no-candidates`, `no-comparison`, `no-qualifying-candidate`, `no-viable-target`, `reset-unknown`, `stale-usage`, `unmanaged-active-account`, and Codex's `switch-deferred` (Codex may be renewing the active login's token; the next check tries again). See [auto-switch.md](auto-switch.md).
 
 ## Usage
 

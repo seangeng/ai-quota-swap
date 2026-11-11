@@ -1527,7 +1527,7 @@ def _auto_command(argv: list[str]) -> None:
         # Codex manages ChatGPT logins only; accepted there, not advertised.
         help=argparse.SUPPRESS if codex else (
             "allow switching onto API-key accounts as a last resort (they bill "
-            "per token)"
+            "per token); never while Claude Code sessions are running"
         ),
     )
     parser.add_argument(

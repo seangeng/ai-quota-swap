@@ -11,7 +11,7 @@ Start with the [quick start](quickstart.md). Each page below opens with what it 
 | [resets.md](resets.md) | know what each kind of usage reset clears, when auto mode spends one, and how to spend or keep one yourself |
 | [codex.md](codex.md) | keep several Codex logins, add one without signing another out, and know what a switch does to running sessions |
 | [usage.md](usage.md) | see tokens and their estimated cost by day, account, model or project, and set your own prices |
-| [api-accounts.md](api-accounts.md) | add API keys as accounts, see what they spent, and hold them to a monthly budget |
+| [api-accounts.md](api-accounts.md) | add API keys as accounts, switch to one without logging running sessions out by surprise, see what they spent, and hold them to a monthly budget |
 | [sessions.md](sessions.md) | run two accounts at once in different terminals, and pick an account per directory |
 | [dashboard.md](dashboard.md) | use the terminal dashboard: every screen and key |
 | [menubar.md](menubar.md) | run the macOS menu bar app and its auto-switch |
