@@ -773,3 +773,141 @@ def block_from_entry(
 def provider_heading(provider: str, *, both: bool) -> str:
     """The heading over one provider's blocks in ``list``."""
     return f"{provider_name(provider)} accounts"
+
+
+# -- API-key accounts and running sessions (docs/design/api-key-sessions.md) -------
+#
+# A running Claude Code session never picks up an API key: it looks the saved
+# key up once, when it starts. Once the switch takes the login out of the
+# login item, every session that started on a subscription answers "Not
+# logged in" within about 30 seconds. These are the words for that, in every
+# surface.
+
+#: The flag that switches to an API-key account while sessions are running.
+LOG_OUT_SESSIONS_FLAG = "--log-out-sessions"
+
+
+def _sessions(n: int) -> str:
+    return f"{n} Claude Code session{'' if n == 1 else 's'}"
+
+
+def api_key_refusal(
+    target: str, number: str | int, sessions: int, *, from_key: str | None = None,
+    prefix: str = "Error: ",
+) -> str:
+    """Why a switch to the API-key account ``target`` was refused while
+    ``sessions`` Claude Code sessions run on the shared login, and the command
+    that goes ahead. ``from_key`` names the active account when it is an API
+    key too. Wrapped to 80 columns with ``prefix`` (how the command line
+    starts the first line) counted in; the text itself excludes it."""
+    are = "is" if sessions == 1 else "are"
+    head = (
+        f"not switched. {target} is an API-key account, and {_sessions(sessions)} "
+        f"{are} running on the shared login. "
+    )
+    if from_key:
+        body = (
+            "A running session cannot move to another key: the ones started "
+            f"while {from_key} was active keep using its key until you restart them."
+        )
+    else:
+        each = "it stops" if sessions == 1 else "each one stops"
+        body = (
+            "A running session cannot move to an API key: about 30 seconds after "
+            f'the switch {each} with "Not logged in" until you switch back or '
+            "restart it."
+        )
+    # Two columns of margin: the refusal is also shown in dialogs.
+    lines = wrap(prefix + head + body, WIDTH - 2)
+    lines[0] = lines[0][len(prefix):]
+    return "\n".join([
+        *lines,
+        "Sessions started after the switch use the key.",
+        "To switch anyway:",
+        f"  qswap switch {number} {LOG_OUT_SESSIONS_FLAG}",
+    ])
+
+
+def api_key_skip_reason(sessions: int) -> str:
+    """Why a rotation passed over an API-key account (``Skipped #5 ci: …``)."""
+    are = "is" if sessions == 1 else "are"
+    return f"an API-key account, and {_sessions(sessions)} {are} running"
+
+
+def api_key_engine_sentence(target: str, sessions: int) -> str:
+    """Why the auto-switch engine did not move onto the API-key account
+    ``target``."""
+    noun = "running session" if sessions == 1 else "running sessions"
+    return (
+        f"Not switching to {target}: it is an API-key account and {sessions} "
+        f"{noun} could not follow"
+    )
+
+
+def session_place(pid: int, cwd: str) -> str:
+    """One session in a list: ``pid 4242 · app`` (the directory's name)."""
+    name = cwd.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] if cwd else ""
+    return f"pid {pid} · {name}" if name else f"pid {pid}"
+
+
+def api_key_followup(
+    *,
+    target: str,
+    target_is_key: bool,
+    source: str | None,
+    source_is_key: bool,
+    running: int,
+    started_on_key: Sequence[tuple[int, str]] = (),
+) -> list[str]:
+    """What follows "Switched …" when either side is an API-key account; ``[]``
+    otherwise (the usual follow-up applies).
+
+    ``running`` is how many Claude Code sessions ran on the shared login at the
+    switch; ``started_on_key`` the ``(pid, cwd)`` of those started while the
+    API-key account being left was active."""
+    if target_is_key:
+        lines: list[str] = []
+        if source_is_key and source:
+            if started_on_key:
+                lines.extend(wrap(
+                    f"These sessions were started while {source} was active and "
+                    "keep using its key until you restart them:"
+                ))
+                lines.extend(f"  {session_place(pid, cwd)}" for pid, cwd in started_on_key)
+            lines.append("Claude Code sessions started from now on use the key.")
+            return lines
+        if running:
+            noun = "running session" if running == 1 else "running sessions"
+            lines.extend(wrap(
+                f'{running} {noun} will stop with "Not logged in" within about 30 seconds.'
+            ))
+            lines.extend(wrap(
+                "Restart a session to put it on the key. Sessions started from "
+                "now on use it."
+            ))
+            return lines
+        return ["Claude Code sessions started from now on use the key."]
+    if source_is_key and source and started_on_key:
+        return wrap(
+            f"Sessions started while {source} was active move to {target} "
+            "within about 30 seconds."
+        )
+    return []
+
+
+#: The variables that make Claude Code ignore the active account.
+OVERRIDE_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+def exported_overrides(environ) -> list[str]:
+    """Which of :data:`OVERRIDE_ENV_VARS` are set (names only, never values)."""
+    return [name for name in OVERRIDE_ENV_VARS if (environ.get(name) or "").strip()]
+
+
+def override_warning(names: Sequence[str]) -> str:
+    """The one line ``qswap switch`` prints when such a variable is set."""
+    if len(names) == 1:
+        subject = f"{names[0]} is set"
+    else:
+        subject = f"{', '.join(names[:-1])} and {names[-1]} are set"
+    return f"Warning: {subject}; claude started here ignores the switch."

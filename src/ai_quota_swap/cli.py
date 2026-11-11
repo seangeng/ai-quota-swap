@@ -2119,6 +2119,26 @@ def _check_switch_target(switcher, identifier: str, *, anyway: bool) -> list[str
     return list(notes) if isinstance(notes, list) else []
 
 
+def _is_api_key_target(switcher, identifier: str) -> bool:
+    """Whether ``identifier`` names an API-key account. One that does not
+    resolve counts as yes: ``switch_to`` then reports it in its own words."""
+    try:
+        number, _email, _org = switcher.resolve_account(identifier)
+    except (ProviderError, TypeError, ValueError):
+        return True
+    return switcher.account_kind_for(number) == "api_key"
+
+
+def _warn_env_overrides() -> None:
+    """One line when the shell exports a variable that makes Claude Code
+    ignore the active account (names only, never values)."""
+    from ai_quota_swap import display
+
+    names = display.exported_overrides(os.environ)
+    if names:
+        warning(display.override_warning(names))
+
+
 # -- list and status across both providers ----------------------------------------
 
 
@@ -2575,6 +2595,15 @@ def _dispatch(argv: list[str]) -> None:
         help="With 'switch ACCOUNT': switch even though it needs re-login",
     )
     parser.add_argument(
+        "--log-out-sessions",
+        action="store_true",
+        help=(
+            "With 'switch ACCOUNT' for an API-key account: switch even though "
+            "Claude Code sessions are running (each one stops with "
+            "\"Not logged in\")"
+        ),
+    )
+    parser.add_argument(
         "-y",
         "--yes",
         action="store_true",
@@ -2822,6 +2851,9 @@ def _dispatch(argv: list[str]) -> None:
     if args.anyway and not args.switch_to:
         parser.error("--anyway can only be used with 'switch ACCOUNT'")
 
+    if args.log_out_sessions and not args.switch_to:
+        parser.error("--log-out-sessions can only be used with 'switch ACCOUNT'")
+
     if args.force and not (args.import_ or args.switch_to):
         parser.error("--force can only be used with 'import' or 'switch ACCOUNT'")
 
@@ -2929,6 +2961,8 @@ def _dispatch(argv: list[str]) -> None:
             else:
                 models = parse_model_names(load_settings(switcher.backup_dir).model)
                 model_source = "autoswitch.model" if models else None
+            if not args.json:
+                _warn_env_overrides()
             payload = switcher.switch(
                 strategy=args.strategy,
                 json_output=args.json,
@@ -2943,12 +2977,20 @@ def _dispatch(argv: list[str]) -> None:
             # login: refused unless --force. One whose usage cannot be read,
             # or is old, switches with a one-line warning (ux.md). The engine
             # calls switch_to directly and runs its own checks.
+            if args.log_out_sessions and not _is_api_key_target(switcher, args.switch_to):
+                parser.error(
+                    "--log-out-sessions is only for switching to an API-key account"
+                )
             notes = _check_switch_target(switcher, args.switch_to, anyway=args.anyway)
             if not args.json:
                 for note in notes:
                     warning(f"Warning: {note}")
+                _warn_env_overrides()
+            # The flag travels only when given, so every switch_to keeps its
+            # plain call shape.
+            extra = {"log_out_sessions": True} if args.log_out_sessions else {}
             payload = switcher.switch_to(
-                args.switch_to, json_output=args.json, force=args.force
+                args.switch_to, json_output=args.json, force=args.force, **extra
             )
             if isinstance(payload, dict) and notes:
                 payload["warnings"] = [*notes, *payload.get("warnings", [])]

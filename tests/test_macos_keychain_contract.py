@@ -18,6 +18,7 @@ accidentally swap their default keychain by running pytest.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -1341,10 +1342,11 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
     ):
         """Review finding: an OAuth pin, then a switch to an API-key account.
 
-        The managed-key write removes ``.credentials.json`` itself and re-pins
-        over a possibly-surviving "Claude Code" Keychain item. That pin is
-        about ``primaryApiKey``; the missing OAuth file must not lift it, or
-        the stale managed key in the Keychain is read over the fresh one.
+        The managed-key write rewrites ``.credentials.json`` itself (without
+        its login) and re-pins over a possibly-surviving "Claude Code"
+        Keychain item. That pin is about ``primaryApiKey``; the OAuth file
+        going missing afterwards must not lift it, or the stale managed key in
+        the Keychain is read over the fresh one.
         """
         from ai_quota_swap import macos_keychain as _kc
         from ai_quota_swap.paths import get_credentials_path
@@ -1352,7 +1354,10 @@ class TestPinnedFileModeEndsWhenTheFileIsGone:
         store = macos_switcher._store
         self._pin_through_a_failed_write(store, monkeypatch, delete_ok=True)
         store._write_managed_credentials("sk-ant-api03-" + "f" * 40)
-        assert not get_credentials_path().exists(), "premise: we removed it"
+        assert "claudeAiOauth" not in json.loads(
+            get_credentials_path().read_text(encoding="utf-8")
+        ), "premise: we took the login out"
+        get_credentials_path().unlink()
         monkeypatch.setattr(
             _kc, "get_password", lambda *_a, **_kw: "sk-ant-api03-" + "s" * 40
         )

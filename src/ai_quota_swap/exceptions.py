@@ -95,6 +95,24 @@ class RetryableSwitchError(SwitchError):
     pass
 
 
+class SessionsRunningError(SwitchError):
+    """A switch to an API-key account refused because Claude Code sessions
+    are running on the shared login (docs/design/api-key-sessions.md).
+
+    Nothing was changed. ``sessions`` is how many were running; the JSON
+    error envelope carries it as ``error.sessions``.
+    """
+
+    def __init__(self, message: str, *, number: str, sessions: int):
+        super().__init__(message)
+        self.number = str(number)
+        self.sessions = sessions
+
+    @property
+    def envelope_fields(self) -> dict:
+        return {"sessions": self.sessions}
+
+
 class SessionError(ClaudeSwitchError):
     """Error setting up or launching a session-mode profile."""
 

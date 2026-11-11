@@ -195,19 +195,20 @@ class TestWriteCredentialsLinux:
         cred_file.parent.mkdir(parents=True, exist_ok=True)
         cred_file.write_text(OAUTH_JSON, encoding="utf-8")
 
-        # Activate the API key: primaryApiKey + approved set, OAuth file cleared.
+        # Activate the API key: primaryApiKey set, the login taken out of the
+        # OAuth file (which stays), and no approval entry: Claude Code reads
+        # that list only for ANTHROPIC_API_KEY.
         s._write_credentials(key)
         cfg = _read_global_config()
         assert cfg["primaryApiKey"] == key
-        assert key[-20:] in cfg["customApiKeyResponses"]["approved"]
-        assert not cred_file.exists()
+        assert "customApiKeyResponses" not in cfg
+        assert json.loads(cred_file.read_text(encoding="utf-8")) == {}
 
-        # Switch back to OAuth: file restored, primaryApiKey dropped, approved kept.
+        # Switch back to OAuth: file restored, primaryApiKey dropped.
         s._write_credentials(OAUTH_JSON)
         assert cred_file.read_text(encoding="utf-8") == OAUTH_JSON
         cfg = _read_global_config()
         assert "primaryApiKey" not in cfg
-        assert key[-20:] in cfg["customApiKeyResponses"]["approved"]
 
     def test_read_credentials_returns_active_key(self, temp_home: Path):
         s = _linux_switcher()
@@ -237,12 +238,13 @@ class TestWriteCredentialsMacOS:
 
         s._write_credentials(API_KEY)
 
-        # Key in the managed keychain service; OAuth keychain item cleared.
+        # Key in the managed keychain service; the login item stays, without
+        # its login.
         assert store.get_password(CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE, acct) == API_KEY
-        assert store.get_password(CLAUDE_CODE_KEYCHAIN_SERVICE, acct) is None
-        # approved recorded, but the full key stays OUT of plaintext config.
-        cfg = _read_global_config()
-        assert API_KEY[-20:] in cfg["customApiKeyResponses"]["approved"]
+        assert json.loads(store.get_password(CLAUDE_CODE_KEYCHAIN_SERVICE, acct)) == {}
+        # The full key stays out of plaintext config, and nothing is approved.
+        cfg = _read_global_config() if get_global_config_path().exists() else {}
+        assert "customApiKeyResponses" not in cfg
         assert "primaryApiKey" not in cfg
 
     def test_switch_back_to_oauth_clears_key(self, temp_home, block_real_keychain):
@@ -253,11 +255,9 @@ class TestWriteCredentialsMacOS:
         assert store.get_password(CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE, acct) == API_KEY
 
         s._write_credentials(OAUTH_JSON)
-        # managed keychain cleared, OAuth keychain populated, approved kept.
+        # managed keychain cleared, OAuth keychain populated.
         assert store.get_password(CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE, acct) is None
         assert store.get_password(CLAUDE_CODE_KEYCHAIN_SERVICE, acct) == OAUTH_JSON
-        cfg = _read_global_config()
-        assert API_KEY[-20:] in cfg["customApiKeyResponses"]["approved"]
 
     def test_read_credentials_from_managed_keychain(self, temp_home, block_real_keychain):
         store = block_real_keychain

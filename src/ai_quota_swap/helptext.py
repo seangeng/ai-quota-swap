@@ -116,10 +116,14 @@ def _status() -> ArgumentParser:
 
 def _switch() -> ArgumentParser:
     p = _parser(
-        "switch", "[ACCOUNT] [--anyway] [--force] [--strategy NAME] [--json]",
+        "switch",
+        "[ACCOUNT] [--anyway] [--force] [--log-out-sessions] [--json]\n"
+        "       qswap switch [--strategy NAME] [--model NAMES] [--json]",
         "Make an account the active Claude Code login. Without ACCOUNT, move to "
-        "the next one, skipping accounts that are disabled or need re-login.",
-        ["qswap switch 2", "qswap switch --strategy best", "qswap switch work --json"],
+        "the next one, skipping accounts that are disabled or need re-login, and "
+        "API-key accounts while Claude Code sessions are running.",
+        ["qswap switch 2", "qswap switch --strategy best", "qswap switch work --json",
+         "qswap switch 5 --log-out-sessions"],
     )
     p.add_argument("account", metavar="ACCOUNT", nargs="?",
                    help="number, email or alias; omit to rotate")
@@ -129,6 +133,10 @@ def _switch() -> ArgumentParser:
     p.add_argument("--force", action="store_true",
                    help="with ACCOUNT: write its saved login without saving the "
                         "current one first (for example after an import)")
+    p.add_argument("--log-out-sessions", action="store_true",
+                   help="with an API-key ACCOUNT: switch even though Claude Code "
+                        "sessions are running; each one stops with \"Not logged "
+                        "in\" until you switch back or restart it")
     p.add_argument("--strategy", metavar="NAME",
                    help="without ACCOUNT: 'best' picks the account with the most "
                         "quota left; 'next-available' skips accounts at their limit")

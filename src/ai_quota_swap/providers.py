@@ -148,9 +148,17 @@ class EngineHost(Protocol):
         ...
 
     def switch_to(
-        self, identifier: str, json_output: bool = False, force: bool = False
+        self,
+        identifier: str,
+        json_output: bool = False,
+        force: bool = False,
+        log_out_sessions: bool = False,
     ) -> dict | None:
-        """Make an account the live login; JSON mode returns ``{switched, from, to, warnings, reason}``."""
+        """Make an account the live login; JSON mode returns ``{switched, from, to, warnings, reason}``.
+
+        ``log_out_sessions`` goes ahead with a switch to an API-key account
+        while Claude Code sessions run on the shared login (refused
+        otherwise); a provider without API-key accounts ignores it."""
         ...
 
     def set_poll_policy_inputs(
@@ -180,9 +188,14 @@ class SurfaceHost(Protocol):
         ...
 
     def switch_to(
-        self, identifier: str, json_output: bool = False, force: bool = False
+        self,
+        identifier: str,
+        json_output: bool = False,
+        force: bool = False,
+        log_out_sessions: bool = False,
     ) -> dict | None:
-        """Make an account the live login."""
+        """Make an account the live login (``log_out_sessions``: see
+        :meth:`EngineHost.switch_to`)."""
         ...
 
     def switch(
