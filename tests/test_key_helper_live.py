@@ -584,8 +584,30 @@ class TestSettingsWrites:
         exe.write_text("#!/bin/sh\n", encoding="utf-8")
         monkeypatch.setattr(sys, "argv", [str(exe), "switch", "5"])
         line = claude_settings.helper_command(5)
-        assert line == f'"{exe}" key-helper 5'
+        quote = '"' if sys.platform == "win32" else "'"
+        assert line == f"{quote}{exe}{quote} key-helper 5"
         assert claude_settings.parse_line(line) == "5"
+
+    @POSIX_ONLY
+    @pytest.mark.parametrize("dirname", [
+        "a$HOME b", "back`tick`", "it's here", "it's $HOME `x` \\z", 'a\\b "c"$d',
+    ])
+    def test_the_shell_runs_the_path_as_written(self, monkeypatch, tmp_path, dirname):
+        """Claude Code runs the line through a shell: ``$``, backticks and
+        backslashes in the path must reach it as they are, and the line must
+        still read as qswap's, with the program found where it is."""
+        exe = tmp_path / dirname / "qswap"
+        exe.parent.mkdir()
+        exe.write_text('#!/bin/sh\necho "ran $*"\n', encoding="utf-8")
+        exe.chmod(0o755)
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [str(exe)])
+        line = claude_settings.helper_command(5)
+        done = subprocess.run(["/bin/sh", "-c", line], capture_output=True, text=True)
+        assert (done.returncode, done.stdout) == (0, "ran key-helper 5\n"), done.stderr
+        assert claude_settings.parse_line(line) == "5"
+        assert _REAL_COMMAND_MISSING(line) is False
+        exe.unlink()
+        assert _REAL_COMMAND_MISSING(line) is True
 
 
 # == C. who is active =====================================================================

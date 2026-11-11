@@ -136,8 +136,19 @@ _LINE_RE = re.compile(
 )
 
 
+def _unquote(token: str) -> str:
+    """A program path as the shell reads it: single quotes taken off as they
+    are, double quotes with their backslash escapes undone."""
+    token = token.strip()
+    if len(token) >= 2 and token[0] == token[-1] == "'":
+        return token[1:-1]
+    if len(token) >= 2 and token[0] == token[-1] == '"':
+        return re.sub(r'\\([\\"$`])', r"\1", token[1:-1])
+    return token
+
+
 def _base_name(token: str) -> str:
-    token = token.strip().strip("\"'")
+    token = _unquote(token)
     name = re.split(r"[\\/]", token)[-1].lower()
     for ext in (".exe", ".cmd", ".bat"):
         if name.endswith(ext):
@@ -169,18 +180,28 @@ def command_missing(command: str | None) -> bool:
     m = _LINE_RE.match(command)
     if not m:
         return False
-    exe = m.group("exe").strip().strip("\"'")
+    exe = _unquote(m.group("exe"))
     if not (os.path.isabs(exe) or re.match(r"^[A-Za-z]:[\\/]", exe)):
         return False
     return not os.path.exists(exe)
 
 
 def _quote(path: str) -> str:
-    if re.search(r"""[\s"'$`\\!*?&;|<>()]""", path) and not (
-        sys.platform == "win32" and "\\" in path and not re.search(r"\s", path)
-    ):
-        return '"' + path.replace('"', '\\"') + '"'
-    return path
+    """``path`` as one word for the shell Claude Code runs the helper in. On
+    Windows (cmd.exe) double quotes, which a Windows path cannot contain. On
+    POSIX single quotes, inside which ``sh`` expands nothing; a path with a
+    single quote in it gets double quotes with ``\\``, ``"``, ``$`` and the
+    backtick escaped."""
+    if sys.platform == "win32":
+        if re.search(r"""[\s"'$`!*?&;|<>()^%]""", path):
+            return '"' + path + '"'
+        return path
+    if not re.search(r"""[\s"'$`\\!*?&;|<>()\[\]{}#~=]""", path):
+        return path
+    if "'" not in path:
+        return "'" + path + "'"
+    return '"' + re.sub(r'([\\"$`])', r"\\\1", path) + '"'
+
 
 
 def qswap_executable() -> list[str]:
