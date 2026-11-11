@@ -1,10 +1,10 @@
 # ai-quota-swap
 
-If you have more than one Claude Code or Codex account, `qswap` keeps them all on one machine, shows how much of each one's 5-hour and weekly quota is left, and switches to another before the one you are on runs out.
+If you have more than one Claude Code or Codex account, `qswap` keeps them all on one machine, shows how much of each one's 5-hour and weekly quota is left in your macOS menu bar or a terminal, and switches to another before the one you are on runs out.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero-light.png">
-  <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero.png" alt="The qswap menu bar with its menu open, beside the terminal dashboard: Claude Code and Codex accounts with their 5-hour and weekly usage, held usage resets, an API key's spend against its budget, and today's estimated cost" width="900">
+  <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero.png" alt="The qswap menu bar with its menu open, beside the terminal dashboard: Claude Code and Codex accounts with their 5-hour and weekly usage, held usage resets, an API key's spend against its budget, today's estimated cost, and auto-switch running for both" width="900">
 </picture>
 
 Every screenshot and recording on this page shows made-up accounts and comes from the [demo harness](https://github.com/seangeng/ai-quota-swap/blob/main/scripts/demo/README.md).
@@ -15,7 +15,7 @@ Every screenshot and recording on this page shows made-up accounts and comes fro
 
 The menu bar shows the active account and how much of its 5-hour and weekly windows it has used, as `⇄ personal · 46% · 38%`. Its menu lists every Claude Code and Codex account with usage, held resets and today's cost. Click an account to switch to it, or turn on auto-switch and let it switch for you.
 
-<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/menubar.gif" alt="Recording: the menu bar's title shows the active account's weekly figure as it climbs; auto-switch moves to the next account and the title changes; then the menu opens and shows why" width="800">
+<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/menubar.gif" alt="Recording: the qswap menu bar with made-up accounts. The menu is open on #1 personal at 86% of its 5-hour window; it closes, the title climbs to 88% and changes to work when auto-switch moves to #2 work at 91%, and the menu opens again on Switch history: #1 personal → #2 work at 14:22" width="800">
 
 Every row of the menu, its settings and how to start it at login: [docs/menubar.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/menubar.md).
 
@@ -53,7 +53,7 @@ Reports and prices: [docs/usage.md](https://github.com/seangeng/ai-quota-swap/bl
 
 Bare `qswap` in a terminal opens a dashboard of every account, on macOS, Linux and Windows: `s` switches, `w` watches every account, `g` opens auto-switch and `u` shows tokens and cost. Each view is also a command (`qswap list`, `qswap status`, `qswap usage`), with `--json` for scripts.
 
-<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/dashboard.gif" alt="Recording: the dashboard's main view; w opens the watch page, g the auto view, u the usage screen, and esc goes back to the main view" width="800">
+<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/dashboard.gif" alt="Recording: the qswap dashboard with made-up Claude Code and Codex accounts; w opens the watch page, g the auto-switch view in dry run, u the usage report, and esc returns to the main view" width="800">
 
 Every screen and key: [docs/dashboard.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/dashboard.md).
 
@@ -76,8 +76,6 @@ pipx takes the same arguments (`pipx install git+https://github.com/seangeng/ai-
 
 ## Quick start
 
-<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/quickstart.gif" alt="Recording: a terminal in which qswap add saves the Claude Code login, qswap list shows every account and its usage, qswap switch 2 makes #2 the active account, and qswap status shows the active accounts" width="800">
-
 Log in to Claude Code with your first account, then save that login:
 
 ```text
@@ -86,18 +84,24 @@ Added #1 personal (maya@example.com)
 To add another account, log in to it in Claude Code (/login), then: qswap add
 ```
 
-In Claude Code, run `/login` with your next account, then `qswap add --alias work`. Go straight to `/login`: a `/logout` first may revoke the saved login of the account you leave.
+In Claude Code, run `/login` with your next account. Go straight to `/login`: a `/logout` first may revoke the saved login of the account you leave. Then save the second account, look at both, switch back to the first and check where you are:
 
-`qswap list` shows every account's usage. Switch by number, email or alias:
+<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/quickstart.gif" alt="Recording: a terminal typing qswap add --alias work, qswap list, qswap switch 1 and qswap status, each answered with its output" width="800">
 
 ```text
-$ qswap switch 2
-Switched #1 personal → #2 work (maya@northwind.example.com)
+$ qswap add --alias work
+Added #2 work (maya@northwind.example.com)
+$ qswap list
+...
+$ qswap switch 1
+Switched #2 work → #1 personal (maya@example.com)
 ...
 Claude Code picks up the new account within 30 seconds; restart it to apply now.
+$ qswap status
+...
 ```
 
-Running Claude Code sessions keep working and move to the new account: within about 30 seconds on macOS, from their next message on Linux and Windows. `qswap status` shows the active account of each provider and whether auto-switch is running.
+The account you just added is the one Claude Code is logged in to, so it is the active one, and `qswap switch 1` goes back to the first. Switch by number, email or alias. `qswap list` shows every account's usage; `qswap status` shows the active account of each provider and whether auto-switch is running. Running Claude Code sessions keep working and move to the new account: within about 30 seconds on macOS, from their next message on Linux and Windows.
 
 To let qswap switch for you, run `qswap auto`, or turn on the menu bar's auto-switch, which starts off: `qswap menubar --auto-switch`. When something looks wrong, run `qswap doctor`: it checks everything qswap needs and prints the fix for each problem. The [quick start guide](https://github.com/seangeng/ai-quota-swap/blob/main/docs/quickstart.md) has each step in more detail.
 

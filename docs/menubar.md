@@ -131,7 +131,7 @@ The notes `qswap list` prints about the line get one orange row under the accoun
 
 ### Use a reset
 
-<img src="../assets/screenshots/raw/menubar-resets.png" alt="The menu with its Use a reset submenu open: a row for each account and kind of usage reset it holds, and the automatic resets setting" width="720">
+<img src="../assets/screenshots/raw/menubar-resets.png" alt="The menu with its Use a reset submenu open to the left: Claude #1 personal's Fable reset and #3 night-shift's 5-hour reset greyed until a limit is reached, and Codex #2 work's reset credit, which clears all usage, under the pointer" width="720">
 
 One row per account and kind, grouped by provider when both have some:
 
@@ -162,7 +162,7 @@ Either of these turns on Claude Code's engine:
 
 *Settings → Auto-switch Codex* appears once Codex manages an account. Turning it on asks first, because a Codex switch restarts Codex's background server, which interrupts work in progress.
 
-<img src="../assets/demos/menubar.gif" alt="Recording: the menu bar's title shows the active account's weekly figure as it climbs; auto-switch moves to the next account and the title changes; then the menu opens and shows why" width="720">
+<img src="../assets/demos/menubar.gif" alt="Recording: the qswap menu bar with made-up accounts. The menu is open on #1 personal at 86% of its 5-hour window; it closes, the title climbs to 88% and changes to work when auto-switch moves to #2 work at 91%, and the menu opens again on Switch history: #1 personal → #2 work at 14:22" width="720">
 
 Each toggle runs the same engine as `qswap auto` or `qswap codex auto` ([auto-switch.md](auto-switch.md)), in a thread of its own. Both use the `autoswitch.*` settings, and Codex uses `codex.threshold` as its switch line. The menu bar's engines switch for real; there is no dry run here.
 
@@ -179,6 +179,8 @@ Turning *Auto-switch Claude Code* off, or quitting the menu bar, while sessions 
 ## Settings
 
 *Settings* in the menu holds, from the top: *Show account name in menu bar*, *Title follows* (with Codex managed), *Title percentage*, *Show model limits in title* and *Refresh interval*; then the auto-switch toggles, their thresholds and *Use resets automatically*; then *Start at login*.
+
+<img src="../assets/screenshots/raw/menubar-settings.png" alt="The menu with Settings and Use resets automatically open: Auto-switch Claude Code and Auto-switch Codex checked, the two threshold submenus, and As a last resort, when no account can take over, checked" width="720">
 
 The menu's own preferences live in `menubar_settings.json` in the data directory (`~/.ai-quota-swap` on macOS). Change them from the menu; the menu bar reads the file when it starts.
 

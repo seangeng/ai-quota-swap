@@ -2,9 +2,9 @@
 
 After this page you will have qswap installed, two accounts saved, their usage on screen, and a switch behind you. It takes about five minutes and two logins.
 
-The recording runs the commands of steps 2 to 5 against made-up accounts:
+The recording runs steps 3 to 5 against made-up accounts, with `#1 personal` saved in step 2:
 
-<img src="../assets/demos/quickstart.gif" alt="Recording: a terminal in which qswap add saves the Claude Code login, qswap list shows every account and its usage, qswap switch 2 makes #2 the active account, and qswap status shows the active accounts" width="800">
+<img src="../assets/demos/quickstart.gif" alt="Recording: a terminal typing qswap add --alias work, qswap list, qswap switch 1 and qswap status, each answered with its output" width="800">
 
 ## 1. Install
 
@@ -83,11 +83,11 @@ Each account shows its plan and its windows: `5h` (the 5-hour window), `7d` (the
 
 ## 5. Switch
 
-Name the account by number, email or alias:
+The account you added last is the one Claude Code is logged in to, so it is the active one. Switch back to the first, naming it by number, email or alias:
 
 ```text
-$ qswap switch work
-Switched #1 personal → #2 work (maya@northwind.example.com)
+$ qswap switch personal
+Switched #2 work → #1 personal (maya@example.com)
 ...
 Claude Code picks up the new account within 30 seconds; restart it to apply now.
 ```
