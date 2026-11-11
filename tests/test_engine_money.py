@@ -1508,3 +1508,110 @@ class TestStatusJsonCarriesTheCredit:
         assert active["credit"] == {
             "amount": 1187.0, "since": "2026-11-06T21:20:00Z", "expires": "2099-12-31",
         }
+
+
+# == Every brake, every way the figure can fail ============================================
+
+
+def _brake_reading(h, limit: str, *, spent: float, source: str = "ledger", age: float = 0.0):
+    """A reading for a $10 budget or a $10 credit with ``spent`` counted."""
+    if limit == "budget":
+        return _reading(h, used=spent, limit=10.0, source=source, age=age)
+    credit = {"amount": 10.0, "used": spent, "left": 10.0 - spent, "spent": spent >= 10.0,
+              "expired": False, "since": "2026-11-01T00:00:00Z", "expires": None,
+              "source": source}
+    return _reading(h, used=spent, limit=None, source=source, age=age, credit=credit)
+
+
+class TestEveryBrake:
+    def _fleet(self, temp_home, limit):
+        h = _fleet(temp_home, limit=None)
+        if limit == "budget":
+            api_spend.set_budget(h.switcher, "2", 10)
+        else:
+            api_spend.set_credit(h.switcher, "2", 10, now=h.clock.now)
+        return h
+
+    def _readings(self, h, limit, state):
+        """The readings of two ticks in a row for ``state``."""
+        if state == "missing":
+            return [None, None]
+        if state == "stale":
+            return [_brake_reading(h, limit, spent=2.0, age=25 * 60)] * 2
+        # degraded: Anthropic's figure over the limit, then the ledger's lower one
+        return [_brake_reading(h, limit, spent=12.0, source="admin-api"),
+                _brake_reading(h, limit, spent=3.0)]
+
+    @pytest.mark.parametrize("limit", ["budget", "credit"])
+    @pytest.mark.parametrize("state", ["missing", "stale", "degraded"])
+    def test_never_entered(self, temp_home, limit, state):
+        h = self._fleet(temp_home, limit)
+        for reading in self._readings(h, limit, state):
+            assert _tick(h, EXHAUSTED, {"2": reading}) is TickOutcome.BLOCKED
+            h.clock.advance(60)
+        assert h.switcher.current_account_number() == "1"
+        assert _settings_line(temp_home) is None
+
+    @pytest.mark.parametrize("limit", ["budget", "credit"])
+    @pytest.mark.parametrize("state", ["missing", "stale", "degraded"])
+    @pytest.mark.parametrize("by", ["engine", "user"])
+    def test_an_active_key_is_left_and_stays_left(self, temp_home, limit, state, by):
+        h = self._fleet(temp_home, limit)
+        if by == "engine":
+            assert _tick(h, EXHAUSTED, {"2": _brake_reading(h, limit, spent=1.0)}) is (
+                TickOutcome.SWITCHED
+            )
+        else:
+            h.switcher.switch_to("2", json_output=True)
+        first, second = self._readings(h, limit, state)
+        h.clock.advance(60)
+        assert _tick(h, EXHAUSTED, {"2": first}) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        h.clock.advance(3600)
+        assert _tick(h, EXHAUSTED, {"2": second}) is not TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+
+    @pytest.mark.parametrize("limit", ["budget", "credit"])
+    def test_an_unpriced_model_reaches_it(self, temp_home, monkeypatch, limit):
+        """$4 of a priced model and 1M input tokens of one with no price, on
+        a $10 limit: at the dearest rate ($16) the limit is passed. The
+        engine reads it through the real spend reading."""
+        import time
+
+        h = _fleet(temp_home, limit=None)
+        h.clock.now = time.time()
+        if limit == "budget":
+            api_spend.set_budget(h.switcher, "2", 10)
+        else:
+            api_spend.set_credit(h.switcher, "2", 10, now=h.clock.now - 3600)
+        _seed_ledger(h.switcher.backup_dir, "key2@token.local|", [
+            (h.clock.now - 60, "claude-opus-5-5", 1_000_000),
+            (h.clock.now - 60, "claude-fable-5-3", 1_000_000),
+        ])
+        from ai_quota_swap.ledger.store import DB_FILENAME, LAST_SCAN_META, LedgerStore
+
+        store = LedgerStore(h.switcher.backup_dir / DB_FILENAME)
+        store.set_meta(LAST_SCAN_META, str(h.clock.now))
+        store.close()
+        real = h.switcher.usage_entries_by_account
+
+        def collect(fetch=None, scheduled=False):
+            entries = real(fetch=set())
+            entries.update({"1": _entry_for(_usage(100), h.clock.now),
+                            "3": _entry_for(_usage(40), h.clock.now)})
+            return entries
+
+        monkeypatch.setattr(h.switcher, "usage_entries_by_account", collect)
+        reading = collect()["2"].api_spend
+        expected = "budget" if limit == "budget" else "credit-spent"
+        assert api_spend.limit_reason(reading) == expected
+        assert reading["unpriced_tokens"] == 1_000_000
+        h.switcher.switch_to("2", json_output=True)
+        assert h.engine.tick() is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "3"
+        monkeypatch.setattr(h.switcher, "usage_entries_by_account", lambda fetch=None,
+                            scheduled=False: {**collect(), "3": _entry_for(_usage(100),
+                                                                            h.clock.now)})
+        h.clock.advance(3600)
+        h.engine.tick()
+        assert h.switcher.current_account_number() != "2"
