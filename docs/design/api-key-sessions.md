@@ -329,7 +329,7 @@ What the code does where this part leaves room, or where it had to differ:
   disabled: that subscription is the target instead, over its own switch line and in any
   strategy, and the switch line says so (`taken over its switch line (5h 95%) before an API
   key`). While another subscription's usage is unreadable, key entry waits at most one
-  cooldown from the first check that wanted the key (`keyWantedAt`;
+  cooldown from the first check that wanted the key (`keyWanted`;
   `usage-unreadable-hold`, said once). A key judged at its budget or credit stays at it in the engine's
   state file, one latch per kind (`limitLatch[N]` holds `budget` and `credit` apart): the
   budget latch until the month rolls over or `qswap budget` sets it again, the credit latch

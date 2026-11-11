@@ -963,7 +963,7 @@ class TestAnUnreadableSubscriptionHoldsTheKey:
         h.engine = h._make_engine(dry_run=True)
         readings = {"1": _u(100), "2": "api key", "3": None}
         assert _tick(h, readings) is TickOutcome.BLOCKED
-        assert "keyWantedAt" not in _state(h)
+        assert "keyWanted" not in _state(h)
         h.clock.advance(300)
         assert _tick(h, readings) is TickOutcome.SWITCHED  # "Would switch"
         assert _switches(h)[-1].dry_run
@@ -1315,3 +1315,28 @@ class TestTheDryRun:
         assert _tick(h, EXHAUSTED) is TickOutcome.SWITCHED
         assert _switches(h)[-1].dry_run
         assert h.switcher._read_account_credentials("2", "key2@token.local") == blob
+
+
+class TestTheUnreadableHoldOverALongWait:
+    def test_a_long_run_of_checks_that_want_a_key_is_one_episode(self, temp_home):
+        """Held 30 minutes for another reason (no spend figure), then #3
+        turns unreadable: the hold is long over, so the key goes ahead at
+        once rather than waiting again."""
+        h = _fleet(temp_home, cooldown_seconds=300)
+        stale = _reading(h, age=3600)
+        for _ in range(30):
+            _tick(h, {"1": _u(100), "2": "api key", "3": _u(100)}, {"2": stale})
+            h.clock.advance(60)
+        assert h.switcher.current_account_number() == "1"
+        assert _tick(h, {"1": _u(100), "2": "api key", "3": None}) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+        assert not [e for e in _holds(h) if e.reason == "usage-unreadable-hold"]
+
+    def test_after_a_long_gap_it_is_a_new_episode(self, temp_home):
+        h = _fleet(temp_home, cooldown_seconds=300)
+        readings = {"1": _u(100), "2": "api key", "3": None}
+        _tick(h, readings)
+        h.clock.advance(2 * 3600)  # the engine was not running
+        h.engine = h._make_engine()
+        assert _tick(h, readings) is TickOutcome.BLOCKED
+        assert [e.reason for e in _holds(h)][-1] == "usage-unreadable-hold"

@@ -907,8 +907,8 @@ def key_watch_words(
     now = time.time() if now is None else now
     mode = getattr(watch, "mode", None)
     last = getattr(watch, "last_checked_at", None)
-    if watch and mode == "loop":
-        return None
+    if watch and mode in ("loop", None):
+        return None  # a loop watches (a bare True says no more than that)
     if watch and mode == "once":
         return (
             f"auto-switch entered {key} and last checked it "
@@ -1768,10 +1768,11 @@ class AutoSwitchEngine:
         # (decision EM3): their spend counts as unknown.
         self._ledger_unsure: set[str] = set()
         # Whether this tick wanted an API key (no subscription could take the
-        # sessions), and since when checks have (``keyWantedAt`` in the state
+        # sessions), and since when checks have (``keyWanted`` in the state
         # file; a dry run keeps it here only): the unreadable hold of EM9.
         self._wanted_key = False
-        self._dry_key_wanted_at: float | None = None
+        self._dry_key_wanted: dict | None = None
+        self._key_wait_recorded = False
 
     # -- state file ---------------------------------------------------------
 
@@ -2352,6 +2353,7 @@ class AutoSwitchEngine:
         settings = self.settings
         priority_mode = settings.strategy == "priority-consume-first"
         state = self._read_state()
+        self._key_wait_recorded = "keyWanted" in state
         if not self.dry_run:
             # Dry-run must not write anything, so recovered quarantines are
             # only released (state mutation) on real ticks.
@@ -2836,6 +2838,7 @@ class AutoSwitchEngine:
             # saved key and would stop with "Not logged in"
             # (docs/design/api-key-sessions.md).
             self._wanted_key = True
+            wanted_since = self._key_wanted_since(state, self.clock())
             helper = self._key_helper_ready()
             if self._reset_claimed or self._reset_in_flight(state, entries):
                 # Free before paid: a reset claimed this tick, or one whose
@@ -2845,7 +2848,7 @@ class AutoSwitchEngine:
                     detail="a usage reset was claimed; its refill comes before an API key",
                 ))
                 held_for_sessions = True
-            elif self._unreadable_hold(state, oauth_candidates, usage, headroom, settings):
+            elif self._unreadable_hold(oauth_candidates, usage, headroom, settings, wanted_since):
                 held_for_sessions = True
             elif helper is False:
                 self._emit(NoSwitchEvent(
@@ -4566,19 +4569,19 @@ class AutoSwitchEngine:
         return sorted(room, key=lambda n: -room[n])
 
     def _unreadable_hold(
-        self, state: dict, candidates: Sequence[str], usage: Mapping[str, object],
+        self, candidates: Sequence[str], usage: Mapping[str, object],
         headroom: Mapping[str, float | None], settings: AutoSwitchSettings,
+        since: float,
     ) -> bool:
         """Whether key entry waits for a subscription whose usage cannot be
         read this check (``usage-unreadable-hold``, said once per episode by
-        the notifier). At most one cooldown from the first check that wanted
-        the key; afterwards the key goes ahead."""
+        the notifier). At most one cooldown from ``since``, the first check
+        that wanted the key; afterwards the key goes ahead."""
         unreadable = [
             n for n in candidates
             if headroom.get(n) is None and usage.get(n) in _UNREADABLE_NOW
         ]
         now = self.clock()
-        since = self._key_wanted_since(state, now)
         left = settings.cooldown_seconds - (now - since)
         if not unreadable or left <= 0:
             return False
@@ -4594,43 +4597,45 @@ class AutoSwitchEngine:
         return True
 
     def _key_wanted_since(self, state: dict, now: float) -> float:
-        """When the checks that want a key began: ``keyWantedAt`` in the
-        state file (a dry run: in memory), set now when none is recorded, or
-        when the last one is older than :data:`ONCE_WATCH_S` (a gap that
-        long is another episode)."""
+        """When the checks that want a key began: ``keyWanted`` in the state
+        file (``{"since", "at"}``: the first and the last such check; a dry
+        run keeps it in memory), carried on while the last one is no older
+        than :data:`ONCE_WATCH_S` (a gap that long is another episode)."""
+        stored = self._dry_key_wanted if self.dry_run else state.get("keyWanted")
+        since = _number(stored.get("since")) if isinstance(stored, dict) else None
+        last = _number(stored.get("at")) if isinstance(stored, dict) else None
+        if since is None or last is None or not (0 <= now - last <= ONCE_WATCH_S):
+            since = now
+        record = {"since": since, "at": now}
         if self.dry_run:
-            stored = self._dry_key_wanted_at
-        else:
-            stored = _number(state.get("keyWantedAt"))
-        if stored is not None and 0 <= now - stored <= ONCE_WATCH_S + self.settings.cooldown_seconds:
-            return stored
-        if self.dry_run:
-            self._dry_key_wanted_at = now
-            return now
-        state["keyWantedAt"] = now
+            self._dry_key_wanted = record
+            return since
+        state["keyWanted"] = record
+        self._key_wait_recorded = True
 
         def store(s: dict) -> None:
-            s["keyWantedAt"] = now
+            s["keyWanted"] = record
 
         try:
             self._mutate_state(store)
         except Exception as e:
-            _logger.debug("Could not record when an API key was first wanted: %r", e)
-        return now
+            _logger.debug("Could not record that an API key is wanted: %r", e)
+        return since
 
     def _end_key_wait(self) -> None:
         """A check that did not want a key ends the episode."""
-        self._dry_key_wanted_at = None
-        if self.dry_run or "keyWantedAt" not in self._read_state():
+        self._dry_key_wanted = None
+        if self.dry_run or not self._key_wait_recorded:
             return
+        self._key_wait_recorded = False
 
         def drop(s: dict) -> None:
-            s.pop("keyWantedAt", None)
+            s.pop("keyWanted", None)
 
         try:
             self._mutate_state(drop)
         except Exception as e:
-            _logger.debug("Could not clear when an API key was first wanted: %r", e)
+            _logger.debug("Could not clear that an API key was wanted: %r", e)
 
     def _enterable_keys(
         self, state: dict, entries: Mapping[str, object], candidates: Sequence[str],
