@@ -92,7 +92,7 @@ Each fact names where it comes from: the end-to-end run on 2.1.322 above, the 2.
 - User settings (`~/.claude/settings.json`) and project settings are watched, and a file
   replaced by a rename (how qswap writes) counts as a change. A running process acts on the
   change about one second after the write (end-to-end run). The `--settings` flag is read
-  once at start and never again.
+  once at start and never again (an earlier run on 2.1.322, on a project settings file).
 - The helper's output is cached for 5 minutes; `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` changes
   that (Anthropic's settings reference, and the 2.1.322 binary). The cache is cleared at every
   settings change and at every 401 (2.1.322 binary). So the helper runs when a session moves
