@@ -1895,6 +1895,11 @@ class TestApiKeyAccounts:
         data = harness.switcher._get_sequence_data()
         data["accounts"][str(num)]["kind"] = "api_key"
         harness.switcher._write_json(harness.switcher.sequence_file, data)
+        # An API-key account holds a key: the helper line is only written
+        # for a slot whose saved credential is one.
+        harness.switcher._write_account_credentials(
+            str(num), data["accounts"][str(num)]["email"], "sk-ant-api03-" + "kk" * 20
+        )
 
     def test_api_key_candidate_excluded_by_default(self, temp_home):
         h = EngineHarness(temp_home)

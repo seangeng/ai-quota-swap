@@ -297,10 +297,17 @@ class KeyActivationMixin:
     def _require_saved_key(self, number: str, email: str) -> None:
         self._heal_api_key_backup(number, email)
         stored, unreadable = self._read_account_credentials_ex(number, email)
+        from ai_quota_swap.key_helper import is_key
+
+        if is_key(stored):
+            return  # what key-helper will print
         if stored:
-            # What key-helper will print (it says so itself when the saved
-            # credential is not a key; nothing here can fix that).
-            return
+            # The line would run a helper that prints no key, and every
+            # Claude Code process reading the settings would lose its auth.
+            raise SwitchError(
+                f"{self.label(number, long=False)}'s saved credential is not an API "
+                f"key. Save the key again with: qswap add-token KEY --slot {number}"
+            )
         if unreadable:
             raise SwitchError(
                 f"{self.label(number, long=False)}'s saved key is in the macOS Keychain "

@@ -764,6 +764,7 @@ class TestEngine:
         data["accounts"]["2"]["kind"] = "api_key"
         data["accounts"]["2"]["alias"] = "ci"
         h.switcher._write_json(h.switcher.sequence_file, data)
+        h.switcher._write_account_credentials("2", "key@token.local", "sk-ant-api03-" + "kk" * 20)
         return h
 
     EXHAUSTED = {"1": _usage(100), "2": "api key", "3": _usage(100)}
@@ -1895,6 +1896,7 @@ class TestHoldKeepsTheAllExhaustedHandling:
         data = h.switcher._get_sequence_data()
         data["accounts"]["2"]["kind"] = "api_key"
         h.switcher._write_json(h.switcher.sequence_file, data)
+        h.switcher._write_account_credentials("2", "key@token.local", "sk-ant-api03-" + "kk" * 20)
         reset = _iso_at(h.clock.now + R1_OFFSET_S)
         return h, {"1": _usage(100, reset), "2": "api key", "3": _usage(100, reset)}
 

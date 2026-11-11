@@ -163,6 +163,12 @@ Claude Code
   fail  ~/.claude/settings.json makes #9 the active API key, but #9 does not
         exist; every Claude Code session fails to get a key
         fix: qswap switch 1
+```
+
+Run profiles keep their settings copy while any line of qswap's is in, so they are reported once the line is gone (a crash between removing the line and restoring the profiles):
+
+```text
+Claude Code
   fail  2 qswap run profiles keep a copy of Claude Code's settings from while a
         key was active, so changes to the settings do not reach them
         fix: qswap switch 1
@@ -179,7 +185,7 @@ qswap key-helper 5 > /dev/null
 ```
 
 - `#5 does not exist` or `is a subscription account`: the line names the wrong account. `qswap switch N` to the account you want removes or replaces it.
-- `has no saved key`: save it again with `qswap add-token KEY --slot 5`.
+- `has no saved key` or `saved credential is not an API key`: save it again with `qswap add-token KEY --slot 5`. A switch refuses such an account, so this only happens when the saved key is changed or lost after the switch.
 - `the Keychain could not be read`: unlock the login keychain (a remote shell may not have it unlocked).
 - The command itself is not found: qswap was reinstalled somewhere else. `qswap switch 5` points the line at this qswap; `qswap doctor` reports it too.
 

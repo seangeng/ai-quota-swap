@@ -851,6 +851,38 @@ class TestSwitching:
         ]
         _fits(out)
 
+    def test_a_slot_without_a_key_is_refused_and_no_line_is_written(self, temp_home, run):
+        """The line would run a helper that prints nothing, and every Claude
+        Code process reading the settings would lose its auth."""
+        s = _fleet()
+        s._write_account_credentials("5", EMAIL_5, json.dumps({"mcpOAuth": MCP}), retain=False)
+        s._write_account_credentials("5", EMAIL_5, json.dumps({"mcpOAuth": MCP}))
+        with pytest.raises(SwitchError, match="not an API key.*qswap add-token KEY --slot 5"):
+            s.switch_to("5", json_output=True)
+        assert not _settings(temp_home).exists()
+        assert s.current_account_number() == "1"
+        code, _out, err = run(s, "switch", "5")
+        assert code == 1
+        assert "#5 ci's saved credential is not an API key" in " ".join(err.split())
+        _fits(err)
+        assert not _settings(temp_home).exists()
+
+    def test_a_previous_copy_with_the_key_still_heals_and_switches(self, temp_home):
+        s = _fleet()
+        s._write_account_credentials("5", EMAIL_5, json.dumps({"mcpOAuth": MCP}))  # key -> .prev
+        assert s.switch_to("5", json_output=True)["switched"] is True
+        assert _settings_obj(temp_home)["apiKeyHelper"].endswith("key-helper 5")
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_5
+
+    def test_the_engine_writes_no_line_for_a_slot_without_a_key(self, temp_home):
+        h = _harness(temp_home)
+        h.switcher._write_account_credentials(
+            "2", "key@token.local", json.dumps({"mcpOAuth": MCP}), retain=False
+        )
+        assert h.tick_with_usage(EXHAUSTED) is not TickOutcome.SWITCHED
+        assert not _settings(temp_home).exists()
+        assert h.switcher.current_account_number() == "1"
+
     def test_key_to_key_replaces_the_line(self, temp_home, block_real_keychain, run):
         s = _fleet()
         _activate(s)
@@ -1404,6 +1436,7 @@ def _harness(temp_home, **settings) -> EngineHarness:
     data["accounts"]["2"]["kind"] = "api_key"
     data["accounts"]["2"]["alias"] = "ci"
     h.switcher._write_json(h.switcher.sequence_file, data)
+    h.switcher._write_account_credentials("2", "key@token.local", "sk-ant-api03-" + "kk" * 20)
     return h
 
 

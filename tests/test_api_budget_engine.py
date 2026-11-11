@@ -44,6 +44,11 @@ def _mark_api_key(h: EngineHarness, *nums: int) -> None:
     for num in nums:
         data["accounts"][str(num)]["kind"] = "api_key"
     h.switcher._write_json(h.switcher.sequence_file, data)
+    for num in nums:
+        # An API-key account holds a key: the helper line is only written
+        # for a slot whose saved credential is one.
+        email = data["accounts"][str(num)]["email"]
+        h.switcher._write_account_credentials(str(num), email, "sk-ant-api03-" + "kk" * 20)
 
 
 def _entries(h: EngineHarness, spec: dict) -> dict:
