@@ -32,7 +32,7 @@ Strategies, switch lines, cron and running it as a service: [docs/auto-switch.md
 
 ### Usage resets
 
-Some plans bank usage resets (Claude Code's `/limit-reset`), and each kind clears different windows: a Fable reset clears Fable's weekly window only, a weekly reset the all-models weekly window. `qswap reset` lists what every account holds and spends one. While auto-switch runs, it spends the narrowest reset that helps once no other account can take over, at most 3 a day for each provider.
+Some plans come with banked usage resets (Claude Code's `/limit-reset`), and each kind clears different windows: a Fable reset clears Fable's weekly window only, a weekly reset the all-models weekly window. `qswap reset` lists what every account holds and spends one. While auto-switch runs, it spends the narrowest reset that helps once no other account can take over, at most 3 a day for each provider.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/reset-light.png">
@@ -43,7 +43,7 @@ The kinds, when auto mode spends each, and the guards: [docs/resets.md](https://
 
 ### What it costs
 
-`qswap usage` prices the tokens in this machine's Claude Code and Codex session files at API list prices, by day, account, model or project; for a subscription that is value used, not a bill. A Console API key can be an account too, with a monthly budget (`qswap budget 5 40`) or a prepaid credit, and with `autoswitch.includeApiKeyAccounts` on, auto-switch moves to it only when no subscription can take over.
+`qswap usage` prices the tokens in this machine's Claude Code and Codex session files at API list prices, by day, account, model or project; a subscription pays a flat price, so for one the figure is the API value of what you used. A Console API key can be an account too, held to a monthly budget (`qswap budget 5 40`) or a prepaid credit. With `autoswitch.includeApiKeyAccounts` on, auto-switch moves to such a key only when no subscription can take over.
 
 <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/menubar-key.png" alt="The menu bar's menu with an API-key account active: what it spent today and this month against its budget, and the subscription logged in underneath it" width="800">
 
