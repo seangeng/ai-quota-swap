@@ -498,11 +498,15 @@ class TestGuard:
         self, temp_home, block_real_keychain, alive, run
     ):
         s = _fleet()
-        profile = s._session_dir("1", MAYA)
-        _write_sessions(profile.parent / profile.name, [4101])
-        (profile / ".claude").mkdir(parents=True, exist_ok=True)
-        _write_sessions(profile, [4102])
-        alive.update({4101, 4102})
+        # A qswap run profile is its own CLAUDE_CONFIG_DIR, with its own
+        # sessions directory.
+        records = s._session_dir("1", MAYA) / "sessions"
+        records.mkdir(parents=True, exist_ok=True)
+        (records / "4101.json").write_text(json.dumps({
+            "pid": 4101, "sessionId": "s", "cwd": "/w", "startedAt": 1,
+            "kind": "interactive", "entrypoint": "cli",
+        }), encoding="utf-8")
+        alive.add(4101)
         code, _out, err = run(s, "switch", "5")
         assert code == 0, err
 
@@ -635,12 +639,12 @@ class TestLeavingAKey:
         assert code == 0, err
         assert out.splitlines() == [
             "Switched #5 ci → #6 ops (API key)",
-            "These sessions were started while #5 ci was active and keep using its key",
-            "until you restart them:",
+            "These sessions were started while #5 ci was active and keep using its key until",
+            "you restart them:",
             "  pid 4102 · app4102",
             "  pid 4103 · app4103",
             "Claude Code sessions started from now on use the key.",
-        ] or sorted(out.splitlines()[3:5]) == ["  pid 4102 · app4102", "  pid 4103 · app4103"]
+        ]
 
     def test_key_to_key_refusal_does_not_claim_a_logout(
         self, temp_home, block_real_keychain, alive

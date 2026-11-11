@@ -8872,9 +8872,10 @@ class ClaudeAccountSwitcher:
             if not (target_is_key or source_is_key):
                 return None
             sessions = self.shared_login_sessions()
-            started = (
+            started = sorted(
                 self._started_since(sessions, self._key_active_since(source))
-                if source_is_key and source != str(target_account) else []
+                if source_is_key and source != str(target_account) else [],
+                key=lambda s: (s.started_at or 0, s.pid),
             )
         except Exception as e:  # wording only; never fail a switch on it
             self._logger.debug(f"API-key switch context failed: {e!r}")
