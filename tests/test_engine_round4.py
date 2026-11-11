@@ -141,3 +141,78 @@ class TestNoOtherKeyAfterABrake:
         assert [e.reason for e in h.events[before:] if isinstance(e, NoSwitchEvent)
                 and e.reason == "key-left"]
         assert _state(h) == state
+
+
+# == EM11: a running engine follows autoswitch.includeApiKeyAccounts =========================
+
+
+EXHAUSTED = {"1": _usage(100), "2": "api key", "3": _usage(100)}
+
+
+def _engine_from_the_file(h, *, flag: bool | None = None):
+    """An engine built as `qswap auto` builds it: the settings file, then
+    the command line's flags (``--include-api-key-accounts`` when ``flag``)."""
+    from argparse import Namespace
+
+    from ai_quota_swap.settings import load_engine_settings, merged_with_cli, set_setting
+
+    root = h.switcher.backup_dir
+    set_setting(root, "autoswitch.includeApiKeyAccounts", "true")
+    settings = load_engine_settings(root)
+    if flag is not None:
+        settings = merged_with_cli(settings, Namespace(include_api_key_accounts=flag))
+    h.settings = settings
+    h.engine = h._make_engine()
+
+
+class TestKeysTurnedOffWhileTheEngineRuns:
+    """EM11 worked only for an engine built after the setting changed: a
+    running `qswap auto` loop and the menu bar's engine read it once."""
+
+    def test_the_running_engine_leaves_its_key(self, temp_home):
+        from ai_quota_swap.settings import set_setting
+
+        h = _fleet(temp_home)
+        _engine_from_the_file(h)
+        assert _tick(h, EXHAUSTED) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+        set_setting(h.switcher.backup_dir, "autoswitch.includeApiKeyAccounts", "false")
+        h.clock.advance(60)
+        assert _tick(h, EXHAUSTED) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        assert _switches(h)[-1].limit_reason == "keys-off"
+        for _ in range(5):
+            h.clock.advance(60)
+            _tick(h, EXHAUSTED)
+        assert h.switcher.current_account_number() == "1"
+        # Turned on again, the same engine uses keys again.
+        set_setting(h.switcher.backup_dir, "autoswitch.includeApiKeyAccounts", "true")
+        h.clock.advance(60)
+        assert _tick(h, EXHAUSTED) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+
+    def test_an_engine_started_with_the_flag_keeps_it(self, temp_home):
+        from ai_quota_swap.settings import set_setting
+
+        h = _fleet(temp_home)
+        _engine_from_the_file(h, flag=True)
+        set_setting(h.switcher.backup_dir, "autoswitch.includeApiKeyAccounts", "false")
+        assert _tick(h, EXHAUSTED) is TickOutcome.SWITCHED
+        h.clock.advance(60)
+        _tick(h, EXHAUSTED)
+        assert h.switcher.current_account_number() == "2"
+
+    def test_the_menu_bars_engine_follows_it_too(self, temp_home):
+        from ai_quota_swap.settings import load_engine_settings, set_setting
+
+        h = _fleet(temp_home)
+        root = h.switcher.backup_dir
+        set_setting(root, "autoswitch.includeApiKeyAccounts", "false")
+        h.settings = load_engine_settings(root, "claude")
+        h.engine = h._make_engine()
+        _tick(h, EXHAUSTED)
+        assert h.switcher.current_account_number() == "1"
+        set_setting(root, "autoswitch.includeApiKeyAccounts", "true")
+        h.clock.advance(60)
+        assert _tick(h, EXHAUSTED) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"

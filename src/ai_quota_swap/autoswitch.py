@@ -1781,6 +1781,9 @@ class AutoSwitchEngine:
         self._key_wait_recorded = False
         # The state file as this tick read it (the rows quote ``keyLeft``).
         self._tick_state: dict = {}
+        # The settings file's stamp and what it said, for the settings a
+        # running engine follows (``_follow_settings_file``).
+        self._settings_stamp: tuple | None = None
 
     # -- state file ---------------------------------------------------------
 
@@ -2348,6 +2351,32 @@ class AutoSwitchEngine:
             return
         self._mutate_state(store)
 
+    def _follow_settings_file(self) -> AutoSwitchSettings:
+        """``self.settings`` with ``autoswitch.includeApiKeyAccounts`` read
+        again from the settings file it was loaded from, reloaded only when
+        the file changes (as ``resets.*`` is): turned off, a running engine
+        leaves the key it entered on its next check, turned on it may use
+        one (decision EM11). A value set by a command-line flag stays."""
+        current = self.settings
+        root = current.settings_root
+        if not root or "include_api_key_accounts" in current.pinned:
+            return current
+        from ai_quota_swap.settings import load_settings, settings_path
+
+        try:
+            st = settings_path(Path(root)).stat()
+            stamp: tuple | None = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            stamp = None
+        if self._settings_stamp is not None and self._settings_stamp[0] == stamp:
+            value = self._settings_stamp[1]
+        else:
+            value = load_settings(Path(root)).include_api_key_accounts
+            self._settings_stamp = (stamp, value)
+        if value != current.include_api_key_accounts:
+            self.settings = replace(current, include_api_key_accounts=value)
+        return self.settings
+
     def _tick_inner(self) -> TickOutcome:
         self._sleep_until_ts = None
         self._blocked_wait_long = False
@@ -2358,7 +2387,7 @@ class AutoSwitchEngine:
         self._context = EventContext(
             provider=self._provider_id(), names=self._alias_names()
         )
-        settings = self.settings
+        settings = self._follow_settings_file()
         priority_mode = settings.strategy == "priority-consume-first"
         state = self._read_state()
         self._tick_state = state

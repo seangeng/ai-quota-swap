@@ -367,7 +367,9 @@ What the code does where this part leaves room, or where it had to differ:
   use (its slot does not hold a key) is skipped and reported once, and leaving a key, a
   subscription whose switch fails and is rolled back is skipped for the next account
   (`switch-failed`), the account underneath last. A key the engine entered is left at once
-  when `autoswitch.includeApiKeyAccounts` is turned off (as when its budget is removed);
+  when `autoswitch.includeApiKeyAccounts` is turned off (as when its budget is removed; a
+  running engine reads that setting again at each check, cached by the file's stamp, unless
+  a command-line flag set it);
   a key the user entered is not touched. With no login under the key at its limit, the engine stays and
   notifies once. When it stops while sessions are on a key it entered, it says that nothing
   watches the key's limit and how to go back, and moves nothing; `enteredBy` stays

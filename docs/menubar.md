@@ -132,7 +132,7 @@ A file from an earlier build loads as it did, and a key this build does not know
 | `resets.auto` | `last-resort` | *Use resets automatically*: `off`, `active`, `last-resort` or `on-limit` |
 | `resets.weeklyForModelLimit` | `false` | *Use a weekly reset for a single model's limit* |
 
-`qswap config set autoswitch.threshold 95` changes it too, but a running engine picks the change up only when it restarts. Use the menu's threshold submenu, or turn the toggle off and on. A `resets.*` change made with `qswap config set` applies at the engines' next check and shows in the menu at its next refresh.
+`qswap config set autoswitch.threshold 95` changes it too, but a running engine picks the change up only when it restarts. Use the menu's threshold submenu, or turn the toggle off and on. A `resets.*` or `autoswitch.includeApiKeyAccounts` change made with `qswap config set` applies at the engines' next check and shows in the menu at its next refresh.
 
 ## Notifications
 
