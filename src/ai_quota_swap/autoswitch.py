@@ -491,10 +491,6 @@ class NoSwitchEvent(AutoSwitchEvent):
     way_off: str | None = _human_only()
     # A dry run's hold, whose figure may be older than a real run's (EM6).
     dry_run: bool = _human_only(False)
-    # reset-ahead: the kind of the active account's own reset ("weekly
-    # reset") and the resets.threshold it is spent at.
-    reset_noun: str | None = _human_only()
-    reset_line: float | None = _human_only()
     # spend-unknown because the ledger scan could not cover the period: that
     # scan's ``spendScan`` record (decision EM3).
     scan_failure: dict | None = _human_only()
@@ -2007,66 +2003,6 @@ class AutoSwitchEngine:
         usage = {num: entry.decision_value() for num, entry in entries.items()}
         return entries, usage, _headroom_by_account(usage, self._models)
 
-    def _own_reset_ahead(
-        self,
-        state: dict,
-        current: str,
-        entries: Mapping[str, object],
-        usage: Mapping[str, object],
-        thresholds: "ThresholdMap",
-        quarantined: set[str],
-        binding: BindingWindow | None,
-    ) -> tuple[str, float] | None:
-        """``(noun, line)`` when ``resets.auto`` is ``active`` and the active
-        account, over its switch line on ``binding``, holds a reset of its
-        own that auto mode spends once that window reaches
-        ``resets.threshold``, leaving every window under its line: the
-        engine stays rather than switch away ("rather than switching away",
-        docs/resets.md). None otherwise. Asks the planner with the window's
-        own figure as the line, so every other guard (the time left, the
-        kind, the daily cap, a claim settling) still applies. Never raises."""
-        from ai_quota_swap import resets
-
-        try:
-            if binding is None:
-                return None
-            rs = self.switcher.reset_settings()
-            if not rs.enabled or rs.auto != "active" or binding.pct >= rs.threshold:
-                return None
-            now = self.clock()
-            if reset_claims_today(state, now) >= MAX_AUTO_RESETS_PER_DAY:
-                return None
-            rotation = [
-                n for n in self.switcher.switchable_account_numbers()
-                if n not in quarantined and self.switcher.account_kind_for(n) != "api_key"
-            ]
-            if current not in rotation:
-                return None
-            claims = state.get("resetClaims")
-            claims = claims if isinstance(claims, dict) else {}
-            entry = entries.get(current)
-            settling = [] if reset_claim_settled(
-                claims.get(current), getattr(entry, "fetched_at", None), now
-            ) else [current]
-            views = resets.views_from(
-                usage, claimable=rotation, thresholds=thresholds,
-                weekly_threshold=self.settings.weekly_threshold,
-                accounts=rotation, settling=settling,
-            )
-            plan = resets.plan_reset(
-                views, current=current, settings=replace(rs, threshold=binding.pct),
-                watched=self._models, now=now,
-            )
-            if plan is None or plan.account != current or plan.window != binding.label:
-                return None
-            for label, pct in plan.projected.items():
-                if pct >= window_line(label, thresholds[current], self.settings.weekly_threshold):
-                    return None
-            return plan.noun, float(rs.threshold)
-        except Exception as e:  # the line stands; never cost the tick
-            _logger.debug("could not tell whether the active account's reset comes first: %r", e)
-            return None
-
     def _reset_planning_account(self, current: str, rotation: Sequence[str]) -> str:
         """The account the reset planner treats as active: the subscription
         underneath a key the engine entered, else ``current``. On a key the
@@ -2731,30 +2667,6 @@ class AutoSwitchEngine:
             else:
                 # Exhaustion is physical: at-limit reads the raw headroom.
                 trigger = "at-limit" if active_headroom <= 0 else "proactive"
-                ahead = (
-                    self._own_reset_ahead(
-                        state, current, entries, usage, thresholds, quarantined,
-                        active_binding,
-                    )
-                    if trigger == "proactive" else None
-                )
-                if ahead is not None:
-                    # resets.auto active: the account's own reset is spent at
-                    # resets.threshold, rather than switching away at its
-                    # line (docs/resets.md).
-                    self._emit(NoSwitchEvent(
-                        reason="reset-ahead",
-                        detail=(
-                            f"account {current}'s own {ahead[0]} is spent when "
-                            f"{active_binding.label} reaches {pct_label(ahead[1])}% "
-                            "(resets.auto active)"
-                        ),
-                        binding=active_binding,
-                        account=str(current),
-                        reset_noun=ahead[0],
-                        reset_line=ahead[1],
-                    ))
-                    return TickOutcome.NO_ACTION
         else:
             if usage.get(current) == USAGE_TOKEN_EXPIRED:
                 # Expired and the refresh could not complete this pass (lock

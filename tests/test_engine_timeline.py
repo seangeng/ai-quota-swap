@@ -531,11 +531,12 @@ def _t1_world(temp_home, monkeypatch):
     return _owner(temp_home, monkeypatch, subs, r5=1.6, r7=0.05)
 
 
-def _t1_rest_of_the_day(run: Run, start: int, ticks: int) -> None:
+def _t1_rest_of_the_day(run: Run, start: int, ticks: int,
+                        moves=(("1", "2"), ("2", "3"), ("3", "4"), ("4", "1"))) -> None:
     """After the reset: #1 fills again and the engine moves through #2, #3
     and #4 as each reaches its line, never to a key."""
     world = run.world
-    expected = iter([("1", "2"), ("2", "3"), ("3", "4"), ("4", "1")])
+    expected = iter(moves)
     want = next(expected)
     for _ in range(start, ticks):
         before = run.h.switcher.current_account_number()
@@ -562,31 +563,42 @@ def _t1_rest_of_the_day(run: Run, start: int, ticks: int) -> None:
 
 
 class TestT1TheNormalDay:
-    def test_the_reset_is_spent_at_100_not_a_switch_then_the_rotation(
+    def test_it_moves_at_the_line_and_spends_the_reset_with_nowhere_to_move(
         self, temp_home, monkeypatch
     ):
         """#1's 7d window climbs a twentieth of a point a minute from 97,
-        with three days left in it. The documented pairing (resets.md:
-        `active` "spends the active account's own reset as soon as a window
-        it is for reaches resets.threshold, rather than switching away"; pair
-        it with resets.threshold 100 "to spend only at the limit") says the
-        reset is spent at 100 and #1 stays."""
+        with three days left in it. resets.threshold (100) is above the switch
+        line (98), so the order is the one resets.md and auto-switch.md state:
+        auto-switch moves to a subscription with room at the line, and keeps
+        the reset; auto mode spends it when #1 is the active account at 100
+        with nowhere to move."""
         h, world = _t1_world(temp_home, monkeypatch)
+        seen: dict[int, tuple[str | None, float, list[str]]] = {}
+
+        def before_the_check(w, t, active):
+            seen[t] = (active, round(w.subs["1"].d7, 3), w.takers())
+
+        world.hooks.append(before_the_check)
         with Run(h, world) as run:
-            for _ in range(80):
+            for _ in range(19):
                 tick = run.step()
-                sub = world.subs["1"]
-                assert tick.active == "1", (
-                    f"t{tick.t}: #1 at 7d {sub.d7:.2f} (before its reset was spent) "
-                    f"left for {tick.active}: {run.trace()}"
-                )
-                if world.claims:
-                    break
-            assert world.claims and world.claims[0][1:] == ("1", "g-maya"), world.claims
-            claimed_at = tick.t
+                assert tick.active == "1" and not tick.switches, run.trace()
+                assert world.subs["1"].d7 < LINE
+            tick = run.step()
+            assert seen[tick.t] == ("1", LINE, ["2", "3", "4"]), seen[tick.t]
+            assert [(m.frm, m.to, m.trigger, m.text) for m in run.moves] == [(
+                "1", "2", "proactive", "Switched #1 maya@example.com → #2 work · 7d reached 98%",
+            )]
+            while not world.claims:
+                assert tick.t < 400, f"no reset by t{tick.t}\n{run.trace()}"
+                tick = run.step()
+            assert world.claims == [(tick.now, "1", "g-maya")]
+            assert seen[tick.t] == ("1", 100.0, []), seen[tick.t]
             assert world.subs["1"].d7 == 0.0 and not tick.switches
-            _t1_rest_of_the_day(run, claimed_at + 1, 300)
-        assert len(run.ticks) == 300
+            assert tick.t > 200 and not run.entries_now(), run.trace()
+            _t1_rest_of_the_day(run, tick.t + 1, tick.t + 190, moves=(
+                ("1", "2"), ("2", "3"), ("3", "4"),
+            ))
 
     def test_a_heavy_turn_to_100_spends_the_reset_then_the_rotation(
         self, temp_home, monkeypatch

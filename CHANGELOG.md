@@ -60,7 +60,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 
 - `qswap reset` lists every account's usage resets and spends one. `qswap list` and the dashboard say what an account holds ("Holds 1 Fable reset"), and the menu bar shows a notification.
 - A dry run that would spend a reset says so and stops there, rather than also reporting a switch.
-- The auto-switch engine spends resets under `resets.auto` (`last-resort` by default, or `active`, `on-limit`, `off`), only on a fresh reading, at most 3 a day for each provider, with a request id that makes a retry safe. With `active`, the active account's own reset for the window over its switch line comes before the switch: the engine stays until `resets.threshold` and spends it (`reset-ahead`).
+- The auto-switch engine spends resets under `resets.auto` (`last-resort` by default, or `active`, `on-limit`, `off`), only on a fresh reading, at most 3 a day for each provider, with a request id that makes a retry safe.
 - Resets have kinds (Fable or another model, 5-hour, weekly, full), read from the windows they clear. The planner spends the narrowest one that helps, and spends a weekly or full reset on a per-model limit only when `resets.weeklyForModelLimit` allows it. JSON output gains `scope`.
 
 ### API accounts

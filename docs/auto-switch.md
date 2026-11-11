@@ -79,7 +79,7 @@ Four rules keep the engine from bouncing between accounts.
 
 When every account is at its limit, the log says `All accounts are at their limit; the first resets 15:32 · in 1h 12m`, and the engine sleeps until that reset, checking at least every 10 minutes because quota can come back early.
 
-If an account holds a usage reset, the engine may spend it instead of switching, under the `resets.*` settings ([resets.md](resets.md)). With `resets.auto active`, the active account's own reset for the window over the line comes first: the engine stays past the line until that window reaches `resets.threshold` and spends the reset there (`its own weekly reset comes first, at 7d 100%`).
+If an account holds a usage reset, the engine may spend it instead of switching, under the `resets.*` settings ([resets.md](resets.md)). It spends before it decides whether to switch, so the order depends on `resets.threshold`. With `resets.auto active` and `resets.threshold` above the switch line (100 against 98, say), auto-switch moves at the line to another account with room, and the reset stays banked. It is spent when the active account reaches `resets.threshold` anyway: when there is nowhere to move, or when its usage passes the line between two checks. To spend the reset before moving, set `resets.threshold` at or below the switch line; with a switch line of 98: `qswap config set resets.threshold 98`.
 
 ## Holding accounts out
 
