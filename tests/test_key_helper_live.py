@@ -1204,6 +1204,46 @@ class TestAccountChangesWhileOnAKey:
         with pytest.raises(ValidationError, match="the active API key"):
             s.add_account(slot=5)
 
+    @pytest.mark.parametrize("op", ["swap", "move", "add"])
+    def test_a_settings_file_that_cannot_be_parsed_still_guards_the_key(self, temp_home, op):
+        """A trailing comma left in by hand: the line is still there, and
+        key_helper.json still says which account it names."""
+        s = _fleet()
+        _activate(s)
+        _settings(temp_home).write_text(
+            f'{{"apiKeyHelper": "{QSWAP} key-helper 5",}}\n', encoding="utf-8"
+        )
+        before = s.sequence_file.read_bytes()
+        with pytest.raises(ValidationError, match="the active API key"):
+            if op == "swap":
+                s.swap_accounts("5", "6")
+            elif op == "move":
+                s.move_account("5", "9")
+            else:
+                s.add_account(slot=5)
+        assert s.sequence_file.read_bytes() == before
+
+    def test_a_setup_token_over_the_active_key_is_refused(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        with pytest.raises(ValidationError, match="the active API key"):
+            s.add_account_from_token(
+                SETUP_TOKEN.replace("p1", "z9"), email="new@example.com", slot=5,
+                assume_yes=True,
+            )
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_5
+        assert s.account_kind_for("5") == "api_key"
+        assert s.helper_account() == "5"
+
+    def test_purge_warns_about_a_line_it_cannot_check(self, temp_home, capsys):
+        s = _fleet()
+        _activate(s)
+        _settings(temp_home).write_text("{broken", encoding="utf-8")
+        assert s.purge(assume_yes=True) is True
+        captured = capsys.readouterr()
+        text = " ".join((captured.out + captured.err).split())
+        assert "cannot be parsed, so qswap could not check it for its apiKeyHelper line" in text
+
     def test_a_new_key_for_the_active_account_is_saved(self, temp_home, capsys):
         s = _fleet()
         _activate(s)

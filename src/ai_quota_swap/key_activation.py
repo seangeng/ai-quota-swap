@@ -107,6 +107,22 @@ class KeyActivationMixin:
             self._logger.debug(f"Could not read the key helper state: {e!r}")
             return None
 
+    def key_line_number(self) -> str | None:
+        """The account qswap's key line names, for the commands that must not
+        renumber or overwrite it: read from the settings, or from
+        key_helper.json when the settings cannot be parsed (the line may
+        still be there). None when there is no line of qswap's."""
+        try:
+            state = self.key_helper_state()
+        except Exception:
+            return None
+        if state.ours:
+            return state.number
+        if state.kind == claude_settings.INVALID:
+            number = self._key_state().get("number")
+            return str(number) if number is not None else None
+        return None
+
     def helper_problem(self) -> dict | None:
         """A helper line naming an account that cannot give a key, or None."""
         try:

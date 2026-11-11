@@ -1288,13 +1288,13 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         """Refuse to renumber the account qswap's key helper line names: the
         line runs ``key-helper N`` by number, so the sessions on the key
         would get another account's key, or none. Leave the key first."""
-        state = self.key_helper_state()
-        if not state.ours or state.number not in (str(first), str(second)):
+        number = self.key_line_number()
+        if number is None or number not in (str(first), str(second)):
             return
         under = self.login_account_number()
         way = f"qswap switch {under}" if under else "qswap switch N"
         raise ValidationError(
-            f"{command} would renumber {self.label(state.number, long=False)}, the "
+            f"{command} would renumber {self.label(number, long=False)}, the "
             "active API key, which the Claude Code settings name by number. Leave "
             f"the key first: {way}"
         )
@@ -4481,8 +4481,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 raise ConfigError("Slot number must be >= 1")
             account_num = str(slot)
             data = self._get_sequence_data()
-            line = self.key_helper_state()
-            if line.ours and line.number == account_num:
+            if self.key_line_number() == account_num:
                 # Claude Code's settings name this slot as the active key: a
                 # login saved over it would leave sessions with no key.
                 under = self.login_account_number()
@@ -4768,6 +4767,16 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 raise ConfigError("Slot number must be >= 1")
             account_num = str(slot)
             data = self._get_sequence_data()
+            if not is_api_key and self.key_line_number() == account_num:
+                # Claude Code's settings name this slot as the active key: a
+                # login saved over it would leave every session with no key.
+                # Another key may replace it.
+                under = self.login_account_number()
+                raise ValidationError(
+                    f"Slot {account_num} holds {self.label(account_num, long=False)}, "
+                    "the active API key. Leave the key first, then add the token: "
+                    f"qswap switch {under or 'N'}"
+                )
 
             if self._account_exists(email, ""):
                 old_num = self._find_account_slot(data, email, "")
@@ -4937,13 +4946,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         self._ensure_no_live_session(account_num, email, "qswap remove")
 
         name = self.label(account_num, email)
-        helper_line = self.key_helper_state()
-        key_line = (helper_line.ours and helper_line.number == account_num) or (
-            # A file that cannot be parsed may still hold the line qswap wrote
-            # for this account: removing it then is refused (by _leave_key).
-            helper_line.kind == claude_settings.INVALID
-            and str(self._key_state().get("number")) == account_num
-        )
+        # A file that cannot be parsed may still hold the line qswap wrote
+        # for this account: removing it then is refused (by _leave_key).
+        key_line = self.key_line_number() == account_num
         if key_line:
             under = self.login_account_number()
             warning(f"Warning: {name} is the active API key")
@@ -9725,9 +9730,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         # qswap's key helper line first: with qswap's data gone it would run a
         # command that has no key to print, and every session would fail.
         try:
-            if self.key_helper_state().ours:
+            state = self.key_helper_state()
+            if state.ours:
                 self._leave_key()
                 removed_items.append("The apiKeyHelper line in Claude Code's settings")
+            elif self.key_line_number() is not None:
+                # The file cannot be parsed, and qswap's line may be in it.
+                warning(
+                    f"{claude_settings.shown_path(state.path)} cannot be parsed, so qswap "
+                    "could not check it for its apiKeyHelper line. If it is there, "
+                    "delete that line by hand."
+                )
         except Exception as e:
             warning(
                 f"Could not remove qswap's apiKeyHelper line from Claude Code's settings "
