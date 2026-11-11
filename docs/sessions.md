@@ -55,7 +55,7 @@ $ qswap run 5
 Launching #5 ci (API key) [this session only]
 ```
 
-That is `claude --settings '{"apiKeyHelper": ".../qswap key-helper 5"}'`. Only this process uses the key, for as long as it lives; Claude Code reads `--settings` once, at start, so the session stays on the key whatever you switch elsewhere, and every other session keeps the active account. Arguments after `--` go to `claude` as for any `run` (`qswap run 5 -- --resume`), except `--settings`, which qswap passes itself and refuses a second time. `ANTHROPIC_API_KEY` and the other variables that would override the key are left out of its environment, with a warning. The banner goes to standard error.
+That is `claude --settings '{"apiKeyHelper": ".../qswap key-helper 5"}'`, and qswap writes no settings file for it. Only this process uses the key, for as long as it lives; Claude Code reads `--settings` once, at start, so the session stays on the key whatever you switch elsewhere, and every other session keeps the active account. Arguments after `--` go to `claude` as for any `run` (`qswap run 5 -- --resume`), except `--settings`, which qswap passes itself and refuses a second time. `ANTHROPIC_API_KEY` and the other variables that would override the key are left out of its environment, with a warning. The banner goes to standard error.
 
 To move every session onto the key instead, switch to it: `qswap switch 5` ([api-accounts.md](api-accounts.md#switch-to-an-api-key)).
 
@@ -168,7 +168,7 @@ Change it with `qswap config set run.shareHistory false`. Every setting is in [s
 ## Limits and caveats
 
 - `qswap run` is experimental.
-- Claude Code only. API-key accounts are refused, and Codex has no `qswap codex run` yet.
+- Claude Code only; Codex has no `qswap codex run` yet. An API-key account runs on your usual profile with the key in `--settings`, not in a profile of its own ([Run on an API key](#run-on-an-api-key)); that has been tested on Claude Code 2.1.322 in print mode.
 - `run` has to be the first word: `qswap run 2 --debug` works, `qswap --debug run 2` does not.
 - Commands that change accounts (`switch`, `add`, `add-token`, `remove`, `alias`, `swap`, `move`, `purge`) refuse in a shell inside a session, where `CLAUDE_CONFIG_DIR` points at a profile. That includes commands Claude Code runs for you in the session. Run them from a normal terminal.
 - The `claude auth status` check is local. A login that was revoked but has not expired passes it and fails on first use.
