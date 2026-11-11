@@ -56,6 +56,7 @@ from ai_quota_swap.menubar import (
     change_resets_setting,
     relogin_confirmation,
     remove_dialog,
+    toggle_menu_setting,
     use_reset,
     wanted_engines,
 )
@@ -789,17 +790,18 @@ def run_app(switcher, rumps, AppKit) -> int:
             self.settings.save(settings_path)
             self.rebuild_menu()
 
-        def _do_toggle_name(self, _a: Action):
-            self.settings.show_account_name = not self.settings.show_account_name
-            self._save_and_rebuild()
+        def _toggle_setting(self, a: Action):
+            toggle_menu_setting(a, self.settings, save=lambda s: s.save(settings_path))
+            self.rebuild_menu()
 
-        def _do_toggle_scoped(self, _a: Action):
-            self.settings.title_scoped = not self.settings.title_scoped
-            self._save_and_rebuild()
+        def _do_toggle_name(self, a: Action):
+            self._toggle_setting(a)
 
-        def _do_toggle_chart(self, _a: Action):
-            self.settings.usage_chart = not self.settings.usage_chart
-            self._save_and_rebuild()
+        def _do_toggle_scoped(self, a: Action):
+            self._toggle_setting(a)
+
+        def _do_toggle_chart(self, a: Action):
+            self._toggle_setting(a)
 
         def _do_title_pct(self, a: Action):
             self.settings.title_pct = str(a.value)

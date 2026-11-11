@@ -627,18 +627,40 @@ def test_the_app_draws_the_chart_or_falls_back_to_the_text_row(monkeypatch):
     assert menubar_app._chart_item(_FakeRumps, row, log) is None
 
 
-def test_the_app_has_a_handler_that_saves_the_setting():
+def test_show_usage_chart_flips_the_setting_saves_it_and_the_menu_follows(tmp_path):
+    # The click goes where the menu's other on/off settings go:
+    # menubar.toggle_menu_setting with the row's own action, which the
+    # app's handler calls with the file it saves to.
     import inspect
 
     from ai_quota_swap import menubar_app
 
-    source = inspect.getsource(menubar_app)
-    assert (
-        "def _do_toggle_chart(self, _a: Action):\n"
-        "            self.settings.usage_chart = not self.settings.usage_chart\n"
-        "            self._save_and_rebuild()"
-    ) in source
+    path = tmp_path / "menubar_settings.json"
+    settings = MenuBarSettings()
+    cost = _cost({A1: (5,) * 7})
+    saved = []
 
+    def save(s):
+        s.save(path)
+        saved.append(s.usage_chart)
+
+    for expect in (False, True):
+        click = menubar.build_menu(_cost_inp(cost, settings=settings)).find("Show usage chart").action
+        menubar.toggle_menu_setting(click, settings, save=save)
+        assert settings.usage_chart is expect and saved[-1] is expect
+        assert MenuBarSettings.load(path).usage_chart is expect
+        menu = menubar.build_menu(_cost_inp(cost, settings=settings))
+        assert menu.find("Show usage chart").checked is expect
+        assert (menu.section("cost").rows[0].chart is not None) is expect
+    # The other two on/off settings flip their own setting only.
+    menubar.toggle_menu_setting(menubar.Action("toggle-scoped"), settings, save=save)
+    assert settings.title_scoped and settings.usage_chart and settings.show_account_name
+    assert set(menubar.SETTING_TOGGLES) <= menubar.ACTION_KINDS
+    source = inspect.getsource(menubar_app.run_app)
+    assert "def _do_toggle_chart(self, a: Action):\n            self._toggle_setting(a)" in source
+    body = source[source.index("def _toggle_setting"):source.index("def _do_toggle_name")]
+    assert "toggle_menu_setting(a, self.settings, save=lambda s: s.save(settings_path))" in body
+    assert "self.rebuild_menu()" in body
 
 
 # --- the off-screen renderer's scenario path ----------------------------------------------------

@@ -1429,6 +1429,24 @@ def resets_auto_confirmation(current: str, chosen: str, *, codex: bool = False) 
     )
 
 
+#: The menu's own on/off settings (``menubar_settings.json``): the action
+#: that flips each, and the setting it flips.
+SETTING_TOGGLES = {
+    "toggle-name": "show_account_name",
+    "toggle-scoped": "title_scoped",
+    "toggle-chart": "usage_chart",
+}
+
+
+def toggle_menu_setting(action: Action, settings: MenuBarSettings, *, save) -> None:
+    """A click on *Show account name in menu bar*, *Show model limits in
+    title* or *Show usage chart*: flip that setting in ``settings`` and
+    ``save(settings)``. The app then draws the menu again."""
+    name = SETTING_TOGGLES[action.kind]
+    setattr(settings, name, not getattr(settings, name))
+    save(settings)
+
+
 def change_resets_setting(action: Action, resets: ResetSettings, *, codex: bool, confirm, write) -> bool:
     """A *Use resets automatically* click. ``resets`` is the section as it is
     on disk at the click (not the menu's last read, so a value set to off in
