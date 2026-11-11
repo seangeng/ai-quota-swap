@@ -45,7 +45,7 @@ The kinds, when auto mode spends each, and the guards: [docs/resets.md](https://
 
 `qswap usage` prices the tokens in this machine's Claude Code and Codex session files at API list prices, by day, account, model or project; a subscription pays a flat price, so for one the figure is the API value of what you used. A Console API key can be an account too, held to a monthly budget (`qswap budget 5 40`) or a prepaid credit. With `autoswitch.includeApiKeyAccounts` on, auto-switch moves to such a key only when no subscription can take over.
 
-<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/menubar-key.png" alt="The menu bar's menu with an API-key account active: what it spent today and this month against its budget, and the subscription logged in underneath it" width="800">
+<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/menubar-key.png" alt="The menu bar's menu with an API-key account active: what it spent today and this month against its budget, and the subscription logged in underneath it" width="560">
 
 Reports and prices: [docs/usage.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/usage.md). Keys, budgets and credits: [docs/api-accounts.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md).
 

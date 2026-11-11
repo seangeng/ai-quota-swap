@@ -4,7 +4,7 @@ The menu bar app keeps the active account's usage in the macOS menu bar, and its
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="../assets/screenshots/raw/menubar-light.png">
-  <img src="../assets/screenshots/raw/menubar.png" alt="The menu bar's title and its open menu: Claude Code and Codex accounts with their usage, a check mark on each active account, held usage resets, today's estimated cost, and whether auto-switch is on" width="720">
+  <img src="../assets/screenshots/raw/menubar.png" alt="The menu bar's title and its open menu: Claude Code and Codex accounts with their usage, a check mark on each active account, held usage resets, today's estimated cost, and whether auto-switch is on" width="560">
 </picture>
 
 The pictures on this page are drawings of the menu, not screenshots of the app: the [demo harness](../scripts/demo/README.md) draws the rows that `menubar.build_menu`, the function the app builds its menu from, returns for made-up accounts.
@@ -86,7 +86,7 @@ Click a row to switch that provider to the account. For an account that needs re
 
 ### With an API key active
 
-<img src="../assets/screenshots/raw/menubar-key.png" alt="The menu with an API-key account active: what it spent today and this month against its budget, and the subscription logged in underneath it" width="720">
+<img src="../assets/screenshots/raw/menubar-key.png" alt="The menu with an API-key account active: what it spent today and this month against its budget, and the subscription logged in underneath it" width="560">
 
 A click on an API-key account switches to it at once: running Claude Code sessions follow the key within a few seconds, and the subscription row says `underneath`. The title shows the key's name alone, `⇄ ci`. In the harness, `run.py showcase --menubar -- switch 5` switches to the key and prints the menu; its top part:
 
