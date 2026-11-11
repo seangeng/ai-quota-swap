@@ -1801,6 +1801,7 @@ class TestStaleUnreadableRecords:
         directory.mkdir(parents=True)
         (directory / "notes.json").write_text("{torn", encoding="utf-8")
         assert process_detection.scan_session_records() == ([], [directory / "notes.json"])
+        _no_helper(temp_home)
         with pytest.raises(SessionsRunningError) as caught:
             s.switch_to("5", json_output=True)
         text = str(caught.value)
@@ -1813,6 +1814,7 @@ class TestStaleUnreadableRecords:
         s = _fleet()
         record = _torn_record(temp_home, 4101)
         alive.add(4101)
+        _no_helper(temp_home)
         code, out, err = run(s, "switch", "5")
         assert code == 1
         lines = err.splitlines()
@@ -1835,21 +1837,25 @@ class TestStaleUnreadableRecords:
         s = _fleet()
         record = _torn_record(temp_home, 4101)
         alive.add(4101)
+        _no_helper(temp_home)
         with pytest.raises(SessionsRunningError) as caught:
             s.switch_to("5", json_output=True)
         _title, message, _button = menubar.api_key_switch_question(caught.value)
         lines = message.splitlines()
-        assert lines[0].startswith("#5 ci is an API-key account, and qswap could not read")
-        assert lines[1:] == [
+        assert lines[0].startswith("qswap cannot add the key helper for #5 ci")
+        assert "could not read the Claude Code session records" in " ".join(message.split())
+        assert lines[-3:] == [
             "This session record could not be read:",
             f"  {record}",
             "If Claude Code process 4101 is gone, delete the file.",
         ]
 
-    def test_the_engine_log_prints_the_path_whole(self, temp_home, alive):
+    def test_the_engine_log_prints_the_path_whole(self, temp_home, alive, monkeypatch):
+        """On a host without a key helper (the part 1 session rule)."""
         h = TestEngine()._harness(temp_home)
         record = _torn_record(temp_home, 4101)
         alive.add(4101)
+        monkeypatch.setattr(h.engine, "_key_helper_ready", lambda: None)
         h.tick_with_usage(TestEngine.EXHAUSTED)
         lines: list[str] = []
         log = autolog.AutoLog(lines.append, clock=lambda: "12:00:00", width=80)
@@ -1901,13 +1907,24 @@ class TestHoldKeepsTheAllExhaustedHandling:
         ]
         return outcome, h.kinds(), h.engine._sleep_until_ts, notes
 
-    @pytest.mark.parametrize("keys", [True, False], ids=["held-off-a-key", "keys-left-out"])
-    def test_held_matches_keys_left_out(self, temp_home, alive, keys):
+    @staticmethod
+    def _hold(h, temp_home, monkeypatch, why):
+        if why == "no-helper":
+            _no_helper(temp_home)  # the key helper cannot be added
+        elif why == "sessions":
+            # A host without a key helper: the part 1 session rule.
+            monkeypatch.setattr(h.engine, "_key_helper_ready", lambda: None)
+
+    @pytest.mark.parametrize("keys, why", [
+        (True, "no-helper"), (True, "sessions"), (False, None),
+    ], ids=["held-no-helper", "held-for-sessions", "keys-left-out"])
+    def test_held_matches_keys_left_out(self, temp_home, alive, monkeypatch, keys, why):
         from ai_quota_swap.autoswitch import RESET_SLACK_S
 
         _write_sessions(temp_home, PIDS)
         alive.update(PIDS)
         h, usage = self._fleet(temp_home, keys=keys)
+        self._hold(h, temp_home, monkeypatch, why)
         reset = h.clock.now + R1_OFFSET_S
         outcome, kinds, sleep, notes = self._outcome(h, usage)
 
@@ -1922,12 +1939,14 @@ class TestHoldKeepsTheAllExhaustedHandling:
             notes = notes[1:]
         assert len(notes) == 1 and "first resets" in notes[0]
 
+    @pytest.mark.parametrize("why", ["no-helper", "sessions"])
     def test_a_candidate_with_room_to_come_keeps_the_normal_cadence(
-        self, temp_home, alive
+        self, temp_home, alive, monkeypatch, why
     ):
         _write_sessions(temp_home, PIDS)
         alive.update(PIDS)
         h, usage = self._fleet(temp_home, keys=True)
+        self._hold(h, temp_home, monkeypatch, why)
         usage["3"] = None  # unreadable this tick: it may have room
         outcome, kinds, sleep, _notes = self._outcome(h, usage)
         assert outcome is TickOutcome.BLOCKED
@@ -2138,9 +2157,11 @@ class TestWindowsRecycledPids:
 
 
 class TestRotationJsonReason:
-    """Finding 9: a rotation held off API keys by sessions says so in JSON."""
+    """Finding 9: a rotation left with only API keys says so in JSON. Part 2:
+    a rotation never lands on a key, so the reason is api-key-only and the
+    message names the switch that goes to one."""
 
-    def test_the_reason_and_message_name_the_sessions(
+    def test_the_reason_and_message_name_the_key(
         self, temp_home, block_real_keychain, alive, run
     ):
         s = _fleet()
@@ -2150,13 +2171,12 @@ class TestRotationJsonReason:
         assert code == 0
         payload = json.loads(out)
         assert payload["switched"] is False
-        assert payload["reason"] == "api-key-sessions"
+        assert payload["reason"] == "api-key-only"
         assert payload["message"] == (
-            "No other account can take over without logging Claude Code sessions out, "
-            "so you stay on Account-1. To switch to an API-key account and log the "
-            "sessions out, run: qswap switch 5 --log-out-sessions"
+            "No other account can take over, so you stay on #1 personal. To use an "
+            "API-key account, name it: qswap switch 5"
         )
-        assert "Skipped Account-5 (API-key account, 6 sessions running)" in payload["warnings"]
+        assert not any("Skipped" in w for w in payload["warnings"])
 
     def test_no_valid_target_is_unchanged(self, temp_home, block_real_keychain, alive, run):
         s = _fleet()
@@ -2197,6 +2217,11 @@ class TestReactivatingTheActiveKeyOnTheFileStore:
         block_real_keychain.delete_password(CLAUDE_CODE_KEYCHAIN_SERVICE, _acct())
         _write_sessions(temp_home, [4101])
         alive.add(4101)
+        # Part 2: the switch goes through the key helper and writes no item.
+        assert s.switch_to("5", json_output=True, force=True)["how"] == "helper"
+        assert block_real_keychain.get_password(CLAUDE_CODE_KEYCHAIN_SERVICE, _acct()) is None
+        # Where the helper cannot be added, it is refused.
+        _no_helper(temp_home)
         with pytest.raises(SessionsRunningError):
             s.switch_to("5", json_output=True, force=True)
 
@@ -2222,7 +2247,7 @@ class TestReactivatingWithANewKey:
         _write_sessions(temp_home, [4101, 4102], started_at=time.time() + 5)
         alive.update({4101, 4102})
 
-        code, out, err = run(s, "switch", "5", "--force")
+        code, out, err = run(s, "switch", "5", "--force", "--log-out-sessions")
 
         assert code == 0, err
         assert out.splitlines()[1:] == [
@@ -2235,7 +2260,7 @@ class TestReactivatingWithANewKey:
         assert block_real_keychain.get_password(
             CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE, _acct()
         ) == KEY_NEW
-        code, out, _err = run(s, "switch", "5", "--force", "--json")
+        code, out, _err = run(s, "switch", "5", "--force", "--log-out-sessions", "--json")
         assert json.loads(out)["followup"] == ["Claude Code sessions started from now on use the key."]
 
     def test_the_same_key_again_says_only_the_usual(
@@ -2245,7 +2270,7 @@ class TestReactivatingWithANewKey:
         s.switch_to("5", json_output=True, log_out_sessions=True)
         _write_sessions(temp_home, [4101], started_at=time.time() + 5)
         alive.add(4101)
-        code, out, _err = run(s, "switch", "5", "--force", "--json")
+        code, out, _err = run(s, "switch", "5", "--force", "--log-out-sessions", "--json")
         assert code == 0
         assert json.loads(out)["followup"] == ["Claude Code sessions started from now on use the key."]
 

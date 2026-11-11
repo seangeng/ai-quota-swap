@@ -144,10 +144,11 @@ class KeyHelperUnavailableError(SessionsRunningError):
     def __init__(
         self, message: str, *, number: str, reason: str, sessions: int = 0,
         unreadable: int = 0, from_key: bool = False,
+        records: tuple[str, ...] | list[str] = (),
     ):
         super().__init__(
             message, number=number, sessions=sessions, unreadable=unreadable,
-            from_key=from_key,
+            from_key=from_key, records=records,
         )
         self.reason = reason
 

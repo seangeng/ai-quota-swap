@@ -261,13 +261,15 @@ class KeyActivationMixin:
             if current and current != str(number) and self._account_kind(current) == "api_key"
             else None
         )
+        records = self.shared_login_unreadable() if unreadable else []
         return KeyHelperUnavailableError(
             display.key_helper_refusal(
                 self.label(number, long=False), number, reason,
                 display.blocking_sessions(len(sessions), unreadable), from_key=from_key,
+                records=records,
             ),
             number=number, reason=reason, sessions=len(sessions), unreadable=unreadable,
-            from_key=from_key is not None,
+            from_key=from_key is not None, records=records,
         )
 
     def _require_saved_key(self, number: str, email: str) -> None:

@@ -7545,8 +7545,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             candidate = str(sequence[(current_index + offset) % len(sequence)])
             if candidate in keys:
                 # Not in rotation: an API-key account is entered by naming
-                # it (or by the engine), never by a rotation.
-                skipped["api_key"].append(candidate)
+                # it (or by the engine), never by a rotation. A disabled one
+                # is not offered as the way out either.
+                if not self._disabled_from_data(data, candidate):
+                    skipped["api_key"].append(candidate)
                 continue
             if self._disabled_from_data(data, candidate):
                 skipped["disabled"].append(candidate)

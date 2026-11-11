@@ -969,7 +969,9 @@ def api_key_question(refusal: str) -> str:
         if line.startswith("To switch anyway"):
             break
         records.append(line)
-    return "\n".join([text[:1].upper() + text[1:], *records])
+    if not text.startswith("qswap "):  # a command's name keeps its case
+        text = text[:1].upper() + text[1:]
+    return "\n".join([text, *records])
 
 
 def api_key_question_title(sessions: int, *, from_key: bool = False) -> str:
@@ -1166,7 +1168,7 @@ def key_leave_followup(target: str, *, login_switch: bool = False) -> list[str]:
 
 def key_helper_refusal(
     target: str, number: str | int, reason: str, sessions: int = 0, *,
-    from_key: str | None = None, prefix: str = "Error: ",
+    from_key: str | None = None, prefix: str = "Error: ", records: Sequence[str] = (),
 ) -> str:
     """Why a switch to the API-key account ``target`` was refused when qswap
     cannot add its key helper (``reason``: the settings file's path and what
@@ -1174,7 +1176,8 @@ def key_helper_refusal(
     only sessions started after the switch use. ``sessions`` is how many
     Claude Code sessions run on the shared login (:data:`SESSIONS_UNKNOWN`
     when the records could not be read); ``from_key`` names the active account
-    when it is a saved key too."""
+    when it is a saved key too; ``records`` are the session records qswap
+    could not read (:func:`unreadable_records_lines`)."""
     head = (
         f"not switched. qswap cannot add the key helper for {target} to the "
         f"Claude Code settings: {reason}. Without it, the key can only be saved "
@@ -1205,7 +1208,8 @@ def key_helper_refusal(
     lines[0] = lines[0][len(prefix):]
     return "\n".join([
         *lines,
-        "Sessions started after the switch use the key.",
+        _STARTED_AFTER,
+        *unreadable_records_lines(records, WIDTH - 2),
         "To switch anyway:",
         f"  qswap switch {number} {LOG_OUT_SESSIONS_FLAG}",
     ])
