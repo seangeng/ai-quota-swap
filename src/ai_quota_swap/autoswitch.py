@@ -822,7 +822,10 @@ def write_heartbeat(
     pid: int | None = None,
 ) -> None:
     """Record that an engine just ticked. ``mode`` is ``"loop"`` or
-    ``"once"``; ``next_tick_at`` is when a loop expects to tick again."""
+    ``"once"``; ``next_tick_at`` is when a loop expects to tick again. A dry
+    run keeps the last beat of an engine that is not one beside its own
+    (``real``), so a dry run never hides a real engine that watches a key
+    (decision DS3); a real engine's beat replaces both."""
     import os
 
     beat = {
@@ -835,17 +838,38 @@ def write_heartbeat(
         "lastTickAt": last_tick_at,
         "nextTickAt": next_tick_at,
     }
+    path = Path(backup_dir) / HEARTBEAT_FILENAME
     try:
-        atomic_write_json(Path(backup_dir) / HEARTBEAT_FILENAME, beat)
+        if dry_run:
+            previous = _read_state_file(path)
+            real = previous.get("real") if previous.get("dryRun") else previous
+            if _real_beat(real):
+                beat["real"] = {k: v for k, v in real.items() if k != "real"}
+        atomic_write_json(path, beat)
     except Exception as e:  # presence only; never break a tick over it
         _logger.debug("heartbeat write failed: %r", e)
 
 
-def read_heartbeat(backup_dir: Path) -> dict | None:
-    """The last heartbeat any engine wrote under ``backup_dir``, or None."""
+def _real_beat(beat: object) -> bool:
+    """Whether ``beat`` is a heartbeat of an engine that is not a dry run."""
+    return (
+        isinstance(beat, dict) and not beat.get("dryRun")
+        and isinstance(beat.get("lastTickAt"), (int, float))
+        and not isinstance(beat.get("lastTickAt"), bool)
+    )
+
+
+def read_heartbeat(backup_dir: Path, *, now: float | None = None) -> dict | None:
+    """The last heartbeat any engine wrote under ``backup_dir``, or None. A
+    dry run's beat that keeps a real loop's beside it (:func:`write_heartbeat`)
+    reads as that loop's while the loop still ticks (``now``: the clock, read
+    here when None), so status and doctor name the engine that switches."""
     beat = _read_state_file(Path(backup_dir) / HEARTBEAT_FILENAME)
     if not isinstance(beat.get("lastTickAt"), (int, float)):
         return None
+    real = beat.get("real") if beat.get("dryRun") else None
+    if _real_beat(real) and engine_running(real, time.time() if now is None else now):
+        return {k: v for k, v in real.items() if k != "real"}
     return beat
 
 
@@ -897,6 +921,15 @@ def key_watch(beat: object, now: float, *, host: str | None = None) -> KeyWatch:
     own label, so its own heartbeat does not count. Never raises."""
     if not isinstance(beat, dict):
         return KeyWatch()
+    real = beat.get("real") if beat.get("dryRun") else None
+    if _real_beat(real):
+        # A dry run's beat with the last real one kept beside it (DS3): the
+        # real engine watches if it still would; else only the dry run runs.
+        watch = key_watch({k: v for k, v in real.items() if k != "real"}, now, host=host)
+        if watch:
+            return watch
+        dry = key_watch({k: v for k, v in beat.items() if k != "real"}, now, host=host)
+        return KeyWatch(dry_run_only=dry.dry_run_only, last_checked_at=watch.last_checked_at)
     last = beat.get("lastTickAt")
     last = float(last) if isinstance(last, (int, float)) and not isinstance(last, bool) else None
     dry = bool(beat.get("dryRun"))
@@ -994,7 +1027,7 @@ def unwatched_key(switcher, *, now: float | None = None, host: str | None = None
             )
             back = f"qswap switch {target}" if target is not None else None
         now = time.time() if now is None else now
-        watch = key_watch(read_heartbeat(Path(switcher.backup_dir)), now, host=host)
+        watch = key_watch(read_heartbeat(Path(switcher.backup_dir), now=now), now, host=host)
         return {
             "number": str(number),
             "enteredBy": "engine",

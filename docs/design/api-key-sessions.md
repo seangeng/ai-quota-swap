@@ -389,7 +389,9 @@ What the code does where this part leaves room, or where it had to differ:
   is not a dry run, or when its last `--once` tick (not a dry run) is under 15 minutes old
   (`autoswitch.key_watch`, read through `engine_watching()`); the surfaces say "only a dry
   run is running" for a dry-run loop and "last checked 4m ago" for a recent `--once`, and
-  doctor warns only when nothing watches.
+  doctor warns only when nothing watches. A dry run's heartbeat keeps the last heartbeat of
+  an engine that is not one beside it (`real`), so a dry run ticking after a real loop never
+  hides it; a real engine's heartbeat replaces both.
 - **The dry run** writes nothing, the ledger included: it judges the stored figure and
   says that a real run measures the spend first and that its own figure may be older,
   and it checks read-only that a key's slot can give a key (A12). The rows say auto-switch

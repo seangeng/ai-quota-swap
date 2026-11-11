@@ -630,3 +630,62 @@ class TestTheDryRunsMoveToAKey:
             )
         else:
             assert text == "Would switch #1 a@example.com → #2 ci · 5h limit reached (dry run)"
+
+
+# == DS3: a dry run beside a real engine ======================================================
+
+
+class TestADryRunBesideARealEngine:
+    """There is one heartbeat file per data directory: a dry run that
+    ticked after the real loop made every surface say nothing watches the
+    key, while the real loop was watching."""
+
+    def _beat(self, h, *, mode, dry_run, at, host="qswap auto"):
+        from ai_quota_swap.autoswitch import write_heartbeat
+
+        write_heartbeat(h.switcher.backup_dir, mode=mode, dry_run=dry_run, last_tick_at=at,
+                        next_tick_at=at + 60 if mode == "loop" else None, started_at=at,
+                        host=host)
+
+    @pytest.mark.parametrize("dry_mode", ["loop", "once"])
+    def test_the_real_loop_still_watches(self, temp_home, dry_mode):
+        from ai_quota_swap.autoswitch import key_watch, read_heartbeat
+
+        h = _fleet(temp_home)
+        now = 1_800_000_000.0
+        self._beat(h, mode="loop", dry_run=False, at=now - 20, host="menu bar")
+        self._beat(h, mode=dry_mode, dry_run=True, at=now, host="dashboard")
+        watch = key_watch(read_heartbeat(h.switcher.backup_dir, now=now), now)
+        assert watch and watch.mode == "loop" and watch.last_checked_at == now - 20
+
+    def test_with_the_real_loop_gone_only_the_dry_run_is_running(self, temp_home):
+        from ai_quota_swap.autoswitch import key_watch, read_heartbeat
+
+        h = _fleet(temp_home)
+        now = 1_800_000_000.0
+        self._beat(h, mode="loop", dry_run=False, at=now - 3600)
+        self._beat(h, mode="loop", dry_run=True, at=now)
+        watch = key_watch(read_heartbeat(h.switcher.backup_dir, now=now), now)
+        assert not watch and watch.dry_run_only
+        assert watch.last_checked_at == now - 3600
+
+    def test_a_real_beat_replaces_both(self, temp_home):
+        from ai_quota_swap.autoswitch import read_heartbeat
+
+        h = _fleet(temp_home)
+        now = 1_800_000_000.0
+        self._beat(h, mode="loop", dry_run=False, at=now - 20)
+        self._beat(h, mode="loop", dry_run=True, at=now - 10)
+        self._beat(h, mode="once", dry_run=False, at=now)
+        beat = read_heartbeat(h.switcher.backup_dir, now=now)
+        assert beat["mode"] == "once" and "real" not in beat
+
+    def test_status_names_the_real_loop(self, temp_home):
+        from ai_quota_swap.autoswitch import read_heartbeat
+
+        h = _fleet(temp_home)
+        now = 1_800_000_000.0
+        self._beat(h, mode="loop", dry_run=False, at=now - 20, host="menu bar")
+        self._beat(h, mode="loop", dry_run=True, at=now, host="dashboard")
+        beat = read_heartbeat(h.switcher.backup_dir, now=now)
+        assert (beat["host"], beat["dryRun"]) == ("menu bar", False)
