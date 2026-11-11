@@ -46,6 +46,8 @@ RUN = HERE / "run.py"
 
 # Browser viewport for screenshots: the 1200 px window plus room around it.
 VIEWPORT = (1240, 900)
+# The menu bar drawings: a menu with a submenu beside it, or the hero.
+MENUBAR_VIEWPORT = (1400, 1000)
 # Recordings: the window on its stage, sized for a README GIF.
 RECORD_VIEWPORT = (1280, 760)
 GIF_CROP = "1216:700:32:30"  # the window plus a little of the stage, from RECORD_VIEWPORT
@@ -83,7 +85,38 @@ def render_html(only: set[str] | None = None) -> list[Path]:
                 raise SystemExit(f"{shot.name} ({theme}) failed with {r.returncode}:\n{r.stderr}")
             log(f"html   {target.relative_to(REPO)}")
             out.append(target)
+    # A drawing with a window behind its menu waits for that window's PNG
+    # (capture_shots renders it after the dashboard shots).
+    for shot in shots.MENUBAR_SHOTS:
+        if (only and shot.name not in only) or shot.beside:
+            continue
+        out.append(render_menubar(shot))
     return out
+
+
+def render_menubar(shot: shots.MenubarShot) -> Path:
+    """``run.py <scenario> --menubar --html``: the menu bar drawing."""
+    target = SHOTS_DIR / f"{shot.name}.html"
+    cmd = [sys.executable, str(RUN), shot.scenario, "--menubar", "--theme", shot.theme,
+           "--html", str(target)]
+    if shot.auto_switch:
+        cmd += ["--auto-switch", shot.auto_switch]
+    if shot.open:
+        cmd += ["--open", shot.open]
+    if shot.highlight:
+        cmd += ["--highlight", shot.highlight]
+    if shot.beside:
+        window = RAW_DIR / f"{shot.beside}.png"
+        if not window.exists():
+            raise SystemExit(f"{window} is missing; run `capture.py shots --only {shot.beside}` first")
+        cmd += ["--beside", str(window)]
+    if shot.args:
+        cmd += ["--", *shot.args]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"{shot.name} failed with {r.returncode}:\n{r.stderr}")
+    log(f"html   {target.relative_to(REPO)}")
+    return target
 
 
 # -- PNGs ---------------------------------------------------------------------
@@ -191,6 +224,22 @@ def capture_shots(only: set[str] | None = None) -> list[Path]:
         image_page(png, SHOTS_DIR / f"{shot.name}.html", shot.caption)
         log(f"png    {png.relative_to(REPO)}  {png.stat().st_size // 1024} KB")
         out.append(png)
+
+    async def menubar_pages() -> None:
+        for shot in shots.MENUBAR_SHOTS:
+            if only and shot.name not in only:
+                continue
+            page = render_menubar(shot) if shot.beside else SHOTS_DIR / f"{shot.name}.html"
+            if not page.exists():
+                raise SystemExit(f"{page} is missing; run `capture.py html` first")
+            png = RAW_DIR / f"{shot.name}.png"
+            await cdp.shoot(page.as_uri(), png, width=MENUBAR_VIEWPORT[0], height=MENUBAR_VIEWPORT[1],
+                            scale=2, selector="#stage")
+            compress(png)
+            log(f"png    {png.relative_to(REPO)}  {png.stat().st_size // 1024} KB")
+            out.append(png)
+
+    asyncio.run(menubar_pages())
     return out
 
 
@@ -427,6 +476,16 @@ def write_index() -> Path:
         rows.append(
             f"<tr><td><code>qswap{(' then ' + html.escape(keys)) if keys else ''}</code></td>"
             f"<td>{html.escape(shot.caption)}</td><td><a href=\"{shot.name}.html\">{shot.theme}</a></td>"
+            f"<td><a href=\"../../assets/screenshots/raw/{shot.name}.png\">PNG</a></td></tr>"
+        )
+    for shot in shots.MENUBAR_SHOTS:
+        how = "qswap menubar" + (f" after qswap {' '.join(shot.args)}" if shot.args else "")
+        if shot.open:
+            how += f", {shot.open} open"
+        rows.append(
+            f"<tr><td><code>{html.escape(how)}</code></td>"
+            f"<td>{html.escape(shot.caption)} (a drawing of the menu's rows)</td>"
+            f"<td><a href=\"{shot.name}.html\">{shot.theme}</a></td>"
             f"<td><a href=\"../../assets/screenshots/raw/{shot.name}.png\">PNG</a></td></tr>"
         )
     target = SHOTS_DIR / "index.html"
