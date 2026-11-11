@@ -151,19 +151,33 @@ def _tombstones(record: dict) -> dict:
 TOMBSTONE_TTL_S = 24 * 3600
 
 
+#: How far a tombstone's ``at`` may lie ahead of the clock and still count
+#: (the clock set back a little since it was written).
+TOMBSTONE_SKEW_S = 5 * 60
+
+
 def live_tombstone(record: dict, key: str, now: float | None = None) -> dict | None:
     """The tombstone for ``key`` while it counts: under a day old, measured
-    from its ``at``. One with no readable ``at`` is old. None otherwise."""
+    from its ``at``. One with no readable ``at`` is old, and so is one dated
+    ahead of the clock by more than :data:`TOMBSTONE_SKEW_S` (a clock set
+    back, a data directory from a machine whose clock ran ahead). None
+    otherwise."""
     import math
 
     tomb = _tombstones(record).get(key)
     if not isinstance(tomb, dict):
         return None
     at = tomb.get("at")
-    if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return None
+    try:
+        at = float(at)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(at):
         return None
     now = time.time() if now is None else now
-    return tomb if now - at < TOMBSTONE_TTL_S else None
+    return tomb if -TOMBSTONE_SKEW_S <= now - at < TOMBSTONE_TTL_S else None
 
 
 def effective_record(record: object, line_number: str | None) -> dict:
@@ -1047,7 +1061,9 @@ class KeyActivationMixin:
             if n == entered:
                 by = old.get("enteredBy")
             else:
-                by = (left.get(n) or {}).get("enteredBy")
+                # A line with no record: auto-switch's only while a tombstone
+                # for it still counts (it came back); else the user's (SS3).
+                by = (live_tombstone(old, n) or {}).get("enteredBy")
             left[n] = {"at": time.time(), "enteredBy": by if by in ENTERED_BY else "user"}
         return {"left": left} if left else None
 
