@@ -597,6 +597,44 @@ class TestSettingsWrites:
         assert left == before
         json.loads(left)
 
+    FIRST_ON_THE_BRACE = [
+        '{"model": "opus",\n "includeCoAuthoredBy": false,\n "env": {"A": "1"}}\n',
+        '{"model": "opus",\n "hooks": {}}',
+        '{ "model": "opus",\n  "hooks": {}\n}',
+        '{"model": "opus"\n}\n',
+        '{"a": 1, "b": 2,\r\n\t"c": 3}\r\n',
+    ]
+
+    @pytest.mark.parametrize("before", FIRST_ON_THE_BRACE)
+    def test_a_first_member_on_the_brace_line_gets_a_line_of_its_own(self, tmp_path, before):
+        """The re-check's case (B4): in a file of several lines whose first
+        member shares the brace's line, the line went on the brace's line
+        too, and deleting it by hand took the brace with it. It now goes on
+        a line of its own; qswap's own removal puts the brace's line back as
+        it was (the lead is recorded when the key is entered)."""
+        path = tmp_path / "settings.json"
+        path.write_bytes(before.encode("utf-8"))
+        lead = claude_settings.brace_lead(path)  # what _enter_key records
+        assert lead is not None
+        claude_settings.install(5, path=path, command=self.LINE)
+        lines = path.read_bytes().decode("utf-8").splitlines(keepends=True)
+        mine = [line for line in lines if '"apiKeyHelper"' in line]
+        assert len(mine) == 1 and mine[0].strip() == f'"apiKeyHelper": "{self.LINE}",'
+        left = "".join(line for line in lines if line not in mine)
+        assert json.loads(left) == json.loads(before)
+        claude_settings.install(6, path=path, command=f"{QSWAP} key-helper 6")
+        claude_settings.remove(path=path, restore_lead=lead)
+        assert path.read_bytes() == before.encode("utf-8")
+
+    @pytest.mark.parametrize("before", FIRST_ON_THE_BRACE[:2])
+    def test_the_brace_line_comes_back_after_the_key(self, temp_home, before):
+        s = _fleet()
+        _settings(temp_home).write_bytes(before.encode("utf-8"))
+        _activate(s)
+        s.switch_to("6", json_output=True)
+        s.switch_to("1", json_output=True)
+        assert _settings(temp_home).read_bytes() == before.encode("utf-8")
+
     @pytest.mark.parametrize("before", [
         '﻿{\n  "model": "opus"\n}\n',
         '﻿{\r\n  "a": 1\r\n}\r\n',

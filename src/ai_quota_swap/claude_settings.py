@@ -618,7 +618,27 @@ def _separator(text: str, members: list[_Member]) -> str:
     return ": "
 
 
-def _edit_text(text: str, value: str | None) -> str:
+def _split_lead(text: str, open_at: int, close_at: int, members: list[_Member]) -> bool:
+    """Whether the file has several lines inside its braces while its first
+    member shares the brace's line: the new line then goes on a line of its
+    own, splitting the brace's line (:func:`brace_lead`)."""
+    return bool(members) and "\n" not in text[open_at + 1 : members[0].start] and (
+        "\n" in text[open_at + 1 : close_at]
+    )
+
+
+def _member_indent(text: str, members: list[_Member]) -> str:
+    """The indentation of the first member that starts a line of its own,
+    else two spaces."""
+    for m in members[1:]:
+        line_start = text.rfind("\n", 0, m.start)
+        lead = text[line_start + 1 : m.start]
+        if line_start >= 0 and lead.strip() == "":
+            return lead
+    return "  "
+
+
+def _edit_text(text: str, value: str | None, *, restore_lead: str | None = None) -> str:
     """``text`` with ``apiKeyHelper`` set to ``value`` (None: removed).
 
     A new line goes in as the first member, followed by what separated the
@@ -628,8 +648,11 @@ def _edit_text(text: str, value: str | None) -> str:
     comma on the line above). Taking the first member out removes exactly
     that text again, and taking out the only member removes it with the
     whitespace before it, so every insertion here is undone byte for byte.
-    (A file whose first member shares the brace's line keeps that shape:
-    the line goes on the brace's line too.)"""
+    A file of several lines whose first member shares the brace's line gets
+    the line on a line of its own too, after the brace (in the indentation
+    of the members below), so deleting it by hand still leaves valid JSON;
+    ``restore_lead`` (what :func:`brace_lead` read before) puts the brace's
+    line back as it was when the line comes out."""
     open_at, close_at, members = _members(text)
     encoded = json.dumps(value, ensure_ascii=False) if value is not None else None
     found = [m for m in members if m.key == HELPER_KEY]
@@ -645,6 +668,11 @@ def _edit_text(text: str, value: str | None) -> str:
             return text[: prev.end] + text[m.end :]
         if len(members) > 1:
             nxt = members[1]
+            if restore_lead is not None and "\n" in text[open_at + 1 : m.start] and (
+                "\n" not in restore_lead
+            ):
+                # The brace's line was split for the line: join it again.
+                return text[: open_at + 1] + restore_lead + text[nxt.start :]
             return text[: m.start] + text[nxt.start :]
         # The only member: the object is left with what followed it.
         return text[: open_at + 1] + text[m.end :]
@@ -660,6 +688,13 @@ def _edit_text(text: str, value: str | None) -> str:
         return text[: open_at + 1] + member + inner + text[close_at:]
     first = members[0]
     lead = text[open_at + 1 : first.start]
+    if _split_lead(text, open_at, close_at, members):
+        newline = "\r\n" if "\r\n" in text else "\n"
+        indent = _member_indent(text, members)
+        return (
+            text[: open_at + 1] + newline + indent + member + "," + newline + indent
+            + text[first.start :]
+        )
     if "\n" in lead:
         between = "," + lead
     elif len(members) > 1:
@@ -669,10 +704,11 @@ def _edit_text(text: str, value: str | None) -> str:
     return text[: first.start] + member + between + text[first.start :]
 
 
-def edited(text: str | None, value: str | None) -> str | None:
+def edited(text: str | None, value: str | None, *, restore_lead: str | None = None) -> str | None:
     """The file's new text with ``apiKeyHelper`` set to ``value`` (None:
     removed); None when the file should not exist (it did not, and nothing is
-    to be added). Raises :class:`SettingsError` when ``text`` cannot be parsed."""
+    to be added). ``restore_lead``: see :func:`_edit_text`. Raises
+    :class:`SettingsError` when ``text`` cannot be parsed."""
     if text is None or not text.strip():
         if value is None:
             return text
@@ -688,7 +724,7 @@ def edited(text: str | None, value: str | None) -> str | None:
     else:
         expected = {HELPER_KEY: value, **expected}  # first, as the text edit puts it
     try:
-        out = _edit_text(text, value)
+        out = _edit_text(text, value, restore_lead=restore_lead)
         if json.loads(out) == expected:
             return out
     except (ValueError, IndexError):
@@ -743,8 +779,8 @@ def _publish(path: Path, text: str | None, mode: int | None) -> None:
 
 
 def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
-            want: str | None = None,
-            restore_blank: str | None = None) -> tuple[str | None, str | None]:
+            want: str | None = None, restore_blank: str | None = None,
+            restore_lead: str | None = None) -> tuple[str | None, str | None]:
     """Set (or remove) the helper, re-reading before the write and starting
     again when the file changed. Returns ``(before, after)`` texts (without a
     byte order mark; a file that has one keeps it). ``restore_blank``: the
@@ -767,7 +803,7 @@ def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
             return before, before
         if want is not None and value is None and state.number != want:
             return before, before
-        after = edited(before, value)
+        after = edited(before, value, restore_lead=restore_lead)
         if value is None and after is not None and (remove_if_empty or restore_blank is not None):
             obj, _ = _parse(after)
             if obj == {}:
@@ -832,18 +868,43 @@ def blank_text(path: Path | None = None) -> str | None:
     return text if obj == {} else None
 
 
+def brace_lead(path: Path | None = None) -> str | None:
+    """What follows the brace before the first member, when the file has
+    several lines inside its braces while that member shares the brace's
+    line (``{"model": "opus",`` then more lines): the line then splits the
+    brace's line, and this is what joins it again. None otherwise, or when
+    the file already holds an ``apiKeyHelper``. Recorded when a key is
+    entered, like :func:`blank_text`. Never raises."""
+    path = settings_path() if path is None else path
+    try:
+        _bom, text = _split_bom(_read(path))
+        if text is None or not text.strip():
+            return None
+        open_at, close_at, members = _members(text)
+    except (OSError, UnicodeDecodeError, ValueError, IndexError):
+        return None
+    if any(m.key == HELPER_KEY for m in members):
+        return None
+    if not _split_lead(text, open_at, close_at, members):
+        return None
+    return text[open_at + 1 : members[0].start]
+
+
 def remove(*, path: Path | None = None, remove_file_if_empty: bool = False,
-           number: str | None = None, restore_blank: str | None = None) -> bool:
+           number: str | None = None, restore_blank: str | None = None,
+           restore_lead: str | None = None) -> bool:
     """Take qswap's line out of the settings (only qswap's; ``number`` limits
     it to the line for that account). With ``remove_file_if_empty`` a file
-    left holding nothing is removed (qswap created it). Returns whether
+    left holding nothing is removed (qswap created it); ``restore_blank`` and
+    ``restore_lead`` put back what :func:`blank_text` and :func:`brace_lead`
+    read before the line went in. Returns whether
     anything changed. Raises :class:`SettingsError` when the file cannot be
     parsed; another helper is left alone (and is not an error)."""
     path = settings_path() if path is None else path
     try:
         before, after = _change(
             path, None, remove_if_empty=remove_file_if_empty, want=number,
-            restore_blank=restore_blank,
+            restore_blank=restore_blank, restore_lead=restore_lead,
         )
     except SettingsError as e:
         if e.kind == FOREIGN:

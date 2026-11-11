@@ -280,10 +280,12 @@ What the code does where this part leaves room, or where it had to differ:
   launch linked again in between; if that fails, the line is taken back and the switch
   refused. A rotation from a key that fails after the line was removed, Ctrl-C included,
   puts the line back.
-- **The line's place in the file.** Always the first member: on a line of its own in a file
-  with one member per line, after the brace where the first member shares the brace's line.
-  The round trip is byte for byte, a byte order mark included, and an empty object gets its
-  own spelling back (`{ }` stays `{ }`).
+- **The line's place in the file.** Always the first member, and in a file of several lines
+  on a line of its own: where the first member shared the brace's line, that line is split
+  after the brace (what followed the brace is recorded in `key_helper.json` and put back when
+  the line comes out). A file of one line keeps the key inside that line. The round trip
+  is byte for byte, a byte order mark included, and an empty object gets its own spelling
+  back (`{ }` stays `{ }`).
 - **`qswap run N` for the subscription underneath an active key** is refused: plain `claude`
   on that login would follow the line onto the key.
 - **`--log-out-sessions`** always takes the saved-key path, also when the helper could be

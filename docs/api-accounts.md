@@ -118,7 +118,7 @@ If qswap created `~/.claude/settings.json` for the line, it removes the file aga
 
 ### Removing the line by hand
 
-If qswap is gone, or you want the subscription back without it, delete the `apiKeyHelper` line from `~/.claude/settings.json`. qswap puts its key first in the file, on a line of its own, so that one line is all there is to delete and the file stays valid JSON. Sessions are back on the subscription about a second later. Then run `qswap doctor`: it confirms the file still parses, puts nothing back by itself, and names what is left over (below).
+If qswap is gone, or you want the subscription back without it, delete the `apiKeyHelper` line from `~/.claude/settings.json`. In a file of several lines qswap puts its key first, on a line of its own, so that one line is all there is to delete and the file stays valid JSON. A file written on one line (`{"apiKeyHelper":"…","model":"opus"}`) keeps the key inside that line: delete only `"apiKeyHelper":"…",` there, not the line. Sessions are back on the subscription about a second later. Then run `qswap doctor`: it confirms the file still parses, puts nothing back by itself, and names what is left over (below).
 
 ### A settings file you sync
 

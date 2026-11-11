@@ -772,11 +772,17 @@ class KeyActivationMixin:
             blank = claude_settings.blank_text(state.path) if previous_key is None else None
             if previous_key is not None and isinstance(old.get("blankSettings"), str):
                 blank = old["blankSettings"]
+            # The brace's line the line splits (a first member on it), joined
+            # again when the line comes out (decision B4).
+            lead = claude_settings.brace_lead(state.path) if previous_key is None else None
+            if previous_key is not None and isinstance(old.get("braceLead"), str):
+                lead = old["braceLead"]
             created = state.kind == claude_settings.NO_FILE or bool(
                 previous_key is not None and old.get("createdSettings")
             )
             key_state = self._entered_record(
                 old, number, entered_by, created=created, path=state.path, blank=blank,
+                lead=lead,
             )
             # The record goes in before the line (F13): a crash after the
             # line leaves a record naming it, so a key the engine entered
@@ -801,7 +807,7 @@ class KeyActivationMixin:
             # see the line and copy by themselves.
             shared = self.isolate_run_profiles()
             if shared is None or shared:
-                self._undo_install(previous_key, created_now, blank)
+                self._undo_install(previous_key, created_now, blank, lead)
                 self._write_key_state(old or None)
                 raise self._key_unavailable(number, self._profiles_unisolated_reason(shared))
             self._record_active_number(number)
@@ -842,7 +848,7 @@ class KeyActivationMixin:
     @staticmethod
     def _entered_record(
         old: dict, number: str, entered_by: str, *, created: bool = False,
-        path: Path | None = None, blank: str | None = None,
+        path: Path | None = None, blank: str | None = None, lead: str | None = None,
     ) -> dict:
         """key_helper.json once ``number`` is entered: its record, the
         tombstones kept, the key left on the way (key to key) tombstoned and
@@ -865,6 +871,9 @@ class KeyActivationMixin:
         if blank is not None:
             # The file was there but held no settings: leaving puts that back.
             record["blankSettings"] = blank
+        if lead is not None:
+            # The line split the brace's line: leaving joins it again.
+            record["braceLead"] = lead
         if left:
             record["left"] = left
         return record
@@ -905,6 +914,7 @@ class KeyActivationMixin:
 
     def _undo_install(
         self, previous_key: str | None, created: bool, blank: str | None = None,
+        lead: str | None = None,
     ) -> None:
         """Take back a line just installed: the previous key's line again, or
         no line (and the file qswap created removed) with the profiles put
@@ -913,7 +923,9 @@ class KeyActivationMixin:
             if previous_key is not None:
                 claude_settings.install(previous_key)
                 return
-            claude_settings.remove(remove_file_if_empty=bool(created), restore_blank=blank)
+            claude_settings.remove(
+                remove_file_if_empty=bool(created), restore_blank=blank, restore_lead=lead,
+            )
             self.restore_run_profiles(force=True)
         except Exception as e:
             self._logger.warning(f"Could not take back the key line: {e!r}")
@@ -967,9 +979,11 @@ class KeyActivationMixin:
         with FileLock(self.lock_file):
             try:
                 blank = state.get("blankSettings")
+                lead = state.get("braceLead")
                 removed = claude_settings.remove(
                     remove_file_if_empty=bool(state.get("createdSettings")),
                     restore_blank=blank if isinstance(blank, str) else None,
+                    restore_lead=lead if isinstance(lead, str) else None,
                 )
             except claude_settings.SettingsError as e:
                 path = claude_settings.shown_path(e.path or claude_settings.settings_path())
