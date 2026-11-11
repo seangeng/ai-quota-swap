@@ -31,7 +31,7 @@ What remains, in rough order:
 - `where`: the best account per provider now, and when each exhausted one returns (M5).
 - Hooks: run a command on a switch, a limit reached, or a reset used (M5).
 - OpenAI organization usage for API keys (M4, later).
-- A scrub pass for personal data, and the GitHub description and topics (M7).
+- A scrub pass of the git history for personal data (M7).
 
 ## Principles
 
@@ -197,17 +197,17 @@ Design: [docs/design/api-accounts.md](docs/design/api-accounts.md). Guide:
   `CONTRIBUTING.md`, `CHANGELOG.md`.
 - [x] CI on macOS, Linux, and Windows. A publish workflow for PyPI by trusted publishing.
 - [x] The first release to PyPI: 0.1.0.
-- [ ] A scrub pass: no personal emails, tokens, or account data in tests, fixtures, or history.
-- [ ] GitHub description and topics: `claude-code`, `codex`, `account-switcher`, `multi-account`,
-  `rate-limit`, `usage-tracking`.
+- [x] A scrub pass of the tests and fixtures: no personal emails, tokens, or account data.
+- [ ] The same for the git history.
+- [x] GitHub description and topics: `claude-code`, `codex`, `account-switcher`, `multi-account`,
+  `rate-limit`, `usage-tracker`.
 
 ## Not planned
 
 - A proxy or load balancer that sits between the CLI and the API.
 - A desktop GUI. The TUI and the menu bar cover it.
-- Gemini, Cursor, and others in the first release. The provider seam leaves room.
+- Gemini, Cursor, and others for now. The provider seam leaves room.
 
 ## Order
 
 M0, then M1. M2 and M3 run in parallel after M1. M4 needs M3. M5 and M6 follow M2. M7 last.
-A first public release makes sense after M2 and M3.
