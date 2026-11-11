@@ -7700,6 +7700,24 @@ class ClaudeAccountSwitcher:
           ``"unresolved"`` and the fail-open backup copied the empty tokens
           over the slot's only surviving refresh token. Never written into
           any slot; nothing worth preserving either.
+        - ``"oauth-absent"``   — the live store carries no ``claudeAiOauth``
+          section at all while the slot's backup does: an API key in the
+          live position, or a credentials item left holding only
+          ``mcpOAuth`` after one. The same loss as ``"wiped"`` one step
+          earlier: ``extract_oauth_data`` answers ``None`` rather than an
+          empty-token dict, so the ``"wiped"`` check misses it and the
+          fail-open backup would destroy the slot's refresh token. Never
+          written into any slot.
+        - ``"api-key-mismatch"`` — the outgoing slot is an API-key account and
+          the verdict would have copied the live bytes into it
+          (``"own-family"``, ``"own-rotated"``, ``"unresolved"``). A Console
+          key never rotates and Claude Code never rewrites it, so the live
+          bytes are never its new generation: an item holding only MCP
+          sign-ins (the ordinary state while a key is active), a login that
+          outlived the switch onto the key, or another key. Never written into
+          the slot; a login or another key among them is preserved in a
+          safety copy. Verdicts that already leave the slot untouched
+          (``"foreign"``, ``"alien"``, …) stand, safety copy included.
         - ``"alien"``          — a *structurally complete* identity (uuid +
           email + organization) that matches no managed slot (unmanaged
           login, recycled email wearing a managed address, or an email+org
@@ -7723,6 +7741,28 @@ class ClaudeAccountSwitcher:
           endpoint state must never change switch behavior beyond skipping
           the extra safety.
         """
+        kind, foreign_slot = self._attribute_live_credential(
+            current_account, current_email, original_creds, provenance, data,
+        )
+        if (
+            kind in ("own-family", "own-rotated", "unresolved")
+            and data.get("accounts", {}).get(current_account, {}).get("kind")
+            == "api_key"
+        ):
+            return ("api-key-mismatch", None)
+        return (kind, foreign_slot)
+
+    def _attribute_live_credential(
+        self,
+        current_account: str,
+        current_email: str,
+        original_creds: str,
+        provenance: dict,
+        data: dict,
+    ) -> tuple[str, str | None]:
+        """The ownership half of :meth:`_classify_outgoing_credential`: whose
+        bytes the live credential holds, before the outgoing slot's kind has
+        its say."""
         backup = self._read_account_credentials(current_account, current_email)
         if backup and backup == original_creds:
             return ("own-bytes", None)
@@ -7736,6 +7776,10 @@ class ClaudeAccountSwitcher:
             live_oauth.get("accessToken") or live_oauth.get("refreshToken")
         ):
             return ("wiped", None)
+        if live_oauth is None and backup and oauth.extract_oauth_data(backup):
+            # Only the asymmetry (nothing to preserve on the live side, a
+            # refresh token to lose on the slot's) is the destruction case.
+            return ("oauth-absent", None)
         resolved = provenance.get("resolved")
         if resolved is None or provenance.get("live") != original_creds:
             if self._probe_verdicts.get(
@@ -8317,6 +8361,21 @@ class ClaudeAccountSwitcher:
                     current_account, current_email, original_creds,
                     provenance, data,
                 )
+                outgoing_is_key = (
+                    data.get("accounts", {}).get(current_account, {}).get("kind")
+                    == "api_key"
+                )
+
+                def _backup_config() -> None:
+                    # An API-key account's config backup is the placeholder
+                    # identity it was added with. The live ~/.claude.json is
+                    # the machine's whole Claude Code state, not that
+                    # account's, and is never written over it.
+                    if not outgoing_is_key:
+                        self._write_account_config(
+                            current_account, current_email, original_config
+                        )
+
                 if kind in ("foreign", "alien", "known-foreign"):
                     # Positively not this slot's bytes: never into a slot;
                     # never silently destroyed. The safety copy (which raises
@@ -8368,21 +8427,69 @@ class ClaudeAccountSwitcher:
                         warning(msg)
                     else:
                         warnings_out.append(msg)
-                elif kind == "wiped":
-                    # Claude Code emptied the live token fields in place
-                    # (its invalid_grant reaction). The blob carries nothing
-                    # to preserve and writing it would replace the slot's
-                    # only surviving refresh token with empty strings — the
-                    # exact destruction chain observed in the field. Config
-                    # backup only; the slot's credential backup is the
-                    # recovery path.
-                    self._write_account_config(
-                        current_account, current_email, original_config
+                elif kind == "api-key-mismatch":
+                    # The slot stores a Console key and the live bytes are not
+                    # that key, so they are never its backup. An item holding
+                    # only MCP sign-ins is the ordinary state while a key is
+                    # active and carries nothing to keep: log only. A login
+                    # (one can survive the best-effort clear) or another key
+                    # is preserved like any other displaced credential before
+                    # the switch replaces it.
+                    live_login = oauth.extract_oauth_data(original_creds) or {}
+                    msg = None
+                    if looks_like_api_key(original_creds):
+                        self._stash_live_credential(
+                            original_creds, kind, current_account,
+                            provenance.get("resolved"),
+                        )
+                        msg = (
+                            "The live store holds a different API key from "
+                            f"{_nm(current_account)}'s. The saved key was kept "
+                            "and the live one was preserved, not written into "
+                            f"{_nm(current_account)}. To save a new key for it, "
+                            f"run: qswap add-token KEY --slot {current_account}"
+                        )
+                    elif live_login.get("accessToken") or live_login.get(
+                        "refreshToken"
+                    ):
+                        self._stash_live_credential(
+                            original_creds, kind, current_account,
+                            provenance.get("resolved"),
+                        )
+                        msg = (
+                            "The live store holds a Claude login instead of "
+                            f"{_nm(current_account)}'s API key. The saved key "
+                            "was kept and the login was preserved, not written "
+                            f"into {_nm(current_account)}. If you need that "
+                            "account, log in as it and run: qswap add"
+                        )
+                    if msg:
+                        if emit_output:
+                            warning(msg)
+                        else:
+                            warnings_out.append(msg)
+                    self._logger.info(
+                        f"Backed up account {current_account}: nothing written "
+                        "(an API-key account; the live credentials are not its key)"
                     )
+                elif kind in ("wiped", "oauth-absent"):
+                    # Nothing to preserve on the live side, and writing it
+                    # would replace the slot's only surviving refresh token:
+                    # "wiped" is Claude Code emptying the token fields in
+                    # place (its invalid_grant reaction), "oauth-absent" an
+                    # API key or MCP-only leftover in the live position.
+                    # Config backup only; the slot's credential backup is the
+                    # recovery path.
+                    _backup_config()
+                    cause = {
+                        "wiped": "The live credential's tokens were wiped "
+                        "(Claude Code clears them when a refresh is "
+                        "rejected).",
+                        "oauth-absent": "The live credential holds no Claude "
+                        "login (an API key, or an emptied credentials store).",
+                    }[kind]
                     msg = (
-                        "The live credential's tokens were wiped (Claude "
-                        "Code clears them when a refresh is rejected). "
-                        f"{_nm(current_account)}'s stored backup was "
+                        f"{cause} {_nm(current_account)}'s stored backup was "
                         "kept. If the account cannot authenticate after "
                         "switching back, log in with Claude Code and run: "
                         "qswap add"
@@ -8418,12 +8525,13 @@ class ClaudeAccountSwitcher:
                     # #145: activation composes live shared MCP state into the
                     # written credential, so live bytes match the slot's only
                     # when nothing was composed in.)
-                    self._write_account_config(
-                        current_account, current_email, original_config
-                    )
+                    _backup_config()
                     self._logger.info(
                         f"Backed up account {current_account} (config only; "
                         "credentials unchanged)"
+                        if not outgoing_is_key else
+                        f"Backed up account {current_account}: nothing written "
+                        "(an API-key account; its saved key is unchanged)"
                     )
                 else:  # own-family / own-rotated
                     self._write_account_credentials(
