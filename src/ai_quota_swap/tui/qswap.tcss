@@ -275,3 +275,9 @@ ConfirmModal, AddTokenModal, OutputModal, CommandModal {
 AddTokenModal Input {
     margin-bottom: 1;
 }
+
+/* The placeholders are the fields' only labels. Textual draws them in
+   $text-disabled, under 3:1 on the light theme; muted text reads at AA. */
+AddTokenModal Input > .input--placeholder {
+    color: $secondary;
+}

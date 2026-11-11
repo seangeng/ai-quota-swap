@@ -1,6 +1,8 @@
 """Tests for the Palette value object and the light/dark themes."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from ai_quota_swap import printer
@@ -19,6 +21,64 @@ def test_dark_palette_matches_constants():
         theme.SEV_CRIT,
         theme.TRACK,
     )
+
+
+# qswap's palette, as the colour spec gives it. Changing a value is a design
+# decision: change it here as well, and keep the contrast tests below passing.
+_PALETTE = {
+    "ACCENT": "#af87ff",
+    "FOREGROUND": "#e4e6ee",
+    "MUTED": "#8a8fa3",
+    "BACKGROUND": "#0f1117",
+    "SURFACE": "#161922",
+    "PANEL": "#1f2330",
+    "SEV_OK": "#7fd4a6",
+    "SEV_WARN": "#f0c674",
+    "SEV_CRIT": "#f47c8c",
+    "TRACK": "#2f3445",
+    "ACCENT_LIGHT": "#5b3fd1",
+    "FOREGROUND_LIGHT": "#1c2030",
+    "MUTED_LIGHT": "#565c70",
+    "BACKGROUND_LIGHT": "#f7f8fc",
+    "SURFACE_LIGHT": "#eceef5",
+    "PANEL_LIGHT": "#dde1ec",
+    "SEV_OK_LIGHT": "#1a6b43",
+    "SEV_WARN_LIGHT": "#7a5200",
+    "SEV_CRIT_LIGHT": "#b3263a",
+    "TRACK_LIGHT": "#c5cad9",
+}
+
+# The palette of the project qswap was forked from. None of it may come back.
+_UPSTREAM = {
+    "#d7875f", "#e8e4de", "#8a8a8a", "#141414", "#1e1e1e", "#262626", "#87af87",
+    "#d7af5f", "#d75f5f", "#3a3a3a", "#954c2a", "#2b2723", "#635d55", "#faf7f2",
+    "#efeae1", "#e2dbcf", "#3d6b3d", "#795911", "#ad3128", "#cec7ba",
+}
+
+
+def test_palette_is_qswaps_own():
+    assert {name: getattr(theme, name) for name in _PALETTE} == _PALETTE
+    assert not set(_PALETTE.values()) & _UPSTREAM
+
+
+def test_no_upstream_colour_in_the_code_or_the_demo_scripts():
+    # The constants above are the one source of truth: no widget, stylesheet
+    # or demo script may draw with an upstream value of its own.
+    root = Path(__file__).resolve().parents[1]
+    files = [
+        path
+        for folder in ("src/ai_quota_swap", "scripts/demo")
+        for path in sorted((root / folder).rglob("*"))
+        if path.suffix in {".py", ".tcss", ".html", ".css", ".js"}
+    ]
+    assert files
+    found = [
+        f"{path.relative_to(root)}: {value}"
+        for path in files
+        for value in _UPSTREAM
+        if value in path.read_text(encoding="utf-8").lower()
+    ]
+    assert found == []
 
 
 def test_from_theme_reads_theme_object_including_track():
@@ -133,3 +193,19 @@ def test_from_printer_maps_every_printer_colour(table, target):
     for key, code in codes.items():
         styles = [str(s.style) for s in theme.from_printer(f"{code}x\033[0m", palette).spans]
         assert styles == [getattr(palette, _PRINTER_ROLE[key])], f"{table} {key}"
+
+
+@pytest.mark.parametrize("table", ["dark", "light"])
+@pytest.mark.parametrize("target", [QSWAP_DARK, QSWAP_LIGHT], ids=["dark", "light"])
+def test_from_printer_maps_dim_to_muted_and_keeps_bold(table, target, monkeypatch):
+    # printer.dimmed sets no colour, only dim; bold_accent sets bold and the
+    # accent. Both must come out in the theme's colours.
+    monkeypatch.setattr(printer, "_theme", table)
+    palette = Palette.from_theme(target)
+    with printer.force_color():
+        dimmed = printer.dimmed("x")
+        bold_accent = printer.bold_accent("x")
+    assert [str(s.style) for s in theme.from_printer(dimmed, palette).spans] == [palette.muted]
+    assert [str(s.style) for s in theme.from_printer(bold_accent, palette).spans] == [
+        f"bold {palette.accent}"
+    ]
