@@ -360,6 +360,52 @@ class KeyActivationMixin:
             self._write_key_state({**state, "enteredBy": "user"})
         return display.KEY_KEPT
 
+    def repair_active_key(self, number: str, *, entered_by: str = "user") -> list[str]:
+        """Decision B2: ``qswap switch N`` to the key that is already active
+        checks its line the way Claude Code runs it
+        (:func:`claude_settings.line_answers`) and, when it does not answer,
+        writes it again for this install; a missing record is written (by
+        ``entered_by``), and run profiles still linked get their copy.
+        Returns what was done, in words. Raises :class:`SwitchError` when the
+        line cannot answer even so: the saved key's own refusal when the key
+        is gone, else the line's reason and the check to run."""
+        number = str(number)
+        done: list[str] = []
+        label = self.label(number, long=False)
+        why = claude_settings.line_answers(self.key_helper_state())
+        if why is not None:
+            row = ((self._get_sequence_data() or {}).get("accounts") or {}).get(number) or {}
+            self._require_saved_key(number, row.get("email", ""))
+            with FileLock(self.lock_file):
+                try:
+                    claude_settings.install(number)
+                except claude_settings.SettingsError as e:
+                    path = claude_settings.shown_path(e.path or claude_settings.settings_path())
+                    raise SwitchError(
+                        f"The key line for {label} {why}, and it could not be written "
+                        f"again: {path} {e.reason}."
+                    ) from e
+            again = claude_settings.line_answers(self.key_helper_state())
+            if again is not None:
+                raise SwitchError(
+                    f"The key line for {label} {again}, also after it was written "
+                    f"again for this qswap. Check it with: qswap key-helper {number} --check"
+                )
+            self._logger.info(f"Wrote the key line for account {number} again: it {why}")
+            done.append(f"Wrote the key line for {label} again: it {why}.")
+        state = self._key_state()
+        if str(state.get("number")) != number:
+            with FileLock(self.lock_file):
+                self._write_key_state(self._entered_record(
+                    state, number, entered_by, path=claude_settings.settings_path(),
+                ))
+        if self.profiles_still_linked():
+            with FileLock(self.lock_file):
+                still = self.isolate_run_profiles()
+            if still:
+                raise SwitchError(self._profiles_unisolated_reason(still).capitalize() + ".")
+        return done
+
     def key_helper_available(self) -> bool:
         """Whether qswap can install its helper line now (no other helper,
         and a file it can parse)."""

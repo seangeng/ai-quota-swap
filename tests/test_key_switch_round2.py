@@ -609,3 +609,78 @@ class TestUnparseableSettingsWithARecord:
         assert "qswap last made #5 ci the active API key" in text
         assert "Fix the JSON in ~/.claude/settings.json" in text
         assert "Already on" not in out
+
+
+# == B2: qswap switch N to the active key checks and repairs its line ================
+
+
+class TestSwitchToTheActiveKeyRepairs:
+    def _answers_unless_bare(self, monkeypatch):
+        ran: list[str] = []
+
+        def check(command, **kw):
+            ran.append(command)
+            if command.startswith("qswap "):
+                return "runs qswap by name only, which a session without it on its PATH cannot find"
+            return None
+
+        monkeypatch.setattr(claude_settings, "check_command", check)
+        return ran
+
+    def test_a_line_that_does_not_answer_is_written_again(self, temp_home, run, monkeypatch):
+        ran = self._answers_unless_bare(monkeypatch)
+        s = _fleet()
+        d = _profile(s)
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": "qswap key-helper 5", "model": "opus"}),
+            encoding="utf-8",
+        )
+        code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        assert "Already on #5 ci (API key)" in out.splitlines()
+        text = " ".join(out.split())
+        assert "Gave 1 qswap run profile its own copy of the settings." in text
+        assert "Wrote the key line for #5 ci again: it runs qswap by name only" in text
+        _fits(out)
+        assert _line(temp_home) == f"{QSWAP} key-helper 5"
+        assert ran[-1] == f"{QSWAP} key-helper 5"  # checked again after the write
+        # The record and the run profile too.
+        record = _key_record(s)
+        assert record["number"] == "5" and record["enteredBy"] == "user"
+        assert not (d / "settings.json").is_symlink()
+
+    def test_json_reports_the_repair(self, temp_home, monkeypatch):
+        self._answers_unless_bare(monkeypatch)
+        s = _fleet()
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": "qswap key-helper 5"}), encoding="utf-8"
+        )
+        payload = s.switch_to("5", json_output=True)
+        assert payload["switched"] is False and payload["reason"] == "already-active"
+        assert any("Wrote the key line for #5 ci again" in w for w in payload["warnings"])
+
+    def test_a_line_that_answers_is_left_alone(self, temp_home, monkeypatch):
+        s = _fleet()
+        _activate(s)
+        before = _settings(temp_home).read_bytes()
+        payload = s.switch_to("5", json_output=True)
+        assert payload["warnings"] == []
+        assert _settings(temp_home).read_bytes() == before
+
+    def test_a_key_that_is_gone_is_said_with_the_helpers_next_step(
+        self, temp_home, block_real_keychain, monkeypatch
+    ):
+        from tests.test_key_helper_live import EMAIL_5, SECURITY_SERVICE
+
+        s = _fleet()
+        _activate(s)
+        block_real_keychain.delete_password(SECURITY_SERVICE, f"account-5-{EMAIL_5}")
+        for f in s.credentials_dir.glob(".creds-5-*"):
+            f.unlink()
+        monkeypatch.setattr(
+            claude_settings, "check_command",
+            lambda command, **kw: "fails (#5 has no saved key; save one: qswap add-token KEY --slot 5)",
+        )
+        with pytest.raises(SwitchError, match="has no saved key.*qswap add-token KEY --slot 5"):
+            s.switch_to("5", json_output=True)
+        assert _line(temp_home) == f"{QSWAP} key-helper 5"
