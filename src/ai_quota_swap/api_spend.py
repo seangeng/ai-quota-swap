@@ -209,11 +209,14 @@ def credit_reading(
     }
 
 
-def limit_reason(reading: object) -> str | None:
+def limit_reason(reading: object, *, latched: bool = True) -> str | None:
     """Why an API-key account is at its limit: ``credit-expired``,
     ``credit-spent`` or ``budget``; None when it is not (or nothing can
-    tell). Whichever is reached first applies. The engine adds the freshness
-    rule on top (:func:`engine_limit_reason`)."""
+    tell). Whichever is reached first applies. With ``latched`` (the
+    surfaces), a limit auto-switch judged reached earlier and still holds
+    (:func:`latch_of`) counts too, though the figure now reads lower; the
+    engine's census asks for the reading's own figures only. The engine adds
+    the freshness rule on top (:func:`engine_limit_reason`)."""
     if not isinstance(reading, dict):
         return None
     credit = reading.get("credit")
@@ -224,7 +227,82 @@ def limit_reason(reading: object) -> str | None:
             return "credit-spent"
     if over_budget(reading):
         return "budget"
+    if latched:
+        return latch_of(reading)
     return None
+
+
+# -- a limit that was reached stays reached (decision A5) ---------------------------
+#
+# The engine records in its state file (``limitLatch``) that a key reached its
+# budget or credit; a later reading under it whose source got worse (the
+# Admin API's figure replaced by the ledger's lower estimate) does not make
+# the key a candidate again. ``readings`` copies a latch that still applies
+# into the reading (``latched``), so every surface says what the engine does.
+
+#: The limits a latch holds.
+LATCH_REASONS = frozenset({"budget", "credit-spent"})
+#: On a row whose latch holds while its figure reads under the limit.
+LATCHED_WORDS = {
+    "budget": "budget reached earlier",
+    "credit-spent": "credit counted as spent",
+}
+
+
+def latch_identity(reason: str, reading: object, record: object, now: float) -> dict | None:
+    """What a latch for ``reason`` records, so that it lapses with the thing
+    it was about: the budget's month and amount, or the credit's start and
+    amount. None when the reading and record cannot tell."""
+    from ai_quota_swap.ledger.activations import parse_ts
+    from datetime import datetime, timezone
+
+    record = record if isinstance(record, dict) else None
+    reading = reading if isinstance(reading, dict) else {}
+    if reason == "budget":
+        month = reading.get("month")
+        if not isinstance(month, str) or not month:
+            month = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m")
+        limit = budget_from_record(record)
+        if limit is None:
+            spend = reading.get("spend") if isinstance(reading.get("spend"), dict) else {}
+            limit = spend.get("limit")
+        if not isinstance(limit, (int, float)) or isinstance(limit, bool):
+            return None
+        return {"reason": reason, "month": month, "limit": float(limit)}
+    if reason == "credit-spent":
+        credit = credit_from_record(record)
+        if credit is not None:
+            since, amount = credit["since"], credit["amount"]
+        else:
+            shown = reading.get("credit") if isinstance(reading.get("credit"), dict) else {}
+            since, amount = parse_ts(shown.get("since")), shown.get("amount")
+        if since is None or not isinstance(amount, (int, float)):
+            return None
+        return {"reason": reason, "credit": f"{int(since)}|{float(amount)}"}
+    return None
+
+
+def latch_of(reading: object) -> str | None:
+    """The latched limit a reading carries (``budget``, ``credit-spent``), or None."""
+    latched = reading.get("latched") if isinstance(reading, dict) else None
+    reason = latched.get("reason") if isinstance(latched, dict) else None
+    return reason if reason in LATCH_REASONS else None
+
+
+def _only_latched(reading: dict) -> str | None:
+    """The latch, when it is the only reason the reading is at its limit."""
+    return latch_of(reading) if limit_reason(reading, latched=False) is None else None
+
+
+def _latches(root: Path) -> dict:
+    """The engine's ``limitLatch``, or ``{}``. Never raises."""
+    try:
+        from ai_quota_swap.autoswitch import STATE_FILENAME, _read_state_file
+
+        latches = _read_state_file(root / STATE_FILENAME).get("limitLatch")
+    except Exception:
+        return {}
+    return latches if isinstance(latches, dict) else {}
 
 
 # -- the engine's freshness rule ----------------------------------------------------
@@ -737,6 +815,7 @@ def readings(
 
     prices = None
     today_label = day.date().isoformat()
+    latches = _latches(root)
     out: dict[str, dict] = {}
     for num, info in infos.items():
         num = str(num)
@@ -806,6 +885,12 @@ def readings(
         reading["month"] = month.strftime("%Y-%m")
         if note:
             reading["note"] = note
+        stored = latches.get(num)
+        if (
+            isinstance(stored, dict) and stored.get("reason") in LATCH_REASONS
+            and latch_identity(stored["reason"], reading, record, now) == stored
+        ):
+            reading["latched"] = {"reason": stored["reason"], "account": num}
         out[num] = reading
     return out
 
@@ -949,6 +1034,8 @@ def spend_text(reading: dict, now: float | None = None) -> str:
 
     unenforced = limit_not_enforced(reading, now)
     tail = [LIMIT_NOT_ENFORCED] if unenforced else []
+    if only := _only_latched(reading):
+        tail.append(LATCHED_WORDS[only])
     credit = reading.get("credit")
     if isinstance(credit, dict):
         parts = ["API key", credit_text(credit)]
@@ -1033,6 +1120,9 @@ def detail_text(
     unpriced = _unpriced_words(reading)
     if unpriced:
         base = f"{unpriced} · {base}" if base else unpriced
+    latched = _latched_words(reading)
+    if latched:
+        base = f"{base} · {latched}" if base else latched
     if limit_not_enforced(reading, now) and not spend_unknown(reading):
         age = figure_age(reading, now) if _has_figure(reading) else None
         as_of = reading.get("as_of")
@@ -1054,6 +1144,23 @@ def detail_text(
     if not words:
         return base
     return f"{base} · {words}" if base else words
+
+
+def _latched_words(reading: dict) -> str | None:
+    """Why the row says :data:`LATCHED_WORDS`, and the command that clears it."""
+    only = _only_latched(reading)
+    if only is None:
+        return None
+    number = (reading.get("latched") or {}).get("account") or "N"
+    if only == "budget":
+        return (
+            "an earlier figure reached the budget; auto-switch counts it as reached "
+            f"until the month ends or it is set again: qswap budget {number} AMOUNT"
+        )
+    return (
+        "an earlier figure spent the credit; auto-switch counts it as spent until "
+        f"it is recorded again: qswap credit {number} AMOUNT"
+    )
 
 
 def _unpriced_words(reading: dict) -> str | None:
@@ -1123,6 +1230,8 @@ def menu_text(reading: dict, now: float | None = None, *, today: bool = True) ->
     with no room for it."""
     unenforced = limit_not_enforced(reading, now) and not spend_unknown(reading)
     text = _menu_text(reading, unenforced, today=today)
+    if only := _only_latched(reading):
+        return f"{text} · {LATCHED_WORDS[only]}"
     return f"{text} · {LIMIT_NOT_ENFORCED_SHORT}" if unenforced else text
 
 

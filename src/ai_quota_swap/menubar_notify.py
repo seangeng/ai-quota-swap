@@ -36,7 +36,7 @@ ENGINE_ERROR_REPEAT_S = 3600.0
 #: it cannot read the settings that hold the line of a key it made active.
 _KEY_HOLDS = (
     "api-key-sessions", "key-helper-unavailable", "key-no-limit", "spend-unknown",
-    "key-unusable", "stuck-on-key", "settings-unreadable",
+    "key-unusable", "stuck-on-key", "settings-unreadable", "limit-latched",
 )
 
 

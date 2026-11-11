@@ -327,6 +327,12 @@ def api_spend_to_json(reading: dict) -> dict:
         out["unpricedTokens"] = reading["unpriced_tokens"]
     if reading.get("note"):
         out["note"] = reading["note"]
+    from ai_quota_swap.api_spend import latch_of
+
+    if latched := latch_of(reading):
+        # Auto-switch judged this limit reached earlier and still counts it
+        # (``budget`` or ``credit-spent``), though the figure reads lower.
+        out["limitLatched"] = latched
     credit = reading.get("credit")
     if isinstance(credit, dict):
         # Additive (docs/design/api-key-sessions.md, "Credit"): qswap's own

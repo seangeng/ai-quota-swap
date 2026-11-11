@@ -234,7 +234,13 @@ def account_facts(
         return "disabled", "dim"
     if state == "api-key":
         used = getattr(view, "used", False)
-        return ("API key, used as a last resort" if used else "API key, not used"), "dim"
+        if not used:
+            return "API key, not used", "dim"
+        # What the engine does with the key on this tick, as the dashboard's
+        # Next best says it (ux.md: a skipped account shows why everywhere).
+        return _key_view_words().get(getattr(view, "key_hold", None) or "", (
+            "API key, used as a last resort"
+        )), "dim"
     if state == "unavailable":
         return display.usage_unavailable(error), "dim"
     if state == "not-read":
@@ -486,6 +492,20 @@ def switch_sentence(event: object, *, src: str | None = None, dst: str | None = 
 
 
 #: A key's limit as "past ..." reads it (stuck-on-key).
+def _key_view_words() -> dict[str, str]:
+    from ai_quota_swap import api_spend
+
+    return {
+        "key-no-limit": "API key, no budget or credit, not used",
+        "spend-unknown": f"API key, {api_spend.LIMIT_NOT_ENFORCED}",
+        "budget": "API key, monthly budget reached",
+        "credit-spent": "API key, credit spent",
+        "credit-expired": "API key, credit expired",
+        "latched-budget": f"API key, {api_spend.LATCHED_WORDS['budget']}, not used",
+        "latched-credit-spent": f"API key, {api_spend.LATCHED_WORDS['credit-spent']}, not used",
+    }
+
+
 _LIMIT_WORDS = {
     "budget": "its monthly budget",
     "credit-spent": "its credit",
@@ -754,6 +774,21 @@ def no_switch_sentence(event: object) -> str:
         return (
             f"Not switching to an API key: {who} has no budget or credit; set one "
             f"with: qswap budget {number} AMOUNT"
+        )
+    if reason == "limit-latched":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "the API-key account"
+        number = account if account else "N"
+        if getattr(event, "limit_reason", None) == "credit-spent":
+            return (
+                f"Not switching to {who}: its credit was counted as spent, and a lower "
+                "figure since does not undo that. To use it again, record it again: "
+                f"qswap credit {number} AMOUNT"
+            )
+        return (
+            f"Not switching to {who}: its monthly budget was reached this month, and a "
+            "lower figure since does not undo that. To use it again, set the budget "
+            f"again: qswap budget {number} AMOUNT"
         )
     if reason == "spend-unknown":
         from ai_quota_swap import api_spend

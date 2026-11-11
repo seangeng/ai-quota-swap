@@ -598,6 +598,39 @@ class TestNoDataAndBudgets:
         assert api_spend.over_budget(reading)
         assert "of $5 (160%, over budget)" in api_spend.spend_text(reading)
 
+    def test_a_latched_budget_is_on_the_row(self, env):
+        """Auto-switch judged #3 at its $20 budget (Anthropic's figure, say),
+        and the reading is now the ledger's $4: the row says the budget
+        counts as reached, and how to clear it (decision A5, re-check)."""
+        from ai_quota_swap.autoswitch import STATE_FILENAME
+        from ai_quota_swap.json_output import api_spend_to_json
+
+        s = make_switcher()
+        email = seed_api_key(s, 3, KEY_A)
+        _ledger(email, [(NOW - 60, OPUS, 1_000_000, 0)])
+        set_record(s, 3, budget=20)
+        (data_root() / STATE_FILENAME).write_text(json.dumps({"limitLatch": {
+            "3": {"reason": "budget", "month": "2026-11", "limit": 20.0},
+        }}), encoding="utf-8")
+        reading = _readings(s)["3"]
+        assert api_spend.limit_reason(reading) == "budget"
+        assert api_spend.limit_reason(reading, latched=False) is None
+        assert api_spend.spend_text(reading, now=NOW) == (
+            "API key · $4.00 today · $4.00 this month of $20 (20%) · estimate · "
+            "budget reached earlier"
+        )
+        assert api_spend.detail_text(reading, NOW) == (
+            "an earlier figure reached the budget; auto-switch counts it as reached "
+            "until the month ends or it is set again: qswap budget 3 AMOUNT"
+        )
+        assert api_spend.menu_text(reading, now=NOW).endswith("· budget reached earlier")
+        assert api_spend_to_json(reading)["limitLatched"] == "budget"
+        # Another month, or another budget: the latch no longer applies.
+        set_record(s, 3, budget=30)
+        reading = _readings(s)["3"]
+        assert api_spend.limit_reason(reading) is None
+        assert "limitLatched" not in api_spend_to_json(reading)
+
     @pytest.mark.parametrize("value,expected", [
         ("500", 500.0), ("$1,200.50", 1200.5), (49.999, 50.0), ("0.01", 0.01),
     ])

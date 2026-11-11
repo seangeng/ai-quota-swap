@@ -573,6 +573,44 @@ class TestTheLatch:
             TickOutcome.SWITCHED
         )
 
+    def test_the_engine_says_why_it_skips_a_latched_key(self, temp_home):
+        """The re-check's case: reached per Anthropic, latched, the reading
+        later down to the ledger's $300. The tick used to be BLOCKED with no
+        word about the key."""
+        h = _fleet(temp_home)
+        _tick(h, EXHAUSTED, {"2": _over(h)})
+        h.clock.advance(60)
+        for _ in range(2):
+            assert _tick(h, EXHAUSTED, {"2": _lower(h)}) is TickOutcome.BLOCKED
+            h.clock.advance(60)
+        held = [e for e in _holds(h) if e.reason == "limit-latched"]
+        assert held and held[0].account == "2" and held[0].limit_reason == "budget"
+        assert held[0].human() == (
+            "Not switching to #2 ci: its monthly budget was reached this month, and a "
+            "lower figure since does not undo that. To use it again, set the budget "
+            "again: qswap budget 2 AMOUNT"
+        )
+        assert len([n for n in _notes(h) if "was reached this month" in n]) == 1
+
+    def test_a_latched_credit_names_its_command(self, temp_home):
+        h = _fleet(temp_home, limit="credit")
+        since = "2026-11-01T00:00:00Z"
+
+        def credit(left):
+            return {"amount": 100.0, "used": 100.0 - left, "left": left,
+                    "spent": left <= 0, "expired": False, "since": since,
+                    "expires": None, "source": "admin-api"}
+
+        _tick(h, EXHAUSTED, {"2": _reading(h, limit=None, source="admin-api",
+                                           credit=credit(-5.0))})
+        _tick(h, EXHAUSTED, {"2": _reading(h, limit=None, credit=credit(60.0))})
+        held = [e for e in _holds(h) if e.reason == "limit-latched"]
+        assert held and held[-1].human() == (
+            "Not switching to #2 ci: its credit was counted as spent, and a lower "
+            "figure since does not undo that. To use it again, record it again: "
+            "qswap credit 2 AMOUNT"
+        )
+
     def test_a_dry_run_latches_in_memory_only(self, temp_home):
         h = _fleet(temp_home)
         h.engine = h._make_engine(dry_run=True)
@@ -1075,6 +1113,33 @@ class TestTheAutoLogFits:
                 if line.strip().startswith("qswap "):
                     continue
                 assert len(line) <= 80, line
+
+    @pytest.mark.parametrize("limit, reading, words", [
+        (None, dict(limit=None), "API key, no budget or credit, not used"),
+        ("budget", dict(used=600.0), "API key, monthly budget reached"),
+        ("budget", dict(age=3600), "API key, limit not enforced: no spend figure"),
+        ("budget", dict(), "API key, used as a last resort"),
+    ])
+    def test_a_key_row_says_what_the_engine_does_with_it(self, temp_home, limit, reading, words):
+        """The re-check's case: every key read "used as a last resort" when
+        the setting was on, also one the engine had just refused (the
+        dashboard's Next best said why). A dry run, which does not scan."""
+        h = _fleet(temp_home, limit=limit)
+        h.engine = h._make_engine(dry_run=True)
+        _tick(h, EXHAUSTED, {"2": _reading(h, **reading)})
+        rows = [line for line in self._lines(h) if line.strip().startswith("#2 ci")]
+        assert rows and rows[0].split("#2 ci", 1)[1].strip() == words, rows
+
+    def test_a_latched_key_row(self, temp_home):
+        h = _fleet(temp_home)
+        _tick(h, EXHAUSTED, {"2": _over(h)})
+        h.events.clear()
+        h.clock.advance(60)
+        _tick(h, EXHAUSTED, {"2": _lower(h)})
+        rows = [line for line in self._lines(h) if line.strip().startswith("#2 ci")]
+        assert rows and rows[0].split("#2 ci", 1)[1].strip() == (
+            "API key, budget reached earlier, not used"
+        ), rows
 
 
 # == A16: saying so when nothing watches the limit =========================================

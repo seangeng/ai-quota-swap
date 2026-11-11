@@ -336,6 +336,26 @@ class TestNextBestSaysWhyTheEngineWouldNotUseAKey:
         order = [c.number for c in picked]
         assert order.index("8") < order.index("5") and order.index("8") < order.index("6")
 
+    def test_a_latched_key_says_so(self):
+        """A key whose budget was reached earlier (latched) while its figure
+        reads lower: Next best lists it as not used, with why (re-check)."""
+        from ai_quota_swap.autoswitch import AutoSwitchSettings
+        from ai_quota_swap.models import AccountsSnapshot
+        from ai_quota_swap.tui import autoview
+        from ai_quota_swap.tui import data as tui_data
+
+        reading = _stale_budget(age=60)
+        reading["latched"] = {"reason": "budget", "account": "7"}
+        view = tui_data.ProviderView(provider="claude", snapshot=AccountsSnapshot(
+            active_number="1", accounts=(_sub_snapshot(1, 100.0, active=True),
+                                         _key_snapshot(7, reading)),
+            taken_at=time.time(),
+        ))
+        picked = autoview.next_best(view, AutoSwitchSettings(include_api_key_accounts=True))
+        assert {c.number: c.words for c in picked}["7"] == (
+            "API key · budget reached earlier, not used"
+        )
+
 
 # == B8 with A16: one way back, the same everywhere =====================================
 
