@@ -819,15 +819,16 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             checks.append(Check(
                 "claude.key_helper", "claude", FAIL,
                 f"{where} makes #{state.number} the active API key, but #{state.number} "
-                f"{what}; new Claude Code sessions fail to get a key, and running "
-                "ones keep the key they have until the settings change",
+                f"{what}; new Claude Code sessions fail to get a key, and "
+                f"{display.BROKEN_LINE_RUNNING}",
                 fix=fix,
             ))
         elif state.stale_command:
             checks.append(Check(
                 "claude.key_helper", "claude", FAIL,
                 f"{where} makes #{state.number} the active API key with a qswap that "
-                "is no longer there; Claude Code sessions cannot get the key",
+                "is no longer there; new Claude Code sessions fail to get the key, "
+                f"and {display.BROKEN_LINE_RUNNING}",
                 fix=f"qswap switch {state.number}",
             ))
         elif findings.key is not None:
@@ -1149,7 +1150,7 @@ def _session_records_check(p: Probes, f: _Facts) -> Check | None:
             "claude.session_records", "claude", WARN,
             f"Claude Code's session records folder {shown[0]} could not be read, so "
             "qswap cannot tell whether sessions are running and will not switch to "
-            "an API-key account without its key helper",
+            "an API-key account without its key line",
             fix=f"check that you can open {shown[0]}",
         )
     n = len(files)
@@ -1166,7 +1167,7 @@ def _session_records_check(p: Probes, f: _Facts) -> Check | None:
         "claude.session_records", "claude", WARN,
         f"{n} Claude Code session {noun} could not be read, so qswap cannot tell "
         "whether sessions are running and will not switch to an API-key account "
-        "without its key helper: " + ", ".join(files),
+        "without its key line: " + ", ".join(files),
         fix=fix,
     )
 

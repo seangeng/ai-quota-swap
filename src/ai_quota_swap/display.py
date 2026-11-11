@@ -1329,6 +1329,12 @@ def key_sent_elsewhere(path: str, host: str, target: str) -> str:
     )
 
 
+#: What a line that cannot give a key leaves running sessions with (E2, read
+#: on Claude Code 2.1.322): the key they hold, until the settings change or a
+#: request is rejected; only new sessions get none.
+BROKEN_LINE_RUNNING = "running ones keep the key they have until the settings change"
+
+
 def key_helper_problem(number: str, why: str, fix_command: str) -> list[str]:
     """The lines every surface shows for a helper line naming an account that
     does not exist or is not an API-key account (``why``: ``missing`` or
@@ -1336,8 +1342,8 @@ def key_helper_problem(number: str, why: str, fix_command: str) -> list[str]:
     what = "does not exist" if why == "missing" else "is not an API-key account"
     return wrap(
         f"The Claude Code settings make #{number} the active API key, but #{number} "
-        f"{what}, so Claude Code sessions cannot get a key. Remove the line: "
-        f"{fix_command}"
+        f"{what}: new Claude Code sessions fail to get a key, and {BROKEN_LINE_RUNNING}. "
+        f"Remove the line: {fix_command}"
     )
 
 
@@ -1346,8 +1352,8 @@ def key_helper_moved(number: str, fix_command: str) -> list[str]:
     moved it), so sessions on the key cannot get it."""
     return wrap(
         f"The key line for #{number} in the Claude Code settings runs a qswap that "
-        f"is no longer there, so Claude Code sessions cannot get the key. Point it "
-        f"at this qswap: {fix_command}"
+        f"is no longer there: new Claude Code sessions fail to get the key, and "
+        f"{BROKEN_LINE_RUNNING}. Point it at this qswap: {fix_command}"
     )
 
 

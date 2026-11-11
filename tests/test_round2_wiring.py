@@ -410,3 +410,48 @@ class TestSwitchToTheActiveKeyRunsTheLine:
         assert any("Wrote the key line for #5 ci again: it fails" in w for w in payload["warnings"])
         assert _line(temp_home) == f"{new} key-helper 5"
         assert claude_settings.line_answers(s.key_helper_state()) is None
+
+
+# == E2: what a line that cannot give a key does to sessions, the same everywhere =====
+
+
+E2_RUNNING = "running ones keep the key they have until the settings change"
+
+
+class TestABrokenLineSaysWhatSessionsDo:
+    """E2 (Claude Code 2.1.322): a session that holds a key keeps sending it
+    while the helper fails, until a settings change or a rejected request;
+    only new sessions get none. The notes in list, status, the dashboard and
+    the menu bar say so as doctor does."""
+
+    def test_a_line_naming_an_account_that_does_not_exist(self, temp_home):
+        from ai_quota_swap import doctor
+
+        s = _fleet()
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": f"{QSWAP} key-helper 9"}), encoding="utf-8"
+        )
+        notes = " ".join(" ".join(s.key_helper_notes()).split())
+        assert "new Claude Code sessions fail to get a key" in notes
+        assert E2_RUNNING in notes
+        assert "Remove the line: qswap switch 1" in notes
+        _fits("\n".join(s.key_helper_notes()))
+        check = {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
+        assert E2_RUNNING in check.summary
+
+    def test_a_line_that_runs_a_qswap_no_longer_there(self, temp_home, monkeypatch):
+        from ai_quota_swap import doctor
+
+        s = _fleet()
+        from tests.test_key_helper_live import _activate
+
+        _activate(s)
+        monkeypatch.setattr(claude_settings, "command_missing", lambda command: True)
+        notes = " ".join(" ".join(s.key_helper_notes()).split())
+        assert "new Claude Code sessions fail to get the key" in notes
+        assert E2_RUNNING in notes
+        assert "Point it at this qswap: qswap switch 5" in notes
+        _fits("\n".join(s.key_helper_notes()))
+        check = {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
+        assert "new Claude Code sessions fail to get the key" in check.summary
+        assert E2_RUNNING in check.summary

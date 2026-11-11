@@ -1031,7 +1031,7 @@ class TestOverrides:
         assert check.summary == (
             "1 Claude Code session record could not be read, so qswap cannot tell "
             "whether sessions are running and will not switch to an API-key account "
-            f"without its key helper: {shown}"
+            f"without its key line: {shown}"
         )
         assert check.fix == f"if Claude Code process 4242 is gone, delete {shown}"
         code, out = machine.run(capsys)
