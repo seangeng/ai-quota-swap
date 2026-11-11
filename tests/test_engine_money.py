@@ -173,8 +173,24 @@ class TestNeverKeyToKey:
         assert h.switcher.current_account_number() == "2"
         assert _settings_line(temp_home) is None
 
+    @pytest.mark.parametrize("brake", ["budget", "spend-unknown"])
+    def test_an_older_way_key_at_its_limit_never_moves_to_another_key(self, temp_home, brake):
+        """The at-limit trigger: #2 (saved the older way) at its budget, or
+        with no spend figure. Subscriptions are exhausted and #4 is a key
+        well under its budget: #4 is never the way out."""
+        h = _fleet(temp_home, keys=(2, 4))
+        h.make_live("key2@token.local", 2)
+        two = _reading(h, used=600.0) if brake == "budget" else _reading(h, used=None)
+        for _ in range(3):
+            _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(100), "4": "api key"},
+                  {"2": two, "4": _reading(h, used=1.0)})
+            h.clock.advance(60)
+        assert not [s for s in _switches(h) if (s.to_ref or {}).get("number") == "4"]
+        assert h.switcher.current_account_number() != "4"
+        assert _settings_line(temp_home) is None
 
-EXHAUSTED = {"1": _usage(100), "2": "api key", "3": _usage(100)}
+
+EXHAUSTED ={"1": _usage(100), "2": "api key", "3": _usage(100)}
 
 
 def _enter(h) -> None:
