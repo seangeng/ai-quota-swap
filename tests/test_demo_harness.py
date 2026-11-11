@@ -437,6 +437,28 @@ class TestScenarioStates:
         r = _run(["empty-claude", "--menubar"])
         assert "Claude Code is logged in as maya@example.com. Add it with: qswap add" in r.stdout
 
+    def test_an_active_api_key_renders_in_the_sandbox(self):
+        # The documents quote the states under an active key: the switch,
+        # doctor (which runs the key line with --check) and the switch to the
+        # key already active (which runs it too). The line names the demo's
+        # own ~/.local/bin/qswap, never this checkout, and nothing spawns.
+        r = _run(["fleet", "--width", "80", "--", "switch", "5", "++", "doctor",
+                  "++", "switch", "5"])
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "crossed the sandbox" not in r.stderr
+        assert "Go back with: qswap switch 1" in r.stdout
+        assert (
+            "  ok    active API key: #5 ci, through qswap's key line in\n"
+            "        ~/.claude/settings.json, which runs ~/.local/bin/qswap\n"
+        ) in r.stdout
+        assert "Already on #5 ci (API key)\n" in r.stdout
+        assert str(REPO) not in r.stdout
+        # --menubar after commands: the menu for the state they leave.
+        r = _run(["fleet", "--menubar", "--", "switch", "5"])
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "✓ #5 ci · API key · over #1 personal · no usage recorded\n" in r.stdout
+        assert "#1 personal · underneath · 5h 46% · 7d 38%" in r.stdout
+
     def test_trouble_seeds_a_quarantine_the_engine_honours(self):
         # After `list` reads it, the quarantined account (4) has a fresh,
         # readable reading with headroom, and auto still finds no candidate:

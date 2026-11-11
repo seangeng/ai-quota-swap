@@ -23,7 +23,8 @@ Run everything from the repository root with the dev dependencies installed
 scenario as an indented outline: the menu bar cannot be drawn off macOS or
 inside the sandbox, but every row it shows comes from one pure function
 (`ai_quota_swap.menubar.build_menu`), which the outline prints after the same
-reads and ledger scan the app makes.
+reads and ledger scan the app makes. Commands after `--` run first, so
+`run.py fleet --menubar -- switch 5` prints the menu with an API key active.
 
 `run.py <scenario> -- <qswap arguments>` runs the real CLI entry point
 (`ai_quota_swap.cli.main`) against a scenario. Separate several commands with
@@ -81,7 +82,12 @@ refuses what it should; and the launcher refuses to start when a guard is off.
 The demo processes patch these in their own memory only, and nothing on
 disk: `cli._use_native_tls` (it would load the Security framework, which the
 sandbox refuses), `poll_policy.JITTER_FRAC` (pinned to zero as the test suite
-pins it), `AutoSwitchEngine._next_delay` (time compression, below), and the
+pins it), `AutoSwitchEngine._next_delay` (time compression, below), the
+command the key line names (`installed.command`, pinned to a stand-in
+`~/.local/bin/qswap` in the temp home that is never run), the check of that
+line (`claude_settings._run_check`, which runs `qswap key-helper N --check`
+in the demo process instead of through the shell), the machine-wide managed
+settings file doctor reads (none), and the
 four functions in `ai_quota_swap.codex.processes` that reach processes
 (listing Codex processes with `ps`, finding and restarting Codex's background
 server, running `codex login`). The sandbox refuses those spawns, so the demo
