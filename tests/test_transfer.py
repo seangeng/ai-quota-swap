@@ -572,6 +572,35 @@ class TestConflictPolicy:
         assert s.helper_account() == "2"
         assert key_helper.read_key("2", root=Path(s.backup_dir)) == KEY_B
 
+    def test_with_a_key_active_only_the_key_is_called_the_active_account(
+        self, temp_home: Path, capsys, monkeypatch
+    ):
+        """The re-check's case: key #2 active through the line over #1, and
+        import --force of both. The output called #2 the active account,
+        and then #1 too; #1 is the login underneath."""
+        from tests.admin_fakes import KEY_A
+        from tests.api_helpers import make_switcher, pin_platform, seed_api_key, seed_oauth
+
+        from ai_quota_swap import claude_settings
+
+        pin_platform(monkeypatch, Platform.LINUX)
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: ["/opt/qswap/bin/qswap"])
+        monkeypatch.setattr(claude_settings, "command_missing", lambda command: False)
+        s = make_switcher()
+        seed_oauth(s, 1, "carol@example.com")
+        seed_api_key(s, 2, KEY_A, email="ci@example.com")
+        s.switch_to("1", json_output=True)
+        s.switch_to("2", json_output=True)
+        assert s.helper_account() == "2" and s.login_account_number() == "1"
+        out = temp_home / "all.qswap"
+        export_accounts(s, str(out))
+        capsys.readouterr()
+        import_accounts(s, str(out), force=True)
+        err = " ".join(capsys.readouterr().err.split())
+        assert "#2 ci@example.com is already the active account; nothing needs doing." in err
+        assert err.count("is already the active account") == 1, err
+        assert "carol@example.com is already the active account" not in err
+
     def test_import_without_matching_live_login_prints_no_hint(
         self, temp_home: Path, capsys
     ):

@@ -816,12 +816,24 @@ def import_accounts(
                         f"line, with: qswap switch {live_slot} --force"
                     )
             elif live_dead:
-                _eprint(
-                    f"{name} is the active account and its login was not working. "
-                    "Load the imported copy, which replaces the live login, with: "
-                    f"qswap switch {live_slot} --force"
-                )
-            else:
+                if helper_slot is not None:
+                    # The login underneath the active key, not the active
+                    # account; loading it leaves the key too.
+                    key_name = switcher.label(helper_slot, long=False)
+                    _eprint(
+                        f"{name} is logged in underneath {key_name}, and its login was not "
+                        "working. Load the imported copy, which replaces that login and "
+                        f"leaves the key, with: qswap switch {live_slot} --force"
+                    )
+                else:
+                    _eprint(
+                        f"{name} is the active account and its login was not working. "
+                        "Load the imported copy, which replaces the live login, with: "
+                        f"qswap switch {live_slot} --force"
+                    )
+            elif helper_slot is None:
+                # Under an active key the login is underneath it, not active,
+                # and nothing needs doing about it either: no line for it.
                 _eprint(f"{name} is already the active account; nothing needs doing.")
 
 
