@@ -7247,7 +7247,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         warnings.extend(repairs if json_output else [])
         key = self.helper_account()
         if key is not None:
-            under = self.login_account_number()
+            # A subscription underneath only: a key saved the older way
+            # under the line is not one, and a rotation never lands on a key.
+            under = self.underneath_account_number()
             target = under
             if strategy == "best" and under is not None:
                 best_usage = self._usage_by_account()
@@ -7263,9 +7265,13 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     self._switch_result_from_op(op, strategy_label, warnings)
                     if json_output else None
                 )
-            # No subscription underneath: leave the key and rotate as on a
-            # machine with no live login.
+            # No subscription underneath: leave the key and rotate onto a
+            # subscription. A plain rotation, also for ``best``: what is
+            # left under the line (no login, or a key saved the older way)
+            # is not a place to stay.
             self._leave_key()
+            strategy = None
+            models = ()
 
         identity = self._get_current_account()
 

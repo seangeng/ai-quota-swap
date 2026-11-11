@@ -3810,6 +3810,8 @@ class AutoSwitchEngine:
         roomy.sort(key=lambda r: (-r[0], int(r[1]) if r[1].isdigit() else 0))
         ordered = [num for _room, num in roomy]
         back_underneath = False
+        underneath_of = getattr(self.switcher, "underneath_account_number", None)
+        under = underneath_of() if callable(underneath_of) else None
         if not ordered:
             if reason is None:
                 self._emit(NoSwitchEvent(
@@ -3817,9 +3819,13 @@ class AutoSwitchEngine:
                     detail="staying on the API key until a subscription has room",
                 ))
                 return TickOutcome.NO_ACTION
-            underneath_of = getattr(self.switcher, "underneath_account_number", None)
-            under = underneath_of() if callable(underneath_of) else None
             if under is None:
+                # At its limit the key is left all the same when the login
+                # underneath is one qswap does not manage: removing the line
+                # returns the sessions to it.
+                left_for_login = self._leave_key_for_unmanaged_login(current, reason)
+                if left_for_login is not None:
+                    return left_for_login
                 self._emit(NoSwitchEvent(
                     reason="no-candidates",
                     detail="no subscription to return to from the API key",
@@ -3838,7 +3844,11 @@ class AutoSwitchEngine:
         left = (None, float("inf"))
         for num in ordered:
             email = self.switcher.account_email(num)
-            if self.dry_run or back_underneath:
+            if self.dry_run or back_underneath or num == under:
+                # The account underneath is the live login: leaving for it
+                # only removes the line, and nothing copies a freshened
+                # backup into the live login, so its refresh token is never
+                # spent here. Claude Code refreshes it with its own.
                 return self._perform(num, email, trigger, left)
             status = self._freshen_target(num, email)
             if status == "identity-conflict":
@@ -3852,6 +3862,45 @@ class AutoSwitchEngine:
             return self._perform(num, email, trigger, left)
         self._emit(NoSwitchEvent(reason="no-viable-target"))
         return TickOutcome.BLOCKED
+
+    def _leave_key_for_unmanaged_login(
+        self, current: str, reason: str,
+    ) -> TickOutcome | None:
+        """Leave the key ``current`` at its limit for an unmanaged login
+        underneath (``leave_key_for_unmanaged_login``); None when the provider
+        has no such path or there is no such login."""
+        leave = getattr(self.switcher, "leave_key_for_unmanaged_login", None)
+        if not callable(leave):
+            return None
+        cause = {
+            "binding": None, "over_budget": True, "priority_up": None,
+            "limit_reason": reason, "back_underneath": True,
+        }
+        if self.dry_run:
+            # Nothing is changed in a dry run, and this path has no
+            # read-only form: say what blocks a real switch.
+            return None
+        with self._state_lock():
+            state = self._read_state()
+            try:
+                result = leave()
+            except Exception as e:
+                self._emit(NoSwitchEvent(reason="no-candidates", detail=str(e)))
+                return TickOutcome.BLOCKED
+            if not result:
+                return None
+            state["schemaVersion"] = STATE_SCHEMA_VERSION
+            state["lastSwitchAt"] = self.clock()
+            state["lastSwitchTo"] = None
+            state["lastSwitchFrom"] = current
+            state["leftHeadroom"], state["leftRecoveryAt"] = None, None
+            state["leftTrigger"] = "at-limit"
+            atomic_write_json(self.state_path, state)
+        self._emit(SwitchEvent(
+            trigger="at-limit", from_ref=result.get("from"), to_ref=result.get("to"),
+            warnings=result.get("warnings", []), **cause,
+        ))
+        return TickOutcome.SWITCHED
 
     def _shared_session_count(self) -> int:
         """How many Claude Code sessions run on the provider's shared login:

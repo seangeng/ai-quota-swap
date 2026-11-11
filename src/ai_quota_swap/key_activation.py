@@ -403,6 +403,30 @@ class KeyActivationMixin:
             self._logger.info("Removed the key helper line from Claude Code's settings")
         return removed
 
+    def leave_key_for_unmanaged_login(self) -> dict | None:
+        """Leave the active key when the login underneath is one qswap does
+        not manage: remove the line only, so running sessions return to that
+        login. For the engine at a key's budget or credit, when no managed
+        subscription can take over. ``{"from", "to"}`` refs (``to`` has no
+        number), or None when there is no such login (none at all, or a
+        managed one, which the ordinary switch handles) and nothing changed."""
+        key = self.helper_account()
+        if key is None:
+            return None
+        identity = self._get_current_account()
+        if identity is None or not identity[0] or self.login_account_number() is not None:
+            return None
+        key_email = self.account_email(key)
+        self._leave_key()
+        self._note_live_login(None, identity)
+        self._logger.info(f"Left account {key} for the unmanaged login underneath")
+        return {
+            "switched": True,
+            "from": account_ref(int(key), key_email),
+            "to": {"number": None, "email": identity[0]},
+            "warnings": [],
+        }
+
     def reconcile_key_helper(self) -> list[str]:
         """Repair what a crash or a removed account left: a helper line that
         cannot give a key is removed, and run profiles holding a stale

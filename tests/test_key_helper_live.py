@@ -1009,6 +1009,25 @@ class TestRotation:
             result = s.switch(strategy="best", json_output=True)
         assert result["to"]["number"] == 1
 
+    @pytest.mark.parametrize("strategy", [None, "best"])
+    def test_rotation_over_a_key_saved_the_older_way_never_lands_on_it(
+        self, temp_home, strategy
+    ):
+        """#6 through the line over #5 saved the older way: #5 is not a
+        subscription underneath, so a rotation goes on to a subscription."""
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        s.switch_to("6", json_output=True)
+        assert s.helper_account() == "6"
+        assert s.underneath_account_number() is None
+        extra = {"strategy": strategy} if strategy else {}
+        with patch.object(s, "_usage_by_account", return_value={}):
+            result = s.switch(json_output=True, **extra)
+        assert result["switched"] is True
+        assert result["to"]["number"] in (1, 7)
+        assert s.account_kind_for(s.current_account_number()) != "api_key"
+        assert s.helper_account() is None
+
 
 class TestAccountChangesWhileOnAKey:
     def test_remove_the_active_key_takes_the_line_out_first(self, temp_home, block_real_keychain):
@@ -1378,6 +1397,49 @@ class TestEngine:
             "has room, so back to the account underneath"
         )
 
+    def test_at_its_budget_it_leaves_for_an_unmanaged_login_underneath(self, temp_home):
+        """No managed subscription has room and the login underneath is one
+        qswap does not manage: the line comes out all the same, so sessions
+        stop spending the key past its budget."""
+        h = _harness(temp_home)
+        h.make_live("x@example.com", 9)
+        h.switcher.switch_to("2", json_output=True)
+        assert h.switcher.helper_account() == "2"
+        assert h.switcher.underneath_account_number() is None
+        from tests.test_autoswitch import _entry_for
+
+        now = h.clock.now
+        over = {"spend": {"used": 600.0, "limit": 500.0}, "source": "ledger"}
+        entries = {"1": _entry_for(_usage(100), now), "2": _key_entry(over, now),
+                   "3": _entry_for(_usage(100), now)}
+        assert h.tick_with_entries(entries) is TickOutcome.SWITCHED
+        assert h.switcher.helper_account() is None
+        assert "apiKeyHelper" not in (
+            _settings_obj(temp_home) if _settings(temp_home).exists() else {}
+        )
+        switch = [e for e in h.events if isinstance(e, SwitchEvent)][-1]
+        assert switch.human() == (
+            "Switched #2 ci → x@example.com · monthly budget reached; no subscription "
+            "has room, so back to the account underneath"
+        )
+
+    def test_at_its_budget_with_no_login_underneath_it_stays(self, temp_home):
+        """With no login at all, removing the line would leave every session
+        with nothing: the engine says so and stays."""
+        h = _harness(temp_home)
+        h.switcher.switch_to("2", json_output=True)
+        (temp_home / ".claude.json").write_text("{}", encoding="utf-8")
+        from tests.test_autoswitch import _entry_for
+
+        now = h.clock.now
+        over = {"spend": {"used": 600.0, "limit": 500.0}, "source": "ledger"}
+        entries = {"1": _entry_for(_usage(100), now), "2": _key_entry(over, now),
+                   "3": _entry_for(_usage(100), now)}
+        assert h.tick_with_entries(entries) is TickOutcome.BLOCKED
+        assert h.switcher.helper_account() == "2"
+        held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
+        assert held.reason == "no-candidates"
+
     def test_will_not_move_to_a_key_whose_credit_is_spent(self, temp_home):
         h = _harness(temp_home)
         from tests.test_autoswitch import _entry_for
@@ -1389,6 +1451,73 @@ class TestEngine:
                    "3": _entry_for(_usage(100), now)}
         assert h.tick_with_entries(entries) is TickOutcome.BLOCKED
         assert h.switcher.current_account_number() == "1"
+
+
+def _rt(raw: str) -> str:
+    return json.loads(raw)["claudeAiOauth"]["refreshToken"]
+
+
+class TestLeavingForTheLoginUnderneath:
+    """Leaving an engine-entered key for the account underneath only removes
+    the line, so that account's refresh token, shared with the live login,
+    is never spent by a freshen whose result only the backup would get."""
+
+    def _entered(self, temp_home):
+        h = EngineHarness(temp_home, include_api_key_accounts=True)
+        h.clock.now = time.time()
+        exp = int(h.clock.now * 1000) + 7 * 60 * 1000  # inside FRESHEN_BUFFER_MS
+        h.seed(1, "a@example.com", expires_at=exp)
+        h.seed(2, "key@token.local")
+        h.seed(3, "c@example.com", expires_at=exp)
+        h.make_live("a@example.com", 1)
+        data = h.switcher._get_sequence_data()
+        data["accounts"]["2"]["kind"] = "api_key"
+        h.switcher._write_json(h.switcher.sequence_file, data)
+        h.switcher._write_account_credentials("2", "key@token.local", "sk-ant-api03-" + "kk" * 20)
+        h.switcher._write_credentials(
+            h.switcher._read_account_credentials("1", "a@example.com")
+        )
+        assert h.tick_with_usage(EXHAUSTED) is TickOutcome.SWITCHED
+        assert h.switcher.key_entered_by() == "engine"
+        return h, exp
+
+    @staticmethod
+    def _refresher(posted, exp):
+        from ai_quota_swap import oauth
+
+        def refresh(creds, *a, **k):
+            posted.append(_rt(creds))
+            return oauth.RefreshOutcome(json.dumps({"claudeAiOauth": {
+                "accessToken": "sk-new", "refreshToken": "rt-new",
+                "expiresAt": exp + 8 * 3600 * 1000,
+            }}), None)
+        return refresh
+
+    def test_the_account_underneath_is_never_freshened(self, temp_home):
+        h, exp = self._entered(temp_home)
+        posted: list[str] = []
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
+                   side_effect=self._refresher(posted, exp)):
+            usage = {"1": _usage(10), "2": "api key", "3": _usage(100)}
+            assert h.tick_with_usage(usage) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        assert h.switcher.helper_account() is None
+        assert posted == []
+        assert _rt(h.switcher._read_credentials()) == "rt-1"
+        assert _rt(h.switcher._read_account_credentials("1", "a@example.com")) == "rt-1"
+
+    def test_another_subscription_is_still_freshened_before_its_login_switch(
+        self, temp_home
+    ):
+        h, exp = self._entered(temp_home)
+        posted: list[str] = []
+        with patch("ai_quota_swap.oauth.try_refresh_oauth_credentials",
+                   side_effect=self._refresher(posted, exp)):
+            usage = {"1": _usage(100), "2": "api key", "3": _usage(10)}
+            assert h.tick_with_usage(usage) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "3"
+        assert posted == ["rt-3"]
+        assert _rt(h.switcher._read_credentials()) == "rt-new"
 
 
 # == H. credit ============================================================================
