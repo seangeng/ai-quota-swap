@@ -12,6 +12,7 @@ tests/test_key_helper_live.py that fixes the command.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import sysconfig
@@ -42,6 +43,21 @@ def _install(site: Path, scripts: list[str], *, version: str = "0.1.0") -> None:
     (info / "RECORD").write_text("\n".join(rows) + "\n", encoding="utf-8")
     (site / "ai_quota_swap").mkdir(exist_ok=True)
     (site / "ai_quota_swap" / "__init__.py").write_text("", encoding="utf-8")
+
+
+def _editable(site: Path, checkout: Path, scripts: list[str]) -> None:
+    """The record an editable install writes (uv, pip): the scripts, a
+    ``.pth`` file and no package of its own, with ``direct_url.json`` naming
+    the checkout."""
+    info = site / "ai_quota_swap-0.1.0.dist-info"
+    info.mkdir(parents=True, exist_ok=True)
+    rows = [f"{s},sha256=x,1" for s in scripts]
+    rows += ["_editable_impl_ai_quota_swap.pth,sha256=x,42", f"{info.name}/RECORD,,",
+             f"{info.name}/direct_url.json,sha256=x,84"]
+    (info / "RECORD").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    (info / "direct_url.json").write_text(json.dumps({
+        "url": checkout.resolve().as_uri(), "dir_info": {"editable": True},
+    }), encoding="utf-8")
 
 
 def _tool_venv(root: Path) -> tuple[Path, Path]:
@@ -151,18 +167,49 @@ class TestTheMenuBarBundle:
 @POSIX_ONLY
 class TestOtherInstalls:
     def test_an_editable_checkout_finds_its_environments_script(self, tmp_path):
-        """The package is in the checkout's src/, the record in .venv."""
+        """The package is in the checkout's src/, the record in .venv (the
+        record an editable install writes: no package of its own)."""
         checkout = tmp_path / "checkout"
         package = checkout / "src" / "ai_quota_swap"
         package.mkdir(parents=True)
         site = checkout / ".venv" / "lib" / "python3.12" / "site-packages"
-        _install(site, ["../../../bin/qswap"])
+        _editable(site, checkout, ["../../../bin/qswap"])
         script = _script(checkout / ".venv" / "bin" / "qswap")
         result = installed.command(
             package_dir=package, site_dirs=[site], path=os.defpath, argv0="/x/pytest",
             executable=str(checkout / ".venv" / "bin" / "python"),
         )
         assert result == [str(script)]
+
+    def test_another_install_in_the_interpreters_site_is_not_this_one(self, tmp_path):
+        """The re-check's case: PYTHONPATH=src with the python of another
+        install. That install's record (with its own package copy) named its
+        console script, which may be older and not know key-helper."""
+        checkout = tmp_path / "checkout"
+        package = checkout / "src" / "ai_quota_swap"
+        package.mkdir(parents=True)
+        other = tmp_path / "other" / "lib" / "python3.12" / "site-packages"
+        _install(other, ["../../../bin/qswap"])
+        _script(tmp_path / "other" / "bin" / "qswap")
+        result = installed.command(
+            package_dir=package, site_dirs=[other], path=os.defpath, argv0="/x/pytest",
+            executable="/usr/bin/python3",
+        )
+        assert result == ["/usr/bin/python3", "-P", "-m", "ai_quota_swap"]
+
+    def test_an_editable_install_of_another_checkout_is_not_this_one(self, tmp_path):
+        checkout = tmp_path / "checkout"
+        package = checkout / "src" / "ai_quota_swap"
+        package.mkdir(parents=True)
+        elsewhere = tmp_path / "worktree-b"
+        site = elsewhere / ".venv" / "lib" / "python3.12" / "site-packages"
+        _editable(site, elsewhere, ["../../../bin/qswap"])
+        _script(elsewhere / ".venv" / "bin" / "qswap")
+        result = installed.command(
+            package_dir=package, site_dirs=[site], path=os.defpath, argv0="/x/pytest",
+            executable="/usr/bin/python3",
+        )
+        assert result == ["/usr/bin/python3", "-P", "-m", "ai_quota_swap"]
 
     def test_a_user_install(self, tmp_path):
         site = tmp_path / "home" / ".local" / "lib" / "python3.12" / "site-packages"

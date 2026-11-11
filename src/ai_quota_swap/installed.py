@@ -13,7 +13,9 @@ answer from :func:`command`:
    from the menu bar's bundle (whose ``Contents/lib`` links into the
    install) the record is the install's own. An editable checkout keeps
    the package in ``src/`` and the record in its environment, so the
-   running interpreter's library directories are looked at next.
+   running interpreter's library directories are looked at next; a record
+   there counts only when it is this package's (an editable install of this
+   checkout), never another install's with a package copy of its own.
 2. Of that script, the link a shell finds first on PATH (or the path this
    process was started by), when it leads to the same file: ``uv tool``
    and ``pipx`` put such a link in ``~/.local/bin`` and keep it across a
@@ -66,9 +68,40 @@ def _interpreter_site_dirs() -> list[Path]:
     return [Path(paths[k]) for k in ("purelib", "platlib") if paths.get(k)]
 
 
-def _recorded_scripts(site: Path) -> list[Path]:
+def _is_this_checkout(info: Path, rows: list[list[str]], package: Path) -> bool:
+    """Whether a record found away from the package (in the interpreter's
+    library directories) is this package's: an editable install, which has
+    no package copy of its own, whose ``direct_url.json`` (when it has one)
+    names the checkout the package is in. A record listing its own
+    ``ai_quota_swap/__init__.py`` belongs to another install."""
+    for row in rows:
+        if row and row[0].replace("\\", "/").lstrip("./") == f"{MODULE}/__init__.py":
+            return False
+    try:
+        import json
+        from urllib.parse import unquote, urlsplit
+
+        url = json.loads((info / "direct_url.json").read_text(encoding="utf-8")).get("url")
+    except (OSError, ValueError, AttributeError):
+        return True  # no record of where it came from: the editable kind
+    if not isinstance(url, str) or not url.startswith("file:"):
+        return False
+    parts = urlsplit(url)
+    where = unquote(parts.path)
+    if sys.platform == "win32" and where.startswith("/") and ":" in where[:4]:
+        where = where[1:]
+    try:
+        root = os.path.realpath(where)
+        mine = os.path.realpath(package)
+    except OSError:
+        return False
+    return os.path.normcase(mine).startswith(os.path.normcase(root.rstrip(os.sep)) + os.sep)
+
+
+def _recorded_scripts(site: Path, package: Path | None = None) -> list[Path]:
     """The console scripts a distribution record in ``site`` names and that
-    are there."""
+    are there. ``package``: the package's directory, when ``site`` is not
+    the directory it is in (:func:`_is_this_checkout` then decides)."""
     found: list[Path] = []
     try:
         infos = sorted(site.glob(DIST_INFO_GLOB))
@@ -79,7 +112,10 @@ def _recorded_scripts(site: Path) -> list[Path]:
             text = (info / "RECORD").read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for row in csv.reader(text.splitlines()):
+        rows = list(csv.reader(text.splitlines()))
+        if package is not None and not _is_this_checkout(info, rows, package):
+            continue
+        for row in rows:
             if not row or not row[0]:
                 continue
             leaf = row[0].replace("\\", "/").rsplit("/", 1)[-1]
@@ -100,7 +136,7 @@ def own_scripts(
     package = _package_dir() if package_dir is None else package_dir
     sites = [package.parent, *(_interpreter_site_dirs() if site_dirs is None else site_dirs)]
     seen: set[str] = set()
-    for site in sites:
+    for i, site in enumerate(sites):
         try:
             real = os.path.realpath(site)
         except OSError:
@@ -108,7 +144,8 @@ def own_scripts(
         if real in seen:
             continue
         seen.add(real)
-        scripts = _recorded_scripts(Path(real))
+        # Beside the package the record is its own; elsewhere it must be.
+        scripts = _recorded_scripts(Path(real), None if i == 0 else package)
         if scripts:
             return sorted(scripts, key=lambda p: COMMAND_NAMES.index(command_name(p.name)))
     return []
