@@ -82,6 +82,9 @@ class ScanStats:
     missing: int = 0  # unreadable entries, such as symlinks to an unmounted volume
     # The first few of them, to name in a message (not in the JSON).
     missing_paths: list = field(default_factory=list)
+    # Entries gone when the scan came to read them (deleted between the
+    # listing and the read): not unreadable, and not part of ``missing``.
+    vanished: int = 0
     skipped_compressed: int = 0  # .zst files with no zstd support
     # The scan window: files last changed before ``modified_since`` (epoch
     # seconds; None when every file was in scope) were not opened.
@@ -99,6 +102,7 @@ class ScanStats:
             "newEvents": self.events,
             "duplicates": self.duplicates,
             "missing": self.missing,
+            "vanished": self.vanished,
             "skippedCompressed": self.skipped_compressed,
             "modifiedSince": (
                 datetime.fromtimestamp(self.modified_since).astimezone().isoformat(
@@ -374,7 +378,13 @@ class Scanner:
         return self.stats
 
     def _missing(self, path: str) -> None:
-        """Count an entry that could not be read, keeping the first few."""
+        """Count an entry that could not be read, keeping the first few. One
+        that no longer exists at all, not even as a link, was deleted after
+        the listing: it counts as vanished instead (decision R4-2). A broken
+        link, a permission error or any other read error stays missing."""
+        if not os.path.lexists(path):
+            self.stats.vanished += 1
+            return
         self.stats.missing += 1
         if len(self.stats.missing_paths) < MISSING_PATHS_KEPT:
             self.stats.missing_paths.append(path)

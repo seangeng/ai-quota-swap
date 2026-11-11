@@ -534,6 +534,91 @@ class TestAScanThatCannotCoverThePeriod:
         ]
 
 
+# == R4-2: a session file deleted during the scan is not an unreadable one ====================
+
+import os  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+
+from ai_quota_swap.ledger import scanner as _scanner  # noqa: E402
+from ai_quota_swap.ledger import usage as _ledger_usage  # noqa: E402
+
+#: The real scan, taken before the autouse ``scans`` fixture replaces it.
+_REAL_SCAN = _ledger_usage.scan_recent
+
+
+class TestAFileDeletedDuringTheScan:
+    """Decision R4-2: a session file that no longer exists when the engine's
+    scan comes to read it was deleted between the listing and the read. It is
+    counted as vanished, and the scan still covers the period. A broken link
+    and a file the scan may not read still mean no figure (spend-unknown)."""
+
+    def _world(self, temp_home, monkeypatch):
+        import time
+
+        from ai_quota_swap import paths
+        from tests.ledger_fixtures import claude_line, write_lines
+
+        monkeypatch.setattr(_ledger_usage, "scan_recent", _REAL_SCAN)
+        h = _fleet(temp_home)
+        h.clock.now = time.time()
+        project = paths.get_claude_config_home() / "projects" / "-work-demo"
+        write_lines(project / "kept.jsonl", [claude_line(mid="m-1", ts=h.clock.now - 60)])
+        return h, project
+
+    def _tick(self, h) -> TickOutcome:
+        month = datetime.fromtimestamp(h.clock.now, timezone.utc).strftime("%Y-%m")
+        return _tick(h, EXHAUSTED, {"2": _reading(h, age=0, month=month)})
+
+    def test_a_file_deleted_before_its_read_does_not_stop_the_key(self, temp_home, monkeypatch):
+        from tests.ledger_fixtures import claude_line, write_lines
+
+        h, project = self._world(temp_home, monkeypatch)
+        gone = write_lines(project / "gone.jsonl", [claude_line(mid="m-2", ts=h.clock.now - 30)])
+        real_stat_all = _scanner._stat_all
+
+        def stat_all(paths):
+            stats = real_stat_all(paths)
+            gone.unlink(missing_ok=True)  # Claude Code deleted it after the listing
+            return stats
+
+        monkeypatch.setattr(_scanner, "_stat_all", stat_all)
+        assert self._tick(h) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+        assert _state(h)["spendScan"]["ok"] is True
+        assert "spend-unknown" not in [
+            e.reason for e in h.events if isinstance(e, NoSwitchEvent)
+        ]
+
+    @pytest.mark.parametrize("how", ["broken-link", "mode-000"])
+    def test_a_broken_link_or_a_file_it_may_not_read_still_does(
+        self, temp_home, monkeypatch, how
+    ):
+        from tests.ledger_fixtures import claude_line, write_lines
+
+        if how == "mode-000" and (
+            os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0
+        ):
+            pytest.skip("mode 000 keeps only a POSIX non-root reader out")
+        h, project = self._world(temp_home, monkeypatch)
+        entry = project / "other.jsonl"
+        if how == "broken-link":
+            entry.symlink_to(temp_home / "unmounted-volume" / "other.jsonl")
+        else:
+            write_lines(entry, [claude_line(mid="m-2", ts=h.clock.now - 30)]).chmod(0)
+        try:
+            assert self._tick(h) is TickOutcome.BLOCKED
+        finally:
+            if how == "mode-000":
+                entry.chmod(0o600)
+        assert h.switcher.current_account_number() == "1"
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)][-1] == (
+            "spend-unknown"
+        )
+        assert (_state(h)["spendScan"]["ok"], _state(h)["spendScan"]["unreadable"]) == (
+            False, 1,
+        )
+
+
 # == EM6: a dry run that would move to a key ===================================================
 
 
