@@ -229,14 +229,36 @@ class KeyActivationMixin:
 
         return SessionManager(self)
 
-    def isolate_run_profiles(self) -> int:
+    def isolate_run_profiles(self) -> list[Path] | None:
+        """Give run profiles their settings copy (step one of entering a
+        key). Returns the profiles still linked to the user settings, which a
+        line written now would reach; None when isolation itself failed."""
         if not self._profiles_share_user_settings():
-            return 0
+            return []
         try:
-            return self._session_manager().isolate_settings()
+            manager = self._session_manager()
+            manager.isolate_settings()
+            return manager.settings_still_shared()
         except Exception as e:
             self._logger.warning(f"Could not give run profiles a settings copy: {e!r}")
-            return 0
+            return None
+
+    @staticmethod
+    def _profiles_unisolated_reason(shared: list[Path] | None) -> str:
+        if not shared:
+            return (
+                "qswap run profiles could not be given their own copy of the "
+                "settings, so sessions there would use the key too"
+            )
+        if len(shared) == 1:
+            return (
+                "a qswap run profile could not be given its own copy of the "
+                "settings, so sessions there would use the key too"
+            )
+        return (
+            f"{len(shared)} qswap run profiles could not be given their own copy "
+            "of the settings, so sessions there would use the key too"
+        )
 
     def restore_run_profiles(self, *, force: bool = False) -> int:
         try:
@@ -322,7 +344,12 @@ class KeyActivationMixin:
             # place: no subscription is logged in underneath.
             underneath = None
         with FileLock(self.lock_file):
-            self.isolate_run_profiles()
+            shared = self.isolate_run_profiles()
+            if shared is None or shared:
+                # Fail closed: a profile still linked would follow the line.
+                if previous_key is None:
+                    self.restore_run_profiles(force=True)
+                raise self._key_unavailable(number, self._profiles_unisolated_reason(shared))
             try:
                 created, _ = claude_settings.install(number)
             except claude_settings.SettingsError as e:
@@ -331,6 +358,13 @@ class KeyActivationMixin:
                 raise self._key_unavailable(
                     number, f"{claude_settings.shown_path(e.path or state.path)} {e.reason}"
                 ) from e
+            # A qswap run launch between the two steps saw no line yet and
+            # may have put its link back: a second pass, now that launches
+            # see the line and copy by themselves.
+            shared = self.isolate_run_profiles()
+            if shared is None or shared:
+                self._undo_install(previous_key, created)
+                raise self._key_unavailable(number, self._profiles_unisolated_reason(shared))
             old = self._key_state()
             created = bool(created or (previous_key is not None and old.get("createdSettings")))
             self._record_active_number(number)
@@ -362,6 +396,19 @@ class KeyActivationMixin:
         op = self._op_result(from_ref, account_ref(int(number), email), [], followup)
         op["how"] = display.HOW_HELPER
         return op
+
+    def _undo_install(self, previous_key: str | None, created: bool) -> None:
+        """Take back a line just installed: the previous key's line again, or
+        no line (and the file qswap created removed) with the profiles put
+        back. Logged, never raised: the refusal that follows says why."""
+        try:
+            if previous_key is not None:
+                claude_settings.install(previous_key)
+                return
+            claude_settings.remove(remove_file_if_empty=bool(created))
+            self.restore_run_profiles(force=True)
+        except Exception as e:
+            self._logger.warning(f"Could not take back the key line: {e!r}")
 
     def _record_active_number(self, number: str) -> None:
         """``activeAccountNumber`` in ``sequence.json``: recorded, never what

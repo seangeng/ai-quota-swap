@@ -1222,6 +1222,117 @@ class TestRunProfiles:
             _activate(s)
         assert (d / "settings.json").is_symlink()  # put back at once
 
+    def test_a_profile_that_cannot_get_its_copy_stops_the_switch(self, temp_home, monkeypatch):
+        """Fail closed: a profile left linked would follow the line onto the
+        key, with nothing on any surface to say so."""
+        from ai_quota_swap.session import SETTINGS_COPY_MARKER, SessionManager
+
+        s = _fleet()
+        d = _profile(s)
+        other = _profile(s, "1", MAYA)
+        real = SessionManager._write_settings_copy
+
+        def copy(self, src, dest, session_dir):
+            if Path(session_dir) == Path(os.path.realpath(d)):
+                return False  # as when the profile cannot be written
+            return real(self, src, dest, session_dir)
+
+        monkeypatch.setattr(SessionManager, "_write_settings_copy", copy)
+        with pytest.raises(KeyHelperUnavailableError) as caught:
+            _activate(s)
+        text = " ".join(str(caught.value).split())
+        assert "a qswap run profile could not be given its own copy of the settings" in text
+        assert "apiKeyHelper" not in _settings_obj(temp_home)
+        assert s.helper_account() is None
+        assert s.current_account_number() == "1"
+        for p in (d, other):
+            assert (p / "settings.json").is_symlink()
+            assert not (p / SETTINGS_COPY_MARKER).exists()
+
+    def test_isolation_that_raises_stops_the_switch(self, temp_home, monkeypatch):
+        from ai_quota_swap.session import SessionManager
+
+        s = _fleet()
+        d = _profile(s)
+
+        def boom(self):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(SessionManager, "isolate_settings", boom)
+        with pytest.raises(KeyHelperUnavailableError, match="could not be given"):
+            _activate(s)
+        assert "apiKeyHelper" not in _settings_obj(temp_home)
+        assert (d / "settings.json").is_symlink()
+
+    def test_a_launch_that_relinks_between_the_steps_gets_the_copy(
+        self, temp_home, monkeypatch
+    ):
+        """A qswap run launch between the two steps saw no line and put its
+        link back; the pass after the line is in gives it the copy again."""
+        s = _fleet()
+        d = _profile(s)
+        dest = d / "settings.json"
+        real = claude_settings.install
+
+        def install(number, *a, **k):
+            dest.unlink()
+            dest.symlink_to(Path.home() / ".claude" / "settings.json")
+            return real(number, *a, **k)
+
+        monkeypatch.setattr(claude_settings, "install", install)
+        _activate(s)
+        assert s.helper_account() == "5"
+        assert not dest.is_symlink()
+        assert "apiKeyHelper" not in json.loads(dest.read_text(encoding="utf-8"))
+
+    def test_a_relinked_profile_that_cannot_be_copied_again_takes_the_line_back(
+        self, temp_home, monkeypatch
+    ):
+        from ai_quota_swap.session import SessionManager
+
+        s = _fleet()
+        d = _profile(s)
+        dest = d / "settings.json"
+        real_install = claude_settings.install
+        real_copy = SessionManager._write_settings_copy
+        installed = []
+
+        def install(number, *a, **k):
+            dest.unlink()
+            dest.symlink_to(Path.home() / ".claude" / "settings.json")
+            installed.append(number)
+            return real_install(number, *a, **k)
+
+        def copy(self, src, dest_, session_dir):
+            return False if installed else real_copy(self, src, dest_, session_dir)
+
+        monkeypatch.setattr(claude_settings, "install", install)
+        monkeypatch.setattr(SessionManager, "_write_settings_copy", copy)
+        with pytest.raises(KeyHelperUnavailableError, match="could not be given"):
+            _activate(s)
+        assert installed == ["5"]
+        assert "apiKeyHelper" not in _settings_obj(temp_home)
+        assert s.helper_account() is None
+        assert dest.is_symlink()
+
+    def test_a_dangling_link_gets_a_copy_before_the_line_creates_its_target(
+        self, temp_home
+    ):
+        """No user settings yet: the line would create the file the
+        profile's link points at, so the profile gets an empty copy first."""
+        s = _fleet()
+        d = _profile(s)
+        _settings(temp_home).unlink()
+        dest = d / "settings.json"
+        assert dest.is_symlink() and not dest.exists()
+        _activate(s)
+        assert "apiKeyHelper" in _settings_obj(temp_home)
+        assert not dest.is_symlink()
+        assert json.loads(dest.read_text(encoding="utf-8")) == {}
+        s.switch_to("1", json_output=True)
+        assert not _settings(temp_home).exists()  # qswap created it, and removed it
+        assert not (dest.exists() and "apiKeyHelper" in dest.read_text(encoding="utf-8"))
+
 
 # == F. qswap run on a key ================================================================
 

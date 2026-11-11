@@ -87,7 +87,7 @@ If qswap is gone, or you want the subscription back without it, delete the `apiK
 
 ### Sessions started with qswap run
 
-A `qswap run` session has its own profile, which shares `~/.claude/settings.json` through a link. While the line is in, each such profile gets a copy of the settings without it instead, so those sessions stay on their own account; when the line is removed the link comes back. Settings changed inside a run session in the meantime stay in its copy. A profile created while a key is active gets the copy too.
+A `qswap run` session has its own profile, which shares `~/.claude/settings.json` through a link. While the line is in, each such profile gets a copy of the settings without it instead, so those sessions stay on their own account; when the line is removed the link comes back. Settings changed inside a run session in the meantime stay in its copy. A profile created while a key is active gets the copy too. If a profile cannot be given its copy (it cannot be written, or the disk is full), the switch is refused and nothing changes, since that profile would follow the line onto the key.
 
 `qswap run 5` runs one session on the key, and nothing else moves: [sessions.md](sessions.md#run-on-an-api-key).
 

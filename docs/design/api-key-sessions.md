@@ -160,6 +160,9 @@ What the code does where this part leaves room, or where it had to differ:
 - **Order of the two steps.** Entering a key gives run profiles their copies first and then
   writes the line (a failure in between puts the profiles back); leaving removes the line and
   then restores the profiles. Either crash leaves copies with no line, which doctor reports.
+  A profile that cannot be given its copy refuses the switch before the line is written. After
+  the line is in, a second pass copies any profile a `qswap run` launch linked again in
+  between; if that fails, the line is taken back and the switch refused.
 - **`qswap run N` for the subscription underneath an active key** is refused: plain `claude`
   on that login would follow the line onto the key.
 - **`--log-out-sessions`** always takes the saved-key path, also when the helper could be

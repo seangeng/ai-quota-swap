@@ -1693,16 +1693,18 @@ class SessionManager:
 
         marker = session_dir / SETTINGS_COPY_MARKER
         try:
-            raw = src.read_bytes().decode("utf-8")
+            raw = src.read_bytes().decode("utf-8") if src.exists() else None
         except (OSError, UnicodeDecodeError) as e:
             self._logger.warning(f"Could not read {src} for a settings copy: {e}")
             return False
-        text = claude_settings.without_helper(raw)
+        # No user settings yet: the line is about to create the file the
+        # link points at, so the copy is an empty object.
+        text = "{}\n" if raw is None else claude_settings.without_helper(raw)
         try:
             if not marker.exists():
                 was = "link" if is_link(dest) else ("copy" if dest.exists() else "none")
                 atomic_write_text(marker, json.dumps({"was": was}))
-            mode = src.stat().st_mode & 0o7777
+            mode = src.stat().st_mode & 0o7777 if raw is not None else 0o644
             atomic_write_text(dest, text, mode=mode, follow_symlinks=False)
         except OSError as e:
             self._logger.warning(f"Could not write the settings copy in {session_dir}: {e}")
@@ -1742,16 +1744,25 @@ class SessionManager:
         profiles hold a copy now. A profile that cannot be changed is logged
         and left; the caller decides whether that stops the switch."""
         src = Path.home() / ".claude" / "settings.json"
-        if not src.exists():
-            return 0
         done = 0
         for session_dir in self.profile_dirs():
             if not self._shares_settings(session_dir):
                 continue
             dest = session_dir / "settings.json"
+            if not src.exists() and not is_link(dest):
+                continue  # nothing shared, nothing the line could reach
             if self._write_settings_copy(src, dest, session_dir):
                 done += 1
         return done
+
+    def settings_still_shared(self) -> list[Path]:
+        """Profiles that share the user settings and whose ``settings.json``
+        is still a link (a dangling one included): a key line written now
+        would reach their sessions."""
+        return [
+            d for d in self.profile_dirs()
+            if self._shares_settings(d) and is_link(d / "settings.json")
+        ]
 
     def restore_settings(self, *, force: bool = False) -> int:
         """Put the sharing back in every profile holding a settings copy, once
