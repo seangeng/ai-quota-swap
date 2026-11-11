@@ -1113,3 +1113,86 @@ class TestWhoEnteredTheKey:
         assert _check("claude.key_watch") is None
         rows = {r["number"]: r for r in s.list_accounts(json_output=True)["accounts"]}
         assert rows[5]["enteredBy"] == "user"
+
+
+# == B9: words ========================================================================
+
+
+class TestWords:
+    def test_the_switch_names_remote_control_and_the_way_back(self, temp_home, run):
+        """F57, F56 (3)."""
+        s = _fleet()
+        code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        text = " ".join(out.split())
+        assert (
+            "claude.ai connectors and Remote Control are unavailable while a key is in use."
+        ) in text
+        assert text.endswith("Go back with: qswap switch 1")
+        _fits(out)
+
+    def test_from_a_login_qswap_does_not_manage_it_is_named(self, temp_home, run):
+        s = _fleet()
+        get_global_config_path().write_text(json.dumps(NEW_LOGIN), encoding="utf-8")
+        code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        text = " ".join(out.split())
+        assert "new@example.com stays logged in underneath." in text
+        assert "Go back with" not in text
+
+    def test_key_to_key_names_the_way_back_too(self, temp_home, run):
+        s = _fleet()
+        _activate(s)
+        code, out, err = run(s, "switch", "6")
+        assert code == 0, err
+        assert " ".join(out.split()).endswith("Go back with: qswap switch 1")
+
+    def test_one_name_for_the_line(self, temp_home, run, capsys):
+        """F56 (1): "key line", in the refusal, doctor and purge."""
+        s = _fleet()
+        _settings(temp_home).write_text("{not json", encoding="utf-8")
+        code, out, err = run(s, "switch", "5")
+        assert "qswap cannot add the key line for #5 ci" in " ".join(err.split())
+        assert "key helper" not in err
+        _settings(temp_home).unlink()
+        _activate(s)
+        check = _check("claude.key_helper")
+        assert "through qswap's key line in" in check.summary
+        _settings(temp_home).write_text("{broken", encoding="utf-8")
+        capsys.readouterr()
+        s.purge(assume_yes=True)
+        captured = capsys.readouterr()
+        text = " ".join((captured.out + captured.err).split())
+        assert "could not check it for its key line" in text
+        assert "apiKeyHelper line" not in text
+
+    @pytest.mark.parametrize("case", ["swap", "remove", "adopt"])
+    def test_the_long_messages_fit_80_columns(self, temp_home, run, case):
+        """F51: the printed forms, not the strings alone."""
+        s = _fleet()
+        s.set_alias("5", "a-rather-long-alias-name")
+        if case == "adopt":
+            _activate(s, entered_by="engine")
+            code, out, err = run(s, "switch", "5")
+            assert code == 0, err
+            assert "Auto-switch keeps it now" in " ".join(out.split())
+        else:
+            _activate(s)
+            if case == "swap":
+                code, out, err = run(s, "swap", "5", "6")
+                assert "This would renumber" in err
+            else:
+                _settings(temp_home).write_text("{broken", encoding="utf-8")
+                code, out, err = run(s, "remove", "5", "--yes")
+                assert "The key line cannot be removed" in " ".join(err.split())
+            assert code == 1
+        for line in (out + err).splitlines():
+            assert len(line) <= 80, line
+
+    def test_help_key_helper_prints_its_help(self, temp_home, capsys):
+        from ai_quota_swap import key_helper
+        from tests.test_key_helper_live import _main
+
+        capsys.readouterr()
+        assert _main(["help", "key-helper"]) == 0
+        assert capsys.readouterr().out == key_helper.HELP

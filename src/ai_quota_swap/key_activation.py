@@ -731,6 +731,11 @@ class KeyActivationMixin:
             # A key saved the older way (--log-out-sessions) is in the login's
             # place: no subscription is logged in underneath.
             underneath = None
+        unmanaged = None
+        if underneath is None and source is None:
+            identity = self._get_current_account()
+            if identity is not None and identity[0]:
+                unmanaged = identity[0]  # a login qswap does not manage
         with FileLock(self.lock_file):
             shared = self.isolate_run_profiles()
             if shared is None or shared:
@@ -785,8 +790,9 @@ class KeyActivationMixin:
             from_ref = account_ref(int(source), self.account_email(source))
         followup = display.key_switch_followup(
             target=self.label(number, long=False),
-            underneath=self.label(underneath, long=False) if underneath else None,
+            underneath=self.label(underneath, long=False) if underneath else unmanaged,
             from_key=self.label(previous_key, long=False) if previous_key else None,
+            back=f"qswap switch {underneath}" if underneath else None,
         )
         sent = (
             [display.key_sent_elsewhere(state.shown_path(), host, self.label(number, long=False))]

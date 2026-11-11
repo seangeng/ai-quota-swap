@@ -1249,8 +1249,8 @@ class TestSwitching:
         assert out.splitlines() == [
             "Switched #1 personal → #5 ci (API key)",
             "Running Claude Code sessions move to the key within a few seconds. #1 personal",
-            "stays logged in underneath. claude.ai connectors are unavailable while a key is",
-            "in use.",
+            "stays logged in underneath. claude.ai connectors and Remote Control are",
+            "unavailable while a key is in use. Go back with: qswap switch 1",
         ]
         _fits(out)
 
@@ -1658,7 +1658,7 @@ class TestAccountChangesWhileOnAKey:
         assert s.purge(assume_yes=True) is True
         captured = capsys.readouterr()
         text = " ".join((captured.out + captured.err).split())
-        assert "cannot be parsed, so qswap could not check it for its apiKeyHelper line" in text
+        assert "cannot be parsed, so qswap could not check it for its key line" in text
 
     def test_a_new_key_for_the_active_account_is_saved(self, temp_home, capsys):
         s = _fleet()

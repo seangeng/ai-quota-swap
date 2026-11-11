@@ -138,7 +138,7 @@ def _switch() -> ArgumentParser:
                         "current one first (for example after an import)")
     p.add_argument("--log-out-sessions", action="store_true",
                    help="with an API-key ACCOUNT: save the key for Claude Code "
-                        "instead of adding the key helper (when it cannot be "
+                        "instead of adding the key line (when it cannot be "
                         "added); sessions running on a subscription stop with "
                         "\"Not logged in\" until you switch back or restart them")
     p.add_argument("--strategy", metavar="NAME",

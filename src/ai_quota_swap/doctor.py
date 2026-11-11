@@ -1049,7 +1049,7 @@ def _key_line_check(p: Probes, f: _Facts, state, record: dict, where: str) -> Ch
     return Check(
         "claude.key_helper", "claude", PASS,
         f"active API key: {_label(state.number, record, email)}, through "
-        f"qswap's apiKeyHelper line in {where}, which runs "
+        f"qswap's key line in {where}, which runs "
         f"{_line_program(state.command, f.home)}",
     )
 

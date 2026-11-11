@@ -9984,17 +9984,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             state = self.key_helper_state()
             if state.ours:
                 self._leave_key()
-                removed_items.append("The apiKeyHelper line in Claude Code's settings")
+                removed_items.append("The key line in Claude Code's settings")
             elif self.key_line_number() is not None:
                 # The file cannot be parsed, and qswap's line may be in it.
                 warning(
                     f"{claude_settings.shown_path(state.path)} cannot be parsed, so qswap "
-                    "could not check it for its apiKeyHelper line. If it is there, "
-                    "delete that line by hand."
+                    "could not check it for its key line. If it is there, delete "
+                    'its "apiKeyHelper" line by hand.'
                 )
         except Exception as e:
             warning(
-                f"Could not remove qswap's apiKeyHelper line from Claude Code's settings "
+                f"Could not remove qswap's key line from Claude Code's settings "
                 f"({e}). Delete it by hand: {claude_settings.shown_path(claude_settings.settings_path())}"
             )
 

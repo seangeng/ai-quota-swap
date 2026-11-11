@@ -1131,8 +1131,12 @@ HOW_LOGIN = "login"
 #: added and the saved-key way is offered instead.
 KEY_HELPER_QUESTION_TITLE = "Use the saved key instead?"
 
-#: The sentence every move onto a key carries.
-KEY_CONNECTORS = "claude.ai connectors are unavailable while a key is in use."
+#: The sentence every move onto a key carries. Remote Control needs the
+#: claude.ai login too: Anthropic's documentation says API keys are not
+#: supported there (decision B9, F57).
+KEY_CONNECTORS = (
+    "claude.ai connectors and Remote Control are unavailable while a key is in use."
+)
 
 #: The header fact of the subscription under an active key.
 UNDERNEATH = "underneath"
@@ -1155,9 +1159,13 @@ def over_fact(underneath: str) -> str:
 
 
 def key_switch_followup(
-    *, target: str, underneath: str | None, from_key: str | None = None
+    *, target: str, underneath: str | None, from_key: str | None = None,
+    back: str | None = None,
 ) -> list[str]:
-    """What follows "Switched … (API key)" on the helper path."""
+    """What follows "Switched … (API key)" on the helper path: where running
+    sessions go, the login that stays underneath (an account, or the address
+    of a login qswap does not manage), what a key turns off, and the way back
+    (``back``, the switch to the account underneath)."""
     if from_key:
         first = (
             f"Running Claude Code sessions move from {from_key} to {target} within "
@@ -1169,6 +1177,8 @@ def key_switch_followup(
     if underneath:
         parts.append(f"{underneath} stays logged in underneath.")
     parts.append(KEY_CONNECTORS)
+    if back:
+        parts.append(f"Go back with: {back}")
     return wrap(" ".join(parts))
 
 
@@ -1207,7 +1217,7 @@ def key_helper_refusal(
     fix: str | None = None,
 ) -> str:
     """Why a switch to the API-key account ``target`` was refused when qswap
-    cannot add its key helper (``reason``: the settings file's path and what
+    cannot add its key line (``reason``: the settings file's path and what
     is wrong with it), and the saved-key path that goes ahead anyway, which
     only sessions started after the switch use. ``sessions`` is how many
     Claude Code sessions run on the shared login (:data:`SESSIONS_UNKNOWN`
@@ -1215,7 +1225,7 @@ def key_helper_refusal(
     when it is a saved key too; ``records`` are the session records qswap
     could not read (:func:`unreadable_records_lines`)."""
     head = (
-        f"not switched. qswap cannot add the key helper for {target} to the "
+        f"not switched. qswap cannot add the key line for {target} to the "
         f"Claude Code settings: {reason}. Without it, the key can only be saved "
         "for Claude Code, which a running session does not pick up."
     )

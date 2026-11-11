@@ -2305,6 +2305,12 @@ def _help_and_usage(argv: list[str]) -> list[str] | None:
         if target in helptext.LEGACY_VERB_HELP:
             print(helptext.legacy_help(target), end="")
             sys.exit(0)
+        if target == "key-helper":
+            # Hidden from the map, but its help is there (F54).
+            from ai_quota_swap.key_helper import HELP as key_helper_help
+
+            print(key_helper_help, end="")
+            sys.exit(0)
         if target in _OWN_PARSER_VERBS:
             _dispatch([target, "--help"])
             return None
@@ -2543,7 +2549,7 @@ def _dispatch(argv: list[str]) -> None:
         action="store_true",
         help=(
             "With 'switch ACCOUNT' for an API-key account: save the key for "
-            "Claude Code instead of adding the key helper; running sessions on "
+            "Claude Code instead of adding the key line; running sessions on "
             "a subscription stop with \"Not logged in\""
         ),
     )
