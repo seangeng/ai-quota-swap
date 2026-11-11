@@ -1973,19 +1973,68 @@ def sub_first(sub):
     return sub.children[0].text
 
 
+def _toggle(sub, kind):
+    return next(r for r in sub.children if r.action is not None and r.action.kind == kind)
+
+
 def test_resets_submenu_weekly_toggle():
     sub = _resets_submenu()
-    toggle = sub.children[-1]
-    assert sub.children[-2].separator
+    toggle = _toggle(sub, "toggle-weekly-for-model")
+    assert sub.children[sub.children.index(toggle) - 1].separator
     assert toggle.text == "Use a weekly reset for a single model's limit"
     assert toggle.action == Action("toggle-weekly-for-model") and not toggle.checked
-    on = _resets_submenu(weekly_for_model_limit=True).children[-1]
+    on = _toggle(_resets_submenu(weekly_for_model_limit=True), "toggle-weekly-for-model")
     assert on.checked
     assert menubar.resets_setting(toggle.action, ResetSettings()) == ("resets.weeklyForModelLimit", "true")
     assert menubar.resets_setting(on.action, ResetSettings(weekly_for_model_limit=True)) == (
         "resets.weeklyForModelLimit", "false")
     assert menubar.resets_setting(Action("resets-auto", value="active"), ResetSettings()) == (
         "resets.auto", "active")
+
+
+BEFORE_SWITCH_TOOLTIP = (
+    "resets.beforeSwitch: auto-switch stays past the active account's switch line "
+    "until its own reset is spent at resets.threshold"
+)
+
+
+@pytest.mark.parametrize("auto", ["active", "on-limit"])
+def test_resets_submenu_before_switch_toggle(auto):
+    sub = _resets_submenu(auto=auto)
+    toggle = sub.children[-1]
+    assert sub.children[-2] == _toggle(sub, "toggle-weekly-for-model")
+    assert toggle.text == "Use the active account's reset before switching"
+    assert toggle.action == Action("toggle-before-switch") and not toggle.checked
+    assert toggle.tooltip == BEFORE_SWITCH_TOOLTIP
+    on = _resets_submenu(auto=auto, before_switch=True).children[-1]
+    assert on.checked and on.action == Action("toggle-before-switch")
+    assert menubar.resets_setting(toggle.action, ResetSettings(auto=auto)) == (
+        "resets.beforeSwitch", "true")
+    assert menubar.resets_setting(on.action, ResetSettings(auto=auto, before_switch=True)) == (
+        "resets.beforeSwitch", "false")
+
+
+@pytest.mark.parametrize("auto", ["off", "last-resort"])
+@pytest.mark.parametrize("before_switch", [False, True])
+def test_resets_submenu_greys_the_before_switch_toggle_where_it_does_nothing(
+    auto, before_switch
+):
+    toggle = _resets_submenu(auto=auto, before_switch=before_switch).children[-1]
+    assert toggle.text == "Use the active account's reset before switching"
+    assert toggle.disabled and toggle.checked is before_switch
+    assert toggle.tooltip == (
+        f"{BEFORE_SWITCH_TOOLTIP}; no effect while resets.auto is {auto}"
+    )
+
+
+def test_the_before_switch_toggle_writes_without_asking(tmp_path: Path):
+    changed, asked, wrote = _change(Action("toggle-before-switch"), ResetSettings(auto="active"))
+    assert changed and asked == [] and wrote == [("resets.beforeSwitch", "true")]
+    set_setting(tmp_path, *wrote[0])
+    assert load_reset_settings(tmp_path).before_switch is True
+    handlers = inspect.getsource(menubar_app.run_app)
+    assert "def _do_toggle_before_switch(self, a: Action):\n            self._change_resets(a)" in (
+        handlers)
 
 
 def test_resets_submenu_sits_with_the_auto_switch_settings_for_both_providers():
