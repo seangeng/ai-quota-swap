@@ -68,7 +68,9 @@ def _parse_args(argv: list[str]) -> tuple[str, Path | None, bool] | None:
     """``(number, data directory, check)`` from ``N [--data-dir DIR]
     [--check]`` (the options in any order after N), or None for a usage
     error."""
-    if not argv or not argv[0].isdigit():
+    # ASCII digits only: str.isdigit() also takes "²", which int() refuses
+    # (a traceback), and other scripts' digits, which no line qswap writes has.
+    if not argv or not (argv[0].isascii() and argv[0].isdigit()):
         return None
     root: Path | None = None
     check = False

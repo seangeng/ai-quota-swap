@@ -354,6 +354,8 @@ class TestKeyHelper:
         [], ["x"], ["5", "6"], ["-5"], ["--check"], ["5", "--data-dir"],
         ["5", "--check", "--check"], ["5", "--data-dir", "/a", "--data-dir", "/b"],
         ["5", "--other"],
+        # Digits str.isdigit() takes and int() does not, and other scripts'.
+        ["\u00b2"], ["5\u00b2"], ["\u0665"], ["\uff15"],
     ])
     def test_a_bad_argument_is_a_usage_error_in_one_line(self, argv):
         """Claude Code shows the helper's standard error as it is: one line,
