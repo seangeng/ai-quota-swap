@@ -132,7 +132,8 @@ def settings_path() -> Path:
 
 _LINE_RE = re.compile(
     r"""^\s*(?P<exe>"[^"]+"|'[^']+'|\S+)(?P<mod>\s+-m\s+ai_quota_swap)?"""
-    r"""\s+key-helper\s+(?P<num>\d+)\s*$"""
+    r"""\s+key-helper\s+(?P<num>\d+)"""
+    r"""(?:\s+--data-dir\s+(?P<dir>"[^"]+"|'[^']+'|\S+))?\s*$"""
 )
 
 
@@ -224,9 +225,18 @@ def qswap_executable() -> list[str]:
 
 
 def helper_command(number: str | int) -> str:
-    """qswap's line for account ``number``: ``/abs/path/qswap key-helper 5``."""
+    """qswap's line for account ``number``: ``/abs/path/qswap key-helper 5``.
+    When the data directory comes from ``XDG_DATA_HOME`` it is named too
+    (``--data-dir``): Claude Code runs the line with its own environment,
+    which may not have that variable."""
+    from ai_quota_swap import key_helper
+
     parts = [_quote(p) for p in qswap_executable()]
-    return " ".join([*parts, HELPER_VERB, str(int(number))])
+    line = [*parts, HELPER_VERB, str(int(number))]
+    pinned = key_helper.pinned_data_dir()
+    if pinned is not None:
+        line += ["--data-dir", _quote(str(pinned))]
+    return " ".join(line)
 
 
 # -- reading ------------------------------------------------------------------------

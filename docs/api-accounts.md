@@ -53,6 +53,8 @@ The switch adds one line to Claude Code's user settings, `~/.claude/settings.jso
 "apiKeyHelper": "/Users/you/.local/bin/qswap key-helper 5"
 ```
 
+The path to `qswap` is quoted when it has spaces or shell characters in it. On Linux with `XDG_DATA_HOME` set, the line also names qswap's data directory (`--data-dir`), because Claude Code started from a desktop launcher or an editor may not have that variable.
+
 Claude Code watches that file. Within a few seconds every session that reads it, running or new, sends its requests with the key that `qswap key-helper 5` prints, instead of the claude.ai login. Nothing else changes: not the login, not the saved key, not `~/.claude.json`. Running sessions keep their conversation. Two things do change for them: Claude Code turns its claude.ai connectors (the MCP servers that come with the claude.ai login) off while a key is in use, and the first request on the key rebuilds the prompt cache, which is paid at the key's price.
 
 ### The account underneath

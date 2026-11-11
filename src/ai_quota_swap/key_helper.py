@@ -38,7 +38,7 @@ from pathlib import Path
 SECURITY_SERVICE = "ai-quota-swap"
 _OAUTH_TOKEN_PREFIXES = ("sk-ant-oat", "sk-ant-ort")
 
-USAGE = "usage: qswap key-helper N"
+USAGE = "usage: qswap key-helper N [--data-dir DIR]"
 HELP = f"""{USAGE}
 
 Print the saved key of API-key account N, for Claude Code.
@@ -46,7 +46,9 @@ Print the saved key of API-key account N, for Claude Code.
 qswap writes this command into Claude Code's settings (apiKeyHelper) while an
 API-key account is active, and into the --settings of a qswap run session on a
 key. It prints the key and nothing else; on a failure it prints one line on
-standard error and exits 1. You do not need to run it yourself.
+standard error and exits 1. You do not need to run it yourself. --data-dir
+names qswap's data directory when XDG_DATA_HOME set it, since Claude Code may
+run the command without that variable.
 
 Example:
   qswap key-helper 5
@@ -77,6 +79,17 @@ def data_dir() -> Path:
                 return xdg_path / "ai-quota-swap"
         return Path.home() / ".local" / "share" / "ai-quota-swap"
     return Path.home() / ".ai-quota-swap"
+
+
+def pinned_data_dir() -> Path | None:
+    """The data directory to name in the helper line: the one in use when it
+    is not the one the rule gives without ``XDG_DATA_HOME`` (Linux with the
+    variable set), else None."""
+    current = data_dir()
+    if _platform() != "linux":
+        return None
+    default = Path.home() / ".local" / "share" / "ai-quota-swap"
+    return None if current == default else current
 
 
 def is_key(value: str | None) -> bool:
@@ -171,12 +184,16 @@ def main(argv: list[str]) -> int:
     if argv in (["-h"], ["--help"]):
         sys.stdout.write(HELP)
         return 0
+    root = None
+    if len(argv) == 3 and argv[1] == "--data-dir" and argv[2]:
+        root = Path(argv[2])
+        argv = argv[:1]
     if len(argv) != 1 or not argv[0].isdigit():
         sys.stderr.write(f"qswap key-helper: needs one account number\n{USAGE}\n")
         return 64
     number = str(int(argv[0]))
     try:
-        key = read_key(number)
+        key = read_key(number, root)
     except HelperFailure as e:
         sys.stderr.write(f"qswap key-helper: {e}\n")
         return 1

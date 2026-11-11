@@ -234,6 +234,32 @@ class TestKeyHelper:
             assert key_helper.data_dir() == s.backup_dir
             assert _helper(["5"]) == (0, KEY_5 + "\n", "")
 
+    def test_a_data_directory_from_xdg_is_named_in_the_line(
+        self, temp_home, monkeypatch, tmp_path
+    ):
+        """Claude Code started from a desktop launcher may not have the
+        XDG_DATA_HOME the terminal had: the line names the directory."""
+        monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
+        xdg = tmp_path / "my data"
+        monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+        root = key_helper.data_dir()
+        assert root == xdg / "ai-quota-swap"
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        line = claude_settings.helper_command(5)
+        quote = '"' if sys.platform == "win32" else "'"
+        assert line == f"{QSWAP} key-helper 5 --data-dir {quote}{root}{quote}"
+        assert claude_settings.parse_line(line) == "5"
+        monkeypatch.delenv("XDG_DATA_HOME")
+        assert _helper(["5"])[0] == 1  # the default directory has no accounts
+        assert _helper(["5", "--data-dir", str(root)]) == (0, KEY_5 + "\n", "")
+
+    def test_the_default_data_directory_is_not_named(self, temp_home, monkeypatch):
+        monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
+        assert claude_settings.helper_command(5) == f"{QSWAP} key-helper 5"
+        monkeypatch.setattr(key_helper, "_platform", lambda: "macos")
+        assert claude_settings.helper_command(5) == f"{QSWAP} key-helper 5"
+
     def test_the_previous_copy_when_the_saved_one_is_not_a_key(self, temp_home, monkeypatch):
         monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
         root = key_helper.data_dir()
