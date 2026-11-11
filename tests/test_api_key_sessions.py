@@ -939,6 +939,10 @@ class TestAddNeverSavesALoginlessStore:
     def test_add_refuses_a_store_with_no_login(
         self, temp_home, block_real_keychain, monkeypatch, platform, var, seed_file, slot
     ):
+        # The capture's profile reader asks the host platform, not the
+        # switcher's: pin it so the macOS cases read the Keychain fake on
+        # every CI host.
+        monkeypatch.setattr(Platform, "detect", staticmethod(lambda: platform))
         if var == "CLAUDE_CONFIG_DIR":
             # It moves .claude.json too, so it is set for the whole test.
             monkeypatch.setenv(var, str(temp_home / ".claude"))
