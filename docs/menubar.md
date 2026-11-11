@@ -7,7 +7,7 @@ The menu bar app keeps the active account's usage in the macOS menu bar, and its
   <img src="../assets/screenshots/raw/menubar.png" alt="The menu bar's title and its open menu: Claude Code and Codex accounts with their usage, a check mark on each active account, held usage resets, today's estimated cost, and whether auto-switch is on" width="720">
 </picture>
 
-The pictures on this page are drawings of the menu's real rows, made by the [demo harness](../scripts/demo/README.md) with made-up accounts from the function the app builds its menu with (`menubar.build_menu`); they are not screenshots of the app.
+The pictures on this page are drawings of the menu, not screenshots of the app: the [demo harness](../scripts/demo/README.md) draws the rows that `menubar.build_menu`, the function the app builds its menu from, returns for made-up accounts.
 
 ## Install and start
 
