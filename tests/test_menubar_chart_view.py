@@ -106,11 +106,15 @@ def test_a_gap_shows_only_between_two_tall_segments():
 
 
 def test_the_legend_fits_the_view_whatever_its_width():
+    # Whatever width the menu gives the view, which is never less than the
+    # view's own min_width.
     _caption, _day, legend_font = view_mod._fonts()
     for week in (SEVEN, LONG, {A1: (1,) * 7, A2: (2,) * 7}):
         chart = build_chart(_cost(week))
         view = view_mod.make_view(chart)
-        for width in (view.frame().size.width, 380.0, 520.0):
+        narrowest = view.frame().size.width
+        assert narrowest == pytest.approx(view_mod.min_width(chart))
+        for width in (narrowest, max(narrowest, 380.0), narrowest + 23.0, 520.0):
             inner = width - view_mod.TITLE_INSET - view_mod.STATE_COLUMN - view_mod.RIGHT_INSET
             names = chart.fit_legend(lambda ns: view_mod._legend_width(chart, ns, legend_font) <= inner)
             assert view_mod._legend_width(chart, names, legend_font) <= inner
