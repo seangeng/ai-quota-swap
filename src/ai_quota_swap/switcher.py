@@ -4806,11 +4806,15 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 raise ConfigError("Slot number must be >= 1")
             account_num = str(slot)
             data = self._get_sequence_data()
-            if not is_api_key and self.key_line_number() == account_num:
+            if self.key_line_number() == account_num and (
+                not is_api_key or self.key_line_unreadable() is not None
+            ):
                 # Claude Code's settings name this slot as the active key: a
                 # login saved over it would leave every session with no key.
-                # Another key may replace it.
-                self._refuse_over_the_key(account_num, "token")
+                # Another key may replace it, except while the settings cannot
+                # be read: then the command stops with the shared sentence, as
+                # swap, move, remove and switch do (decision DS17).
+                self._refuse_over_the_key(account_num, "key" if is_api_key else "token")
 
             if self._account_exists(email, ""):
                 old_num = self._find_account_slot(data, email, "")
@@ -6928,43 +6932,105 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         to ``width`` (80 columns by default; status indents its notes)."""
         from ai_quota_swap import display
 
-        notes = self._key_notes()
-        if width is None or width == display.WIDTH:
-            return [line for note in notes for line in note]
-        return [line for note in notes for line in display.wrap(" ".join(note), width)]
+        return [
+            line for note in self.key_notes()
+            for line in display.wrap(note["text"], width or display.WIDTH)
+        ]
 
-    def _key_notes(self) -> list[list[str]]:
-        """:meth:`key_helper_notes`, one list of lines per note."""
+    def key_notes(self) -> list[dict]:
+        """The notes of :meth:`key_helper_notes`, one dict each, in the order
+        the text views print them: ``code`` (stable, for JSON; see
+        :data:`key_activation.KEY_NOTE_CODES`), ``account`` (the number of the account it
+        is about, or None), ``text`` (the whole note, unwrapped) and ``fix``
+        (its command or step, the one the note names first). Reads only;
+        ``[]`` when all is well."""
         from ai_quota_swap import display
+
+        def note(code: str, account: object, lines: list[str], fix: str | None) -> dict:
+            number = int(account) if account is not None and str(account).isdigit() else None
+            return {"code": code, "account": number, "text": " ".join(lines), "fix": fix}
 
         unreadable = self.key_line_unreadable()
         if unreadable is not None:
-            return [unreadable]
+            state = self.key_helper_state()
+            number = self._key_state().get("number")
+            return [note(
+                "settings-unreadable", number, unreadable,
+                display.settings_fix(state.shown_path(), state.error),
+            )]
         f = self.key_findings()
         if f.unknown is not None:
             return []
-        out: list[list[str]] = []
+        out: list[dict] = []
         fix = self.helper_fix_command()
+        path = f.state.shown_path()
+        if f.other_dir is not None:
+            other = claude_settings.shown_path(Path(f.other_dir))
+            out.append(note(
+                "other-data-dir", None, display.other_qswap_note(path, other),
+                display.foreign_helper_fix(path),
+            ))
+        elif f.state.kind == claude_settings.FOREIGN:
+            # Decision DS16: what blocks every key is said where the key
+            # would be, in the refusal's words.
+            out.append(note(
+                "other-helper", None, display.foreign_helper_note(path),
+                display.foreign_helper_fix(path),
+            ))
+        names = defeating_names(self._settings_env())
+        if names and (f.key is not None or self._api_key_numbers()):
+            label = self.label(f.key, long=False) if f.key is not None else None
+            out.append(note(
+                "env-outranks", f.key,
+                display.key_line_outranked_note(path, names, label, f.key),
+                display.key_line_defeated_fix(path, names, f.key),
+            ))
         if f.problem is not None:
-            out.append(display.key_helper_problem(f.problem["number"], f.problem["why"], fix))
+            out.append(note(
+                "line-no-key", f.problem["number"],
+                display.key_helper_problem(
+                    f.problem["number"], f.problem["why"], fix,
+                    key=self.label(f.problem["number"], long=False)
+                    if f.problem["why"] != "missing" else None,
+                ), fix,
+            ))
         if f.key is not None:
             label = self.label(f.key, long=False)
             if f.entered_by == "engine" and not self.engine_watching():
-                out.append(display.key_unwatched(label, self.key_way_back()))
+                back = self.key_way_back()
+                out.append(note(
+                    "unwatched", f.key, display.key_unwatched(label, back),
+                    back or display.KEY_NO_WAY_BACK,
+                ))
             if f.state.stale_command:
-                out.append(display.key_helper_moved(f.key, f"qswap switch {f.key}"))
+                out.append(note(
+                    "line-moved", f.key,
+                    display.key_helper_moved(f.key, f"qswap switch {f.key}", key=label),
+                    f"qswap switch {f.key}",
+                ))
             if f.came_back:
-                out.append(display.key_line_came_back(label, fix))
+                out.append(note(
+                    "line-came-back", f.key, display.key_line_came_back(label, fix), fix,
+                ))
             if f.linked:
-                out.append(display.profiles_still_linked_line(
-                    len(f.linked), label, f"qswap switch {f.key}"
+                out.append(note(
+                    "profiles-linked", f.key,
+                    display.profiles_still_linked_line(len(f.linked), label, f"qswap switch {f.key}"),
+                    f"qswap switch {f.key}",
                 ))
         if f.lost is not None and f.lost in ((self._get_sequence_data() or {}).get("accounts") or {}):
-            out.append(display.key_line_lost(
-                self.label(f.lost, long=False), f.state.shown_path(), f.lost,
+            # Decision E1: the fix is the way off the key, which clears the
+            # record; using the key again is named second.
+            back = self.key_way_back()
+            out.append(note(
+                "line-lost", f.lost,
+                display.key_line_lost(self.label(f.lost, long=False), path, f.lost, back),
+                back or display.KEY_NO_WAY_BACK,
             ))
         if f.copies:
-            out.append(display.stale_copies_line(len(f.copies), fix))
+            out.append(note(
+                "profiles-stale", None, display.stale_copies_line(len(f.copies), fix), fix,
+            ))
         return out
 
     def _print_nothing_managed(self) -> None:
@@ -8219,6 +8285,11 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         # with a settings copy, are repaired before anything else.
         if self._account_kind(target_account) != "api_key":
             self._refuse_unreadable_key_line()
+        elif not log_out_sessions and not force and self.helper_account() == target_account:
+            # Decision SS9: the key already active, with what outranks its
+            # line since, is refused in the words of the first-time refusal,
+            # before anything (a repair, the record) is written.
+            self._refuse_defeated_line(target_account)
         repairs = self.reconcile_key_helper()
         if repairs and not json_output:
             for text in repairs:
@@ -8228,12 +8299,13 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         helper = self.helper_account()
         if target_is_key and log_out_sessions:
             state = self.key_helper_state()
-            if state.kind == claude_settings.FOREIGN:
-                # Another helper outranks a saved key too (decision B6): the
-                # saved-key way would log every session out for nothing.
+            if state.kind in (claude_settings.FOREIGN, claude_settings.OTHER):
+                # Another helper outranks a saved key too (decision B6), and
+                # so does another qswap's line (SS4): the saved-key way would
+                # log every session out for nothing.
                 raise self._key_unavailable(
                     target_account, f"{state.shown_path()} already sets another apiKeyHelper",
-                    kind=claude_settings.FOREIGN, log_out_sessions=True,
+                    kind=state.kind, log_out_sessions=True,
                 )
             names = tuple(defeating_names(self._settings_env()))
             if names:
@@ -8253,17 +8325,20 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 # and written again (with the record and the run profiles)
                 # when it does not answer.
                 fixed = self.repair_active_key(target_account, entered_by=entered_by)
+                sent = self._key_sent_elsewhere(target_account)
                 if not json_output:
                     print(f"{accent('Already on')} {self._landed_label(target_account, email)}")
                     for text in [*fixed, *([kept] if kept else [])]:
                         for line in display.wrap(text):
                             print(dimmed(line))
+                    for text in sent:
+                        warning(text)
                     return None
                 message = f"Already on Account-{target_account} ({email})"
                 return self._switch_noop(
                     strategy="direct", reason="already-active", from_ref=ref, to_ref=ref,
                     message=f"{message}. {kept}" if kept else message,
-                    warnings=repairs + fixed,
+                    warnings=repairs + fixed + [t.removeprefix("Warning: ") for t in sent],
                 )
             op = self._enter_key(
                 target_account, entered_by=entered_by, emit_output=not json_output
@@ -9363,6 +9438,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 followup = self._api_key_followup(key_context, target_account, from_ref)
                 if followup_override is not None:
                     followup = list(followup_override)
+                followup = [*followup, *self._other_qswap_followup(target_account)]
                 if emit_output:
                     if shown_from:
                         print(f"{accent('Switched')} {shown_from} → "
@@ -9707,6 +9783,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         followup = self._api_key_followup(key_context, target_account, from_ref)
         if followup_override is not None:
             followup = list(followup_override)
+        followup = [*followup, *self._other_qswap_followup(target_account)]
         if emit_output:
             source = (
                 f"{self.label(from_ref.get('number'), long=False)} → "
@@ -9733,6 +9810,24 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             data["accounts"][target_account].get("organizationUuid", ""),
         )
         return self._op_result(from_ref, to_ref, warnings_out, followup)
+
+    def _other_qswap_followup(self, target_account: str) -> list[str]:
+        """Decision SS4: after a switch to a subscription while the settings
+        hold another qswap's key line, which the switch leaves alone, say that
+        sessions stay on that key until the line is removed. Never raises."""
+        from ai_quota_swap import display
+
+        try:
+            if self._account_kind(target_account) == "api_key":
+                return []
+            state = self.key_helper_state()
+            if state.kind != claude_settings.OTHER or not state.data_dir:
+                return []
+            return display.other_qswap_followup(
+                state.shown_path(), claude_settings.shown_path(Path(state.data_dir)),
+            )
+        except Exception:
+            return []
 
     def _api_key_switch_context(self, target_account: str) -> dict | None:
         """What the post-switch message needs when an API-key account is on

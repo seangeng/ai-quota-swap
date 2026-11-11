@@ -56,7 +56,7 @@ The switch adds one line to Claude Code's user settings, `~/.claude/settings.jso
 }
 ```
 
-The command is the `qswap` of this install, by absolute path, so a session with another `PATH` finds it; the path is quoted when it has spaces or shell characters in it. On Linux the line also names qswap's data directory (`--data-dir`), because Claude Code started from a desktop launcher or an editor may have another `XDG_DATA_HOME`, or none.
+The command is the `qswap` of this install, by absolute path, so a session with another `PATH` finds it; the path is quoted when it has spaces or shell characters in it. On Linux the line also names qswap's data directory (`--data-dir`), because Claude Code started from a desktop launcher or an editor may have another `XDG_DATA_HOME`, or none. A line for another data directory is another qswap's (one run with another `XDG_DATA_HOME`, say): this qswap leaves it alone, does not switch to a key while it is there, and `qswap list` and `qswap doctor` name that data directory.
 
 Claude Code watches that file. About a second after the write (measured on Claude Code 2.1.322), every session that reads it, running or new, sends its requests with the key that `qswap key-helper 5` prints, instead of the claude.ai login. Nothing else changes: not the login, not the saved key, not `~/.claude.json`. Running sessions keep their conversation. Some things do change for them:
 
@@ -94,7 +94,7 @@ Claude Code accounts
 ...
 ```
 
-`qswap status` shows only the active account, so it shows the key's row, `over #1 personal`. The key is the active account; the subscription is *underneath* it and is not active. Its windows still read as usual. When auto-switch entered the key, the row adds `by auto-switch`. Under `--json`, the key's row has `"active": true`, `"how": "helper"` and `"enteredBy"` (`user` or `engine`), and the subscription's row has `"underneath": true` ([json-output.md](json-output.md)).
+`qswap status` shows only the active account, so it shows the key's row, `over #1 personal`. The key is the active account; the subscription is *underneath* it and is not active. Its windows still read as usual. When auto-switch entered the key, the row adds `by auto-switch`. When the login underneath is one qswap does not manage, the switch to the key ends with `To go back, add that login first: qswap add` (`qswap add` then names the switch to it); with no login at all it names the switch to your first subscription (`Go back with: qswap switch 1`), which logs it in, and with no subscription either, how to log in to one. Under `--json`, the key's row has `"active": true`, `"how": "helper"` and `"enteredBy"` (`user` or `engine`), and the subscription's row has `"underneath": true` ([json-output.md](json-output.md)).
 
 ### Leaving the key
 
@@ -112,13 +112,13 @@ If qswap created `~/.claude/settings.json` for the line, it removes the file aga
 
 ### Changing accounts while a key is active
 
-- `qswap add-token NEWKEY --slot 5 --yes` replaces the key of the active account. The line stays the same, so `Running Claude Code sessions pick up the new key within 5 minutes, or at once after a request is rejected.`
+- `qswap add-token NEWKEY --slot 5 --yes` replaces the key of the active account. The line stays the same, so `Running Claude Code sessions pick up the new key within 5 minutes, or at once after a request is rejected.` While `~/.claude/settings.json` cannot be read it stops instead, with the sentence every command that changes accounts gives then, and saves nothing ([troubleshooting.md](troubleshooting.md#the-key-line-was-left-behind-after-a-crash)).
 - `qswap add` after a `/login` saves the new login but leaves the sessions on the key, and says so: `#5 ci is still the active API key; Claude Code sessions use it, not this login. To use this login: qswap switch 8`.
 - `qswap remove 5` takes the line out first and says where sessions go. `qswap swap` and `qswap move` refuse to renumber the account the line names, and `add-token` never moves it to another slot.
 
 ### Removing the line by hand
 
-If qswap is gone, or you want the subscription back without it, delete the `apiKeyHelper` line from `~/.claude/settings.json`. In a file of several lines qswap puts its key first, on a line of its own, so that one line is all there is to delete and the file stays valid JSON. A file written on one line (`{"apiKeyHelper":"…","model":"opus"}`) keeps the key inside that line: delete only `"apiKeyHelper":"…",` there, not the line. Sessions are back on the subscription about a second later. Then run `qswap doctor`: it confirms the file still parses, puts nothing back by itself, and names what is left over (below).
+If qswap is gone, or you want the subscription back without it, delete the `apiKeyHelper` line from `~/.claude/settings.json`. In a file of several lines qswap puts its key first, on a line of its own, so that one line is all there is to delete and the file stays valid JSON. A file written on one line (`{"apiKeyHelper":"…","model":"opus"}`) keeps the key inside that line: delete only `"apiKeyHelper":"…",` there, not the line. Sessions are back on the subscription about a second later. Then run `qswap doctor`: it confirms the file still parses, puts nothing back by itself, and names what is left over (below): qswap's record that #5 is active, which `qswap switch 1` clears.
 
 ### A settings file you sync
 
@@ -194,13 +194,22 @@ Because only the sessions started after a saved-key switch use the key, `qswap u
 - A line for an account that no longer exists, or is not an API-key account, fails: new sessions get no key ("apiKeyHelper script is failing"), and running ones keep the key they have until the settings change. The fix is `qswap switch N` to the account underneath, which removes the line.
 - A line that does not answer fails: it runs a qswap that is no longer there (a reinstall moved it), a program that is not executable, or an interpreter that cannot import qswap. `qswap switch 5` writes the line again for this qswap.
 - Run profiles left with a settings copy after the line is gone (qswap stopped between the two steps), or still sharing the settings while the line is in, fail, and `qswap switch N` repairs them.
-- A line that came back after qswap took it out (another program wrote an older copy of the settings) warns, with the switch that leaves it.
-- A key qswap made active whose line is no longer in the file (another program wrote an older copy the other way) warns, and so does `activeAccountNumber` naming it; the next `qswap switch` clears both.
+- A line that came back after qswap took it out (another program wrote an older copy of the settings) warns, with the switch that leaves it. That holds for 24 hours after qswap took it out; a line for that account written later is yours, as any line qswap has no record of.
+- A key qswap made active whose line is no longer in the file (you deleted it, or another program wrote an older copy the other way) warns once, for the record and `activeAccountNumber` together. The fix is the switch to the account underneath (`qswap switch 1`), which clears both and keeps you on the subscription; `to use the key again: qswap switch 5` comes second. `qswap list` and `qswap status` give the same two steps in the same order.
 - A key auto-switch entered while no auto-switch is running warns: nothing watches its limit.
 - `~/.claude/settings.json` that cannot be parsed while qswap's record names a key fails, with the fix.
 - Another `apiKeyHelper`, a variable in the settings' `env` block that comes before the line (or `ANTHROPIC_BASE_URL`, which sends the key elsewhere), `apiKeyHelper` or those variables in the managed settings or the current project's settings, and `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` exported in your shell, warn. `qswap switch` warns about the shell variables too; with a key active, `CLAUDE_CODE_OAUTH_TOKEN` follows the key.
 
-`qswap list`, `qswap status`, the dashboard and the menu bar say the same, with the same command, about a line for an account that cannot give a key, a line that runs a qswap no longer there, run profiles left with a copy or still sharing the settings, a line that came back, a key whose line is gone, a key auto-switch entered that nothing watches, and settings that cannot be read while a key is recorded. Only doctor reports another `apiKeyHelper`, a variable in the `env` block or another layer, and a line whose command fails its check while its program is there; a switch to a key that one of the first two would defeat is refused with the same words.
+`qswap list`, `qswap status`, the dashboard and the menu bar say the same, with the same command, about a line for an account that cannot give a key, a line that runs a qswap no longer there, run profiles left with a copy or still sharing the settings, a line that came back, a key whose line is gone, a key auto-switch entered that nothing watches, settings that cannot be read while a key is recorded, and another qswap's line. They also say, in the words of the refusal and with its fix, when another `apiKeyHelper` is set, and when a variable in the settings' `env` block outranks the line (over the active key, or, with API-key accounts and none active, over every key qswap would switch to):
+
+```text
+~/.claude/settings.json sets ANTHROPIC_API_KEY in its env block, which Claude
+Code obeys before any key line, so sessions do not use #5 ci. Remove
+ANTHROPIC_API_KEY from the env block of ~/.claude/settings.json, then:
+qswap switch 5
+```
+
+`qswap switch 5` to the key already active refuses in the same words, and changes nothing, while such a variable is set. Only doctor reports the other layers and a line whose command fails its check while its program is there.
 
 ## See what it spent
 

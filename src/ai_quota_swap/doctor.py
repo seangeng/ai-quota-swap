@@ -772,7 +772,9 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             text = None if raw is None else raw.decode("utf-8")
         except UnicodeDecodeError:
             text = "\x00"
-        state = claude_settings.state_of_text(text, Path(settings_path))
+        state = claude_settings.state_of_text(
+            text, Path(settings_path), data_dir=f.data_dir, default_dir=_default_data_dir(f),
+        )
     else:
         state = claude_settings.HelperState(
             claude_settings.INVALID, Path(settings_path),
@@ -817,15 +819,28 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             "active account, and qswap cannot add its own",
             fix=f"remove apiKeyHelper from {where}",
         ))
+    elif state.kind == claude_settings.OTHER:
+        # Decision SS4: another qswap's line, for its own data directory
+        # (named on a line of its own): not this qswap's to check or repair.
+        checks.append(Check(
+            "claude.api_key_helper", "claude", WARN,
+            f"{where} holds the key line of another qswap; Claude Code uses that "
+            "qswap's key instead of the active account, and qswap cannot add its "
+            "own. That qswap's data directory:",
+            fix=f"remove apiKeyHelper from {where}",
+            path=_abbr(state.data_dir, f.home),
+        ))
     elif state.kind == claude_settings.OURS:
         row = _accounts(registry).get(state.number)
+        # One name per account (decision DS7): its label where it exists.
+        named = label(state.number) if isinstance(row, dict) else f"#{state.number}"
         if findings.problem is not None:
             what = "does not exist" if not isinstance(row, dict) else (
                 "is not an API-key account"
             )
             checks.append(Check(
                 "claude.key_helper", "claude", FAIL,
-                f"{where} makes #{state.number} the active API key, but #{state.number} "
+                f"{where} makes {named} the active API key, but {named} "
                 f"{what}; new Claude Code sessions fail to get a key, and "
                 f"{display.BROKEN_LINE_RUNNING}",
                 fix=fix,
@@ -833,7 +848,7 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
         elif state.stale_command:
             checks.append(Check(
                 "claude.key_helper", "claude", FAIL,
-                f"{where} makes #{state.number} the active API key with a qswap that "
+                f"{where} makes {named} the active API key with a qswap that "
                 "is no longer there; new Claude Code sessions fail to get the key, "
                 f"and {display.BROKEN_LINE_RUNNING}",
                 fix=f"qswap switch {state.number}",
@@ -862,22 +877,31 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
     env_check = _settings_env_check(raw if read_err is None else None, where, findings.key)
     if env_check is not None:
         checks.append(env_check)
+    lost_said = False
     if findings.lost is not None and isinstance((accounts or {}).get(findings.lost), dict):
+        # Decision E1: one warning for the record and activeAccountNumber
+        # together. Its fix is the way off the key (the switch to the
+        # account underneath, which clears both); using the key again is
+        # offered second, and labelled as that.
+        lost_said = True
+        also = (
+            ", and the account list names it as the active account"
+            if findings.stale_active == findings.lost else ""
+        )
         checks.append(Check(
             "claude.key_helper", "claude", WARN,
-            f"qswap made {label(findings.lost)} the active API key, but its key line "
-            f"is no longer in {where}; Claude Code sessions do not use it",
-            fix=f"qswap switch {findings.lost}",
+            f"qswap made {label(findings.lost)} the active API key{also}, but its key "
+            f"line is no longer in {where}; Claude Code sessions do not use it",
+            fix=_key_way_back(p, registry, login_slot) or display.KEY_NO_WAY_BACK,
+            hint=f"to use the key again: qswap switch {findings.lost}",
         ))
-    if findings.stale_active is not None:
+    if findings.stale_active is not None and not (
+        lost_said and findings.stale_active == findings.lost
+    ):
         active_fix = fix
         if fix == "qswap switch N":
-            # No login underneath to name: the command the record's warning
-            # names for the same leftover, else the way off a key.
-            active_fix = (
-                f"qswap switch {findings.lost}" if findings.lost is not None
-                else _key_way_back(p, registry, None) or display.KEY_NO_WAY_BACK
-            )
+            # No login underneath to name: the way off a key.
+            active_fix = _key_way_back(p, registry, None) or display.KEY_NO_WAY_BACK
         checks.append(Check(
             "claude.active_number", "claude", WARN,
             f"the account list names {label(findings.stale_active)} as the active "
@@ -1049,11 +1073,13 @@ def _key_line_check(p: Probes, f: _Facts, state, record: dict, where: str) -> Ch
     line again for this install. A check that could not be made warns."""
     from ai_quota_swap import claude_settings
 
+    email = record.get("email") if isinstance(record.get("email"), str) else ""
+    named = _label(state.number, record, email)  # one name per account (DS7)
     why, err = _try(p.key_line_answers, state.command)
     if err is not None:
         return Check(
             "claude.key_helper", "claude", WARN,
-            f"{where} makes #{state.number} the active API key; qswap could not "
+            f"{where} makes {named} the active API key; qswap could not "
             f"check that its line answers ({_reason(err)})",
             fix=f"qswap key-helper {state.number} --check",
         )
@@ -1067,16 +1093,15 @@ def _key_line_check(p: Probes, f: _Facts, state, record: dict, where: str) -> Ch
             )
         # The helper names its own fix when it has one ("save one: qswap
         # add-token KEY --slot 5"); else the switch writes the line again.
-        named = re.search(r": (qswap [^;()]+)\)$", why)
+        step = re.search(r": (qswap [^;()]+)\)$", why)
         return Check(
             "claude.key_helper", "claude", FAIL,
-            f"{where} makes #{state.number} the active API key, but its line {why}{then}",
-            fix=named.group(1) if named else f"qswap switch {state.number}",
+            f"{where} makes {named} the active API key, but its line {why}{then}",
+            fix=step.group(1) if step else f"qswap switch {state.number}",
         )
-    email = record.get("email") if isinstance(record.get("email"), str) else ""
     return Check(
         "claude.key_helper", "claude", PASS,
-        f"active API key: {_label(state.number, record, email)}, through "
+        f"active API key: {named}, through "
         f"qswap's key line in {where}, which runs "
         f"{_line_program(state.command, f.home)}",
     )
@@ -1095,6 +1120,17 @@ def _line_program(command: str | None, home: Path | None) -> str:
     if any(c.isspace() for c in shown):
         shown = f'"{shown}"'
     return f"{shown} {line.module} ai_quota_swap" if line.module else shown
+
+
+def _default_data_dir(f: _Facts) -> Path | None:
+    """The data directory a key line without ``--data-dir`` belongs to on
+    this machine (decision SS4): ``~/.local/share/ai-quota-swap`` on Linux,
+    ``~/.ai-quota-swap`` elsewhere."""
+    if f.home is None:
+        return None
+    if f.platform in (Platform.LINUX, Platform.WSL):
+        return f.home / ".local" / "share" / "ai-quota-swap"
+    return f.home / paths.LEGACY_BACKUP_DIRNAME
 
 
 def _key_repair_command(p: Probes, f: _Facts, registry: dict | None) -> str:

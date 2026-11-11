@@ -149,8 +149,9 @@ return to it when the key is left.
   a key picks its target before it touches the line, and stays on the key when there is none.
 - **Messages.** To a key: running sessions move to it within a few seconds, the account
   underneath stays logged in, claude.ai connectors and Remote Control are unavailable while a
-  key is in use, and the way back (`Go back with: qswap switch 1`). Away from a key: sessions
-  are back on the named account within a few seconds.
+  key is in use, and the way back (`Go back with: qswap switch 1`; over a login qswap does
+  not manage, or with no login, the way back the other surfaces give). Away from a key:
+  sessions are back on the named account within a few seconds.
 - **The settings file.** Read, change one key, write atomically, keep everything else as it
   was (key order, indentation, file mode, a byte order mark). In a file of several lines the
   line goes in as the first member, so that deleting it by hand leaves valid JSON. If the
@@ -245,7 +246,9 @@ What the code does where this part leaves room, or where it had to differ:
 - **Who entered the key** (the user or the engine) and whether qswap created the settings
   file are kept in `<data dir>/key_helper.json`. Leaving a key keeps a tombstone there
   (number, time, who had entered it). A line of qswap's with no record but a tombstone for
-  its number "came back": another program wrote an older copy of the settings. Claude Code
+  its number "came back": another program wrote an older copy of the settings. A tombstone
+  counts for 24 hours from its time (one with no readable time is old); after that a line
+  for that number is the user's. Claude Code
   is one (read in the 2.1.322 binary): a session that saves a setting within about a second
   of qswap's write merges into the copy it read before. The line keeps who had entered it,
   and every surface names the way out. A line with neither counts as the
@@ -265,9 +268,18 @@ What the code does where this part leaves room, or where it had to differ:
   no line, gives a still-linked run profile its copy, and puts back the links of copies left
   with no line. Every `qswap switch` runs it first, and so does every tick of the engine
   (never a dry run). List, status, doctor, the dashboard and the menu bar report the same
-  findings without repairing. A line that names another `--data-dir` belongs to another
-  qswap and is not touched. When `sequence.json` or the settings cannot be read the state
+  findings without repairing. When `sequence.json` or the settings cannot be read the state
   is unknown, not missing: nothing is repaired or removed.
+- **Another qswap's line.** A line reads its key from the data directory after its
+  `--data-dir`, or, without one, from the default data directory (`~/.ai-quota-swap`;
+  `~/.local/share/ai-quota-swap` on Linux). A line for another data directory than this
+  qswap's is another program's line, as another helper is: not repaired, not removed, not
+  counted as the active key, and reported (by list, status, the dashboard, the menu bar and
+  doctor) with that data directory named. A switch to a key is refused in the words of the
+  refusal for another helper, plus the data directory; a switch to a subscription leaves the
+  line and says that sessions stay on the other qswap's key until the line is removed. A
+  qswap whose own data directory is not the default always names it in its line, on every
+  platform.
 - **Settings that cannot be read while a key is recorded.** Every surface says the same
   sentence: `~/.claude/settings.json cannot be read (...); qswap last made #5 ci the active
   API key there, and its key line may still be in it. Fix the JSON in
@@ -278,8 +290,12 @@ What the code does where this part leaves room, or where it had to differ:
   run-profile copies, is `qswap switch N` to the account underneath. A line that runs a
   qswap no longer there (a reinstall moved it) is read as qswap's, reported, and pointed at
   the current qswap by `qswap switch N` to the key. `qswap switch N` to the key already
-  active runs the line's command with `--check` and repairs the line, the record and the run
-  profiles, instead of answering only `Already on`.
+  active first checks what outranks the line, as the first switch does (a variable in the
+  `env` block is refused in the same words, and nothing is written; `ANTHROPIC_BASE_URL`
+  warns), then runs the line's command with `--check` and repairs the line, the record and
+  the run profiles, instead of answering only `Already on`. List, status, the dashboard and
+  the menu bar carry a note for such a variable and for another `apiKeyHelper`, in the
+  refusal's words and with its fix.
 - **Order of the two steps.** Entering a key gives run profiles their copies first, then
   writes the record, then the line (a failure in between puts the profiles back); leaving
   removes the line and then restores the profiles. Either crash leaves copies with no line,
@@ -325,7 +341,10 @@ What the code does where this part leaves room, or where it had to differ:
 - **The way back**, in status, list, the menu bar, the dashboard, doctor and the stopping
   engine: `qswap switch N` to the account underneath; `qswap add` over a login qswap does
   not manage; else `qswap switch N` to the first subscription; else log in to one and run
-  `qswap add`.
+  `qswap add`. It is also the fix for a record whose line is gone (the line deleted by
+  hand): the switch clears the record and `activeAccountNumber`, which doctor reports as
+  one warning; `qswap switch 5`, to use the key again, is offered second and labelled so.
+  No surface names re-entering the key as that fix.
 - **Credit and Anthropic's figures.** The usage report has daily buckets, so the day a credit
   is recorded counts in full against it; the ledger counts from the hour. The row and `qswap
   credit` say which (`credit counted from 14:00 UTC Nov 10`). A credit recorded before this
