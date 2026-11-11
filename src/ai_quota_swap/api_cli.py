@@ -436,6 +436,164 @@ def _budget_list(switcher, account: str | None, *, as_json: bool) -> None:
     print(dimmed(NOT_A_CAP))
 
 
+# -- qswap credit ----------------------------------------------------------------
+
+NOT_ANTHROPICS = (
+    "A credit is the count qswap keeps of what you recorded, less the spend it "
+    "measures from then on. It is not the balance at Anthropic, which no key can read."
+)
+
+
+def credit_command(argv: list[str]) -> None:
+    """Handle ``qswap credit [ACCOUNT [AMOUNT|off] [--expires DATE]]``."""
+    prog = _cli()._prog_name()
+    from ai_quota_swap.argparsing import ArgumentParser
+
+    parser = ArgumentParser(
+        prog=f"{prog} credit",
+        description=(
+            "Record, remove or list a prepaid credit for an API-key account, as of "
+            "now. Spend from then on counts down from it; when it is spent or past "
+            "its expiry date, auto-switch stops using the account."
+        ),
+        epilog=f"""examples:
+  {prog} credit 5 1187                     # $1,187 left on #5 as of now
+  {prog} credit 5 1187 --expires 2026-12-31
+  {prog} credit 5 off                      # remove it
+  {prog} credit                            # every recorded credit
+
+{NOT_ANTHROPICS}
+""",
+    )
+    parser.add_argument("account", nargs="?", metavar="ACCOUNT",
+                        help="an API-key account (number, email or alias); omit to list")
+    parser.add_argument("amount", nargs="?", metavar="AMOUNT|off",
+                        help="dollars left now, or 'off' to remove the credit")
+    parser.add_argument("--expires", metavar="DATE",
+                        help="the last day (YYYY-MM-DD, UTC) the credit can be used")
+    parser.add_argument("--json", action="store_true",
+                        help="machine-readable output (docs/json-output.md)")
+    parser.add_argument("--debug", action="store_true", help="log debug detail")
+    args = parser.parse_args(argv)
+
+    try:
+        switcher = _cli()._switcher(debug=args.debug)
+        _cli()._guard_root(switcher)
+        if args.amount is None and args.expires:
+            raise api_spend.CreditError(
+                "--expires goes with an amount: qswap credit N AMOUNT --expires DATE"
+            )
+        if args.amount is not None:
+            off = args.amount.strip().lower() == "off"
+            num, email, credit, changed = api_spend.set_credit(
+                switcher, args.account, None if off else args.amount,
+                expires=None if off else args.expires,
+            )
+            if args.json:
+                from ai_quota_swap.json_output import SCHEMA_VERSION
+
+                print(json.dumps({
+                    "schemaVersion": SCHEMA_VERSION, "number": int(num), "email": email,
+                    "credit": _credit_json(credit), "changed": changed,
+                }, indent=2))
+                return
+            who = switcher.label(num, email, long=False)
+            if credit is None:
+                print(f"{accent('Removed')} the credit for {who}." if changed
+                      else dimmed(f"{who} has no credit recorded."))
+                return
+            until = f", usable until {credit['expires']}" if credit.get("expires") else ""
+            print(
+                f"{accent('Recorded')} {api_spend.budget_money(credit['amount'])} of credit "
+                f"for {who} as of now{until}."
+            )
+            from ai_quota_swap.display import wrap
+
+            for line in wrap(NOT_ANTHROPICS, indent="  "):
+                print(dimmed(line))
+            return
+        _credit_list(switcher, args.account, as_json=args.json)
+    except (api_spend.CreditError, ValueError) as e:
+        _fail(str(e), args.json, "ValueError")
+    except ProviderError as e:
+        _fail(str(e), args.json, type(e).__name__)
+    except KeyboardInterrupt:
+        print(f"\n{dimmed('Operation cancelled')}")
+        sys.exit(130)
+
+
+def _credit_json(credit: dict | None) -> dict | None:
+    if credit is None:
+        return None
+    from datetime import datetime, timezone
+
+    return {
+        "amount": credit["amount"],
+        "since": admin_api.iso_z(datetime.fromtimestamp(credit["since"], tz=timezone.utc)),
+        "expires": credit.get("expires"),
+    }
+
+
+def _credit_list(switcher, account: str | None, *, as_json: bool) -> None:
+    from ai_quota_swap.json_output import SCHEMA_VERSION, api_spend_to_json
+
+    data = switcher._get_sequence_data() or {}
+    records = data.get("accounts") or {}
+    infos = _api_key_infos(switcher)
+    if account is not None:
+        num, email, _org = switcher.resolve_account(account)
+        if num not in infos:
+            raise api_spend.CreditError(
+                f"{_label(num, email)} is a subscription account; a credit applies to "
+                "API-key accounts"
+            )
+        infos = {num: infos[num]}
+    with_credit = {
+        num: info for num, info in infos.items()
+        if api_spend.credit_from_record(records.get(num)) is not None
+    }
+    readings = api_spend.readings(switcher, with_credit) if with_credit else {}
+    if as_json:
+        print(json.dumps({
+            "schemaVersion": SCHEMA_VERSION,
+            "accounts": [
+                {
+                    "number": int(num), "email": info[1],
+                    "credit": _credit_json(api_spend.credit_from_record(records.get(num))),
+                    "apiSpend": api_spend_to_json(readings[num]) if num in readings else None,
+                }
+                for num, info in with_credit.items()
+            ],
+        }, indent=2))
+        return
+    if not with_credit:
+        print(dimmed(
+            "No credit is recorded. Record one for an API-key account with: "
+            "qswap credit N AMOUNT"
+        ))
+        return
+    print(bolded("Credit recorded for API-key accounts:"))
+    from ai_quota_swap.labels import account_label
+
+    for num, info in with_credit.items():
+        who = account_label(None, alias=info[6] or None, email=info[1], long=True)
+        reading = readings.get(num) or {}
+        credit = reading.get("credit")
+        line = api_spend.credit_text(credit) if isinstance(credit, dict) else "no figure"
+        text = f"  {num}: {who}  {line}"
+        if api_spend.limit_reason(reading) in ("credit-spent", "credit-expired"):
+            warning(text)
+        else:
+            print(text)
+        detail = api_spend.detail_text(reading) if reading else None
+        if detail:
+            print(dimmed(f"     {detail}"))
+    from ai_quota_swap.display import wrap
+
+    for line in wrap(NOT_ANTHROPICS):
+        print(dimmed(line))
+
+
 # -- qswap usage --billed -------------------------------------------------------
 
 BILLED_GROUPINGS = ("day", "model", "key", "workspace")

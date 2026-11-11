@@ -361,14 +361,26 @@ class TestSessionGuard:
 
     def test_setup_session_rejects(self, temp_home: Path):
         mgr = SessionManager(self._seed_api_key_account())
-        with pytest.raises(SessionError, match="does not support API-key accounts"):
+        with pytest.raises(SessionError, match="which has no session profile"):
             mgr.setup_session("2", share=True)
 
-    def test_run_rejects_before_exec(self, temp_home: Path, monkeypatch):
+    def test_run_execs_on_the_shared_profile_with_the_helper(self, temp_home: Path, monkeypatch):
+        """Part 2 of docs/design/api-key-sessions.md: ``qswap run N`` for an
+        API-key account no longer refuses; it starts claude with the key
+        helper in ``--settings`` (tests/test_key_helper_live.py has the rest)."""
         mgr = SessionManager(self._seed_api_key_account())
         monkeypatch.setattr(clis, "find_cli", lambda name: "/fake/claude")
-        with pytest.raises(SessionError, match="does not support API-key accounts"):
+        seen = {}
+
+        def fake_exec(claude_bin, args, env):
+            seen["args"] = args
+            raise SystemExit(0)
+
+        monkeypatch.setattr(mgr, "_exec", fake_exec)
+        with pytest.raises(SystemExit):
             mgr.run("2", [], share=True)
+        assert seen["args"][0] == "--settings"
+        assert json.loads(seen["args"][1])["apiKeyHelper"].endswith("key-helper 2")
 
 
 # ---------------------------------------------------------------------------

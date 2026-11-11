@@ -211,8 +211,10 @@ class ActiveChangeWatcher:
     """Notices which providers' active account changed outside the menu bar.
 
     ``paths[provider]()`` is the file that names the live login (Claude
-    Code's config, Codex's ``auth.json``); ``read_active[provider]()`` reads
-    the live login's email from it. Each :meth:`poll` stats every file and
+    Code's config, Codex's ``auth.json``), or several files (Claude Code's
+    config and its user settings, whose key helper line makes an API key the
+    active account); ``read_active[provider]()`` reads the active account's
+    email. Each :meth:`poll` stats every file and
     reads only those whose modification time moved (Claude Code rewrites its
     config often for unrelated reasons, so a changed file alone is not a
     switch); a provider is reported when the login now differs from the one
@@ -237,12 +239,21 @@ class ActiveChangeWatcher:
         changed: list[str] = []
         for provider, path_of in self._paths.items():
             try:
-                path = path_of()
-                if path is None:
+                found = path_of()
+                if found is None:
                     continue
-                mtime = self._stat(path).st_mtime
-            except (OSError, ValueError):
-                continue
+                # One file, or several (Claude Code's config and its user
+                # settings, where qswap's key helper line makes a key active).
+                group = tuple(found) if isinstance(found, (tuple, list)) else (found,)
+                stamps = []
+                for path in group:
+                    try:
+                        stamps.append(self._stat(path).st_mtime)
+                    except (OSError, ValueError):
+                        stamps.append(None)
+                if all(s is None for s in stamps):
+                    continue
+                mtime = stamps[0] if len(stamps) == 1 else tuple(stamps)
             except Exception:
                 _logger.debug("active-change stat failed", exc_info=True)
                 continue

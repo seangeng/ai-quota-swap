@@ -7,10 +7,12 @@ colour only together with a word). ``--json`` prints the same checks as data,
 ``--online`` adds two reachability checks; without it nothing touches the
 network. Exit status 0 when no check fails, 1 when one does.
 
-Three Claude Code checks appear only when they apply: an ``apiKeyHelper`` in
-Claude Code's user settings, a variable in qswap's environment that overrides
-the active account (names only, never values), and an API-key account that is
-active while sessions older than its activation are running.
+Claude Code checks that appear only when they apply: an ``apiKeyHelper`` in
+Claude Code's user settings (qswap's own line is the active key; a line for an
+account that cannot give a key, or run profiles left with a settings copy,
+fail with the repair), a variable in qswap's environment that overrides the
+active account (names only, never values), and an API-key account that is
+active as a saved key while sessions older than its activation are running.
 
 Doctor never changes anything and never asks a question. In particular it
 builds no switcher (constructing one creates the data directory and runs
@@ -251,6 +253,14 @@ def _claude_settings_path() -> Path:
     return paths.get_claude_config_home() / "settings.json"
 
 
+def _list_dir(path: Path) -> list[Path]:
+    """A directory's entries; [] when it does not exist."""
+    try:
+        return sorted(Path(path).iterdir())
+    except FileNotFoundError:
+        return []
+
+
 def _claude_sessions() -> list:
     from ai_quota_swap.process_detection import list_sessions
 
@@ -330,6 +340,8 @@ class Probes:
     claude_settings_path: Callable[[], Path] = _claude_settings_path
     #: The Claude Code sessions running on the shared login.
     claude_sessions: Callable[[], list] = _claude_sessions
+    #: A directory's entries (the run profiles under the data directory).
+    list_dir: Callable[[Path], list[Path]] = _list_dir
 
 
 def default_probes() -> Probes:
@@ -359,6 +371,7 @@ def default_probes() -> Probes:
         environ=_environ,
         claude_settings_path=_claude_settings_path,
         claude_sessions=_claude_sessions,
+        list_dir=_list_dir,
     )
 
 
@@ -624,17 +637,7 @@ def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
     from ai_quota_swap import display
 
     checks: list[Check] = []
-    settings_path, err = _try(p.claude_settings_path)
-    settings, read_err = (None, err) if err is not None else _read_json(p, settings_path)
-    helper = (settings or {}).get("apiKeyHelper")
-    if isinstance(helper, str) and helper.strip():
-        where = _abbr(settings_path, f.home)
-        checks.append(Check(
-            "claude.api_key_helper", "claude", WARN,
-            f"{where} sets apiKeyHelper; Claude Code uses it instead of the "
-            "active account",
-            fix=f"remove apiKeyHelper from {where}",
-        ))
+    checks.extend(_key_helper_checks(p, f))
 
     environ, _ = _try(p.environ, default={})
     names = display.exported_overrides(environ or {})
@@ -651,6 +654,111 @@ def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
     if stale is not None:
         checks.append(stale)
     return checks
+
+
+def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
+    """Claude Code's user settings and qswap's key helper line
+    (docs/design/api-key-sessions.md, part 2): qswap's own line for an
+    API-key account is the active key, reported as such; a line for an
+    account that does not exist (or is not an API-key account) fails with the
+    repair; another helper overrides the active account; run profiles left
+    with a settings copy after the line is gone fail with the repair."""
+    from ai_quota_swap import claude_settings
+
+    checks: list[Check] = []
+    settings_path, err = _try(p.claude_settings_path)
+    if err is not None or settings_path is None:
+        return checks
+    where = _abbr(settings_path, f.home)
+    raw, read_err = _try(p.read_bytes, settings_path)
+    registry = None
+    if f.data_dir is not None:
+        registry, _ = _read_json(p, f.data_dir / "sequence.json")
+    fix = _key_repair_command(p, f, registry)
+    state = None
+    if read_err is None:
+        try:
+            text = None if raw is None else raw.decode("utf-8").lstrip("\ufeff")
+        except UnicodeDecodeError:
+            text = "\x00"
+        state = claude_settings.state_of_text(text, Path(settings_path))
+    if state is None:
+        pass
+    elif state.kind == claude_settings.INVALID:
+        checks.append(Check(
+            "claude.settings", "claude", WARN,
+            f"{where} is not valid JSON ({state.error}); Claude Code cannot read "
+            "it and qswap will not change it",
+            fix=f"fix the JSON in {where}",
+        ))
+    elif state.kind == claude_settings.FOREIGN:
+        checks.append(Check(
+            "claude.api_key_helper", "claude", WARN,
+            f"{where} sets apiKeyHelper; Claude Code uses it instead of the "
+            "active account, and qswap cannot add its own",
+            fix=f"remove apiKeyHelper from {where}",
+        ))
+    elif state.kind == claude_settings.OURS:
+        record = _accounts(registry).get(state.number)
+        if not isinstance(record, dict) or record.get("kind") != "api_key":
+            what = "does not exist" if not isinstance(record, dict) else (
+                "is not an API-key account"
+            )
+            checks.append(Check(
+                "claude.key_helper", "claude", FAIL,
+                f"{where} makes #{state.number} the active API key, but #{state.number} "
+                f"{what}; every Claude Code session fails to get a key",
+                fix=fix,
+            ))
+        else:
+            email = record.get("email") if isinstance(record.get("email"), str) else ""
+            checks.append(Check(
+                "claude.key_helper", "claude", PASS,
+                f"active API key: {_label(state.number, record, email)}, through "
+                f"qswap's apiKeyHelper line in {where}",
+            ))
+    stale = _stale_profile_copies(p, f, state)
+    if stale:
+        noun = "profile keeps" if stale == 1 else "profiles keep"
+        checks.append(Check(
+            "claude.profile_settings", "claude", FAIL,
+            f"{stale} qswap run {noun} a copy of Claude Code's settings from while a "
+            "key was active, so changes to the settings do not reach them",
+            fix=fix,
+        ))
+    return checks
+
+
+def _key_repair_command(p: Probes, f: _Facts, registry: dict | None) -> str:
+    """``qswap switch N`` for the live login, which removes a broken key line
+    and restores run profiles' settings sharing."""
+    config_path, err = _try(p.claude_config_path)
+    if err is None:
+        data, _ = _read_json(p, config_path)
+        oauth = (data or {}).get("oauthAccount")
+        if isinstance(oauth, dict) and isinstance(oauth.get("emailAddress"), str):
+            slot = claude_slot(registry, oauth["emailAddress"], oauth.get("organizationUuid", "") or "")
+            if slot is not None:
+                return f"qswap switch {slot}"
+    return "qswap switch N"
+
+
+def _stale_profile_copies(p: Probes, f: _Facts, state) -> int:
+    """How many run profiles hold a settings copy (session.SETTINGS_COPY_MARKER)
+    while the user settings carry no key line of qswap's."""
+    from ai_quota_swap.session import SETTINGS_COPY_MARKER
+
+    if f.data_dir is None or (state is not None and state.ours):
+        return 0
+    entries, err = _try(p.list_dir, f.data_dir / "sessions", default=[])
+    count = 0
+    for entry in entries or []:
+        if Path(entry).name.startswith("."):
+            continue
+        found, _ = _try(p.exists, Path(entry) / SETTINGS_COPY_MARKER, default=False)
+        if found:
+            count += 1
+    return count
 
 
 def _api_key_session_check(p: Probes, f: _Facts) -> Check | None:

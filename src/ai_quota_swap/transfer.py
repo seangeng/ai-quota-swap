@@ -475,6 +475,15 @@ def import_accounts(
     # What each written slot received, for the note about the live login.
     written_creds: dict[str, str] = {}
     live_creds, live_dead = _live_login_state(switcher)
+    # The API-key account active through Claude Code's apiKeyHelper line
+    # (docs/design/api-key-sessions.md): its slot keeps an API key, and the
+    # login underneath it is the live login above.
+    helper_getter = getattr(switcher, "helper_account", None)
+    helper_slot = helper_getter() if callable(helper_getter) else None
+    helper_before = (
+        switcher._read_account_credentials(helper_slot, switcher.account_email(helper_slot))
+        if helper_slot is not None else None
+    )
 
     # Track where the envelope's active account ended up locally. We can't
     # just look up envelope_active in the final account map afterwards: the
@@ -502,6 +511,17 @@ def import_accounts(
         existing_slot = switcher._find_account_slot(
             data, entry["email"], entry["org_uuid"]
         )
+
+        if (
+            existing_slot is not None and existing_slot == helper_slot
+            and entry["kind"] != "api_key"
+        ):
+            _eprint(
+                f"Skipped {shown_email(entry['email'])}: slot {existing_slot} is the active "
+                "API key, and the import is not a key. Switch away first, then import again."
+            )
+            skipped += 1
+            continue
 
         if existing_slot is not None:
             if force:
@@ -674,6 +694,16 @@ def import_accounts(
     #   and only there, loading it over the live login is the step (#79).
     # - An API key is never refreshed: a different imported key is lost at
     #   the next switch away unless it is loaded now.
+    if helper_slot is not None and helper_slot in written_slots:
+        name = switcher.label(helper_slot, long=False)
+        same = (helper_before or "").strip() == (written_creds.get(helper_slot) or "").strip()
+        if same:
+            _eprint(f"{name} is already the active account; nothing needs doing.")
+        else:
+            _eprint(
+                f"The saved key for {name} was replaced. Claude Code sessions use the new "
+                "key from their next key refresh, within five minutes."
+            )
     identity = switcher._get_current_account()
     if identity is not None and final is not None:
         live_slot = switcher._find_account_slot(final, identity[0], identity[1])

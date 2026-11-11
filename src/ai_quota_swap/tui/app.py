@@ -389,12 +389,16 @@ class QswapApp(App):
                 return True
             if (
                 not result.ok and not log_out_sessions and result.error
-                and result.error_type == "SessionsRunningError"
+                and result.error_type in ("SessionsRunningError", "KeyHelperUnavailableError")
             ):
+                # Through the key helper a switch to a key asks nothing; this
+                # is the saved-key way, offered when the helper cannot be
+                # added (docs/design/api-key-sessions.md).
                 sessions = int((result.error_fields or {}).get("sessions") or 0)
                 self._offer_log_out_sessions(
                     provider, str(number), result.error, sessions, anyway,
                     from_key=self._active_is_api_key(sw),
+                    helper=result.error_type == "KeyHelperUnavailableError",
                 )
                 return True
             if not result.ok:
@@ -430,14 +434,18 @@ class QswapApp(App):
 
     def _offer_log_out_sessions(
         self, provider: str, number: str, error: str, sessions: int, anyway: bool,
-        *, from_key: bool = False,
+        *, from_key: bool = False, helper: bool = False,
     ) -> None:
         # The command line's refusal as a question; the button is what
         # "qswap switch N --log-out-sessions" says to run. Cancel is the focus.
+        title = (
+            display.KEY_HELPER_QUESTION_TITLE if helper
+            else display.api_key_question_title(sessions, from_key=from_key)
+        )
         self.push_screen(
             ConfirmModal(
                 display.api_key_question(error),
-                title=display.api_key_question_title(sessions, from_key=from_key),
+                title=title,
                 yes_label=display.api_key_question_button(from_key=from_key),
                 default_no=True,
             ),

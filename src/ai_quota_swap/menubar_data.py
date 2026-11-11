@@ -101,7 +101,18 @@ def account_states(
     ``lines`` are the provider's switch lines."""
     from ai_quota_swap.display import Lines
 
+    from ai_quota_swap.labels import account_label
+
     lines = lines or Lines()
+    under = getattr(snapshot, "underneath_number", None)
+    over = ""
+    if under is not None:
+        acc_under = next((a for a in snapshot.accounts if str(a.number) == str(under)), None)
+        if acc_under is not None:
+            over = account_label(
+                acc_under.number, alias=acc_under.alias or None, email=acc_under.email,
+                long=False,
+            )
     return tuple(
         AccountState(
             provider=provider,
@@ -117,6 +128,8 @@ def account_states(
             plan=_plan_label(acc.subscription_plan, now),
             org=(acc.org_name or "") if provider == "claude" else "",
             lines=_account_lines(acc, lines),
+            underneath=bool(getattr(acc, "underneath", False)),
+            over=over if acc.is_active else "",
         )
         for acc in snapshot.accounts
     )
@@ -145,7 +158,8 @@ def claude_state(switcher, source, *, full: bool, store_only: bool, now: float) 
     lines = provider_lines(getattr(switcher, "backup_dir", None), "claude")
     accounts = account_states(snap, "claude", set_aside, now=now, lines=lines)
     found = None if accounts or live else _quiet(lambda: clis.cli_found("claude"))
-    return ProviderState("claude", accounts, live_email=live, cli_found=found)
+    notes = tuple(getattr(snap, "key_notes", ()) or ())
+    return ProviderState("claude", accounts, live_email=live, cli_found=found, key_notes=notes)
 
 
 def codex_registry_count(data_root: Path) -> int:

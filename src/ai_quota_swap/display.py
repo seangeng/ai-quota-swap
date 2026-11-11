@@ -383,6 +383,11 @@ class AccountBlock:
     error: str | None = None
     retry_in_s: float | None = None
     set_aside: str | None = None
+    #: The subscription whose login is live under an active key (docs/design/
+    #: api-key-sessions.md): shown ``underneath``, never ``active``.
+    underneath: bool = False
+    #: On an active key: the account underneath (``#1 personal``).
+    over: str = ""
 
 
 def label_for(block: AccountBlock, *, long: bool = True) -> str:
@@ -425,10 +430,14 @@ def header_parts(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ")
     facts: list[tuple[str, str]] = []
     if block.active:
         facts.append(("active", "active"))
+    elif block.underneath:
+        facts.append((UNDERNEATH, "underneath"))
     if block.disabled:
         facts.append(("disabled", "disabled"))
     if block.kind == "api_key":
         facts.append(("API key", "api-key"))
+    if block.over:
+        facts.append((over_fact(block.over), "over"))
     if block.plan:
         facts.append((block.plan, "plan-lapsed" if block.plan_warning else "plan"))
     if block.org:
@@ -481,6 +490,7 @@ def header_line(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ") 
     styles: dict[str, Callable[[str], str]] = {
         "active": bolded, "disabled": muted, "api-key": muted,
         "plan": muted, "plan-lapsed": yellowed, "org": muted,
+        "underneath": muted, "over": muted,
     }
     parts = header_parts(block, width=width, indent=indent)
     styled_name = accent(parts.name) if parts.alias else parts.name
@@ -730,6 +740,8 @@ def block_from_entry(
     kind: str = "oauth",
     lines: Lines = Lines(),
     set_aside: str | None = None,
+    underneath: bool = False,
+    over: str = "",
     sentinel_notes: dict[str, str] | None = None,
     login_row: WindowRow | None = None,
     now: float,
@@ -766,6 +778,7 @@ def block_from_entry(
         number=number, email=email, alias=alias, provider=provider,
         show_provider=show_provider, active=active, disabled=disabled,
         plan=plan, plan_warning=plan_warning, org=org, kind=kind,
+        underneath=underneath and not active, over=over if active else "",
     )
     sentinel = getattr(entry, "sentinel", None)
     last_good = getattr(entry, "last_good", None)
@@ -1019,6 +1032,132 @@ def api_key_followup(
             "within about 30 seconds."
         )
     return []
+
+
+# -- part 2: the key helper (docs/design/api-key-sessions.md) -----------------------
+#
+# An API-key account is active while qswap's apiKeyHelper line is in Claude
+# Code's user settings. Every session that reads that file follows it within a
+# few seconds, running or new; the subscription whose login is live stays
+# logged in "underneath", and sessions return to it when the line goes.
+
+#: How a switch made an account active (the activation log's ``how``).
+HOW_HELPER = "helper"
+HOW_SAVED_KEY = "saved-key"
+HOW_LOGIN = "login"
+
+#: The question's title (menu bar, dashboard) when the key helper cannot be
+#: added and the saved-key way is offered instead.
+KEY_HELPER_QUESTION_TITLE = "Use the saved key instead?"
+
+#: The sentence every move onto a key carries.
+KEY_CONNECTORS = "claude.ai connectors are unavailable while a key is in use."
+
+#: The header fact of the subscription under an active key.
+UNDERNEATH = "underneath"
+
+
+def over_fact(underneath: str) -> str:
+    """The header fact of an active key: ``over #1 personal``."""
+    return f"over {underneath}"
+
+
+def key_switch_followup(
+    *, target: str, underneath: str | None, from_key: str | None = None
+) -> list[str]:
+    """What follows "Switched … (API key)" on the helper path."""
+    if from_key:
+        first = (
+            f"Running Claude Code sessions move from {from_key} to {target} within "
+            "a few seconds."
+        )
+    else:
+        first = "Running Claude Code sessions move to the key within a few seconds."
+    parts = [first]
+    if underneath:
+        parts.append(f"{underneath} stays logged in underneath.")
+    parts.append(KEY_CONNECTORS)
+    return wrap(" ".join(parts))
+
+
+def key_leave_followup(target: str, *, login_switch: bool = False) -> list[str]:
+    """What follows "Switched #5 ci → #1 personal" when a key is left. With
+    ``login_switch`` the login changed too (the target was not underneath),
+    which Claude Code picks up within about 30 seconds."""
+    if login_switch:
+        return wrap(
+            f"Running Claude Code sessions move to {target} within about 30 seconds."
+        )
+    return wrap(f"Running Claude Code sessions are back on {target} within a few seconds.")
+
+
+def key_helper_refusal(
+    target: str, number: str | int, reason: str, sessions: int = 0, *,
+    from_key: str | None = None, prefix: str = "Error: ",
+) -> str:
+    """Why a switch to the API-key account ``target`` was refused when qswap
+    cannot add its key helper (``reason``: the settings file's path and what
+    is wrong with it), and the saved-key path that goes ahead anyway, which
+    only sessions started after the switch use. ``sessions`` is how many
+    Claude Code sessions run on the shared login (:data:`SESSIONS_UNKNOWN`
+    when the records could not be read); ``from_key`` names the active account
+    when it is a saved key too."""
+    head = (
+        f"not switched. qswap cannot add the key helper for {target} to the "
+        f"Claude Code settings: {reason}. Without it, the key can only be saved "
+        "for Claude Code, which a running session does not pick up."
+    )
+    if from_key:
+        body = (
+            "Sessions started while "
+            f"{from_key} was active keep using its key until you restart them."
+        )
+    elif sessions > 0:
+        are = "is" if sessions == 1 else "are"
+        each = "it stops" if sessions == 1 else "each one stops"
+        body = (
+            f"{_sessions(sessions)} {are} running on the shared login: about 30 "
+            f'seconds after the switch {each} with "Not logged in" until you '
+            "switch back or restart it."
+        )
+    elif sessions < 0:
+        body = (
+            "qswap could not read the Claude Code session records, so it cannot "
+            "tell whether sessions are running on the shared login; any that are "
+            'stop with "Not logged in" about 30 seconds after the switch.'
+        )
+    else:
+        body = "No Claude Code session is running on the shared login."
+    lines = wrap(prefix + head + " " + body, WIDTH - 2)
+    lines[0] = lines[0][len(prefix):]
+    return "\n".join([
+        *lines,
+        "Sessions started after the switch use the key.",
+        "To switch anyway:",
+        f"  qswap switch {number} {LOG_OUT_SESSIONS_FLAG}",
+    ])
+
+
+def key_helper_problem(number: str, why: str, fix_command: str) -> list[str]:
+    """The lines every surface shows for a helper line naming an account that
+    does not exist or is not an API-key account (``why``: ``missing`` or
+    ``not-api-key``)."""
+    what = "does not exist" if why == "missing" else "is not an API-key account"
+    return wrap(
+        f"The Claude Code settings make #{number} the active API key, but #{number} "
+        f"{what}, so Claude Code sessions cannot get a key. Remove the line: "
+        f"{fix_command}"
+    )
+
+
+def stale_copies_line(count: int, fix_command: str) -> list[str]:
+    """The run profiles left with a copy of the settings after the key line
+    was removed (a crash between the two steps)."""
+    noun = "profile keeps" if count == 1 else "profiles keep"
+    return wrap(
+        f"{count} qswap run {noun} a copy of the Claude Code settings from while a "
+        f"key was active. Restore the shared settings: {fix_command}"
+    )
 
 
 #: The variables that make Claude Code ignore the active account.

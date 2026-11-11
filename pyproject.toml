@@ -55,8 +55,8 @@ Changelog = "https://github.com/seangeng/ai-quota-swap/blob/main/CHANGELOG.md"
 Issues = "https://github.com/seangeng/ai-quota-swap/issues"
 
 [project.scripts]
-ai-quota-swap = "ai_quota_swap.cli:main"
-qswap = "ai_quota_swap.cli:main"
+ai-quota-swap = "ai_quota_swap.entry:main"
+qswap = "ai_quota_swap.entry:main"
 
 [build-system]
 requires = ["hatchling"]

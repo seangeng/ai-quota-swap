@@ -28,7 +28,7 @@ from ai_quota_swap.exceptions import (
     SwitchError,
     ValidationError,
 )
-from ai_quota_swap import clis, display, oauth, pace, prompts, subscription
+from ai_quota_swap import claude_settings, clis, display, oauth, pace, prompts, subscription
 from ai_quota_swap.claude_locks import claude_config_lock, claude_credentials_lock
 from ai_quota_swap.json_output import (
     SCHEMA_VERSION,
@@ -61,6 +61,7 @@ from ai_quota_swap.fsutil import (
     atomic_write_text,
     read_text_with_retry,
 )
+from ai_quota_swap.key_activation import KeyActivationMixin
 from ai_quota_swap.locking import FileLock
 from ai_quota_swap.logging_config import setup_logging
 from ai_quota_swap.models import (
@@ -446,6 +447,24 @@ def _record_budget(data: dict, account_num: str) -> float | None:
     return budget_from_record(record)
 
 
+def _record_credit(data: dict, account_num: str) -> dict | None:
+    """A slot's recorded credit (``qswap credit``) as JSON: ``{amount, since,
+    expires}``; None when unset or unusable."""
+    record = (data.get("accounts") or {}).get(str(account_num))
+    if not isinstance(record, dict) or not isinstance(record.get("credit"), dict):
+        return None
+    from ai_quota_swap.api_spend import credit_from_record
+
+    credit = credit_from_record(record)
+    if credit is None:
+        return None
+    return {
+        "amount": credit["amount"],
+        "since": record["credit"].get("since"),
+        "expires": credit.get("expires"),
+    }
+
+
 def _same_directory(left: Path, right: Path) -> bool:
     """Whether two paths name the same directory, symlinks and ``..`` included.
 
@@ -463,7 +482,7 @@ def _same_directory(left: Path, right: Path) -> bool:
 
 
 
-class ClaudeAccountSwitcher:
+class ClaudeAccountSwitcher(KeyActivationMixin):
     """Multi-account switcher for Claude Code."""
 
     # Provider identity, part of the engine-host contract (providers.py).
@@ -1265,6 +1284,21 @@ class ClaudeAccountSwitcher:
         with FileLock(self.lock_file):
             return self._swap_accounts_locked(first, second)
 
+    def _refuse_moving_the_key(self, first: str, second: str, command: str) -> None:
+        """Refuse to renumber the account qswap's key helper line names: the
+        line runs ``key-helper N`` by number, so the sessions on the key
+        would get another account's key, or none. Leave the key first."""
+        state = self.key_helper_state()
+        if not state.ours or state.number not in (str(first), str(second)):
+            return
+        under = self.login_account_number()
+        way = f"qswap switch {under}" if under else "qswap switch N"
+        raise ValidationError(
+            f"{command} would renumber {self.label(state.number, long=False)}, the "
+            "active API key, which the Claude Code settings name by number. Leave "
+            f"the key first: {way}"
+        )
+
     def _read_backup_or_abort(self, account_num: str, email: str) -> str:
         """Backup read for swap/move's pre-mutation snapshot; raises on an
         unreadable (not absent) backup.
@@ -1300,6 +1334,7 @@ class ClaudeAccountSwitcher:
             raise AccountNotFoundError(f"No account matches {second}; qswap list shows the accounts")
         if num_a == num_b:
             raise ValidationError("Cannot swap an account with itself")
+        self._refuse_moving_the_key(num_a, num_b, "qswap swap")
 
         data = self._get_sequence_data() or {}
         record_a = data.get("accounts", {}).get(num_a)
@@ -1745,6 +1780,7 @@ class ClaudeAccountSwitcher:
 
             if num_src == target:
                 return num_src, target, False
+            self._refuse_moving_the_key(num_src, target, "qswap move")
 
             if data.get("accounts", {}).get(target):
                 # Occupied target: trade places, exactly `swap num_src target`.
@@ -2213,8 +2249,11 @@ class ClaudeAccountSwitcher:
         seq_data = self._get_sequence_data() or {}
         active_number: str | None = None
         accounts: list[AccountSnapshot] = []
+        key, under = self.active_view()
         for num, email, org_name, org_uuid, is_active, creds, alias in accounts_info:
             n = str(num)
+            if key is not None:
+                is_active = n == key
             if is_active:
                 active_number = n
             accounts.append(
@@ -2232,12 +2271,15 @@ class ClaudeAccountSwitcher:
                     login_expires_at=oauth.login_expires_at_epoch(creds),
                     policy=self._policy_from_data(seq_data, n),
                     subscription_plan=plans.get(n),
+                    underneath=key is not None and n == under,
                 )
             )
         return AccountsSnapshot(
             active_number=active_number,
             accounts=tuple(accounts),
             taken_at=self._usage_store.clock(),
+            underneath_number=under if key is not None else None,
+            key_notes=tuple(self.key_helper_notes()),
         )
 
     def usage_fetch_stamps(self) -> dict[str, float | None]:
@@ -2355,7 +2397,7 @@ class ClaudeAccountSwitcher:
     #: ``add_account_from_token`` rebuild a ``--slot`` record wholesale and
     #: carry exactly these across; a new per-account setting belongs here.
     USER_ACCOUNT_SETTINGS: tuple[str, ...] = (
-        "alias", "disabled", "threshold", "priority", "budget",
+        "alias", "disabled", "threshold", "priority", "budget", "credit",
     )
 
     @classmethod
@@ -2614,35 +2656,30 @@ class ClaudeAccountSwitcher:
         data = self._get_sequence_data() or {}
         return data.get("accounts", {}).get(str(account_num), {}).get("email", "")
 
-    def current_account_number(self) -> str | None:
-        """Slot of the live login; ``None`` when there is none or it's unmanaged.
-
-        Deliberately no fallback to the recorded ``activeAccountNumber``: an
-        unmanaged live login must return ``None`` — never a guessed slot — so
-        the auto-switch engine can't evaluate the wrong account's usage and
-        overwrite a login qswap doesn't own (``_perform_switch`` would take
-        the no-backup direct-activation path). Use :meth:`has_live_login` to
-        tell the two ``None`` cases apart.
-        """
-        identity = self._get_current_account()
-        if identity is None:
-            return None
-        data = self._get_sequence_data() or {}
-        email, org_uuid = identity
-        return self._find_account_slot(data, email, org_uuid)
+    # current_account_number / login_account_number: key_activation.py.
 
     def has_live_login(self) -> bool:
         """Whether ``~/.claude.json`` carries any live account identity."""
         return self._get_current_account() is not None
 
-    def _record_activation(self, number: str, email: str, org_uuid: str) -> None:
+    def _record_activation(
+        self, number: str, email: str, org_uuid: str, *, how: str | None = None
+    ) -> None:
         """Append a ``switch`` line to the activation log (``qswap usage``
-        attributes tokens by it). Never raises; takes no lock."""
+        attributes tokens by it). ``how`` defaults to the way a login switch
+        activates the account: ``saved-key`` for an API-key account, else
+        ``login``. Never raises; takes no lock."""
         try:
             from ai_quota_swap.ledger.activations import record_activation
 
+            if how is None:
+                how = (
+                    display.HOW_SAVED_KEY if self._account_kind(number) == "api_key"
+                    else display.HOW_LOGIN
+                )
             record_activation(
-                self.backup_dir, number=number, email=email, org=org_uuid, source="switch"
+                self.backup_dir, number=number, email=email, org=org_uuid,
+                source="switch", how=how,
             )
         except Exception:
             pass
@@ -2650,18 +2687,32 @@ class ClaudeAccountSwitcher:
     def _note_live_login(
         self, number: str | None, identity: tuple[str, str] | None
     ) -> None:
-        """Append an ``observed`` line when the live login differs from the
-        activation log's last line. Cheap when nothing changed (a stat).
-        Skipped inside a ``qswap run`` shell, whose "live" login is the
-        profile's, not the default one. Never raises; takes no lock."""
-        if identity is None:
-            return
+        """Append an ``observed`` line when the active account differs from
+        the activation log's last line. The active account is the key whose
+        helper line is installed, if any, else the live login. Cheap when
+        nothing changed (a stat and one small file read). Skipped inside a
+        ``qswap run`` shell, whose "live" login is the profile's, not the
+        default one. Never raises; takes no lock."""
         try:
+            how = None
+            helper = self.helper_account()
+            if helper is not None:
+                record = ((self._get_sequence_data() or {}).get("accounts") or {}).get(helper) or {}
+                number = helper
+                identity = (record.get("email", ""), record.get("organizationUuid", "") or "")
+                how = display.HOW_HELPER
+            if identity is None or not identity[0]:
+                return
             self._refuse_session_shell()
             from ai_quota_swap.ledger.activations import observe_live_login
 
+            if how is None and number is not None:
+                how = (
+                    display.HOW_SAVED_KEY if self._account_kind(number) == "api_key"
+                    else display.HOW_LOGIN
+                )
             observe_live_login(
-                self.backup_dir, number=number, email=identity[0], org=identity[1]
+                self.backup_dir, number=number, email=identity[0], org=identity[1], how=how
             )
         except Exception:
             pass
@@ -4430,6 +4481,16 @@ class ClaudeAccountSwitcher:
                 raise ConfigError("Slot number must be >= 1")
             account_num = str(slot)
             data = self._get_sequence_data()
+            line = self.key_helper_state()
+            if line.ours and line.number == account_num:
+                # Claude Code's settings name this slot as the active key: a
+                # login saved over it would leave sessions with no key.
+                under = self.login_account_number()
+                raise ValidationError(
+                    f"Slot {account_num} holds {self.label(account_num, long=False)}, "
+                    "the active API key. Leave the key first, then add the login: "
+                    f"qswap switch {under or 'N'}"
+                )
 
             # Find if current account already exists in a different slot
             if self._account_exists(current_email, current_org_uuid):
@@ -4870,7 +4931,17 @@ class ClaudeAccountSwitcher:
         self._ensure_no_live_session(account_num, email, "qswap remove")
 
         name = self.label(account_num, email)
-        if str(active_account) == account_num:
+        helper_line = self.key_helper_state()
+        key_line = (helper_line.ours and helper_line.number == account_num) or (
+            # A file that cannot be parsed may still hold the line qswap wrote
+            # for this account: removing it then is refused (by _leave_key).
+            helper_line.kind == claude_settings.INVALID
+            and str(self._key_state().get("number")) == account_num
+        )
+        if key_line:
+            under = self.login_account_number()
+            warning(f"Warning: {name} is the active API key")
+        elif str(active_account) == account_num:
             warning(f"Warning: {name} is the active account")
 
         from ai_quota_swap import display
@@ -4881,6 +4952,15 @@ class ClaudeAccountSwitcher:
         ):
             print(dimmed("Cancelled; nothing was removed."))
             return
+
+        if key_line:
+            # The line first: a helper for an account that is gone would
+            # leave every session failing with "apiKeyHelper script is
+            # failing". A file qswap cannot change stops the removal.
+            self._leave_key()
+            if under:
+                for line in display.key_leave_followup(self.label(under, long=False)):
+                    print(dimmed(line))
 
         # Remove backup files
         self._delete_account_files(account_num, email)
@@ -6052,7 +6132,7 @@ class ClaudeAccountSwitcher:
         entry = self._usage_store.entries(ident).get(num)
         if entry is None:
             return False
-        is_active = num == self.current_account_number()
+        is_active = num == self.login_account_number()
         # The backup is a stored source on BOTH paths — directly when idle,
         # and as _entry_token_dead's second source when active — and each
         # turns an unreadable one into "dead" by a different route: an empty
@@ -6440,7 +6520,10 @@ class ClaudeAccountSwitcher:
         seq_data = self._get_sequence_data() or {}
         now = self._usage_store.clock()
         set_aside = self.set_aside_accounts()
+        key, under = self.active_view()
         for num, email, org_name, org_uuid, is_active, creds, alias in accounts_info:
+            if key is not None:
+                is_active = str(num) == key
             if is_active:
                 active_num = num
             entry = entries[str(num)]
@@ -6475,11 +6558,25 @@ class ClaudeAccountSwitcher:
             )
             if held is not None:
                 accounts[-1]["setAside"] = {"reason": held}
+            # Additive (docs/design/api-key-sessions.md): the subscription
+            # logged in under an active key, and how the key was activated.
+            if key is not None and str(num) == under:
+                accounts[-1]["underneath"] = True
+            if key is not None and str(num) == key:
+                accounts[-1]["how"] = display.HOW_HELPER
+            credit = _record_credit(seq_data, str(num))
+            if credit is not None:
+                accounts[-1]["credit"] = credit
         payload = {
             "schemaVersion": SCHEMA_VERSION,
             "activeAccountNumber": active_num,
             "accounts": accounts,
         }
+        if key is not None:
+            payload["underneathAccountNumber"] = int(under) if under else None
+        problem = self.helper_problem()
+        if problem is not None:
+            payload["keyHelperProblem"] = {**problem, "fix": self.helper_fix_command()}
         # Additive fields (absent when clean) — never printed warnings; the
         # JSON contract keeps stdout a single machine-readable object.
         dup_warnings = self._duplicate_account_warnings(accounts_info)
@@ -6534,11 +6631,14 @@ class ClaudeAccountSwitcher:
         seq_data = self._get_sequence_data() or {}
         set_aside = self.set_aside_accounts()
         settings = load_settings(self.backup_dir)
+        view = self.active_view()
         print(bolded(display.provider_heading("claude", both=False)))
+        for line in self.key_helper_notes():
+            warning(line)
         for i, info in enumerate(accounts_info):
             block = self._account_block(
                 info, entries[str(info[0])], seq_data=seq_data, plans=plans,
-                set_aside=set_aside, settings=settings,
+                set_aside=set_aside, settings=settings, view=view,
             )
             for line in display.render_block(block):
                 print(line)
@@ -6659,14 +6759,26 @@ class ClaudeAccountSwitcher:
         settings,
         show_provider: bool = False,
         login_expires_at: float | None | object = ...,
+        view: tuple[str | None, str | None] | None = None,
     ):
         """One account's :class:`display.AccountBlock` for ``list``/``status``.
 
         ``login_expires_at`` overrides the expiry read from ``info``'s
-        credentials (``status`` has it from the live login already)."""
+        credentials (``status`` has it from the live login already).
+        ``view`` is :meth:`active_view` read once for the whole pass."""
         from ai_quota_swap import api_spend, display
 
         num, email, org_name, org_uuid, is_active, creds, alias = info
+        helper, under = self.active_view() if view is None else view
+        over = ""
+        underneath = False
+        if helper is not None:
+            # The key whose line is installed is the active account; the
+            # live login is the one underneath it, never "active".
+            underneath = str(num) == under
+            is_active = str(num) == helper
+            if is_active and under:
+                over = self.label(under, long=False)
         now = self._usage_store.clock()
         policy = self._policy_from_data(seq_data, str(num))
         line = policy.threshold if policy.threshold is not None else settings.threshold
@@ -6696,11 +6808,37 @@ class ClaudeAccountSwitcher:
             plan=plan, plan_warning=plan_warning, org=org_name or "",
             kind="api_key" if record.get("kind") == "api_key" else "oauth",
             lines=display.Lines(five_hour=line, weekly=settings.weekly_threshold),
-            set_aside=held_out,
+            set_aside=held_out, underneath=underneath, over=over,
             sentinel_notes={k: v.replace(" — ", ": ") for k, v in SENTINEL_NOTES.items()},
             login_row=login_row, now=now, stale_after_s=_USAGE_AGE_NOTE_S,
             api_lines=api_lines,
         )
+
+    def active_view(self) -> tuple[str | None, str | None]:
+        """``(key, underneath)``: the API-key account active through the
+        helper line and the subscription logged in under it; ``(None,
+        None)`` when no key is active that way."""
+        key = self.helper_account()
+        if key is None:
+            return None, None
+        return key, self.login_account_number()
+
+    def key_helper_notes(self) -> list[str]:
+        """The lines every surface shows when the helper line names an
+        account that cannot give a key, or run profiles kept a stale copy of
+        the settings; ``[]`` when all is well."""
+        from ai_quota_swap import display
+
+        out: list[str] = []
+        problem = self.helper_problem()
+        fix = self.helper_fix_command()
+        if problem is not None:
+            out.extend(display.key_helper_problem(problem["number"], problem["why"], fix))
+        elif self.helper_account() is None:
+            stale = self.stale_profile_copies()
+            if stale:
+                out.extend(display.stale_copies_line(len(stale), fix))
+        return out
 
     def _print_nothing_managed(self) -> None:
         """The empty state: why there is nothing to list, and the next step."""
@@ -6734,8 +6872,70 @@ class ClaudeAccountSwitcher:
         return entry, oauth.login_expires_at_epoch(creds)
 
     def _build_status_payload(self) -> dict:
-        """Build the ``--status --json`` payload (no active / unmanaged / managed)."""
+        """Build the ``--status --json`` payload (no active / unmanaged / managed).
+
+        Under a key active through the helper line, ``active`` is the key
+        (``how: "helper"``) and ``underneath`` the subscription logged in
+        under it. A helper line naming an account that cannot give a key adds
+        ``keyHelperProblem``."""
+        payload = self._build_status_payload_inner()
+        extra: dict = {}
+        try:
+            problem = self.helper_problem()
+            if problem is not None:
+                extra["keyHelperProblem"] = {
+                    **problem, "fix": self.helper_fix_command(),
+                }
+        except Exception:
+            pass
+        payload.update(extra)
+        return payload
+
+    def _build_status_payload_inner(self) -> dict:
         identity = self._get_current_account()
+        key, under = self.active_view() if self.sequence_file.exists() else (None, None)
+        if key is not None:
+            data = self._get_sequence_data_migrated() or {}
+            record = data["accounts"][key]
+            email = record.get("email", "")
+            info = (
+                int(key), email, record.get("organizationName", "") or "",
+                record.get("organizationUuid", "") or "", False,
+                self.read_account_credentials(key, email) or "", record.get("alias", "") or "",
+            )
+            entry = self._collect_usage_entries([info])[key]
+            status, usage = usage_fields(entry.decision_value(), entry.fetched_at)
+            active: dict = {
+                "number": int(key),
+                "email": email,
+                "organizationName": record.get("organizationName", "") or "",
+                "organizationUuid": record.get("organizationUuid", "") or "",
+                "isOrganization": bool(record.get("organizationUuid")),
+                "managed": True,
+                "usageStatus": status,
+                "usage": usage,
+                "how": display.HOW_HELPER,
+                "needsRelogin": False,
+            }
+            if record.get("alias"):
+                active["alias"] = record["alias"]
+            budget = _record_budget(data, key)
+            if budget is not None:
+                active["budget"] = budget
+            if entry.api_spend is not None:
+                active["apiSpend"] = api_spend_to_json(entry.api_spend)
+            out = {
+                "schemaVersion": SCHEMA_VERSION,
+                "active": active,
+                "totalManagedAccounts": len(data.get("accounts", {})),
+            }
+            if under is not None:
+                out["underneath"] = account_ref(int(under), self.account_email(under))
+            elif identity is not None:
+                out["underneath"] = {"number": None, "email": identity[0]}
+            else:
+                out["underneath"] = None
+            return out
         if identity is None:
             return {"schemaVersion": SCHEMA_VERSION, "active": None}
         current_email, current_org_uuid = identity
@@ -6819,6 +7019,14 @@ class ClaudeAccountSwitcher:
             return 0
         return len((self._get_sequence_data() or {}).get("accounts") or {})
 
+    def active_email(self) -> str | None:
+        """The active account's email: the API key's whose helper line is
+        installed, else the live login's (managed or not); None when neither."""
+        key = self.helper_account()
+        if key is not None:
+            return self.account_email(key) or None
+        return self.live_login_email()
+
     def live_login_email(self) -> str | None:
         """The live login's email, managed or not; None when logged out."""
         identity = self._get_current_account()
@@ -6833,6 +7041,27 @@ class ClaudeAccountSwitcher:
         identity = self._get_current_account()
         data = (self._get_sequence_data_migrated() or {}) if self.sequence_file.exists() else {}
         accounts = data.get("accounts") or {}
+        notes = [f"  {line}" for line in self.key_helper_notes()] if accounts else []
+        out.extend(yellowed(line) for line in notes)
+        view = self.active_view() if accounts else (None, None)
+        if view[0] is not None:
+            # A key is active through the helper line: its block, with the
+            # account underneath named in the header.
+            key = view[0]
+            record = accounts[key]
+            creds = self.read_account_credentials(key, record.get("email", ""))
+            info = (
+                int(key), record.get("email", ""), record.get("organizationName", "") or "",
+                record.get("organizationUuid", "") or "", False, creds or "",
+                record.get("alias", "") or "",
+            )
+            entry = self._collect_usage_entries([info])[key]
+            block = self._account_block(
+                info, entry, seq_data=data, plans={}, set_aside=self.set_aside_accounts(),
+                settings=load_settings(self.backup_dir), view=view,
+            )
+            out.extend(display.render_block(block))
+            return out
         if identity is None:
             if accounts:
                 out.append("  No account is active. Activate one with: qswap switch")
@@ -6866,6 +7095,7 @@ class ClaudeAccountSwitcher:
         block = self._account_block(
             info, entry, seq_data=data, plans=self._plans_for_pass([info], None),
             set_aside=self.set_aside_accounts(), settings=load_settings(self.backup_dir),
+            view=view,
         )
         out.extend(display.render_block(block))
         return out
@@ -6900,6 +7130,13 @@ class ClaudeAccountSwitcher:
             # Only after a switch with an API-key account on either side: what
             # the running sessions do now, in the words text output prints.
             **({"followup": list(op["followup"])} if op.get("followup") else {}),
+            # How the target was made active: "helper" (an API key through
+            # Claude Code's apiKeyHelper), "saved-key" or "login".
+            "how": op.get("how") or (
+                display.HOW_SAVED_KEY
+                if to_ref and self._account_kind(str(to_ref.get("number"))) == "api_key"
+                else display.HOW_LOGIN
+            ),
         }
 
     def _switch_noop(
@@ -6977,6 +7214,37 @@ class ClaudeAccountSwitcher:
         if not self.sequence_file.exists():
             raise self._nothing_managed_error()
 
+        # Part 2 (docs/design/api-key-sessions.md): rotation and the
+        # strategies move among subscriptions only. On a key, a rotation
+        # returns to the account underneath; ``best`` may pick a better
+        # subscription, else the account underneath too.
+        repairs = self.reconcile_key_helper()
+        if repairs and not json_output:
+            for line in repairs:
+                print(dimmed(line))
+        warnings.extend(repairs if json_output else [])
+        key = self.helper_account()
+        if key is not None:
+            under = self.login_account_number()
+            target = under
+            if strategy == "best" and under is not None:
+                best_usage = self._usage_by_account()
+                self._warn_inert_models(best_usage, models, json_output, warnings)
+                picked, _note = self._select_best_switchable(
+                    under, models, best_usage,
+                    exclude=set(self.relogin_reasons()) | self._api_key_numbers(),
+                )
+                target = picked or under
+            if target is not None:
+                op = self._leave_key_to(target, emit_output=not json_output)
+                return (
+                    self._switch_result_from_op(op, strategy_label, warnings)
+                    if json_output else None
+                )
+            # No subscription underneath: leave the key and rotate as on a
+            # machine with no live login.
+            self._leave_key()
+
         identity = self._get_current_account()
 
         # Ensure org fields are migrated before checking composite key
@@ -6998,14 +7266,13 @@ class ClaudeAccountSwitcher:
 
             target = str(preferred)
             relogin = self.relogin_reasons()
-            key_blocked = self._api_key_rotation_check()
+            keys = self._api_key_numbers()
             target_disabled = self._disabled_from_data(data, target)
-            target_running = key_blocked(target)
             if (
                 target_disabled
                 or not self._account_is_switchable(target)
                 or target in relogin
-                or target_running
+                or target in keys
             ):
                 if target_disabled:
                     self._skip_line(warnings, json_output, target, "(disabled)", "disabled")
@@ -7017,19 +7284,14 @@ class ClaudeAccountSwitcher:
                 elif target in relogin:
                     self._skip_line(warnings, json_output, target, "(needs re-login)",
                                     "needs re-login")
-                else:
-                    self._skip_line(
-                        warnings, json_output, target,
-                        display.api_key_skip_detail(target_running),
-                        display.api_key_skip_reason(target_running),
-                    )
+                # An API-key account is not in rotation: entered by name only.
                 fallback = next(
                     (str(num) for num in sequence
                      if str(num) != target
                      and not self._disabled_from_data(data, str(num))
                      and self._account_is_switchable(str(num))
                      and str(num) not in relogin
-                     and not key_blocked(str(num))),
+                     and str(num) not in keys),
                     None,
                 )
                 if not fallback:
@@ -7039,15 +7301,14 @@ class ClaudeAccountSwitcher:
                     ]
                     blocked = [
                         num for num in usable
-                        if not self._disabled_from_data(data, num) and key_blocked(num)
+                        if not self._disabled_from_data(data, num) and num in keys
                     ]
                     if blocked:
                         raise ConfigError(
-                            "No account can take over without logging Claude Code "
-                            "sessions out: the rest are API-key accounts, disabled, "
-                            "or need re-login. To switch to an API-key account "
-                            "anyway:\n"
-                            f"  qswap switch {blocked[0]} {display.LOG_OUT_SESSIONS_FLAG}"
+                            "No subscription account can be activated: the rest are "
+                            "API-key accounts, disabled, or need re-login. An API-key "
+                            "account is used by naming it:\n"
+                            f"  qswap switch {blocked[0]}"
                         )
                     if usable:
                         raise ConfigError(
@@ -7129,7 +7390,8 @@ class ClaudeAccountSwitcher:
             best_usage = self._usage_by_account()
             self._warn_inert_models(best_usage, models, json_output, warnings)
             target, note = self._select_best_switchable(
-                current_num, models, best_usage, exclude=set(relogin),
+                current_num, models, best_usage,
+                exclude=set(relogin) | self._api_key_numbers(),
             )
             if note != "none":
                 # "none" falls through to rotation, which says it itself.
@@ -7256,9 +7518,14 @@ class ClaudeAccountSwitcher:
         skipped: dict[str, list[str]] = {
             "relogin": [], "disabled": [], "broken": [], "api_key": [],
         }
-        key_blocked = self._api_key_rotation_check()
+        keys = self._api_key_numbers()
         for offset in range(1, len(sequence)):
             candidate = str(sequence[(current_index + offset) % len(sequence)])
+            if candidate in keys:
+                # Not in rotation: an API-key account is entered by naming
+                # it (or by the engine), never by a rotation.
+                skipped["api_key"].append(candidate)
+                continue
             if self._disabled_from_data(data, candidate):
                 skipped["disabled"].append(candidate)
                 self._skip_line(warnings, json_output, candidate, "(disabled)", "disabled")
@@ -7275,16 +7542,6 @@ class ClaudeAccountSwitcher:
                 skipped["relogin"].append(candidate)
                 self._skip_line(warnings, json_output, candidate, "(needs re-login)",
                                 "needs re-login")
-                continue
-            running = key_blocked(candidate)
-            if running:
-                # Landing on it would log every running session out.
-                skipped["api_key"].append(candidate)
-                self._skip_line(
-                    warnings, json_output, candidate,
-                    display.api_key_skip_detail(running),
-                    display.api_key_skip_reason(running),
-                )
                 continue
             if strategy == "next-available":
                 headroom = oauth.account_headroom(usage.get(candidate), models)
@@ -7349,8 +7606,8 @@ class ClaudeAccountSwitcher:
                 steps.append(f"re-add one: qswap add --slot {skipped['broken'][0]}")
             if skipped["api_key"]:
                 steps.append(
-                    "switch to an API-key account and log the sessions out: "
-                    f"qswap switch {skipped['api_key'][0]} {display.LOG_OUT_SESSIONS_FLAG}"
+                    "use an API-key account by naming it: "
+                    f"qswap switch {skipped['api_key'][0]}"
                 )
             say(dimmed(
                 f"No other account can take over, so you stay on "
@@ -7478,6 +7735,14 @@ class ClaudeAccountSwitcher:
                 out.append(session)
         return out
 
+    def _api_key_numbers(self) -> set[str]:
+        """The API-key accounts: never in a rotation or a strategy's pick."""
+        data = self._get_sequence_data() or {}
+        return {
+            str(num) for num, record in (data.get("accounts") or {}).items()
+            if isinstance(record, dict) and record.get("kind") == "api_key"
+        }
+
     def _api_key_rotation_check(self):
         """For a rotation: a function giving, for an account, how many
         running sessions bar landing on it (0 unless it is an API-key account
@@ -7544,6 +7809,7 @@ class ClaudeAccountSwitcher:
         json_output: bool = False,
         force: bool = False,
         log_out_sessions: bool = False,
+        entered_by: str = "user",
     ) -> dict | None:
         """Switch to specific account.
 
@@ -7551,10 +7817,16 @@ class ClaudeAccountSwitcher:
         both the already-active no-op guard and the backup-current step —
         the recovery path for a live login gone stale (e.g. after --import).
 
-        A switch to an API-key account while Claude Code sessions run on the
-        shared login raises :class:`SessionsRunningError` and changes nothing,
-        unless ``log_out_sessions`` (``--log-out-sessions``): a running
-        session cannot move to a key and stops with "Not logged in".
+        An API-key account is made active through qswap's ``apiKeyHelper``
+        line in Claude Code's settings (docs/design/api-key-sessions.md, part
+        2): running sessions follow it, so nothing is refused for them. When
+        the line cannot be installed, :class:`KeyHelperUnavailableError` is
+        raised and nothing changes; ``log_out_sessions``
+        (``--log-out-sessions``) takes the saved-key path instead, which only
+        sessions started afterwards use. ``entered_by`` (``user`` or
+        ``engine``) is recorded for the engine's rules on leaving a key.
+        Leaving a key removes the line first; a target that is not the
+        account underneath then gets the ordinary login switch.
         """
         if not self.sequence_file.exists():
             raise self._nothing_managed_error()
@@ -7612,6 +7884,41 @@ class ClaudeAccountSwitcher:
         if target_account not in data.get("accounts", {}):
             raise AccountNotFoundError(f"#{target_account} does not exist; qswap list shows the accounts")
 
+        # Part 2 (docs/design/api-key-sessions.md): a key goes in through the
+        # helper line, and leaving one takes the line out first. A line left
+        # naming an account that cannot give a key, and run profiles left
+        # with a settings copy, are repaired before anything else.
+        repairs = self.reconcile_key_helper()
+        if repairs and not json_output:
+            for line in repairs:
+                print(dimmed(line))
+        target_is_key = self._account_kind(target_account) == "api_key"
+        helper = self.helper_account()
+        if target_is_key and not log_out_sessions:
+            if helper == target_account and not force:
+                email = data["accounts"][target_account].get("email", "")
+                ref = account_ref(int(target_account), email)
+                if not json_output:
+                    print(f"{accent('Already on')} {self._landed_label(target_account, email)}")
+                    return None
+                return self._switch_noop(
+                    strategy="direct", reason="already-active", from_ref=ref, to_ref=ref,
+                    message=f"Already on Account-{target_account} ({email})",
+                    warnings=repairs,
+                )
+            op = self._enter_key(
+                target_account, entered_by=entered_by, emit_output=not json_output
+            )
+            return self._switch_result_from_op(op, "direct", repairs) if json_output else None
+        if helper is not None:
+            if target_is_key:
+                # --log-out-sessions onto a key: the saved-key path, with the
+                # line out of the way first so sessions do not follow it.
+                self._leave_key()
+            else:
+                op = self._leave_key_to(target_account, force=force, emit_output=not json_output)
+                return self._switch_result_from_op(op, "direct", repairs) if json_output else None
+
         # Short-circuit a no-op before mutating (issue #79). A self-switch
         # would first back up the live credentials into the target slot —
         # destroying a freshly imported backup with a possibly stale login —
@@ -7654,16 +7961,13 @@ class ClaudeAccountSwitcher:
                         message=f"Already on Account-{target_account} ({email})",
                     )
 
-        if not log_out_sessions:
-            self._refuse_api_key_switch(target_account)
-
         op = self._perform_switch(
             target_account,
             emit_output=not json_output,
             force_activate=force,
             provenance=provenance,
         )
-        result = self._switch_result_from_op(op, "direct") if json_output else None
+        result = self._switch_result_from_op(op, "direct", repairs) if json_output else None
         # A forced self-activation really rewrote the live credentials from the
         # stored backup — "already-active" would misdescribe that mutation.
         # A cross-slot force stays "switched": reason reports the outcome, not
@@ -7675,6 +7979,49 @@ class ClaudeAccountSwitcher:
                 f"Activated Account-{to['number']} ({to['email']}) from stored backup"
             )
         return result
+
+    def _leave_key_to(
+        self, target_account: str, *, force: bool = False, emit_output: bool = True
+    ) -> dict:
+        """Leave the active key for the subscription ``target_account``:
+        remove the line, then the ordinary login switch from the account
+        underneath unless it is the target (or ``force`` rewrites its login)."""
+        key = self.helper_account()
+        key_email = self.account_email(key) if key else ""
+        self._leave_key()
+        underneath = self.login_account_number()
+        from_ref = account_ref(int(key), key_email) if key else None
+        target_label = self.label(target_account, long=False)
+        if target_account == underneath and not force:
+            record = (
+                (self._get_sequence_data() or {}).get("accounts", {}).get(target_account) or {}
+            )
+            email = record.get("email", "")
+            with FileLock(self.lock_file):
+                self._record_active_number(target_account)
+            self._record_activation(
+                target_account, email, record.get("organizationUuid", "") or "",
+                how=display.HOW_LOGIN,
+            )
+            followup = display.key_leave_followup(target_label)
+            if emit_output:
+                where = f"{self.label(key, long=False)} → " if key else "to "
+                print(f"{accent('Switched')} {where}{self._landed_label(target_account, email)}")
+                for line in followup:
+                    print(line)
+            op = self._op_result(from_ref, account_ref(int(target_account), email), [], followup)
+            op["how"] = display.HOW_LOGIN
+            return op
+        op = self._perform_switch(
+            target_account,
+            emit_output=emit_output,
+            force_activate=force,
+            shown_from=self.label(key, long=False) if key else None,
+            followup_override=display.key_leave_followup(target_label, login_switch=True),
+        )
+        if from_ref is not None:
+            op["from"] = from_ref
+        return op
 
     def _nothing_managed_error(self) -> ConfigError:
         """"No accounts are managed yet" with the next step for this machine."""
@@ -8258,8 +8605,14 @@ class ClaudeAccountSwitcher:
         emit_output: bool = True,
         force_activate: bool = False,
         provenance: dict | None = None,
+        shown_from: str | None = None,
+        followup_override: list[str] | None = None,
     ) -> dict:
         """Perform the actual account switch with transaction support.
+
+        ``shown_from`` names the account left in "Switched X → Y" when it is
+        not the live login (a key being left); ``followup_override`` replaces
+        the lines after it.
 
         Returns ``{"from": ref|None, "to": ref, "warnings": [...]}``, capturing the
         left/landed identities under the lock so callers don't reconstruct ``from``
@@ -8586,8 +8939,13 @@ class ClaudeAccountSwitcher:
                     target_account, target_email, target_oauth.get("organizationUuid") or ""
                 )
                 followup = self._api_key_followup(key_context, target_account, from_ref)
+                if followup_override is not None:
+                    followup = list(followup_override)
                 if emit_output:
-                    if from_ref and str(from_ref.get("number")) == str(target_account):
+                    if shown_from:
+                        print(f"{accent('Switched')} {shown_from} → "
+                              f"{self._landed_label(target_account, target_email)}")
+                    elif from_ref and str(from_ref.get("number")) == str(target_account):
                         print(
                             f"{accent('Restored')} the live login of "
                             f"{self.label(target_account, target_email)} from its saved copy"
@@ -8925,11 +9283,15 @@ class ClaudeAccountSwitcher:
         # only — suppressed in JSON mode (the nested list_accounts() would
         # otherwise leak human output onto the JSON stdout).
         followup = self._api_key_followup(key_context, target_account, from_ref)
+        if followup_override is not None:
+            followup = list(followup_override)
         if emit_output:
             source = (
                 f"{self.label(from_ref.get('number'), long=False)} → "
                 if from_ref and from_ref.get("number") is not None else "to "
             )
+            if shown_from:
+                source = f"{shown_from} → "
             print(
                 f"{accent('Switched')} {source}"
                 f"{self._landed_label(target_account, target_email)}"
@@ -9190,6 +9552,18 @@ class ClaudeAccountSwitcher:
             return False
 
         removed_items = []
+
+        # qswap's key helper line first: with qswap's data gone it would run a
+        # command that has no key to print, and every session would fail.
+        try:
+            if self.key_helper_state().ours:
+                self._leave_key()
+                removed_items.append("The apiKeyHelper line in Claude Code's settings")
+        except Exception as e:
+            warning(
+                f"Could not remove qswap's apiKeyHelper line from Claude Code's settings "
+                f"({e}). Delete it by hand: {claude_settings.shown_path(claude_settings.settings_path())}"
+            )
 
         # Remove credentials. On macOS backups may be in the Keychain and/or .enc
         # files (auto-fallback), so clean both; Linux/WSL/Windows are file-only.

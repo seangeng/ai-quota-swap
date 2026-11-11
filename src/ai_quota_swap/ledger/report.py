@@ -141,6 +141,10 @@ class Report:
     searched_dirs: tuple[str, ...] | None = None
     # True when the report came from the ledger without a scan (--no-scan).
     unscanned: bool = False
+    # True when part of the range had an API key active as a saved key: only
+    # the sessions started after it used the key, which the ledger can tell
+    # only by each session's first event (docs/design/api-key-sessions.md).
+    approximate: bool = False
 
     @property
     def unattributed_share(self) -> float:
@@ -247,6 +251,18 @@ def _profile_sessions(
     return out
 
 
+def saved_key_moves(log: ActivationLog, hour: int, session_start: float | None,
+                    account: str | None = None) -> str | None:
+    """Where a bucket's usage goes under the saved-key rule, or None to keep
+    it (see :meth:`ActivationLog.saved_key_owner`). ``account`` defaults to
+    the one the log gives for the hour's end."""
+    if session_start is None or not log.saved_key_periods():
+        return None
+    if account is None:
+        account = log.account_at(hour * 3600 + 3599)
+    return log.saved_key_owner(account, hour, session_start)
+
+
 def build_report(
     store: LedgerStore,
     *,
@@ -265,6 +281,13 @@ def build_report(
     accounts = Accounts(registries or {}, logs)
     claude_log = logs.get("claude") or ActivationLog([])
     overrides = _profile_sessions(store, accounts, claude_log)
+    # The saved-key rule (docs/design/api-key-sessions.md): only sessions
+    # started after a saved-key activation used the key.
+    saved_key = claude_log.saved_key_periods()
+    session_starts = (
+        {s: v[1] for s, v in store.sessions("claude").items()} if saved_key else {}
+    )
+    approximate = False
     since_hour, until_hour = day_bounds(since, until)
     raw = store.query_buckets(since_hour=since_hour, until_hour=until_hour, provider=provider)
 
@@ -280,6 +303,13 @@ def build_report(
         if prov == "claude" and session in overrides and account not in (DESKTOP_ACCOUNT,):
             account = overrides[session]
             used_profile_sessions.add(session)
+        elif saved_key and prov == "claude" and account not in (DESKTOP_ACCOUNT, UNATTRIBUTED):
+            moved = claude_log.saved_key_owner(account, hour, session_starts.get(session))
+            if moved is not None:
+                account = moved or UNATTRIBUTED
+                approximate = True
+            elif _in_saved_key_period(claude_log, account, hour):
+                approximate = True
         found = prices.lookup(model)
         cost = None
         if found is not None:
@@ -338,7 +368,14 @@ def build_report(
         attribution_starts={
             p: _iso_or_none(log.first_ts) for p, log in logs.items()
         },
+        approximate=approximate,
     )
+
+
+def _in_saved_key_period(log: ActivationLog, account: str, hour: int) -> bool:
+    """Whether ``account`` was a saved key during ``hour`` (a session that
+    started before it could not tell; the split is approximate)."""
+    return log.saved_key_owner(account, hour, float("-inf")) is not None
 
 
 def _iso_or_none(ts: float | None) -> str | None:
@@ -426,6 +463,7 @@ def report_to_json(report: Report, scan: dict | None = None) -> dict:
         ],
         "unattributedTokens": report.unattributed_tokens,
         "unattributedShare": round(report.unattributed_share, 4),
+        "attributionApproximate": report.approximate,
         "attributionStarts": report.attribution_starts,
         "pricing": {
             "fetched": PRICES_FETCHED,
@@ -630,6 +668,12 @@ def render_text(
                 f"Unattributed: {report.unattributed_share:.0%} of tokens, used before "
                 "qswap recorded which account was live (see docs/usage.md)."
             )
+    if report.approximate:
+        footer.append(
+            "Approximate: an API key was active as a saved key in this range, which "
+            "only sessions started after it used; usage is split by each session's "
+            "first event (docs/api-accounts.md)."
+        )
     for w in report.prices.warnings:
         footer.append(f"Pricing override: {w}")
     footer.extend(notes or [])

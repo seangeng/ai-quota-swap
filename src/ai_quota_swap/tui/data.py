@@ -375,10 +375,19 @@ def block_for(
         relogin = held_out is not None or acc.usage.sentinel == USAGE_RELOGIN_REQUIRED
         login_row = ClaudeAccountSwitcher._login_window(acc.login_expires_at, relogin)
         api_lines = _api_lines
+    over = ""
+    under = getattr(view.snapshot, "underneath_number", None)
+    if acc.is_active and under is not None:
+        below = view.account(under)
+        if below is not None:
+            over = display.account_label(
+                below.number, alias=below.alias or None, email=below.email, long=False,
+            )
     return display.block_from_entry(
         acc.number, acc.usage,
         email=acc.email, alias=acc.alias, provider=view.provider,
         show_provider=show_provider, active=acc.is_active, disabled=acc.disabled,
+        underneath=bool(getattr(acc, "underneath", False)), over=over,
         plan=plan, plan_warning=plan_warning,
         org=acc.org_name if view.provider == "claude" else "",
         kind="api_key" if acc.kind == "api_key" else "oauth",
@@ -390,10 +399,11 @@ def block_for(
 
 
 def over_budget(acc: AccountSnapshot) -> bool:
-    """An API-key account at or past its monthly budget."""
+    """An API-key account at or past its monthly budget, or with its credit
+    spent or expired."""
     from ai_quota_swap import api_spend
 
-    return api_spend.over_budget(getattr(acc.usage, "api_spend", None))
+    return api_spend.limit_reason(getattr(acc.usage, "api_spend", None)) is not None
 
 
 # ---------------------------------------------------------------------------

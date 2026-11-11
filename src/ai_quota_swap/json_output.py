@@ -327,6 +327,20 @@ def api_spend_to_json(reading: dict) -> dict:
         out["unpricedTokens"] = reading["unpriced_tokens"]
     if reading.get("note"):
         out["note"] = reading["note"]
+    credit = reading.get("credit")
+    if isinstance(credit, dict):
+        # Additive (docs/design/api-key-sessions.md, "Credit"): qswap's own
+        # count of a recorded balance, not Anthropic's.
+        out["credit"] = {
+            "amount": credit.get("amount"),
+            "used": credit.get("used"),
+            "left": credit.get("left"),
+            "since": credit.get("since"),
+            "expires": credit.get("expires"),
+            "expired": bool(credit.get("expired")),
+            "spent": bool(credit.get("spent")),
+            "source": credit.get("source"),
+        }
     return out
 
 

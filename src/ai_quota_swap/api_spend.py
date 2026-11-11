@@ -99,6 +99,154 @@ def budget_from_record(record: dict | None) -> float | None:
         return None
 
 
+# -- credit ---------------------------------------------------------------------
+#
+# docs/design/api-key-sessions.md, "Credit": ``qswap credit N AMOUNT [--expires
+# DATE]`` records a balance for an API-key account as of now. Spend measured
+# from then on counts down from it (Anthropic's figures when the account is
+# linked to a registered organization, the ledger otherwise). At zero, or after
+# the expiry date, the account is at its limit like at its budget: the engine
+# leaves it and will not move to it. It is qswap's own count, not Anthropic's
+# balance, which no key can read.
+
+
+def normalize_credit(value: object) -> float:
+    """A credit in dollars from ``1187``, ``"1,187.50"``, ``"$1187"``. Raises ValueError."""
+    try:
+        return normalize_budget(value)
+    except ValueError:
+        raise ValueError(
+            f"a credit is an amount in US dollars above 0 and at most "
+            f"${BUDGET_MAX:,.0f}, for example 1187 or 49.50"
+        ) from None
+
+
+def parse_expiry(value: str) -> str:
+    """``YYYY-MM-DD`` (the last UTC day the credit can be used). Raises ValueError."""
+    from datetime import date
+
+    try:
+        return date.fromisoformat(str(value).strip()).isoformat()
+    except ValueError:
+        raise ValueError(
+            f"--expires takes a date as YYYY-MM-DD, for example 2026-12-31 (got {value!r})"
+        ) from None
+
+
+def credit_from_record(record: dict | None) -> dict | None:
+    """``{"amount", "since", "expires"}`` (``since`` in epoch seconds,
+    ``expires`` a date or None), or None. Degrades, never raises."""
+    from ai_quota_swap.ledger.activations import parse_ts
+
+    if not isinstance(record, dict):
+        return None
+    raw = record.get("credit")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        amount = normalize_credit(raw.get("amount"))
+    except ValueError:
+        return None
+    since = parse_ts(raw.get("since"))
+    if since is None:
+        return None
+    expires = raw.get("expires")
+    try:
+        expires = parse_expiry(expires) if expires else None
+    except ValueError:
+        expires = None
+    return {"amount": amount, "since": since, "expires": expires}
+
+
+def credit_expired(expires: str | None, now: float) -> bool:
+    """Whether ``now`` is after the expiry date (the whole UTC day counts)."""
+    if not expires:
+        return False
+    from datetime import date, datetime, timedelta, timezone
+
+    day = date.fromisoformat(expires)
+    end = datetime(day.year, day.month, day.day, tzinfo=timezone.utc) + timedelta(days=1)
+    return now >= end.timestamp()
+
+
+def credit_reading(credit: dict, used: float | None, source: str | None, now: float) -> dict:
+    """The ``credit`` part of a reading: what is left of it."""
+    from ai_quota_swap.admin_api import iso_z
+    from datetime import datetime, timezone
+
+    left = None if used is None else round(credit["amount"] - used, 4)
+    return {
+        "amount": credit["amount"],
+        "used": None if used is None else round(used, 4),
+        "left": left,
+        "since": iso_z(datetime.fromtimestamp(credit["since"], tz=timezone.utc)),
+        "expires": credit["expires"],
+        "expired": credit_expired(credit["expires"], now),
+        "spent": left is not None and left <= 0,
+        "source": source,
+    }
+
+
+def limit_reason(reading: object) -> str | None:
+    """Why an API-key account is at its limit: ``credit-expired``,
+    ``credit-spent`` or ``budget``; None when it is not (or nothing can
+    tell). Whichever is reached first applies."""
+    if not isinstance(reading, dict):
+        return None
+    credit = reading.get("credit")
+    if isinstance(credit, dict):
+        if credit.get("expired"):
+            return "credit-expired"
+        if credit.get("spent"):
+            return "credit-spent"
+    if over_budget(reading):
+        return "budget"
+    return None
+
+
+class CreditError(ValueError):
+    """A refused ``qswap credit`` change; the message is for the user."""
+
+
+def set_credit(
+    switcher, identifier: str, amount: object | None, *, expires: str | None = None,
+    now: float | None = None,
+) -> tuple[str, str, dict | None, bool]:
+    """Record (``amount``) or remove (None) one API-key account's credit, as
+    of ``now``. Stored on the account record; validated before any write.
+    Returns ``(number, email, credit, changed)``."""
+    from ai_quota_swap.admin_api import iso_z
+    from ai_quota_swap.models import get_timestamp
+    from datetime import datetime, timezone
+
+    now = time.time() if now is None else now
+    value = None
+    if amount is not None:
+        value = {
+            "amount": normalize_credit(amount),
+            "since": iso_z(datetime.fromtimestamp(now, tz=timezone.utc)),
+        }
+        if expires:
+            value["expires"] = parse_expiry(expires)
+    elif expires:
+        raise CreditError("--expires goes with an amount: qswap credit N AMOUNT --expires DATE")
+    num, email, data, record = switcher._resolve_for_policy_write(identifier)
+    if record.get("kind") != "api_key":
+        raise CreditError(
+            f"#{num} {email} is a subscription account; a credit applies to "
+            "API-key accounts"
+        )
+    if value is None:
+        if "credit" not in record:
+            return num, email, None, False
+        record.pop("credit", None)
+    else:
+        record["credit"] = value
+    data["lastUpdated"] = get_timestamp()
+    switcher._write_json(switcher.sequence_file, data)
+    return num, email, credit_from_record(record), True
+
+
 # -- linking --------------------------------------------------------------------
 
 
@@ -334,22 +482,32 @@ def _price_admin(
     days: dict[str, list[tuple[str, str | None, tuple[int, ...]]]],
     prices,
     today_label: str,
-) -> tuple[float, float, int]:
+    month_label: str = "",
+    since_label: str | None = None,
+) -> tuple[float, float, int, float]:
+    """``(month, today, unpriced tokens, since)`` from a report's daily
+    buckets: this month from ``month_label`` (the report may start earlier
+    for a credit), and from ``since_label`` for a credit (Anthropic's figures
+    are whole UTC days, so the credit's first day counts in full)."""
     from ai_quota_swap.ledger.pricing import FAST_SUFFIX
 
-    month = today = 0.0
+    month = today = since = 0.0
     unpriced = 0
     for day, rows in days.items():
         for model, speed, toks in rows:
             found = prices.lookup(model + FAST_SUFFIX if speed == "fast" else model)
             if found is None:
-                unpriced += sum(toks)
+                if day >= month_label:
+                    unpriced += sum(toks)
                 continue
             cost = found[1].cost(*toks)
-            month += cost
+            if day >= month_label:
+                month += cost
             if day == today_label:
                 today += cost
-    return month, today, unpriced
+            if since_label is not None and day >= since_label:
+                since += cost
+    return month, today, unpriced, since
 
 
 def readings(
@@ -400,11 +558,21 @@ def readings(
     by_org: dict[str, list[str]] = defaultdict(list)
     for num, link in links.items():
         by_org[link.org].append(num)
+    credits = {
+        str(num): credit_from_record(records.get(str(num)) if isinstance(records.get(str(num)), dict) else None)
+        for num in infos
+    }
     reports: dict[str, tuple[ReportResult, dict | None]] = {}
     for org_name, nums in by_org.items():
+        # A credit recorded before this month widens the report back to its day.
+        starts = [
+            credits[n]["since"] for n in nums
+            if credits.get(n) is not None and credits[n]["since"] < month.timestamp()
+        ]
         res = admin_api.month_usage_by_key(
             org_by_name[org_name], [links[n].key_id for n in nums],
             now=now, network=network, cache=cache,
+            start=min(starts) if starts else None,
         )
         parsed = None
         if res.buckets is not None:
@@ -421,6 +589,8 @@ def readings(
         num = str(num)
         record = records.get(num) if isinstance(records.get(num), dict) else {}
         budget = budget_from_record(record)
+        credit = credits.get(num)
+        credit_used: float | None = None
         link = links.get(num)
         reading: dict | None = None
         note = notes.get(num)
@@ -428,9 +598,15 @@ def readings(
             res, parsed = reports[link.org]
             if parsed is not None:
                 prices = prices or PriceTable.load(root)
-                cost, today_cost, unpriced = _price_admin(
-                    parsed.get(link.key_id, {}), prices, today_label
+                since_label = (
+                    admin_api.utc_day_label(credit["since"]) if credit is not None else None
                 )
+                cost, today_cost, unpriced, since_cost = _price_admin(
+                    parsed.get(link.key_id, {}), prices, today_label,
+                    month_label=month.date().isoformat(), since_label=since_label,
+                )
+                if credit is not None:
+                    credit_used = since_cost
                 reading = _blank(SOURCE_ADMIN, cost, today_cost, unpriced, res.fetched_at)
                 reading["org"] = link.org
                 reading["api_key_id"] = link.key_id
@@ -446,15 +622,20 @@ def readings(
                 root, info[1], info[3] or "",
                 month_start=month.timestamp(), day_start=day.timestamp(),
                 registry=data,
+                since_start=credit["since"] if credit is not None else None,
             )
             if ls is not None:
                 reading = _blank(SOURCE_LEDGER, ls.month, ls.today, ls.unpriced_tokens, ls.last_scan_at)
+                if credit is not None:
+                    credit_used = ls.since
             elif not note and (root / DB_FILENAME).exists():
                 note = LEDGER_UNREADABLE
         if reading is None:
-            if budget is None and not orgs and not note:
+            if budget is None and credit is None and not orgs and not note:
                 continue
             reading = _blank(None, None, None, 0, None)
+        if credit is not None:
+            reading["credit"] = credit_reading(credit, credit_used, reading.get("source"), now)
         spend = reading["spend"]
         spend["resets_at"] = admin_api.iso_z(next_month)
         if budget is not None:
@@ -546,12 +727,60 @@ def _nothing_spent(limit: float | None) -> str:
     return f"$0 of {budget_money(limit)} this month" if limit is not None else ""
 
 
+def credit_money(value: float) -> str:
+    """Whole dollars for a credit, rounded down so the count never shows
+    more than is left: ``$1,150``."""
+    return f"${math.floor(max(value, 0.0) + 1e-9):,}"
+
+
+def _day_words(iso: str) -> str:
+    """``Dec 31`` (with the year when it is not this year's)."""
+    from datetime import date
+
+    try:
+        day = date.fromisoformat(iso)
+    except ValueError:
+        return iso
+    text = f"{day.strftime('%b')} {day.day}"
+    if day.year != date.today().year:
+        text += f" {day.year}"
+    return text
+
+
+def credit_text(credit: dict) -> str:
+    """``$1,150 of $1,187 credit left``; ``credit expired Dec 31``; ``credit
+    spent ($0 of $1,187 left)``; ``$1,187 credit, no spend figure yet``."""
+    amount = budget_money(credit["amount"])
+    if credit.get("expired"):
+        return f"credit expired {_day_words(credit['expires'])}"
+    if credit.get("spent"):
+        return f"credit spent ($0 of {amount} left)"
+    left = credit.get("left")
+    if left is None:
+        return f"{amount} credit, no spend figure yet"
+    return f"{credit_money(left)} of {amount} credit left"
+
+
 def spend_text(reading: dict) -> str:
     """``API key · $4.12 today · $212.40 this month of $500 (42%)``, then
     ``· estimate`` when the figure is the local one. With nothing recorded:
     ``API key · no usage recorded on this machine``, after ``$0 of $500 this
-    month`` when there is a budget."""
+    month`` when there is a budget. With a credit: ``API key · $1,150 of
+    $1,187 credit left``, and the month against its budget after it when one
+    is set too."""
     from ai_quota_swap.display import API_KEY_NO_USAGE
+
+    credit = reading.get("credit")
+    if isinstance(credit, dict):
+        parts = ["API key", credit_text(credit)]
+        spend = reading.get("spend") or {}
+        used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
+        if limit is not None and used is not None and pct is not None:
+            tag = f"{pct:.0f}%" + (", over budget" if pct >= 100 else "")
+            parts.append(f"{money(used)} of {budget_money(limit)} this month ({tag})")
+        if reading.get("source") == SOURCE_LEDGER and credit.get("left") is not None:
+            parts.append("estimate")
+        return " · ".join(parts)
 
     spend = reading.get("spend") or {}
     used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
@@ -587,8 +816,23 @@ def spend_text(reading: dict) -> str:
 
 def detail_text(reading: dict, now: float | None = None) -> str | None:
     """A second line when there is more to say: why the figure is not
-    Anthropic's, how old it is, or how to get one."""
+    Anthropic's, how old it is, or how to get one; for a credit, since when it
+    counts and when it expires."""
     now = time.time() if now is None else now
+    base = _detail_text(reading, now)
+    credit = reading.get("credit")
+    if not isinstance(credit, dict) or credit.get("expired"):
+        return base
+    since = str(credit.get("since") or "")[:10]
+    words = f"credit counted from {_day_words(since)}" if since else ""
+    if credit.get("expires"):
+        words += f", expires {_day_words(credit['expires'])}"
+    if not words:
+        return base
+    return f"{base} · {words}" if base else words
+
+
+def _detail_text(reading: dict, now: float) -> str | None:
     note = reading.get("note")
     source = reading.get("source")
     as_of = reading.get("as_of")
@@ -637,6 +881,9 @@ def menu_text(reading: dict) -> str:
     this month``."""
     from ai_quota_swap.display import API_KEY_NO_USAGE_SHORT
 
+    credit = reading.get("credit")
+    if isinstance(credit, dict):
+        return credit_text(credit)
     spend = reading.get("spend") or {}
     used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
     if spend_unknown(reading):

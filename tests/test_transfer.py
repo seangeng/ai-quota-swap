@@ -525,7 +525,10 @@ class TestConflictPolicy:
         s = make_switcher()
         seed_oauth(s, 1, "carol@example.com")
         seed_api_key(s, 2, KEY_A, email="ci@example.com")
-        s.switch_to("2")
+        # The saved-key path (docs/design/api-key-sessions.md, part 1): the
+        # key is the live credential. The helper path is
+        # tests/test_key_helper_live.py's.
+        s.switch_to("2", log_out_sessions=True)
         assert s.current_account_number() == "2" and s._read_credentials() == KEY_A
         out = temp_home / "k.qswap"
         export_accounts(s, str(out), account="2")
@@ -560,7 +563,7 @@ class TestConflictPolicy:
                 "qswap switch 2 --force") in err
         assert "nothing needs doing" not in err
         assert s._read_credentials() == KEY_A
-        s.switch_to("2", force=True)  # what the note says
+        s.switch_to("2", force=True, log_out_sessions=True)  # the saved-key reload
         assert s._read_credentials() == KEY_B
 
     def test_import_without_matching_live_login_prints_no_hint(

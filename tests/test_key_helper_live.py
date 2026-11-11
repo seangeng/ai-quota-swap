@@ -1,0 +1,1659 @@
+"""Part 2 of docs/design/api-key-sessions.md: an API-key account made active
+through qswap's ``apiKeyHelper`` line in Claude Code's user settings.
+
+Everything runs on the temporary home, the in-memory Keychain fake and
+faked network; the macOS paths run on every platform by setting the
+switcher's platform. Sections follow the design: the key helper command (A),
+the settings editor (B), who is active (C), switching (D), run profiles (E),
+``qswap run`` on a key (F), the engine (G), credit (H), the ledger (I), the
+surfaces and doctor (J).
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+import json
+import os
+import stat
+import subprocess
+import sys
+import textwrap
+import time
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from ai_quota_swap import (
+    api_spend,
+    claude_settings,
+    cli,
+    display,
+    doctor,
+    key_helper,
+    macos_keychain,
+    paths,
+)
+from ai_quota_swap.credentials import (
+    CLAUDE_CODE_KEYCHAIN_SERVICE,
+    CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE,
+    SECURITY_SERVICE,
+)
+from ai_quota_swap.exceptions import (
+    KeyHelperUnavailableError,
+    SessionError,
+    SessionsRunningError,
+    SwitchError,
+    ValidationError,
+)
+from ai_quota_swap.models import Platform
+from ai_quota_swap.paths import get_global_config_path
+from ai_quota_swap.switcher import ClaudeAccountSwitcher
+
+KEY_5 = "sk-ant-api03-" + "k5k5k5k5k5" * 4
+KEY_6 = "sk-ant-api03-" + "k6k6k6k6k6" * 4
+SETUP_TOKEN = "sk-ant-oat01-" + "p1p1p1p1p1" * 4
+MCP = {"plugin:slack:slack|abc": {"serverName": "slack", "accessToken": "mcp-1"}}
+MAYA = "maya@example.com"
+SAM = "sam@example.com"
+EMAIL_5 = "api-key-5@token.local"
+EMAIL_6 = "api-key-6@token.local"
+QSWAP = "/opt/qswap/bin/qswap"
+
+POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+
+
+# -- the fleet ---------------------------------------------------------------------
+
+
+def _switcher(platform: Platform) -> ClaudeAccountSwitcher:
+    s = ClaudeAccountSwitcher()
+    s.platform = platform
+    s._setup_directories()
+    s._init_sequence_file()
+    return s
+
+
+def _fleet(platform: Platform = Platform.MACOS) -> ClaudeAccountSwitcher:
+    """#1 personal (a subscription login, with MCP sign-ins) is the live login;
+    #5 ci and #6 ops are API-key accounts; #7 is a second subscription."""
+    s = _switcher(platform)
+    s.add_account_from_token(SETUP_TOKEN, email=MAYA, slot=1)
+    s.add_account_from_token(KEY_5, slot=5)
+    s.add_account_from_token(KEY_6, slot=6)
+    s.add_account_from_token(SETUP_TOKEN.replace("p1", "q2"), email=SAM, slot=7)
+    s.set_alias("1", "personal")
+    s.set_alias("5", "ci")
+    s.set_alias("6", "ops")
+    s.set_alias("7", "work")
+    login = json.loads(s._read_account_credentials("1", MAYA))
+    s._write_credentials(json.dumps({**login, "mcpOAuth": MCP}))
+    get_global_config_path().write_text(json.dumps({
+        "oauthAccount": {"emailAddress": MAYA, "accountUuid": "", "organizationUuid": None},
+        "projects": {"/work/app": {"allowedTools": []}},
+    }), encoding="utf-8")
+    data = s._get_sequence_data()
+    data["activeAccountNumber"] = 1
+    s._write_json(s.sequence_file, data)
+    return s
+
+
+@pytest.fixture(autouse=True)
+def _fixed_command(monkeypatch):
+    """The installed command every helper line names, fixed for the tests."""
+    monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [QSWAP])
+
+
+@pytest.fixture
+def alive(monkeypatch):
+    pids: set[int] = set()
+    monkeypatch.setattr("ai_quota_swap.process_detection.is_pid_alive", lambda pid: pid in pids)
+    return pids
+
+
+def _write_sessions(home: Path, pids, *, started_at: float | None = None):
+    directory = home / ".claude" / "sessions"
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = int((started_at if started_at is not None else time.time()) * 1000)
+    for pid in pids:
+        (directory / f"{pid}.json").write_text(json.dumps({
+            "pid": pid, "sessionId": f"s-{pid}", "cwd": f"/work/app{pid}",
+            "startedAt": stamp, "kind": "interactive", "entrypoint": "cli",
+        }), encoding="utf-8")
+
+
+def _settings(home: Path) -> Path:
+    return home / ".claude" / "settings.json"
+
+
+def _settings_obj(home: Path) -> dict:
+    return json.loads(_settings(home).read_text(encoding="utf-8"))
+
+
+def _acct() -> str:
+    return macos_keychain.keychain_account_name()
+
+
+def _claude_state(store) -> tuple:
+    """What a helper switch must never write: the login item, the saved-key
+    item and ``~/.claude.json``."""
+    return (
+        store.get_password(CLAUDE_CODE_KEYCHAIN_SERVICE, _acct()),
+        store.get_password(CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE, _acct()),
+        get_global_config_path().read_bytes(),
+    )
+
+
+def _main(argv: list[str]) -> int:
+    with patch.object(sys, "argv", ["qswap", *argv]):
+        try:
+            cli.main()
+        except SystemExit as e:
+            return e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    return 0
+
+
+@pytest.fixture
+def run(monkeypatch, capsys):
+    monkeypatch.setattr("ai_quota_swap.update_check.check_for_update", lambda v: None)
+    monkeypatch.setattr("os.geteuid", lambda: 1000, raising=False)
+    for name in display.OVERRIDE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    def go(switcher, *argv: str) -> tuple[int, str, str]:
+        capsys.readouterr()
+        with patch.object(cli, "ClaudeAccountSwitcher", return_value=switcher), \
+             patch.object(switcher, "list_accounts"), \
+             patch.object(switcher, "target_readiness", return_value=(None, "")):
+            code = _main(list(argv))
+        out, err = capsys.readouterr()
+        return code, out, err
+
+    return go
+
+
+def _fits(text: str) -> None:
+    for line in text.splitlines():
+        if line.strip().startswith("qswap "):
+            continue  # a command to copy stays whole
+        assert len(line) <= display.WIDTH, line
+
+
+# == A. qswap key-helper N ================================================================
+
+
+def _seed_data(root: Path, accounts: dict, creds: dict[str, str] | None = None) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "sequence.json").write_text(json.dumps({
+        "activeAccountNumber": None, "sequence": [int(n) for n in accounts],
+        "accounts": accounts,
+    }), encoding="utf-8")
+    (root / "credentials").mkdir(exist_ok=True)
+    for name, value in (creds or {}).items():
+        (root / "credentials" / name).write_text(
+            base64.b64encode(value.encode()).decode(), encoding="utf-8"
+        )
+
+
+def _helper(argv: list[str]) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        code = key_helper.main(argv)
+    return code, out.getvalue(), err.getvalue()
+
+
+class TestKeyHelper:
+    def test_prints_the_key_and_one_newline_from_the_file(self, temp_home, monkeypatch):
+        monkeypatch.setattr(key_helper, "_platform", lambda: "windows")
+        root = key_helper.data_dir()
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        assert _helper(["5"]) == (0, KEY_5 + "\n", "")
+
+    def test_prints_the_key_from_the_keychain(self, temp_home, monkeypatch, block_real_keychain):
+        monkeypatch.setattr(key_helper, "_platform", lambda: "macos")
+        root = key_helper.data_dir()
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}})
+        block_real_keychain.set_password(SECURITY_SERVICE, f"account-5-{EMAIL_5}", KEY_5)
+        assert _helper(["5"]) == (0, KEY_5 + "\n", "")
+
+    def test_reads_what_the_switcher_saved(self, temp_home, monkeypatch, block_real_keychain):
+        for platform, name in ((Platform.MACOS, "macos"), (Platform.LINUX, "linux")):
+            monkeypatch.setattr(key_helper, "_platform", lambda name=name: name)
+            monkeypatch.setattr(Platform, "detect", classmethod(lambda cls, p=platform: p))
+            s = _fleet(platform)
+            assert key_helper.data_dir() == s.backup_dir
+            assert _helper(["5"]) == (0, KEY_5 + "\n", "")
+
+    def test_the_previous_copy_when_the_saved_one_is_not_a_key(self, temp_home, monkeypatch):
+        monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
+        root = key_helper.data_dir()
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}}, {
+            f".creds-5-{EMAIL_5}.enc": json.dumps({"mcpOAuth": MCP}),
+            f".creds-5-{EMAIL_5}.enc.prev": KEY_5,
+        })
+        before = sorted(p.name for p in (root / "credentials").iterdir())
+        assert _helper(["5"]) == (0, KEY_5 + "\n", "")
+        assert sorted(p.name for p in (root / "credentials").iterdir()) == before
+
+    @pytest.mark.parametrize("case", [
+        "no-data", "missing", "subscription", "no-key", "not-a-key", "torn", "keychain",
+    ])
+    def test_every_failure_prints_nothing_on_stdout(self, temp_home, monkeypatch, case,
+                                                     block_real_keychain):
+        monkeypatch.setattr(key_helper, "_platform", lambda: "macos")
+        root = key_helper.data_dir()
+        accounts = {"5": {"email": EMAIL_5, "kind": "api_key"},
+                    "1": {"email": MAYA}}
+        if case == "missing":
+            _seed_data(root, {"1": {"email": MAYA}})
+        elif case == "subscription":
+            _seed_data(root, accounts, {f".creds-1-{MAYA}.enc": '{"claudeAiOauth": {}}'})
+        elif case == "no-key":
+            _seed_data(root, accounts)
+        elif case == "not-a-key":
+            _seed_data(root, accounts, {f".creds-5-{EMAIL_5}.enc": '{"mcpOAuth": {}}'})
+        elif case == "torn":
+            root.mkdir(parents=True)
+            (root / "sequence.json").write_text("{not json", encoding="utf-8")
+        elif case == "keychain":
+            _seed_data(root, accounts)
+
+            def boom(service, account):
+                raise macos_keychain.KeychainError("locked")
+
+            monkeypatch.setattr(macos_keychain, "get_password", boom)
+        number = "1" if case == "subscription" else "5"
+        code, out, err = _helper([number])
+        assert code != 0
+        assert out == ""
+        assert err.startswith("qswap key-helper: ") and err.count("\n") == 1
+        assert KEY_5 not in err
+
+    @pytest.mark.parametrize("argv", [[], ["x"], ["5", "6"], ["-5"]])
+    def test_a_bad_argument_is_a_usage_error(self, argv):
+        code, out, err = _helper(argv)
+        assert (code, out) == (64, "")
+        assert "usage: qswap key-helper N" in err
+
+    def test_help(self):
+        code, out, err = _helper(["--help"])
+        assert code == 0 and err == ""
+        assert out.startswith("usage: qswap key-helper N")
+        assert "Example:" in out
+
+    def test_hidden_from_the_main_help_map(self):
+        from ai_quota_swap import helptext
+
+        assert "key-helper" not in helptext.MAIN_HELP
+
+    def test_the_entry_point_answers_before_the_cli(self, temp_home, monkeypatch, capsys):
+        from ai_quota_swap import entry
+
+        monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
+        _seed_data(key_helper.data_dir(), {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        for main in (entry.main, cli.main):
+            capsys.readouterr()
+            with patch.object(sys, "argv", ["qswap", "key-helper", "5"]), \
+                 pytest.raises(SystemExit) as caught:
+                main()
+            out, err = capsys.readouterr()
+            assert caught.value.code == 0
+            assert (out, err) == (KEY_5 + "\n", "")
+
+    def test_writes_no_file(self, temp_home, monkeypatch):
+        monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
+        root = key_helper.data_dir()
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+
+        def tree():
+            return sorted(
+                (str(p.relative_to(temp_home)), p.stat().st_mtime_ns)
+                for p in temp_home.rglob("*")
+            )
+
+        before = tree()
+        _helper(["5"])
+        _helper(["9"])
+        assert tree() == before
+
+    @pytest.mark.parametrize("platform, env, expected", [
+        (Platform.LINUX, {}, ".local/share/ai-quota-swap"),
+        (Platform.LINUX, {"XDG_DATA_HOME": "{home}/xdg"}, "xdg/ai-quota-swap"),
+        (Platform.LINUX, {"XDG_DATA_HOME": "relative"}, ".local/share/ai-quota-swap"),
+        (Platform.MACOS, {"XDG_DATA_HOME": "{home}/xdg"}, ".ai-quota-swap"),
+        (Platform.WINDOWS, {}, ".ai-quota-swap"),
+    ])
+    def test_finds_the_data_directory_the_way_qswap_does(
+        self, temp_home, monkeypatch, platform, env, expected
+    ):
+        names = {Platform.LINUX: "linux", Platform.MACOS: "macos", Platform.WINDOWS: "windows"}
+        monkeypatch.setattr(key_helper, "_platform", lambda: names[platform])
+        monkeypatch.setattr(Platform, "detect", classmethod(lambda cls: platform))
+        for name, value in env.items():
+            monkeypatch.setenv(name, value.format(home=temp_home))
+        assert key_helper.data_dir() == paths.get_backup_root()
+        assert key_helper.data_dir() == temp_home.joinpath(*expected.split("/"))
+
+    def test_imports_nothing_that_could_print_or_connect(self, tmp_path):
+        """In a fresh interpreter with a minimal environment, from another
+        directory: only the leaf modules load."""
+        home = tmp_path / "home"
+        home.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        script = textwrap.dedent("""
+            import json, sys
+            sys.argv = ["qswap", "key-helper", "5"]
+            from ai_quota_swap import entry
+            try:
+                entry.main()
+            except SystemExit as e:
+                code = e.code
+            mods = sorted(m for m in sys.modules if m.startswith("ai_quota_swap"))
+            heavy = [m for m in ("urllib.request", "http.client", "ssl", "sqlite3",
+                                 "textual", "rumps") if m in sys.modules]
+            sys.stderr.write(json.dumps({"code": code, "mods": mods, "heavy": heavy}))
+        """)
+        env = {"HOME": str(home), "USERPROFILE": str(home), "PATH": os.defpath}
+        if sys.platform == "win32":
+            env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", r"C:\Windows")
+        done = subprocess.run(
+            [sys.executable, "-c", script], cwd=elsewhere, env=env,
+            capture_output=True, text=True, timeout=60,
+        )
+        assert done.stdout == ""
+        report = json.loads(done.stderr.splitlines()[-1][done.stderr.splitlines()[-1].index("{"):])
+        assert report["code"] == 1
+        assert set(report["mods"]) <= {
+            "ai_quota_swap", "ai_quota_swap.entry", "ai_quota_swap.key_helper",
+            "ai_quota_swap.macos_keychain", "ai_quota_swap.spawn",
+        }
+        assert report["heavy"] == []
+
+
+# == B. the settings editor ===============================================================
+
+
+class TestSettingsStates:
+    def test_no_file(self, tmp_path):
+        assert claude_settings.read_state(tmp_path / "settings.json").kind == "no-file"
+
+    def test_no_helper(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text('{"model": "opus"}', encoding="utf-8")
+        assert claude_settings.read_state(path).kind == "none"
+
+    @pytest.mark.parametrize("line, number", [
+        ("/opt/qswap/bin/qswap key-helper 5", "5"),
+        ("/usr/local/bin/qswap key-helper 12", "12"),
+        ('"/Users/a b/.local/bin/qswap" key-helper 5', "5"),
+        ("C:\\Users\\a\\.local\\bin\\qswap.exe key-helper 3", "3"),
+        ("/home/u/.local/bin/ai-quota-swap key-helper 4", "4"),
+        ("/usr/bin/python3 -m ai_quota_swap key-helper 6", "6"),
+        ("qswap key-helper 05", "5"),
+    ])
+    def test_qswaps_line_by_its_structure(self, tmp_path, line, number):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"apiKeyHelper": line}), encoding="utf-8")
+        state = claude_settings.read_state(path)
+        assert (state.kind, state.number) == ("ours", number)
+
+    @pytest.mark.parametrize("line", [
+        "/opt/vault/print-key", "qswap key-helper", "qswap key-helper 5 extra",
+        "/x/notqswap key-helper 5", "echo sk-ant-api03-zzzz", 42,
+    ])
+    def test_someone_elses_helper(self, tmp_path, line):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"apiKeyHelper": line}), encoding="utf-8")
+        assert claude_settings.read_state(path).kind == "foreign"
+
+    @pytest.mark.parametrize("text", [
+        "{not json", "[1, 2]", '"x"',
+        '{"apiKeyHelper": "qswap key-helper 5", "apiKeyHelper": "qswap key-helper 6"}',
+    ])
+    def test_not_valid(self, tmp_path, text):
+        path = tmp_path / "settings.json"
+        path.write_text(text, encoding="utf-8")
+        assert claude_settings.read_state(path).kind == "invalid"
+
+    def test_the_path_follows_claude_config_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+        assert claude_settings.settings_path() == tmp_path / "cfg" / "settings.json"
+
+
+class TestSettingsWrites:
+    LINE = f"{QSWAP} key-helper 5"
+
+    @pytest.mark.parametrize("before, after", [
+        (
+            '{\n  "model": "opus",\n  "hooks": {"Stop": []}\n}\n',
+            '{\n  "model": "opus",\n  "hooks": {"Stop": []},\n  "apiKeyHelper": "LINE"\n}\n',
+        ),
+        (
+            '{\n    "b": 1,\n    "a": 2\n}',
+            '{\n    "b": 1,\n    "a": 2,\n    "apiKeyHelper": "LINE"\n}',
+        ),
+        (
+            '{\n\t"z": true\n}\n',
+            '{\n\t"z": true,\n\t"apiKeyHelper": "LINE"\n}\n',
+        ),
+        ('{"a":1}', '{"a":1, "apiKeyHelper":"LINE"}'),  # the file's own separator
+        ('{\n  "name": "café"\n}\n', '{\n  "name": "café",\n  "apiKeyHelper": "LINE"\n}\n'),
+        ("{}", '{"apiKeyHelper": "LINE"}'),
+    ])
+    def test_adds_one_key_and_keeps_the_rest(self, tmp_path, before, after):
+        path = tmp_path / "settings.json"
+        path.write_text(before, encoding="utf-8")
+        claude_settings.install(5, path=path, command=self.LINE)
+        assert path.read_text(encoding="utf-8") == after.replace("LINE", self.LINE)
+        claude_settings.remove(path=path)
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_replaces_its_own_line_in_place(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            '{\n  "apiKeyHelper": "/old/path/qswap key-helper 5",\n  "model": "opus"\n}\n',
+            encoding="utf-8",
+        )
+        claude_settings.install(6, path=path, command=f"{QSWAP} key-helper 6")
+        assert path.read_text(encoding="utf-8") == (
+            f'{{\n  "apiKeyHelper": "{QSWAP} key-helper 6",\n  "model": "opus"\n}}\n'
+        )
+
+    def test_removing_the_first_of_several_keys(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            f'{{\n  "apiKeyHelper": "{self.LINE}",\n  "model": "opus"\n}}\n', encoding="utf-8"
+        )
+        assert claude_settings.remove(path=path) is True
+        assert path.read_text(encoding="utf-8") == '{\n  "model": "opus"\n}\n'
+
+    def test_a_missing_file_is_created_and_removed_again(self, tmp_path):
+        path = tmp_path / ".claude" / "settings.json"
+        created, state = claude_settings.install(5, path=path, command=self.LINE)
+        assert created and state.ours
+        assert json.loads(path.read_text(encoding="utf-8")) == {"apiKeyHelper": self.LINE}
+        claude_settings.remove(path=path, remove_file_if_empty=True)
+        assert not path.exists()
+
+    def test_a_created_file_that_gained_keys_is_kept(self, tmp_path):
+        path = tmp_path / "settings.json"
+        claude_settings.install(5, path=path, command=self.LINE)
+        obj = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**obj, "model": "opus"}, indent=2) + "\n", encoding="utf-8")
+        claude_settings.remove(path=path, remove_file_if_empty=True)
+        assert json.loads(path.read_text(encoding="utf-8")) == {"model": "opus"}
+
+    @POSIX_ONLY
+    def test_keeps_the_file_mode(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text('{"a": 1}\n', encoding="utf-8")
+        os.chmod(path, 0o640)
+        claude_settings.install(5, path=path, command=self.LINE)
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o640
+        claude_settings.remove(path=path)
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o640
+
+    def test_writes_through_a_link(self, tmp_path):
+        real = tmp_path / "dotfiles" / "settings.json"
+        real.parent.mkdir()
+        real.write_text('{"a": 1}\n', encoding="utf-8")
+        link = tmp_path / "settings.json"
+        try:
+            link.symlink_to(real)
+        except (OSError, NotImplementedError):
+            pytest.skip("symbolic links are not available here")
+        claude_settings.install(5, path=link, command=self.LINE)
+        assert link.is_symlink()
+        assert json.loads(real.read_text(encoding="utf-8"))["apiKeyHelper"] == self.LINE
+        claude_settings.remove(path=link)
+        assert link.is_symlink()
+        assert json.loads(real.read_text(encoding="utf-8")) == {"a": 1}
+
+    def test_a_change_made_while_writing_is_kept(self, tmp_path, monkeypatch):
+        """Claude Code writes this file too: the editor re-reads right before
+        the rename and starts again from what is there now."""
+        path = tmp_path / "settings.json"
+        path.write_text('{\n  "a": 1\n}\n', encoding="utf-8")
+        real_read = claude_settings._read
+        calls = {"n": 0}
+
+        def read(p):
+            calls["n"] += 1
+            if calls["n"] == 2:  # the re-read before the first write
+                p.write_text('{\n  "a": 1,\n  "theme": "dark"\n}\n', encoding="utf-8")
+            return real_read(p)
+
+        monkeypatch.setattr(claude_settings, "_read", read)
+        claude_settings.install(5, path=path, command=self.LINE)
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "a": 1, "theme": "dark", "apiKeyHelper": self.LINE,
+        }
+
+    def test_a_file_that_keeps_changing_is_not_written(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text('{"a": 1}', encoding="utf-8")
+        texts = iter(f'{{"a": {i}}}' for i in range(100))
+        monkeypatch.setattr(claude_settings, "_read", lambda p: next(texts))
+        monkeypatch.setattr(claude_settings.time, "sleep", lambda s: None)
+        with pytest.raises(claude_settings.SettingsError) as caught:
+            claude_settings.install(5, path=path, command=self.LINE)
+        assert caught.value.kind == "changing"
+        assert path.read_text(encoding="utf-8") == '{"a": 1}'
+
+    @pytest.mark.parametrize("text, kind", [
+        ("{not json", "invalid"),
+        ('{"apiKeyHelper": "/opt/vault/print-key"}', "foreign"),
+    ])
+    def test_never_writes_a_file_it_cannot_parse_or_another_helper(self, tmp_path, text, kind):
+        path = tmp_path / "settings.json"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(claude_settings.SettingsError) as caught:
+            claude_settings.install(5, path=path, command=self.LINE)
+        assert caught.value.kind == kind
+        assert path.read_text(encoding="utf-8") == text
+
+    def test_removal_leaves_another_helper_alone(self, tmp_path):
+        path = tmp_path / "settings.json"
+        text = '{"apiKeyHelper": "/opt/vault/print-key"}'
+        path.write_text(text, encoding="utf-8")
+        assert claude_settings.remove(path=path) is False
+        assert path.read_text(encoding="utf-8") == text
+
+    def test_the_copy_for_a_run_profile_has_no_helper(self):
+        text = f'{{\n  "a": 1,\n  "apiKeyHelper": "{self.LINE}"\n}}\n'
+        assert claude_settings.without_helper(text) == '{\n  "a": 1\n}\n'
+        assert claude_settings.without_helper("{bad") == "{bad"
+
+    def test_the_command_names_the_installed_qswap(self, monkeypatch, tmp_path):
+        monkeypatch.undo()
+        exe = tmp_path / "bin with space" / "qswap"
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setattr(sys, "argv", [str(exe), "switch", "5"])
+        line = claude_settings.helper_command(5)
+        assert line == f'"{exe}" key-helper 5'
+        assert claude_settings.parse_line(line) == "5"
+
+
+# == C. who is active =====================================================================
+
+
+def _activate(s, number="5", entered_by="user"):
+    return s.switch_to(number, json_output=True, entered_by=entered_by)
+
+
+class TestWhoIsActive:
+    def test_the_key_is_active_and_the_login_is_underneath(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        assert s.current_account_number() == "5"
+        assert s.login_account_number() == "1"
+        assert s.underneath_account_number() == "1"
+        assert s.helper_account() == "5"
+        assert s.active_view() == ("5", "1")
+        assert s.active_email() == EMAIL_5
+
+    def test_without_the_line_the_login_rule_holds(self, temp_home):
+        s = _fleet()
+        assert s.current_account_number() == "1"
+        assert s.underneath_account_number() is None
+        assert s.active_view() == (None, None)
+
+    def test_a_line_written_by_hand_counts(self, temp_home):
+        s = _fleet()
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": "/other/place/qswap key-helper 6"}), encoding="utf-8"
+        )
+        assert s.current_account_number() == "6"
+        assert s.key_entered_by() == "user"
+
+    @pytest.mark.parametrize("number, why", [("9", "missing"), ("7", "not-api-key")])
+    def test_a_line_for_no_key_is_reported_not_active(self, temp_home, number, why):
+        s = _fleet()
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": f"{QSWAP} key-helper {number}"}), encoding="utf-8"
+        )
+        assert s.current_account_number() == "1"
+        assert s.helper_problem() == {"number": number, "why": why}
+        notes = " ".join(s.key_helper_notes())
+        assert f"make #{number} the active API key" in notes
+        assert "qswap switch 1" in notes
+
+    def test_list_text(self, temp_home, capsys):
+        s = _fleet()
+        _activate(s)
+        capsys.readouterr()
+        s.list_accounts()
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+        key = next(line for line in lines if line.startswith("  #5 "))
+        assert key == "  #5 ci · active · API key · over #1 personal"
+        under = next(line for line in lines if line.startswith("  #1 "))
+        assert "· underneath" in under and "active" not in under
+
+    def test_list_json(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        payload = s.list_accounts(json_output=True)
+        assert payload["activeAccountNumber"] == 5
+        assert payload["underneathAccountNumber"] == 1
+        rows = {row["number"]: row for row in payload["accounts"]}
+        assert rows[5]["active"] is True and rows[5]["how"] == "helper"
+        assert rows[1]["active"] is False and rows[1]["underneath"] is True
+
+    def test_status_text_and_json(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        lines = s.status_lines()
+        assert lines[1] == "  #5 ci · active · API key · over #1 personal"
+        payload = s.status(json_output=True)
+        assert payload["active"]["number"] == 5
+        assert payload["active"]["how"] == "helper"
+        assert payload["underneath"] == {"number": 1, "email": MAYA}
+
+    def test_the_snapshot(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        snap = s.accounts_snapshot(fetch=set())
+        assert snap.active_number == "5"
+        assert snap.underneath_number == "1"
+        by = {a.number: a for a in snap.accounts}
+        assert by["5"].is_active and not by["5"].underneath
+        assert by["1"].underneath and not by["1"].is_active
+
+    def test_the_menu_bar_rows(self, temp_home):
+        from ai_quota_swap import menubar, menubar_data
+
+        s = _fleet()
+        _activate(s)
+        snap = s.accounts_snapshot(fetch=set())
+        states = menubar_data.account_states(snap, "claude", {}, now=time.time())
+        by = {a.number: a for a in states}
+        assert by["5"].active and by["5"].over == "#1 personal"
+        assert by["1"].underneath and not by["1"].active
+        row = menubar.account_row(by["1"], now=time.time(), stale_after_s=600)
+        assert row.text.startswith("#1 personal · underneath")
+        assert not row.checked
+        key_row = menubar.account_row(by["5"], now=time.time(), stale_after_s=600)
+        assert key_row.checked and "over #1 personal" in key_row.text
+
+    def test_the_dashboard_block(self, temp_home):
+        from ai_quota_swap.tui import data as tui_data
+
+        s = _fleet()
+        _activate(s)
+        snap = s.accounts_snapshot(fetch=set())
+        view = tui_data.ProviderView(provider="claude", snapshot=snap)
+        block = tui_data.block_for(view, view.account("5"))
+        assert block.over == "#1 personal" and block.active
+        assert tui_data.block_for(view, view.account("1")).underneath
+
+    def test_the_engine_sees_the_key(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        from ai_quota_swap.autoswitch import AutoSwitchEngine
+
+        engine = AutoSwitchEngine.__new__(AutoSwitchEngine)
+        engine.switcher = s
+        assert engine._helper_key_mode("5") == "user"
+        assert engine._helper_key_mode("1") is None
+
+    def test_the_activation_log_observes_the_key_not_the_login(self, temp_home):
+        from ai_quota_swap.ledger.activations import ActivationLog
+
+        s = _fleet()
+        _activate(s)
+        s._build_accounts_info()  # the observation point
+        log = ActivationLog.load(s.backup_dir)
+        last = log.activations[-1]
+        assert last.number == 5 and last.how == "helper"
+
+    def test_run_of_the_account_underneath_refuses_the_fast_path(self, temp_home, monkeypatch):
+        from ai_quota_swap import clis
+        from ai_quota_swap.session import SessionManager
+
+        s = _fleet()
+        _activate(s)
+        monkeypatch.setattr(clis, "find_cli", lambda name: "/fake/claude")
+        mgr = SessionManager(s)
+        monkeypatch.setattr(mgr, "_exec", lambda *a, **k: pytest.fail("exec"))
+        with pytest.raises(SessionError) as caught:
+            mgr.run("1", [], share=True)
+        assert "underneath #5 ci, the active API key" in str(caught.value)
+        assert "qswap switch 1" in str(caught.value)
+
+    def test_doctor_reports_the_active_key(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        checks = {c.id: c for c in doctor.run_checks()}
+        check = checks["claude.key_helper"]
+        assert check.status == "pass"
+        assert "active API key: #5 ci" in check.summary
+
+    @pytest.mark.parametrize("number", ["9", "7"])
+    def test_doctor_fails_a_line_for_no_key(self, temp_home, number):
+        _fleet()
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": f"{QSWAP} key-helper {number}"}), encoding="utf-8"
+        )
+        checks = {c.id: c for c in doctor.run_checks()}
+        check = checks["claude.key_helper"]
+        assert check.status == "fail"
+        assert check.fix == "qswap switch 1"
+
+    def test_the_repair_removes_the_line(self, temp_home):
+        s = _fleet()
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": f"{QSWAP} key-helper 9", "a": 1}), encoding="utf-8"
+        )
+        s.switch_to("1", json_output=True)
+        assert _settings_obj(temp_home) == {"a": 1}
+        assert s.helper_problem() is None
+
+
+# == D. switching =========================================================================
+
+
+class TestSwitching:
+    def test_to_a_key_writes_only_the_line(self, temp_home, block_real_keychain, alive):
+        s = _fleet()
+        _write_sessions(temp_home, [4101, 4102])
+        alive.update({4101, 4102})
+        before = _claude_state(block_real_keychain)
+        result = _activate(s)
+        assert result["switched"] is True and result["how"] == "helper"
+        assert _claude_state(block_real_keychain) == before
+        assert _settings_obj(temp_home) == {"apiKeyHelper": f"{QSWAP} key-helper 5"}
+
+    def test_the_message(self, temp_home, run, alive):
+        s = _fleet()
+        _write_sessions(temp_home, [4101])
+        alive.add(4101)
+        code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        assert out.splitlines() == [
+            "Switched #1 personal → #5 ci (API key)",
+            "Running Claude Code sessions move to the key within a few seconds. #1 personal",
+            "stays logged in underneath. claude.ai connectors are unavailable while a key is",
+            "in use.",
+        ]
+        _fits(out)
+
+    def test_key_to_key_replaces_the_line(self, temp_home, block_real_keychain, run):
+        s = _fleet()
+        _activate(s)
+        before = _claude_state(block_real_keychain)
+        code, out, _err = run(s, "switch", "6")
+        assert code == 0
+        assert _settings_obj(temp_home) == {"apiKeyHelper": f"{QSWAP} key-helper 6"}
+        assert _claude_state(block_real_keychain) == before
+        assert out.splitlines()[0] == "Switched #5 ci → #6 ops (API key)"
+        assert "move from #5 ci to #6 ops within a few seconds" in " ".join(out.split())
+
+    def test_back_to_the_account_underneath_removes_the_line_only(
+        self, temp_home, block_real_keychain, run
+    ):
+        s = _fleet()
+        _activate(s)
+        before = _claude_state(block_real_keychain)
+        code, out, _err = run(s, "switch", "1")
+        assert code == 0
+        assert not _settings(temp_home).exists()  # qswap created it
+        assert _claude_state(block_real_keychain) == before
+        assert out.splitlines() == [
+            "Switched #5 ci → #1 personal (maya@example.com)",
+            "Running Claude Code sessions are back on #1 personal within a few seconds.",
+        ]
+        assert s.current_account_number() == "1"
+
+    def test_to_another_subscription_is_the_line_then_the_login_switch(
+        self, temp_home, block_real_keychain
+    ):
+        s = _fleet()
+        _activate(s)
+        result = s.switch_to("7", json_output=True)
+        assert result["switched"] and result["from"]["number"] == 5
+        assert result["to"]["number"] == 7
+        assert not _settings(temp_home).exists()
+        assert json.loads(get_global_config_path().read_text())["oauthAccount"]["emailAddress"] == SAM
+        assert s.current_account_number() == "7"
+        assert "within about 30 seconds" in " ".join(result["followup"])
+
+    def test_already_on_the_key(self, temp_home, capsys):
+        s = _fleet()
+        _activate(s)
+        payload = s.switch_to("5", json_output=True)
+        assert payload["switched"] is False and payload["reason"] == "already-active"
+
+    def test_the_users_settings_are_kept(self, temp_home):
+        s = _fleet()
+        original = '{\n  "model": "opus",\n  "permissions": {"allow": ["Bash"]}\n}\n'
+        _settings(temp_home).write_text(original, encoding="utf-8")
+        _activate(s)
+        obj = _settings_obj(temp_home)
+        assert obj["model"] == "opus" and obj["apiKeyHelper"].endswith("key-helper 5")
+        s.switch_to("1", json_output=True)
+        assert _settings(temp_home).read_text(encoding="utf-8") == original
+
+    @pytest.mark.parametrize("text, reason", [
+        ('{"apiKeyHelper": "/opt/vault/print-key"}', "already sets another apiKeyHelper"),
+        ("{not json", "is not valid JSON"),
+    ])
+    def test_refused_when_the_line_cannot_be_installed(
+        self, temp_home, block_real_keychain, alive, text, reason, run
+    ):
+        s = _fleet()
+        _settings(temp_home).write_text(text, encoding="utf-8")
+        _write_sessions(temp_home, [4101, 4102])
+        alive.update({4101, 4102})
+        before = (_claude_state(block_real_keychain), s.sequence_file.read_bytes())
+        code, out, err = run(s, "switch", "5")
+        assert code == 1
+        assert "Switched" not in out
+        flat = " ".join(err.split())
+        assert reason in flat
+        assert "2 Claude Code sessions are running on the shared login" in flat
+        assert err.rstrip().endswith("qswap switch 5 --log-out-sessions")
+        _fits(err)
+        assert (_claude_state(block_real_keychain), s.sequence_file.read_bytes()) == before
+        assert _settings(temp_home).read_text(encoding="utf-8") == text
+        code, out, _err = run(s, "switch", "5", "--json")
+        payload = json.loads(out)
+        assert payload["error"]["type"] == "KeyHelperUnavailableError"
+        assert payload["error"]["sessions"] == 2
+        assert reason in payload["error"]["keyHelper"]
+
+    def test_the_saved_key_path_keeps_its_part_1_behaviour(
+        self, temp_home, block_real_keychain, alive
+    ):
+        s = _fleet()
+        _settings(temp_home).write_text('{"apiKeyHelper": "/opt/vault/print-key"}',
+                                        encoding="utf-8")
+        _write_sessions(temp_home, [4101])
+        alive.add(4101)
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        item = json.loads(block_real_keychain.get_password(CLAUDE_CODE_KEYCHAIN_SERVICE, _acct()))
+        assert item == {"mcpOAuth": MCP}
+        assert block_real_keychain.get_password(
+            CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE, _acct()) == KEY_5
+
+    def test_the_saved_key_path_takes_qswaps_line_out_first(self, temp_home, block_real_keychain):
+        s = _fleet()
+        _activate(s)
+        s.switch_to("6", json_output=True, log_out_sessions=True)
+        assert not _settings(temp_home).exists()
+        assert block_real_keychain.get_password(
+            CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE, _acct()) == KEY_6
+
+    def test_an_account_without_a_saved_key_is_refused(self, temp_home, block_real_keychain):
+        s = _fleet()
+        block_real_keychain.delete_password(SECURITY_SERVICE, f"account-5-{EMAIL_5}")
+        for f in s.credentials_dir.glob(".creds-5-*"):
+            f.unlink()
+        with pytest.raises(SwitchError, match="has no saved key"):
+            _activate(s)
+        assert not _settings(temp_home).exists()
+
+    def test_the_activation_log_records_how(self, temp_home):
+        from ai_quota_swap.ledger.activations import ActivationLog
+
+        s = _fleet()
+        _activate(s)
+        s.switch_to("1", json_output=True)
+        s.switch_to("6", json_output=True, log_out_sessions=True)
+        hows = [(a.number, a.how) for a in ActivationLog.load(s.backup_dir).activations]
+        assert hows[-3:] == [(5, "helper"), (1, "login"), (6, "saved-key")]
+
+
+class TestRotation:
+    def test_rotation_never_lands_on_a_key(self, temp_home):
+        s = _fleet()
+        result = s.switch(json_output=True)
+        assert result["to"]["number"] == 7
+        result = s.switch(json_output=True)
+        assert result["to"]["number"] == 1
+        assert not any("Account-5" in w or "Account-6" in w for w in result["warnings"])
+
+    def test_with_only_keys_left_it_names_the_way(self, temp_home, capsys):
+        s = _fleet()
+        s.set_account_disabled("7", True)
+        capsys.readouterr()
+        s.switch()
+        out = capsys.readouterr().out
+        assert "use an API-key account by naming it: qswap switch 5" in " ".join(out.split())
+        assert s.current_account_number() == "1"
+
+    def test_rotation_on_a_key_returns_to_the_account_underneath(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        result = s.switch(json_output=True)
+        assert (result["from"]["number"], result["to"]["number"]) == (5, 1)
+        assert not _settings(temp_home).exists()
+
+    def test_best_on_a_key_without_usage_goes_back_underneath(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        with patch.object(s, "_usage_by_account", return_value={}):
+            result = s.switch(strategy="best", json_output=True)
+        assert result["to"]["number"] == 1
+
+
+class TestAccountChangesWhileOnAKey:
+    def test_remove_the_active_key_takes_the_line_out_first(self, temp_home, block_real_keychain):
+        s = _fleet()
+        _activate(s)
+        before = _claude_state(block_real_keychain)
+        s.remove_account("5", assume_yes=True)
+        assert not _settings(temp_home).exists()
+        assert _claude_state(block_real_keychain) == before
+        assert s.current_account_number() == "1"
+
+    def test_remove_refuses_when_the_line_cannot_be_removed(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        _settings(temp_home).write_text("{broken", encoding="utf-8")
+        with pytest.raises(SwitchError, match="cannot remove its key line"):
+            s.remove_account("5", assume_yes=True)
+        assert "5" in s._get_sequence_data()["accounts"]
+
+    def test_removing_the_account_underneath_keeps_the_key(self, temp_home, block_real_keychain):
+        s = _fleet()
+        _activate(s)
+        s.remove_account("1", assume_yes=True)
+        assert s.helper_account() == "5"
+
+    @pytest.mark.parametrize("op", ["swap", "move"])
+    def test_swap_and_move_never_renumber_the_active_key(self, temp_home, op):
+        s = _fleet()
+        _activate(s)
+        before = s.sequence_file.read_bytes()
+        with pytest.raises(ValidationError, match="the active API key"):
+            if op == "swap":
+                s.swap_accounts("5", "7")
+            else:
+                s.move_account("5", "9")
+        assert s.sequence_file.read_bytes() == before
+
+    def test_swapping_others_is_fine(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        s.swap_accounts("6", "7")
+        assert s.helper_account() == "5"
+
+    def test_add_saves_the_login_underneath(self, temp_home, block_real_keychain):
+        s = _fleet()
+        _activate(s)
+        with patch.object(s, "_reject_foreign_credential_capture", side_effect=lambda c, *a: c):
+            s.add_account()
+        stored = json.loads(s._read_account_credentials("1", MAYA))
+        assert "claudeAiOauth" in stored
+        assert s.helper_account() == "5"
+
+    def test_add_into_the_slot_of_the_active_key_is_refused(self, temp_home):
+        s = _fleet()
+        _activate(s)
+        with pytest.raises(ValidationError, match="the active API key"):
+            s.add_account(slot=5)
+
+    def test_a_new_key_for_the_active_account_is_saved(self, temp_home, capsys):
+        s = _fleet()
+        _activate(s)
+        s.add_account_from_token(KEY_6.replace("k6", "k8"), slot=5, assume_yes=True)
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_6.replace("k6", "k8")
+        assert s.helper_account() == "5"
+
+    def test_export_carries_the_key_and_the_login_underneath(self, temp_home, block_real_keychain):
+        from ai_quota_swap.transfer import export_accounts
+
+        s = _fleet()
+        _activate(s)
+        out = temp_home / "all.qswap"
+        export_accounts(s, str(out))
+        env = json.loads(out.read_text())
+        by = {a["number"] if "number" in a else a.get("slot"): a for a in env["accounts"]}
+        creds = {str(k): v["credentials"] for k, v in by.items()}
+        assert creds["5"] == KEY_5
+        assert "claudeAiOauth" in creds["1"]
+
+    def test_import_of_a_new_key_for_the_active_account(self, temp_home, capsys):
+        from ai_quota_swap.transfer import export_accounts, import_accounts
+
+        s = _fleet(Platform.LINUX)
+        _activate(s)
+        out = temp_home / "k.qswap"
+        export_accounts(s, str(out), account="5")
+        env = json.loads(out.read_text())
+        env["accounts"][0]["credentials"] = KEY_6.replace("k6", "k9")
+        out.write_text(json.dumps(env))
+        capsys.readouterr()
+        import_accounts(s, str(out), force=True)
+        err = " ".join(capsys.readouterr().err.split())
+        assert "The saved key for #5 ci was replaced." in err
+        assert "from their next key refresh" in err
+        assert s.helper_account() == "5"
+
+
+# == E. run profiles ======================================================================
+
+
+def _profile(s, number="7", email=SAM, *, link=True) -> Path:
+    """A run profile sharing the user settings (``qswap run 7`` made it)."""
+    from ai_quota_swap.session import SHARE_MANIFEST, session_dir_for
+
+    d = session_dir_for(s.backup_dir, number, email)
+    d.mkdir(parents=True, exist_ok=True)
+    src = Path.home() / ".claude" / "settings.json"
+    if not src.exists():
+        src.write_text('{\n  "model": "opus"\n}\n', encoding="utf-8")
+    dest = d / "settings.json"
+    if link:
+        try:
+            dest.symlink_to(src)
+        except (OSError, NotImplementedError):
+            pytest.skip("symbolic links are not available here")
+    else:
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    (d / SHARE_MANIFEST).write_text(json.dumps({"items": ["settings.json"]}), encoding="utf-8")
+    return d
+
+
+class TestRunProfiles:
+    def test_before_during_and_after(self, temp_home):
+        from ai_quota_swap.session import SETTINGS_COPY_MARKER
+
+        s = _fleet()
+        d = _profile(s)
+        _activate(s)
+        dest = d / "settings.json"
+        assert not dest.is_symlink()
+        assert json.loads(dest.read_text(encoding="utf-8")) == {"model": "opus"}
+        assert (d / SETTINGS_COPY_MARKER).exists()
+        assert "apiKeyHelper" in _settings_obj(temp_home)
+        s.switch_to("1", json_output=True)
+        assert dest.is_symlink()
+        assert not (d / SETTINGS_COPY_MARKER).exists()
+        assert json.loads(dest.read_text(encoding="utf-8")) == {"model": "opus"}
+
+    def test_a_profile_that_copies_keeps_a_copy(self, temp_home):
+        from ai_quota_swap.session import SETTINGS_COPY_MARKER
+
+        s = _fleet()
+        d = _profile(s, link=False)
+        _activate(s)
+        assert "apiKeyHelper" not in json.loads((d / "settings.json").read_text())
+        s.switch_to("1", json_output=True)
+        assert not (d / SETTINGS_COPY_MARKER).exists()
+        assert json.loads((d / "settings.json").read_text()) == {"model": "opus"}
+
+    def test_a_profile_made_while_on_a_key_gets_the_copy(self, temp_home):
+        from ai_quota_swap.session import SETTINGS_COPY_MARKER, SessionManager, session_dir_for
+
+        s = _fleet()
+        _settings(temp_home).write_text('{"model": "opus"}', encoding="utf-8")
+        _activate(s)
+        d = session_dir_for(s.backup_dir, "7", SAM)
+        d.mkdir(parents=True)
+        SessionManager(s)._sync_items(d, ("settings.json",), scope=("settings.json",))
+        dest = d / "settings.json"
+        assert not dest.is_symlink()
+        assert json.loads(dest.read_text()) == {"model": "opus"}
+        assert (d / SETTINGS_COPY_MARKER).exists()
+        s.switch_to("1", json_output=True)
+        # The next launch links it again.
+        SessionManager(s)._sync_items(d, ("settings.json",), scope=("settings.json",))
+        assert dest.is_symlink() or "apiKeyHelper" not in dest.read_text()
+
+    def test_a_crash_between_the_steps_is_found_and_repaired(self, temp_home):
+        s = _fleet()
+        d = _profile(s)
+        _activate(s)
+        # The line went, the profile restore did not (a crash in between).
+        claude_settings.remove(path=_settings(temp_home))
+        assert s.stale_profile_copies() == [Path(os.path.realpath(d))]
+        notes = " ".join(s.key_helper_notes())
+        assert "qswap run profile keeps a copy" in notes and "qswap switch 1" in notes
+        checks = {c.id: c for c in doctor.run_checks()}
+        assert checks["claude.profile_settings"].status == "fail"
+        assert checks["claude.profile_settings"].fix == "qswap switch 1"
+        s.switch_to("1", json_output=True)
+        assert (d / "settings.json").is_symlink()
+        assert s.stale_profile_copies() == []
+
+    def test_a_crash_before_the_line_is_repairable_too(self, temp_home, monkeypatch):
+        s = _fleet()
+        d = _profile(s)
+
+        def fail(*a, **k):
+            raise claude_settings.SettingsError("could not be written (EIO)", kind="write")
+
+        monkeypatch.setattr(claude_settings, "install", fail)
+        with pytest.raises(KeyHelperUnavailableError, match="could not be written"):
+            _activate(s)
+        assert (d / "settings.json").is_symlink()  # put back at once
+
+
+# == F. qswap run on a key ================================================================
+
+
+class TestRunOnAKey:
+    def _mgr(self, s, monkeypatch):
+        from ai_quota_swap import clis
+        from ai_quota_swap.session import SessionManager
+
+        monkeypatch.setattr(clis, "find_cli", lambda name: "/fake/claude")
+        mgr = SessionManager(s)
+        seen: dict = {}
+
+        def fake_exec(claude_bin, args, env):
+            seen.update(bin=claude_bin, args=args, env=env)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(mgr, "_exec", fake_exec)
+        return mgr, seen
+
+    def test_the_shared_profile_with_the_helper_in_settings(self, temp_home, monkeypatch, capsys):
+        s = _fleet()
+        mgr, seen = self._mgr(s, monkeypatch)
+        capsys.readouterr()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        with pytest.raises(SystemExit):
+            mgr.run("5", ["--resume", "abc"], share=True)
+        assert seen["args"][0] == "--settings"
+        assert json.loads(seen["args"][1]) == {"apiKeyHelper": f"{QSWAP} key-helper 5"}
+        assert seen["args"][2:] == ["--resume", "abc"]
+        assert "ANTHROPIC_API_KEY" not in seen["env"]
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert "Launching #5 ci (API key)" in err
+        assert "Ignoring ANTHROPIC_API_KEY" in err
+        assert not _settings(temp_home).exists()  # nothing global changed
+
+    @pytest.mark.parametrize("extra", [["--settings", "{}"], ["--settings={}"]])
+    def test_another_settings_flag_is_refused(self, temp_home, monkeypatch, extra):
+        s = _fleet()
+        mgr, seen = self._mgr(s, monkeypatch)
+        with pytest.raises(SessionError, match="cannot take another --settings"):
+            mgr.run("5", extra, share=True)
+        assert not seen
+
+    def test_a_run_profile_shell_runs_on_the_shared_profile(self, temp_home, monkeypatch):
+        s = _fleet()
+        mgr, seen = self._mgr(s, monkeypatch)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(s.backup_dir / "sessions" / "7-x"))
+        with pytest.raises(SystemExit):
+            mgr.run("5", [], share=True)
+        assert "CLAUDE_CONFIG_DIR" not in seen["env"]
+
+
+# == G. the engine ========================================================================
+
+from ai_quota_swap.autoswitch import NoSwitchEvent, SwitchEvent, TickOutcome  # noqa: E402
+from ai_quota_swap.usage_store import UsageEntry  # noqa: E402
+from tests.test_autoswitch import EngineHarness, _usage  # noqa: E402
+
+
+def _harness(temp_home, **settings) -> EngineHarness:
+    h = EngineHarness(temp_home, include_api_key_accounts=True, **settings)
+    h.seed(1, "a@example.com")
+    h.seed(2, "key@token.local")
+    h.seed(3, "c@example.com")
+    h.make_live("a@example.com", 1)
+    data = h.switcher._get_sequence_data()
+    data["accounts"]["2"]["kind"] = "api_key"
+    data["accounts"]["2"]["alias"] = "ci"
+    h.switcher._write_json(h.switcher.sequence_file, data)
+    return h
+
+
+EXHAUSTED = {"1": _usage(100), "2": "api key", "3": _usage(100)}
+
+
+def _key_entry(reading: dict | None, now: float) -> UsageEntry:
+    from tests.test_autoswitch import _entry_for
+
+    return replace(_entry_for("api key", now), api_spend=reading)
+
+
+class TestEngine:
+    def test_moves_to_a_key_while_sessions_run(self, temp_home, alive):
+        h = _harness(temp_home)
+        _write_sessions(temp_home, [4101, 4102])
+        alive.update({4101, 4102})
+        assert h.tick_with_usage(EXHAUSTED) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+        assert h.switcher.key_entered_by() == "engine"
+        assert _settings_obj(temp_home)["apiKeyHelper"].endswith("key-helper 2")
+
+    def test_does_not_take_the_saved_key_path_by_itself(self, temp_home, alive):
+        h = _harness(temp_home)
+        _settings(temp_home).write_text('{"apiKeyHelper": "/opt/vault/x"}', encoding="utf-8")
+        assert h.tick_with_usage(EXHAUSTED) is TickOutcome.BLOCKED
+        assert h.switcher.current_account_number() == "1"
+        reasons = [e.reason for e in h.events if isinstance(e, NoSwitchEvent)]
+        assert reasons[-1] == "key-helper-unavailable"
+        assert "qswap doctor" in [e for e in h.events if isinstance(e, NoSwitchEvent)][-1].human()
+
+    def test_an_engine_key_is_left_once_a_subscription_has_room(self, temp_home):
+        h = _harness(temp_home)
+        h.tick_with_usage(EXHAUSTED)
+        assert h.switcher.current_account_number() == "2"
+        assert h.tick_with_usage({"1": _usage(100), "2": "api key", "3": _usage(100)}) is (
+            TickOutcome.NO_ACTION
+        )
+        assert h.switcher.current_account_number() == "2"
+        assert h.tick_with_usage({"1": _usage(100), "2": "api key", "3": _usage(10)}) is (
+            TickOutcome.SWITCHED
+        )
+        assert h.switcher.current_account_number() == "3"
+        event = [e for e in h.events if isinstance(e, SwitchEvent)][-1]
+        assert event.trigger == "key-return"
+        assert event.human().endswith("a subscription has room again")
+        assert not _settings(temp_home).exists()
+
+    def test_a_user_key_is_not_left_because_a_subscription_has_room(self, temp_home):
+        h = _harness(temp_home)
+        h.switcher.switch_to("2", json_output=True)
+        assert h.switcher.key_entered_by() == "user"
+        assert h.tick_with_usage({"1": _usage(10), "2": "api key", "3": _usage(5)}) is (
+            TickOutcome.NO_ACTION
+        )
+        assert h.switcher.current_account_number() == "2"
+        held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
+        assert held.reason == "active-api-key"
+        assert "you chose the active API key" in held.human()
+
+    @pytest.mark.parametrize("reading, words", [
+        ({"spend": {"used": 600.0, "limit": 500.0}, "source": "ledger"},
+         "monthly budget reached"),
+        ({"spend": {"used": 1.0, "limit": None}, "source": "ledger",
+          "credit": {"amount": 100.0, "left": 0.0, "spent": True, "expired": False}},
+         "credit spent"),
+        ({"spend": {"used": 1.0, "limit": None}, "source": "ledger",
+          "credit": {"amount": 100.0, "left": 50.0, "spent": False, "expired": True,
+                     "expires": "2026-01-31"}},
+         "credit expired"),
+    ])
+    def test_at_its_limit_a_user_key_is_left_for_the_best_subscription(
+        self, temp_home, reading, words
+    ):
+        h = _harness(temp_home)
+        h.switcher.switch_to("2", json_output=True)
+        from tests.test_autoswitch import _entry_for
+
+        now = h.clock.now
+        entries = {"1": _entry_for(_usage(40), now), "2": _key_entry(reading, now),
+                   "3": _entry_for(_usage(10), now)}
+        assert h.tick_with_entries(entries) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "3"
+        event = [e for e in h.events if isinstance(e, SwitchEvent)][-1]
+        assert words in event.human()
+
+    def test_at_its_budget_with_no_room_it_goes_back_underneath_and_says_so(self, temp_home):
+        h = _harness(temp_home)
+        h.switcher.switch_to("2", json_output=True)
+        from tests.test_autoswitch import _entry_for
+
+        now = h.clock.now
+        over = {"spend": {"used": 600.0, "limit": 500.0}, "source": "ledger"}
+        entries = {"1": _entry_for(_usage(100), now), "2": _key_entry(over, now),
+                   "3": _entry_for(_usage(100), now)}
+        assert h.tick_with_entries(entries) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        switches = [e for e in h.events if isinstance(e, SwitchEvent)]
+        assert len(switches) == 1
+        assert switches[-1].human() == (
+            "Switched #2 ci → #1 a@example.com · monthly budget reached; no subscription "
+            "has room, so back to the account underneath"
+        )
+
+    def test_will_not_move_to_a_key_whose_credit_is_spent(self, temp_home):
+        h = _harness(temp_home)
+        from tests.test_autoswitch import _entry_for
+
+        now = h.clock.now
+        spent = {"spend": {"used": 1.0, "limit": None}, "source": "ledger",
+                 "credit": {"amount": 10.0, "left": 0.0, "spent": True, "expired": False}}
+        entries = {"1": _entry_for(_usage(100), now), "2": _key_entry(spent, now),
+                   "3": _entry_for(_usage(100), now)}
+        assert h.tick_with_entries(entries) is TickOutcome.BLOCKED
+        assert h.switcher.current_account_number() == "1"
+
+
+# == H. credit ============================================================================
+
+
+NOW = 1_794_000_000.0  # 2026-11-07, a fixed clock for the arithmetic
+
+
+class TestCredit:
+    def test_record_list_and_remove(self, temp_home, capsys, monkeypatch):
+        from tests.api_helpers import pin_platform
+
+        pin_platform(monkeypatch, Platform.LINUX)
+        s = _fleet(Platform.LINUX)
+        num, _email, credit, changed = api_spend.set_credit(s, "5", "$1,187", expires="2026-12-31",
+                                                            now=NOW)
+        assert (num, changed) == ("5", True)
+        assert credit == {"amount": 1187.0, "since": NOW, "expires": "2026-12-31"}
+        record = s._get_sequence_data()["accounts"]["5"]
+        assert record["credit"]["amount"] == 1187.0
+        assert api_spend.set_credit(s, "5", None)[2:] == (None, True)
+        assert "credit" not in s._get_sequence_data()["accounts"]["5"]
+
+    def test_a_subscription_has_no_credit(self, temp_home):
+        s = _fleet()
+        with pytest.raises(api_spend.CreditError, match="subscription account"):
+            api_spend.set_credit(s, "1", 50)
+
+    @pytest.mark.parametrize("value", ["0", "-5", "abc", "1e12"])
+    def test_bad_amounts(self, value):
+        with pytest.raises(ValueError):
+            api_spend.normalize_credit(value)
+
+    def test_bad_dates(self):
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            api_spend.parse_expiry("31/12/2026")
+
+    def test_the_arithmetic_and_the_row(self):
+        c = {"amount": 1187.0, "since": NOW, "expires": None}
+        reading = api_spend.credit_reading(c, 36.4, "admin-api", NOW + 60)
+        assert reading["left"] == pytest.approx(1150.6)
+        assert api_spend.credit_text(reading) == "$1,150 of $1,187 credit left"
+        full = {"spend": {"used": 36.4, "limit": None}, "source": "admin-api", "credit": reading}
+        assert api_spend.spend_text(full) == "API key · $1,150 of $1,187 credit left"
+        assert api_spend.limit_reason(full) is None
+
+    def test_spent(self):
+        c = {"amount": 100.0, "since": NOW, "expires": None}
+        reading = api_spend.credit_reading(c, 100.0, "ledger", NOW)
+        assert reading["spent"] and reading["left"] == 0
+        assert api_spend.credit_text(reading) == "credit spent ($0 of $100 left)"
+        assert api_spend.limit_reason({"credit": reading}) == "credit-spent"
+
+    def test_expiry_is_after_the_whole_day(self):
+        from datetime import datetime, timezone
+
+        day = datetime.fromtimestamp(NOW, tz=timezone.utc).date()
+        end = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp() + 86_400
+        assert not api_spend.credit_expired(day.isoformat(), NOW)
+        assert not api_spend.credit_expired(day.isoformat(), end - 1)
+        assert api_spend.credit_expired(day.isoformat(), end)
+        reading = api_spend.credit_reading(
+            {"amount": 5.0, "since": NOW - 86_400 * 3, "expires": day.isoformat()},
+            0.0, "ledger", end,
+        )
+        assert api_spend.limit_reason({"credit": reading}) == "credit-expired"
+        assert api_spend.credit_text(reading) == f"credit expired {day.strftime('%b')} {day.day}"
+
+    def test_a_budget_and_a_credit_whichever_comes_first(self):
+        credit = api_spend.credit_reading({"amount": 1000.0, "since": NOW, "expires": None},
+                                          600.0, "ledger", NOW)
+        over_budget = {"spend": {"used": 600.0, "limit": 500.0, "pct": 120.0}, "credit": credit}
+        assert api_spend.limit_reason(over_budget) == "budget"
+        credit_first = {"spend": {"used": 50.0, "limit": 500.0},
+                        "credit": api_spend.credit_reading(
+                            {"amount": 40.0, "since": NOW, "expires": None}, 50.0, "ledger", NOW)}
+        assert api_spend.limit_reason(credit_first) == "credit-spent"
+        text = api_spend.spend_text({**over_budget, "source": "ledger"})
+        assert text == ("API key · $400 of $1,000 credit left · $600.00 of $500 this month "
+                        "(120%, over budget) · estimate")
+
+    def test_the_admin_figures_count_from_the_credits_day(self):
+        from ai_quota_swap.ledger.pricing import PriceTable
+
+        prices = PriceTable()
+        model = "claude-opus-5-5"
+        days = {
+            "2026-10-30": [(model, None, (1_000_000, 0, 0, 0, 0))],
+            "2026-11-02": [(model, None, (1_000_000, 0, 0, 0, 0))],
+            "2026-11-07": [(model, None, (2_000_000, 0, 0, 0, 0))],
+        }
+        month, today, _unpriced, since = api_spend._price_admin(
+            days, prices, "2026-11-07", month_label="2026-11-01", since_label="2026-10-30",
+        )
+        one = prices.lookup(model)[1].cost(1_000_000, 0, 0, 0, 0)
+        assert month == pytest.approx(3 * one)
+        assert today == pytest.approx(2 * one)
+        assert since == pytest.approx(4 * one)
+
+    def test_an_earlier_credit_widens_the_report(self):
+        from ai_quota_swap import admin_api
+
+        from datetime import datetime, timezone
+
+        start = NOW - 40 * 86_400
+        params = dict(admin_api.month_usage_params(["k"], NOW, start=start))
+        day = datetime.fromtimestamp(start, tz=timezone.utc).date().isoformat()
+        assert params["starting_at"] == f"{day}T00:00:00Z"
+        assert dict(admin_api.month_usage_params(["k"], NOW))["starting_at"] == (
+            "2026-11-01T00:00:00Z"
+        )
+
+    def test_the_reading_from_the_ledger(self, temp_home, monkeypatch):
+        from ai_quota_swap.ledger import spend as ledger_spend
+
+        s = _fleet(Platform.LINUX)
+        api_spend.set_credit(s, "5", 100, now=NOW - 3600)
+        seen = {}
+
+        def fake(root, email, org, **kw):
+            seen.update(kw)
+            return ledger_spend.LedgerSpend(month=30.0, today=2.0, unpriced_tokens=0,
+                                            last_scan_at=NOW, since=12.5)
+
+        monkeypatch.setattr(ledger_spend, "account_spend", fake)
+        infos = {"5": next(i for i in s._build_accounts_info() if str(i[0]) == "5")}
+        reading = api_spend.readings(s, infos, now=NOW)["5"]
+        assert seen["since_start"] == NOW - 3600
+        assert reading["credit"]["used"] == 12.5 and reading["credit"]["left"] == 87.5
+        from ai_quota_swap.json_output import api_spend_to_json
+
+        out = api_spend_to_json(reading)
+        assert out["credit"]["left"] == 87.5 and out["credit"]["source"] == "ledger"
+        assert out["used"] == 30.0  # the month figure is unchanged
+
+    def test_the_command(self, temp_home, monkeypatch, capsys):
+        from tests.api_helpers import pin_platform, run_main
+
+        pin_platform(monkeypatch, Platform.LINUX)
+        _fleet(Platform.LINUX)
+        capsys.readouterr()
+        run_main(["credit", "5", "1187", "--expires", "2026-12-31"])
+        out = capsys.readouterr().out
+        assert out.splitlines()[0] == (
+            "Recorded $1,187 of credit for #5 ci as of now, usable until 2026-12-31."
+        )
+        _fits(out)
+        run_main(["credit", "--json"])
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["accounts"][0]["credit"]["amount"] == 1187.0
+        run_main(["credit", "5", "off"])
+        assert "Removed the credit for #5 ci" in capsys.readouterr().out
+        with pytest.raises(SystemExit):
+            run_main(["credit", "1", "5"])
+        assert "subscription account" in capsys.readouterr().err
+
+
+# == I. the ledger ========================================================================
+
+
+class TestLedgerRule:
+    def _store(self, tmp_path):
+        from ai_quota_swap.ledger.store import LedgerStore
+
+        return LedgerStore(tmp_path / "ledger.db")
+
+    def test_saved_key_usage_goes_to_the_key_only_for_later_sessions(self, tmp_path):
+        from datetime import date, datetime
+
+        from ai_quota_swap.ledger.activations import Activation, ActivationLog
+        from ai_quota_swap.ledger.report import build_report
+
+        base = datetime(2026, 11, 3, 10).astimezone().timestamp()
+        hour = int(base // 3600)
+        log = ActivationLog([
+            Activation(ts=base - 7200, account="maya@example.com|", number=1, source="switch",
+                       how="login"),
+            Activation(ts=base, account=f"{EMAIL_5}|", number=5, source="switch",
+                       how="saved-key"),
+        ])
+        store = self._store(tmp_path)
+        toks = (100, 10, 0, 0, 0, 0, 1)
+        store.add_buckets([
+            ("claude", hour, f"{EMAIL_5}|", "claude-opus-5-5", "/w", "old", *toks),
+            ("claude", hour, f"{EMAIL_5}|", "claude-opus-5-5", "/w", "new", *toks),
+        ])
+        store.note_sessions([
+            ("claude", "old", None, base - 3600), ("claude", "new", None, base + 60),
+        ])
+        store.conn.commit()
+        registry = {"accounts": {
+            "1": {"email": MAYA, "organizationUuid": ""},
+            "5": {"email": EMAIL_5, "organizationUuid": "", "kind": "api_key"},
+        }}
+        report = build_report(
+            store, since=date(2026, 11, 3), until=date(2026, 11, 3), by="account",
+            registries={"claude": registry}, logs={"claude": log},
+        )
+        by = {row.key[1]: row.totals.tokens for row in report.rows}
+        assert by == {f"{EMAIL_5}|": 110, "maya@example.com|": 110}
+        assert report.approximate is True
+
+    def test_a_helper_period_is_attributed_by_time(self, tmp_path):
+        from datetime import date, datetime
+
+        from ai_quota_swap.ledger.activations import Activation, ActivationLog
+        from ai_quota_swap.ledger.report import build_report, report_to_json
+
+        base = datetime(2026, 11, 3, 10).astimezone().timestamp()
+        hour = int(base // 3600)
+        log = ActivationLog([
+            Activation(ts=base - 7200, account="maya@example.com|", number=1, source="switch",
+                       how="login"),
+            Activation(ts=base, account=f"{EMAIL_5}|", number=5, source="switch", how="helper"),
+        ])
+        store = self._store(tmp_path)
+        store.add_buckets([("claude", hour, f"{EMAIL_5}|", "claude-opus-5-5", "/w", "old",
+                            100, 10, 0, 0, 0, 0, 1)])
+        store.note_sessions([("claude", "old", None, base - 3600)])
+        store.conn.commit()
+        report = build_report(store, since=date(2026, 11, 3), until=date(2026, 11, 3),
+                              by="account", logs={"claude": log})
+        assert [row.key[1] for row in report.rows] == [f"{EMAIL_5}|"]
+        assert report.approximate is False
+        assert report_to_json(report)["attributionApproximate"] is False
+
+    def test_the_activation_line_carries_how(self, tmp_path):
+        from ai_quota_swap.ledger.activations import ActivationLog, record_activation
+
+        record_activation(tmp_path, number=5, email=EMAIL_5, org="", how="helper")
+        record_activation(tmp_path, number=1, email=MAYA, org="", how="bogus")
+        lines = (tmp_path / "activations.jsonl").read_text().splitlines()
+        assert json.loads(lines[0])["how"] == "helper"
+        assert "how" not in json.loads(lines[1])
+        assert [a.how for a in ActivationLog.load(tmp_path).activations] == ["helper", ""]
+
+
+# == J. surfaces, questions, doctor and words =============================================
+
+
+class TestSurfaces:
+    def test_the_menu_bar_asks_only_when_the_helper_cannot_be_added(
+        self, temp_home, alive
+    ):
+        from ai_quota_swap import menubar
+
+        s = _fleet()
+        _write_sessions(temp_home, [4101])
+        alive.add(4101)
+        assert _activate(s)["switched"] is True  # no question at all
+        s.switch_to("1", json_output=True)
+        _settings(temp_home).write_text('{"apiKeyHelper": "/opt/x"}', encoding="utf-8")
+        with pytest.raises(KeyHelperUnavailableError) as caught:
+            _activate(s)
+        assert isinstance(caught.value, SessionsRunningError)
+        title, message, button = menubar.api_key_switch_question(caught.value)
+        assert title == "Use the saved key instead?"
+        assert button == "Switch and log out sessions"
+        assert "already sets another apiKeyHelper" in message
+        assert "--log-out-sessions" not in message
+
+    def test_the_menu_bar_notices_a_change_of_the_settings_file(self, temp_home):
+        from ai_quota_swap.menubar_engines import ActiveChangeWatcher
+
+        s = _fleet()
+        settings = _settings(temp_home)
+        watcher = ActiveChangeWatcher(
+            paths={"claude": lambda: (s._get_claude_config_path(), settings)},
+            read_active={"claude": s.active_email},
+        )
+        assert watcher.poll({"claude": MAYA}) == []
+        settings.write_text(json.dumps({"apiKeyHelper": f"{QSWAP} key-helper 5"}),
+                            encoding="utf-8")
+        os.utime(settings, (time.time() + 5, time.time() + 5))
+        assert watcher.poll({"claude": MAYA}) == ["claude"]
+
+    def test_the_menu_shows_a_broken_line(self, temp_home):
+        from ai_quota_swap import menubar, menubar_data
+
+        s = _fleet()
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": f"{QSWAP} key-helper 9"}), encoding="utf-8"
+        )
+        snap = s.accounts_snapshot(fetch=set())
+        state = menubar.ProviderState(
+            "claude", menubar_data.account_states(snap, "claude", {}, now=time.time()),
+            key_notes=snap.key_notes,
+        )
+        inp = replace(menubar.MenuInput.__new__(menubar.MenuInput)) if False else None
+        del inp
+        rows = menubar._provider_rows(
+            type("I", (), {"settings": type("S", (), {"refresh_interval": 60})(),
+                           "now": time.time()})(), state,
+        )
+        assert rows[-1].attention and "qswap switch 1" in rows[-1].tooltip
+
+    def test_every_new_message_fits_80_columns(self):
+        long = "#12 a-rather-long-alias-name"
+        texts = [
+            "Error: " + display.key_helper_refusal(
+                long, 12, "~/.claude/settings.json already sets another apiKeyHelper", 16),
+            "Error: " + display.key_helper_refusal(
+                long, 12, "~/.claude/settings.json is not valid JSON (line 3: x)", 0),
+            "Error: " + display.key_helper_refusal(
+                long, 12, "~/.claude/settings.json could not be written (EACCES)",
+                display.SESSIONS_UNKNOWN),
+            "Error: " + display.key_helper_refusal(
+                long, 12, "~/.claude/settings.json already sets another apiKeyHelper", 2,
+                from_key="#11 another-long-alias"),
+            *display.key_switch_followup(target=long, underneath="#13 yet-another-alias"),
+            *display.key_switch_followup(target=long, underneath=None,
+                                         from_key="#11 another-long-alias"),
+            *display.key_leave_followup(long),
+            *display.key_leave_followup(long, login_switch=True),
+            *display.key_helper_problem("12", "missing", "qswap switch 1"),
+            *display.key_helper_problem("12", "not-api-key", "qswap switch 1"),
+            *display.stale_copies_line(3, "qswap switch 1"),
+            key_helper.HELP,
+            "\n".join(display.wrap(api_spend.NOT_ANTHROPICS)) if hasattr(
+                api_spend, "NOT_ANTHROPICS") else "",
+        ]
+        from ai_quota_swap import api_cli
+
+        texts.append("\n".join(display.wrap(api_cli.NOT_ANTHROPICS)))
+        for text in texts:
+            _fits(text)
+
+    def test_the_connectors_sentence_is_said_on_every_move_onto_a_key(self):
+        for lines in (
+            display.key_switch_followup(target="#5 ci", underneath="#1 personal"),
+            display.key_switch_followup(target="#6 ops", underneath=None, from_key="#5 ci"),
+        ):
+            assert display.KEY_CONNECTORS in " ".join(lines)

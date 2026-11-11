@@ -54,6 +54,7 @@ from typing import ClassVar
 from ai_quota_swap import oauth, poll_policy
 from ai_quota_swap.exceptions import (
     CredentialFormatError,
+    KeyHelperUnavailableError,
     ProviderError,
     RetryableSwitchError,
     SessionsRunningError,
@@ -375,7 +376,9 @@ class PollEvent(AutoSwitchEvent):
 @dataclass(frozen=True)
 class SwitchEvent(AutoSwitchEvent):
     kind: ClassVar[str] = "switch"
-    trigger: str  # "proactive" | "at-limit" | "failover" | "consume-first" | "priority"
+    # "proactive" | "at-limit" | "failover" | "consume-first" | "priority" |
+    # "key-return" (a key the engine entered is left: a subscription has room)
+    trigger: str
     from_ref: dict | None
     to_ref: dict | None
     warnings: list[str] = field(default_factory=list)
@@ -388,6 +391,11 @@ class SwitchEvent(AutoSwitchEvent):
     binding: BindingWindow | None = _human_only()
     over_budget: bool = _human_only(False)
     priority_up: bool | None = _human_only()
+    # Leaving an API key: why it is at its limit (``budget``, ``credit-spent``,
+    # ``credit-expired``), and whether no subscription had room so the switch
+    # went back to the account underneath.
+    limit_reason: str | None = _human_only()
+    back_underneath: bool = _human_only(False)
 
     def _fields(self) -> dict:
         return {
@@ -1193,9 +1201,18 @@ def _api_budget(entry: object) -> tuple[float, float, str, str | None] | None:
     return state[0], state[1], month, source
 
 
+def _limit_reason(entry: object) -> str | None:
+    """Why an API-key account is at its limit: ``budget``, ``credit-spent``
+    or ``credit-expired`` (api_spend.limit_reason); None when it is not."""
+    from ai_quota_swap import api_spend
+
+    return api_spend.limit_reason(getattr(entry, "api_spend", None))
+
+
 def _over_budget(entry: object) -> bool:
-    budget = _api_budget(entry)
-    return budget is not None and budget[0] >= budget[1]
+    """At its monthly budget, or its credit spent or expired: whichever is
+    reached first applies (docs/design/api-key-sessions.md, "Credit")."""
+    return _limit_reason(entry) is not None
 
 
 @dataclass(frozen=True)
@@ -1945,6 +1962,17 @@ class AutoSwitchEngine:
         self._warn_budgets(state, entries)
         active_over_budget = _over_budget(entries.get(current))
 
+        # An API key active through the helper line (docs/design/
+        # api-key-sessions.md): one the engine entered is left as soon as a
+        # subscription has room; one the user entered only at its budget, or
+        # when its credit is spent or expired.
+        key_mode = self._helper_key_mode(current)
+        if key_mode is not None:
+            return self._leave_key_tick(
+                current, key_mode, entries, usage, headroom, thresholds, settings,
+                quarantined, policies,
+            )
+
         if (
             self.switcher.account_kind_for(current) == "api_key"
             and not settings.include_api_key_accounts
@@ -2257,13 +2285,29 @@ class AutoSwitchEngine:
             # Last resort when we must move: metered API-key accounts
             # (unmeasurable headroom). Never for a below-threshold consume-first
             # nudge — those API-key accounts have no weekly window to consume.
-            # And never while Claude Code sessions run on the shared login: a
-            # running session cannot move to a key and would stop with "Not
-            # logged in" (docs/design/api-key-sessions.md).
-            running = self._shared_session_count()
-            if running:
-                self._emit(_api_key_sessions_event(api_key_candidates[0], running))
+            # Through the key helper, running sessions follow the move, so
+            # they do not hold it. Where the helper cannot be installed the
+            # engine does not take the saved-key path by itself, and a
+            # provider without a helper never moves onto a key while sessions
+            # run on the shared login: a running session cannot move to a
+            # saved key and would stop with "Not logged in"
+            # (docs/design/api-key-sessions.md).
+            helper = self._key_helper_ready()
+            if helper is False:
+                self._emit(NoSwitchEvent(
+                    reason="key-helper-unavailable",
+                    detail=(
+                        f"account {api_key_candidates[0]} is an API-key account and "
+                        "qswap cannot add its key helper to Claude Code's settings"
+                    ),
+                    account=api_key_candidates[0],
+                ))
                 return TickOutcome.BLOCKED
+            if helper is None:
+                running = self._shared_session_count()
+                if running:
+                    self._emit(_api_key_sessions_event(api_key_candidates[0], running))
+                    return TickOutcome.BLOCKED
             ordered = api_key_candidates
 
         if not ordered:
@@ -3306,7 +3350,20 @@ class AutoSwitchEngine:
                 return TickOutcome.NO_ACTION
 
             try:
-                result = self.switcher.switch_to(number, json_output=True)
+                extra = {}
+                if (
+                    self._key_helper_ready() is not None
+                    and self.switcher.account_kind_for(number) == "api_key"
+                ):
+                    extra["entered_by"] = "engine"
+                result = self.switcher.switch_to(number, json_output=True, **extra)
+            except KeyHelperUnavailableError as e:
+                self._emit(NoSwitchEvent(
+                    reason="key-helper-unavailable",
+                    detail=f"qswap cannot add the key helper: {e.reason}",
+                    account=number,
+                ))
+                return TickOutcome.BLOCKED
             except SessionsRunningError as e:
                 # Sessions started between the decision and the switch: the
                 # same refusal the decision makes, and nothing changed.
@@ -3448,6 +3505,8 @@ class AutoSwitchEngine:
             "binding": cause.get("binding"),
             "over_budget": bool(cause.get("over_budget")),
             "priority_up": priority_up,
+            "limit_reason": cause.get("limit_reason"),
+            "back_underneath": bool(cause.get("back_underneath")),
         }
 
     def _account_views(
@@ -3663,6 +3722,125 @@ class AutoSwitchEngine:
         if earliest is None:
             return None
         return datetime.fromtimestamp(earliest, tz=timezone.utc)
+
+    def _key_helper_ready(self) -> bool | None:
+        """Whether the provider can move onto an API key through the key
+        helper now: True, False (another helper is set, or the settings file
+        cannot be parsed), or None for a provider without one (Codex, and
+        hosts that do not offer it)."""
+        reader = getattr(self.switcher, "key_helper_available", None)
+        if not callable(reader):
+            return None
+        try:
+            return bool(reader())
+        except Exception:
+            return False
+
+    def _helper_key_mode(self, current: str | None) -> str | None:
+        """``user`` or ``engine`` when ``current`` is an API key active
+        through the helper line; None otherwise."""
+        reader = getattr(self.switcher, "key_entered_by", None)
+        helper = getattr(self.switcher, "helper_account", None)
+        if not callable(reader) or not callable(helper) or current is None:
+            return None
+        try:
+            if helper() != str(current):
+                return None
+            mode = reader()
+        except Exception:
+            return None
+        return mode if mode in ("user", "engine") else None
+
+    def _leave_key_tick(
+        self,
+        current: str,
+        key_mode: str,
+        entries: Mapping[str, object],
+        usage: Mapping[str, dict | str | None],
+        headroom: Mapping[str, float | None],
+        thresholds: Mapping[str, float],
+        settings: AutoSwitchSettings,
+        quarantined: set[str],
+        policies,
+    ) -> TickOutcome:
+        """One tick while an API key is active through the helper line.
+
+        At its budget, or with its credit spent or expired, the key is left
+        for the subscription with the most room, else for the account
+        underneath (said once, by the switch). Otherwise a key the user
+        entered is kept, and one the engine entered is left as soon as a
+        subscription has room: below its switch lines, with readable usage.
+        """
+        reason = _limit_reason(entries.get(current))
+        if reason is None and key_mode == "user":
+            self._emit(NoSwitchEvent(
+                reason="active-api-key",
+                detail=(
+                    "you chose this API key; auto-switch leaves it at its budget or "
+                    "when its credit is spent or expires"
+                ),
+            ))
+            return TickOutcome.NO_ACTION
+        switchable = self.switcher.switchable_account_numbers()
+        picked = rotation_candidates(
+            switchable, current, set_aside=quarantined,
+            kind_of=self.switcher.account_kind_for,
+            include_api_key_accounts=False, entries=entries,
+        )
+        roomy = []
+        for num in picked.oauth:
+            room = headroom.get(num)
+            if room is None or room <= 0:
+                continue
+            binding = self._binding(usage.get(num), settings, thresholds[num])
+            if binding is not None and binding.over:
+                continue
+            roomy.append((room, num))
+        roomy.sort(key=lambda r: (-r[0], int(r[1]) if r[1].isdigit() else 0))
+        ordered = [num for _room, num in roomy]
+        back_underneath = False
+        if not ordered:
+            if reason is None:
+                self._emit(NoSwitchEvent(
+                    reason="no-subscription-room",
+                    detail="staying on the API key until a subscription has room",
+                ))
+                return TickOutcome.NO_ACTION
+            underneath_of = getattr(self.switcher, "underneath_account_number", None)
+            under = underneath_of() if callable(underneath_of) else None
+            if under is None:
+                self._emit(NoSwitchEvent(
+                    reason="no-candidates",
+                    detail="no subscription to return to from the API key",
+                ))
+                return TickOutcome.BLOCKED
+            ordered = [under]
+            back_underneath = True
+        self._tick_cause = {
+            "binding": None,
+            "over_budget": reason is not None,
+            "policies": policies,
+            "limit_reason": reason,
+            "back_underneath": back_underneath,
+        }
+        trigger = "at-limit" if reason is not None else "key-return"
+        left = (None, float("inf"))
+        for num in ordered:
+            email = self.switcher.account_email(num)
+            if self.dry_run or back_underneath:
+                return self._perform(num, email, trigger, left)
+            status = self._freshen_target(num, email)
+            if status == "identity-conflict":
+                self._quarantine(num, email, "identity-conflict")
+                continue
+            if status == "invalid_grant":
+                self._quarantine(num, email, "invalid_grant")
+                continue
+            if status in ("transient", "skip-live-session") or status in _SYSTEMIC_STATUSES:
+                continue
+            return self._perform(num, email, trigger, left)
+        self._emit(NoSwitchEvent(reason="no-viable-target"))
+        return TickOutcome.BLOCKED
 
     def _shared_session_count(self) -> int:
         """How many Claude Code sessions run on the provider's shared login:

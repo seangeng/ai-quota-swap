@@ -40,6 +40,8 @@ class LedgerSpend:
     # When ``qswap usage`` last scanned (epoch seconds); None for a ledger
     # written before the time was recorded.
     last_scan_at: float | None
+    # Spend since ``since_start`` (a credit's start), when one was asked for.
+    since: float | None = None
 
 
 _memo: dict[tuple, LedgerSpend] = {}
@@ -78,10 +80,12 @@ def account_spend(
     month_start: float,
     day_start: float,
     registry: dict | None = None,
+    since_start: float | None = None,
 ) -> LedgerSpend | None:
     """Claude Code spend since ``month_start`` and ``day_start`` (epoch seconds,
-    UTC boundaries) for the account ``email``/``org``, or None when there is
-    no readable ledger. Never raises."""
+    UTC boundaries) for the account ``email``/``org``, and since
+    ``since_start`` (a credit's start, from its hour) when given; None when
+    there is no readable ledger. Never raises."""
     root = Path(data_root)
     db = root / DB_FILENAME
     db_key = _stat_key(db)
@@ -91,13 +95,14 @@ def account_spend(
         str(db), db_key, _stat_key(Path(str(db) + "-wal")),
         _stat_key(log_path(root)), _stat_key(root / OVERRIDE_FILENAME),
         email, org or "", int(month_start), int(day_start),
+        None if since_start is None else int(since_start),
     )
     with _memo_lock:
         hit = _memo.get(memo_key)
     if hit is not None:
         return hit
     try:
-        result = _read(root, db, email, org, month_start, day_start, registry)
+        result = _read(root, db, email, org, month_start, day_start, registry, since_start)
     except (sqlite3.Error, OSError, ValueError):
         return None
     if result is not None:
@@ -116,8 +121,9 @@ def _read(
     month_start: float,
     day_start: float,
     registry: dict | None,
+    since_start: float | None = None,
 ) -> LedgerSpend | None:
-    from ai_quota_swap.ledger.report import Accounts, _profile_sessions
+    from ai_quota_swap.ledger.report import Accounts, _profile_sessions, saved_key_moves
 
     conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0)
     try:
@@ -139,35 +145,53 @@ def _read(
         account = identity_key(email, org)
         month_hour = int(month_start // 3600)
         day_hour = int(day_start // 3600)
+        since_hour = None if since_start is None else int(since_start // 3600)
+        first_hour = month_hour if since_hour is None else min(month_hour, since_hour)
         rows = conn.execute(
             "SELECT hour, model, session, input, output, cache_read, cache_write_5m, "
             "cache_write_1h FROM buckets WHERE provider = 'claude' AND hour >= ? "
             "AND account = ?",
-            (month_hour, account),
+            (first_hour, account),
         ).fetchall()
         moved: dict[str, str] = {}
+        log = None
+        starts: dict[str, float | None] = {}
         if rows:
             log = ActivationLog.load(root)
             accounts = Accounts({"claude": registry}, {"claude": log})
-            moved = _profile_sessions(_Sessions(conn), accounts, log)  # type: ignore[arg-type]
+            sessions = _Sessions(conn)
+            moved = _profile_sessions(sessions, accounts, log)  # type: ignore[arg-type]
+            if log.saved_key_periods():
+                starts = {s: v[1] for s, v in sessions.sessions("claude").items()}
     finally:
         conn.close()
     prices = PriceTable.load(root)
-    month = today = 0.0
+    month = today = since = 0.0
     unpriced = 0
     for hour, model, session, *toks in rows:
         owner = moved.get(session)
         if owner is not None and owner != account:
             continue
+        if log is not None and starts:
+            # docs/design/api-key-sessions.md: in a saved-key period only the
+            # sessions started after the activation used the key.
+            elsewhere = saved_key_moves(log, hour, starts.get(session), account)
+            if elsewhere is not None and elsewhere != account:
+                continue
         found = prices.lookup(model)
         if found is None:
-            unpriced += sum(toks)
+            if hour >= month_hour:
+                unpriced += sum(toks)
             continue
         cost = found[1].cost(*toks)
-        month += cost
-        if hour >= day_hour:
-            today += cost
+        if hour >= month_hour:
+            month += cost
+            if hour >= day_hour:
+                today += cost
+        if since_hour is not None and hour >= since_hour:
+            since += cost
     return LedgerSpend(
         month=round(month, 6), today=round(today, 6),
         unpriced_tokens=unpriced, last_scan_at=last_scan_at,
+        since=None if since_hour is None else round(since, 6),
     )

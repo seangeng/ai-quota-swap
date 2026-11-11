@@ -166,7 +166,11 @@ class DashboardScreen(Screen):
                     action = "→ enable" if acc.disabled else "→ disable"
                     label = f"{name}{state}   {action}"
                 else:
-                    label = f"{name}{' · active' if acc.is_active else ''}"
+                    state = (
+                        " · active" if acc.is_active
+                        else " · underneath" if getattr(acc, "underneath", False) else ""
+                    )
+                    label = f"{name}{state}"
                 entries.append((label, f"{kind}:{view.provider}:{acc.number}"))
         entries.append(_BACK)
         return entries

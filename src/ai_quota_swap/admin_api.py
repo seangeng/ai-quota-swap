@@ -784,15 +784,28 @@ def api_key_list(
 # -- the reads surfaces make ----------------------------------------------------
 
 
-def month_usage_params(key_ids: list[str], now: float) -> list[tuple[str, str]]:
+def utc_day_label(ts: float) -> str:
+    """The UTC date of ``ts`` as ``YYYY-MM-DD`` (a daily bucket's label)."""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+
+
+def month_usage_params(
+    key_ids: list[str], now: float, start: float | None = None
+) -> list[tuple[str, str]]:
     """The usage-report query for this UTC month to date, one daily bucket per
     day, split by key, model and speed (fast mode has its own price).
+    ``start`` (epoch seconds) begins it earlier, at that UTC day, for a credit
+    recorded before this month; the reads page through more than
+    ``DAY_BUCKET_LIMIT`` days.
 
     ``ending_at`` is the start of tomorrow (UTC): the reference keeps a bucket
     that ends at ``ending_at`` (its 7-day example runs from the 8th to the
     15th at midnight), so today's partial bucket is included.
     """
     month, _next_month, _day, next_day = utc_month_bounds(now)
+    if start is not None and start < month.timestamp():
+        first = datetime.fromtimestamp(start, tz=timezone.utc)
+        month = first.replace(hour=0, minute=0, second=0, microsecond=0)
     params = [
         ("starting_at", iso_z(month)),
         ("ending_at", iso_z(next_day)),
@@ -807,11 +820,13 @@ def month_usage_params(key_ids: list[str], now: float) -> list[tuple[str, str]]:
 
 
 def month_usage_by_key(
-    org: _Org, key_ids: list[str], *, now: float, network: bool, cache: AdminCache
+    org: _Org, key_ids: list[str], *, now: float, network: bool, cache: AdminCache,
+    start: float | None = None,
 ) -> ReportResult:
-    """This UTC month's usage-report buckets for ``key_ids``. Never raises."""
+    """This UTC month's usage-report buckets for ``key_ids`` (from ``start``'s
+    day when that is earlier). Never raises."""
     return cached_report(
-        org, USAGE_REPORT_PATH, month_usage_params(key_ids, now),
+        org, USAGE_REPORT_PATH, month_usage_params(key_ids, now, start),
         now=now, network=network, cache=cache,
     )
 

@@ -2224,6 +2224,13 @@ def _status(switcher, *, as_json: bool):
 
 def main() -> None:
     """Main entry point for the CLI."""
+    if sys.argv[1:2] == ["key-helper"]:
+        # Normally answered by ai_quota_swap.entry before this module loads;
+        # here for a caller that enters through cli.main. Before anything
+        # that could print.
+        from ai_quota_swap.key_helper import main as key_helper_main
+
+        sys.exit(key_helper_main(sys.argv[2:]))
     force_utf8_output()
     _use_native_tls()
     # `qswap codex <verb>`: the prefix goes before the dispatch below, whose
@@ -2248,7 +2255,8 @@ def main() -> None:
 # command line knows; anything else is a usage error.
 _OWN_PARSER_VERBS = (
     "run", "auto", "config", "map", "unmap", "unclaimed", "alias", "threshold",
-    "priority", "api", "budget", "reset", "resets", "usage", "swap", "move", "doctor",
+    "priority", "api", "budget", "credit", "reset", "resets", "usage", "swap", "move",
+    "doctor",
 )
 # Options of the legacy interface that take a value (so the value is not
 # mistaken for a verb's positional argument).
@@ -2392,10 +2400,14 @@ def _dispatch(argv: list[str]) -> None:
     if argv and argv[0] == "priority":
         _priority_command(argv[1:])
         return
-    if argv and argv[0] in ("api", "budget"):
+    if argv and argv[0] in ("api", "budget", "credit"):
         from ai_quota_swap import api_cli
 
-        (api_cli.api_command if argv[0] == "api" else api_cli.budget_command)(argv[1:])
+        {
+            "api": api_cli.api_command,
+            "budget": api_cli.budget_command,
+            "credit": api_cli.credit_command,
+        }[argv[0]](argv[1:])
         return
     if argv and argv[0] in ("reset", "resets"):
         _reset_command(argv[1:])
@@ -2527,9 +2539,9 @@ def _dispatch(argv: list[str]) -> None:
         "--log-out-sessions",
         action="store_true",
         help=(
-            "With 'switch ACCOUNT' for an API-key account: switch even though "
-            "Claude Code sessions are running (those on a subscription stop "
-            "with \"Not logged in\")"
+            "With 'switch ACCOUNT' for an API-key account: save the key for "
+            "Claude Code instead of adding the key helper; running sessions on "
+            "a subscription stop with \"Not logged in\""
         ),
     )
     parser.add_argument(

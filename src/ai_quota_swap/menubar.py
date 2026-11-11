@@ -39,7 +39,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ai_quota_swap import display, launch_agent, oauth
-from ai_quota_swap.exceptions import ClaudeSwitchError, ProviderError, SessionsRunningError
+from ai_quota_swap.exceptions import (
+    ClaudeSwitchError,
+    KeyHelperUnavailableError,
+    ProviderError,
+    SessionsRunningError,
+)
 from ai_quota_swap.fsutil import atomic_write_text
 from ai_quota_swap.labels import account_label, is_placeholder, shown_email
 from ai_quota_swap.menubar_engines import (  # noqa: F401  (re-exported)
@@ -606,6 +611,10 @@ class AccountState:
     #: Its switch lines (its own threshold, else the provider's): a window
     #: at or past one shows when it resets.
     lines: display.Lines = display.Lines()
+    #: The subscription logged in under an active key; on that key, the
+    #: account underneath (``#1 personal``). docs/design/api-key-sessions.md.
+    underneath: bool = False
+    over: str = ""
 
     def label(self, *, provider_prefix: bool = False, long: bool = True) -> str:
         """``#2 work (maya@example.com)``; ``Claude #2 work (…)`` with the prefix."""
@@ -640,6 +649,9 @@ class ProviderState:
     cli_found: bool | None = None
     error: str | None = None
     managed: int | None = None
+    #: What every surface says when the key helper line names an account
+    #: that cannot give a key, or run profiles kept a stale settings copy.
+    key_notes: tuple[str, ...] = ()
 
     @property
     def count(self) -> int:
@@ -895,6 +907,7 @@ def account_block(acc: AccountState, *, now: float, stale_after_s: float, show_p
         email=acc.email, alias=acc.alias, provider=acc.provider, show_provider=show_provider,
         active=acc.active, disabled=acc.disabled, plan=acc.plan, org=acc.org,
         kind=acc.kind, lines=acc.lines, set_aside=acc.set_aside, sentinel_notes=notes,
+        underneath=acc.underneath, over=acc.over,
         now=now, stale_after_s=stale_after_s, reset_strings=_reset_strings(now),
         api_lines=_api_lines,
     )
@@ -928,6 +941,8 @@ def account_row(
     block = account_block(acc, now=now, stale_after_s=stale_after_s)
     parts = [acc.label(long=False)]
     attention = False
+    if acc.underneath:
+        parts.append(display.UNDERNEATH)
     if acc.disabled:
         parts.append("disabled")
     state = block.state
@@ -940,13 +955,18 @@ def account_row(
     elif state == "api-key":
         reading = getattr(acc.entry, "api_spend", None)
         parts.append("API key")
-        if api_spend.budget_state(reading) is not None:
-            # With a budget, the compact form: the budget figure (and "over
-            # budget") must never be what the row limit cuts.
+        if acc.over:
+            parts.append(display.over_fact(acc.over))
+        if api_spend.budget_state(reading) is not None or (
+            isinstance(reading, dict) and isinstance(reading.get("credit"), dict)
+        ):
+            # With a budget or a credit, the compact form: the figure (and
+            # "over budget", "credit spent") must never be what the row
+            # limit cuts.
             parts.append(api_spend.menu_text(reading))
         else:
             parts.append(display.api_key_summary(block))
-        attention = api_spend.over_budget(reading)
+        attention = api_spend.limit_reason(reading) is not None
     elif state == "not-read":
         parts.append(display.NOT_READ_YET)
     elif state == "note":
@@ -1176,10 +1196,16 @@ def _provider_rows(inp: MenuInput, state: ProviderState) -> list[Row]:
             rows.append(Row(line, action=action))
         return rows
     stale = stale_after(inp.settings.refresh_interval)
-    return [
+    rows = [
         account_row(acc, now=inp.now, stale_after_s=stale, action=Action("switch", provider, acc.number))
         for acc in state.accounts
     ]
+    if state.key_notes:
+        # A key helper line that cannot give a key, or stale run-profile
+        # copies: one row, the whole sentence (and its repair) in the tooltip.
+        text = " ".join(line.strip() for line in state.key_notes)
+        rows.append(Row(display.fit(text, ROW_LIMIT), attention=True, tooltip=text))
+    return rows
 
 
 def _strategy_rows(inp: MenuInput) -> list[Row]:
@@ -1632,6 +1658,8 @@ def relogin_confirmation(refusal: str) -> str:
 #: The button that goes ahead with a switch to an API-key account while
 #: Claude Code sessions are running (``--log-out-sessions``).
 API_KEY_SWITCH_BUTTON = display.API_KEY_SWITCH_BUTTON
+#: The question's title when the key helper cannot be added.
+KEY_HELPER_QUESTION_TITLE = display.KEY_HELPER_QUESTION_TITLE
 
 
 def api_key_switch_question(error: BaseException | None) -> tuple[str, str, str] | None:
@@ -1647,6 +1675,14 @@ def api_key_switch_question(error: BaseException | None) -> tuple[str, str, str]
     if not isinstance(error, SessionsRunningError):
         return None
     from_key = bool(getattr(error, "from_key", False))
+    if isinstance(error, KeyHelperUnavailableError):
+        # The key helper could not be added (another apiKeyHelper, a file
+        # that cannot be parsed): the saved-key way is what the button does.
+        return (
+            KEY_HELPER_QUESTION_TITLE,
+            display.api_key_question(str(error)),
+            display.api_key_question_button(from_key=from_key),
+        )
     return (
         display.api_key_question_title(error.sessions, from_key=from_key),
         display.api_key_question(str(error)),

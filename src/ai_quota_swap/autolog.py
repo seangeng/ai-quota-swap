@@ -430,9 +430,19 @@ def switch_reason(event: object) -> str:
             value = pct_text(binding.pct, pct_decimals(binding.line))
             return f"{binding.label} reached {value}%"
         return "switch line reached"
+    back = (
+        "; no subscription has room, so back to the account underneath"
+        if getattr(event, "back_underneath", False) else ""
+    )
+    if trigger == "key-return":
+        return "a subscription has room again"
     if trigger == "at-limit":
         if getattr(event, "over_budget", False):
-            return "monthly budget reached"
+            words = {
+                "credit-spent": "credit spent",
+                "credit-expired": "credit expired",
+            }.get(getattr(event, "limit_reason", None) or "", "monthly budget reached")
+            return words + back
         if binding is not None and binding.pct >= 100.0:
             return f"{binding.label} limit reached"
         return "limit reached"
@@ -596,7 +606,13 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         who = number_label(account, "", context) if account else "a candidate"
         return f"re-checking {who}", "wait"
     if reason == "active-api-key":
+        if (getattr(event, "detail", "") or "").startswith("you chose"):
+            return "on the API key you chose", "routine"
         return "no quota to watch", "routine"
+    if reason == "no-subscription-room":
+        return "on the API key until a subscription has room", "routine"
+    if reason == "key-helper-unavailable":
+        return "not moving to an API key, its helper cannot be added", "wait"
     if reason == "api-key-sessions":
         running = getattr(event, "sessions", None)
         if running and running > 0:
@@ -663,7 +679,21 @@ def no_switch_sentence(event: object) -> str:
             )
         return f"No switch yet: {detail}" if detail else "No switch yet: usage could not be re-read"
     if reason == "active-api-key":
+        if detail.startswith("you chose"):
+            return (
+                "No switch: you chose the active API key; auto-switch leaves it at its "
+                "budget or when its credit is spent or expires"
+            )
         return "No switch: the active account is an API key, which has no quota to watch"
+    if reason == "no-subscription-room":
+        return "No switch: staying on the API key until a subscription has room"
+    if reason == "key-helper-unavailable":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "an API-key account"
+        return (
+            f"Not switching to {who}: qswap cannot add its key helper to Claude "
+            "Code's settings. qswap doctor says why"
+        )
     if reason == "api-key-sessions":
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "an API-key account"
