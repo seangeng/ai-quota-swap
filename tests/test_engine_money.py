@@ -1615,3 +1615,19 @@ class TestEveryBrake:
         h.clock.advance(3600)
         h.engine.tick()
         assert h.switcher.current_account_number() != "2"
+
+
+class TestDryRunOverAnUnmanagedLogin:
+    def test_it_says_what_a_real_run_would_do(self, temp_home):
+        h = _fleet(temp_home)
+        _enter(h)
+        h.make_live("new@example.com", 9)
+        h.engine = h._make_engine(dry_run=True)
+        over = _reading(h, used=600.0)
+        assert _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(10)}, {"2": over}) is (
+            TickOutcome.SWITCHED
+        )
+        assert h.switcher.helper_account() == "2"  # nothing changed
+        event = _switches(h)[-1]
+        assert event.dry_run and event.to_ref == {"number": None, "email": "new@example.com"}
+        assert event.human().startswith("Would switch #2 ci → new@example.com")

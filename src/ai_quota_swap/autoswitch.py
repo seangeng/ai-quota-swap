@@ -4453,9 +4453,19 @@ class AutoSwitchEngine:
             "limit_source": self._tick_cause.get("limit_source"),
         }
         if self.dry_run:
-            # Nothing is changed in a dry run, and this path has no
-            # read-only form: say what blocks a real switch.
-            return None
+            # Nothing is changed in a dry run: say what a real run would do
+            # (the line out, sessions back on the login underneath).
+            email_of = getattr(self.switcher, "live_login_email", None)
+            email = email_of() if callable(email_of) else None
+            if not email:
+                return None
+            self._emit(SwitchEvent(
+                trigger="at-limit",
+                from_ref=_ref(current, self.switcher.account_email(current) or ""),
+                to_ref={"number": None, "email": email},
+                dry_run=True, **cause,
+            ))
+            return TickOutcome.SWITCHED
         with self._state_lock():
             state = self._read_state()
             try:
