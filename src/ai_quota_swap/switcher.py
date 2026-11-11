@@ -7978,12 +7978,16 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if helper == target_account and not force:
                 email = data["accounts"][target_account].get("email", "")
                 ref = account_ref(int(target_account), email)
+                kept = self._adopt_engine_key(target_account) if entered_by == "user" else None
                 if not json_output:
                     print(f"{accent('Already on')} {self._landed_label(target_account, email)}")
+                    if kept:
+                        print(dimmed(kept))
                     return None
+                message = f"Already on Account-{target_account} ({email})"
                 return self._switch_noop(
                     strategy="direct", reason="already-active", from_ref=ref, to_ref=ref,
-                    message=f"Already on Account-{target_account} ({email})",
+                    message=f"{message}. {kept}" if kept else message,
                     warnings=repairs,
                 )
             op = self._enter_key(

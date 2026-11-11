@@ -175,6 +175,20 @@ class KeyActivationMixin:
             return state["enteredBy"]
         return "user"
 
+    def _adopt_engine_key(self, number: str) -> str | None:
+        """The user asked for the key the engine entered: record the choice,
+        so auto-switch keeps it until its budget or credit. Returns the
+        sentence that says so, or None when nothing changed."""
+        state = self._key_state()
+        if str(state.get("number")) != str(number) or state.get("enteredBy") != "engine":
+            return None
+        with FileLock(self.lock_file):
+            self._write_key_state({**state, "enteredBy": "user"})
+        return (
+            "Auto-switch keeps it now, and leaves it only at its budget or when its "
+            "credit is spent or expires."
+        )
+
     def key_helper_available(self) -> bool:
         """Whether qswap can install its helper line now (no other helper,
         and a file it can parse)."""

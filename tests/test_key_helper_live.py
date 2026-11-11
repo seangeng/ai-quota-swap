@@ -1611,6 +1611,24 @@ class TestEngine:
         assert event.human().endswith("a subscription has room again")
         assert not _settings(temp_home).exists()
 
+    def test_switching_to_the_engine_key_makes_it_the_users(self, temp_home, capsys):
+        h = _harness(temp_home)
+        h.tick_with_usage(EXHAUSTED)
+        assert h.switcher.key_entered_by() == "engine"
+        capsys.readouterr()
+        assert h.switcher.switch_to("2") is None
+        out = " ".join(capsys.readouterr().out.split())
+        assert "Already on #2 ci" in out
+        assert "Auto-switch keeps it now" in out
+        assert h.switcher.key_entered_by() == "user"
+        assert h.tick_with_usage({"1": _usage(100), "2": "api key", "3": _usage(10)}) is (
+            TickOutcome.NO_ACTION
+        )
+        assert h.switcher.current_account_number() == "2"
+        payload = h.switcher.switch_to("2", json_output=True)
+        assert payload["reason"] == "already-active"
+        assert "Auto-switch" not in payload["message"]  # nothing changed this time
+
     def test_a_user_key_is_not_left_because_a_subscription_has_room(self, temp_home):
         h = _harness(temp_home)
         h.switcher.switch_to("2", json_output=True)
