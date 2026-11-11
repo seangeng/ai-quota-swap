@@ -839,6 +839,19 @@ def provider_heading(provider: str, *, both: bool) -> str:
 LOG_OUT_SESSIONS_FLAG = "--log-out-sessions"
 
 
+#: A session count for "qswap could not tell": the sessions directory or
+#: every live record in it could not be read. Never "nobody there".
+SESSIONS_UNKNOWN = -1
+
+
+def blocking_sessions(sessions: int, unreadable: int) -> int:
+    """What bars a switch to an API-key account: the readable live sessions,
+    else :data:`SESSIONS_UNKNOWN` when records could not be read, else 0."""
+    if sessions:
+        return sessions
+    return SESSIONS_UNKNOWN if unreadable else 0
+
+
 def _sessions(n: int) -> str:
     return f"{n} Claude Code session{'' if n == 1 else 's'}"
 
@@ -849,14 +862,21 @@ def api_key_refusal(
 ) -> str:
     """Why a switch to the API-key account ``target`` was refused while
     ``sessions`` Claude Code sessions run on the shared login, and the command
-    that goes ahead. ``from_key`` names the active account when it is an API
-    key too. Wrapped to 80 columns with ``prefix`` (how the command line
+    that goes ahead. ``sessions`` is :data:`SESSIONS_UNKNOWN` (or 0) when the
+    session records could not be read. ``from_key`` names the active account
+    when it is an API key too. Wrapped to 80 columns with ``prefix`` (how the command line
     starts the first line) counted in; the text itself excludes it."""
     are = "is" if sessions == 1 else "are"
     head = (
         f"not switched. {target} is an API-key account, and {_sessions(sessions)} "
         f"{are} running on the shared login. "
     )
+    if sessions <= 0:
+        head = (
+            f"not switched. {target} is an API-key account, and qswap could not "
+            "read Claude Code's session records, so it cannot tell whether "
+            "sessions are running on the shared login. "
+        )
     if from_key:
         body = (
             "A running session cannot move to another key: the ones started "
@@ -897,20 +917,52 @@ def api_key_question(refusal: str) -> str:
     return text[:1].upper() + text[1:]
 
 
-def api_key_question_title(sessions: int) -> str:
-    """``Log out 6 running sessions?``"""
-    return f"Log out {sessions} running session{'' if sessions == 1 else 's'}?"
+def api_key_question_title(sessions: int, *, from_key: bool = False) -> str:
+    """``Log out 6 running sessions?``; a key-to-key switch logs no one out
+    (``Switch keys with 6 sessions running?``), and a count qswap could not
+    read asks without one."""
+    if sessions <= 0:
+        return "Could not count the running sessions"
+    plural = "" if sessions == 1 else "s"
+    if from_key:
+        return f"Switch keys with {sessions} session{plural} running?"
+    return f"Log out {sessions} running session{plural}?"
+
+
+#: The button on a key-to-key question: that switch logs no one out.
+API_KEY_TO_KEY_BUTTON = "Switch anyway"
+
+
+def api_key_question_button(*, from_key: bool = False) -> str:
+    """The button that goes ahead: :data:`API_KEY_SWITCH_BUTTON`, or
+    :data:`API_KEY_TO_KEY_BUTTON` when the active account is a key too."""
+    return API_KEY_TO_KEY_BUTTON if from_key else API_KEY_SWITCH_BUTTON
 
 
 def api_key_skip_reason(sessions: int) -> str:
     """Why a rotation passed over an API-key account (``Skipped #5 ci: …``)."""
+    if sessions <= 0:
+        return "an API-key account, and running sessions could not be counted"
     are = "is" if sessions == 1 else "are"
     return f"an API-key account, and {_sessions(sessions)} {are} running"
+
+
+def api_key_skip_detail(sessions: int) -> str:
+    """The same in a JSON rotation warning: ``(API-key account, 6 sessions
+    running)``."""
+    if sessions <= 0:
+        return "(API-key account, running sessions could not be counted)"
+    return f"(API-key account, {sessions} sessions running)"
 
 
 def api_key_engine_sentence(target: str, sessions: int) -> str:
     """Why the auto-switch engine did not move onto the API-key account
     ``target``."""
+    if sessions <= 0:
+        return (
+            f"Not switching to {target}: it is an API-key account and running "
+            "sessions could not be counted"
+        )
     noun = "running session" if sessions == 1 else "running sessions"
     return (
         f"Not switching to {target}: it is an API-key account and {sessions} "

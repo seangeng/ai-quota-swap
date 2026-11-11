@@ -394,6 +394,7 @@ class QswapApp(App):
                 sessions = int((result.error_fields or {}).get("sessions") or 0)
                 self._offer_log_out_sessions(
                     provider, str(number), result.error, sessions, anyway,
+                    from_key=self._active_is_api_key(sw),
                 )
                 return True
             if not result.ok:
@@ -417,16 +418,27 @@ class QswapApp(App):
             lambda yes: self.do_switch(provider, number, anyway=True) if yes else None,
         )
 
+    @staticmethod
+    def _active_is_api_key(sw) -> bool:
+        """Whether the active account is an API key (a key-to-key switch logs
+        no one out, and the question says so)."""
+        try:
+            current = sw.current_account_number()
+            return bool(current) and sw.account_kind_for(current) == "api_key"
+        except Exception:
+            return False
+
     def _offer_log_out_sessions(
-        self, provider: str, number: str, error: str, sessions: int, anyway: bool
+        self, provider: str, number: str, error: str, sessions: int, anyway: bool,
+        *, from_key: bool = False,
     ) -> None:
         # The command line's refusal as a question; the button is what
         # "qswap switch N --log-out-sessions" says to run. Cancel is the focus.
         self.push_screen(
             ConfirmModal(
                 display.api_key_question(error),
-                title=display.api_key_question_title(sessions) if sessions else "API-key account",
-                yes_label=display.API_KEY_SWITCH_BUTTON,
+                title=display.api_key_question_title(sessions, from_key=from_key),
+                yes_label=display.api_key_question_button(from_key=from_key),
                 default_no=True,
             ),
             lambda yes: self.do_switch(

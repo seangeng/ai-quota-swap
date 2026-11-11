@@ -790,18 +790,18 @@ class TestEngine:
     def test_a_refusal_at_switch_time_is_the_same_decision(self, temp_home, alive):
         """Sessions that start between the decision and the switch."""
         h = self._harness(temp_home)
-        real = h.switcher.shared_login_sessions
+        real = h.switcher.shared_login_scan
         calls = {"n": 0}
 
         def sessions_after_the_decision():
             calls["n"] += 1
             if calls["n"] == 1:
-                return []
+                return [], 0
             _write_sessions(temp_home, [4101])
             alive.add(4101)
             return real()
 
-        with patch.object(h.switcher, "shared_login_sessions", sessions_after_the_decision):
+        with patch.object(h.switcher, "shared_login_scan", sessions_after_the_decision):
             outcome = h.tick_with_usage(self.EXHAUSTED)
         assert outcome is TickOutcome.BLOCKED
         assert h.active_number() == 1
@@ -905,3 +905,499 @@ class TestDashboard:
             await settle(pilot)
             assert ("log-out", "5", True) in fake.calls
             assert fake.active == "5"
+
+
+# -- review fixes --------------------------------------------------------------------
+
+import pathlib  # noqa: E402
+
+from ai_quota_swap import process_detection  # noqa: E402
+from ai_quota_swap.exceptions import ValidationError  # noqa: E402
+
+
+def _has_login(store) -> bool:
+    item = _login_item(store)
+    return bool(item) and "claudeAiOauth" in item
+
+
+class TestAddNeverSavesALoginlessStore:
+    """``qswap add`` while an API-key account is active, with a variable that
+    makes the capture read the login item directly: that item holds only MCP
+    sign-ins and must never be saved over an account."""
+
+    CASES = [
+        pytest.param(Platform.MACOS, "CLAUDE_SECURESTORAGE_CONFIG_DIR", False,
+                     id="mac-securestorage-empty"),
+        pytest.param(Platform.LINUX, "CLAUDE_SECURESTORAGE_CONFIG_DIR", False,
+                     id="linux-securestorage-empty"),
+        pytest.param(Platform.LINUX, "CLAUDE_CONFIG_DIR", False, id="linux-config-dir"),
+        pytest.param(Platform.MACOS, "CLAUDE_CONFIG_DIR", True, id="mac-config-dir-with-file"),
+    ]
+
+    @pytest.mark.parametrize("platform,var,seed_file", CASES)
+    @pytest.mark.parametrize("slot", [None, 5, 7], ids=["refresh", "same-slot", "move-slot"])
+    def test_add_refuses_a_store_with_no_login(
+        self, temp_home, block_real_keychain, monkeypatch, platform, var, seed_file, slot
+    ):
+        if var == "CLAUDE_CONFIG_DIR":
+            # It moves .claude.json too, so it is set for the whole test.
+            monkeypatch.setenv(var, str(temp_home / ".claude"))
+        if seed_file:
+            # A plaintext copy an earlier fallback left beside the Keychain.
+            path = get_credentials_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(
+                {"claudeAiOauth": {"accessToken": "old"}, "mcpOAuth": MCP}
+            ), encoding="utf-8")
+        s = _fleet(platform)
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_5
+        if var == "CLAUDE_SECURESTORAGE_CONFIG_DIR":
+            monkeypatch.setenv(var, "")
+
+        with pytest.raises(ValidationError, match="holds no Claude login"):
+            s.add_account(slot=slot, assume_yes=True)
+
+        data = s._get_sequence_data()
+        assert data["accounts"]["5"]["email"] == EMAIL_5
+        assert data["accounts"]["5"].get("kind") == "api_key"
+        assert "7" not in data["accounts"]
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_5
+        assert _prev(s, "5", EMAIL_5) == ""
+
+    def test_a_real_login_is_still_added(self, temp_home, block_real_keychain):
+        s = _fleet()
+        s._reject_live_api_key_capture(json.dumps({"claudeAiOauth": {"accessToken": "a"}}))
+
+
+class TestUnreadableSessions:
+    """"Could not tell" is never "nobody there": a session record or a
+    sessions directory qswap cannot read refuses the switch onto a key."""
+
+    def _torn(self, home: Path, pid: int = 4101) -> None:
+        directory = home / ".claude" / "sessions"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{pid}.json").write_text(
+            '{"pid": %d, "sessionId": "s-41' % pid, encoding="utf-8"
+        )
+
+    def _refused(self, s) -> SessionsRunningError:
+        with pytest.raises(SessionsRunningError) as caught:
+            s.switch_to("5", json_output=True)
+        return caught.value
+
+    def test_a_torn_record_refuses(self, temp_home, block_real_keychain, alive):
+        s = _fleet()
+        self._torn(temp_home)
+        alive.add(4101)
+        assert process_detection.scan_sessions() == ([], 1)
+        before = _state(s, block_real_keychain)
+        error = self._refused(s)
+        assert (error.sessions, error.unreadable) == (0, 1)
+        assert "could not read Claude Code's session records" in str(error).replace("\n", " ")
+        assert _state(s, block_real_keychain) == before
+        assert _has_login(block_real_keychain)
+
+    def test_records_of_an_unknown_shape_refuse(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        directory = temp_home / ".claude" / "sessions"
+        directory.mkdir(parents=True)
+        for pid in PIDS:
+            (directory / f"{pid}.json").write_text(
+                json.dumps({"processId": pid, "sessionId": f"s-{pid}"}), encoding="utf-8"
+            )
+        alive.update(PIDS)
+        code, out, err = run(s, "switch", "5")
+        assert code == 1
+        assert "Switched" not in out
+        assert err.startswith(
+            "Error: not switched. #5 ci is an API-key account, and qswap could not read\n"
+        )
+        assert "qswap switch 5 --log-out-sessions" in err
+        assert all(len(line) <= 80 for line in err.splitlines())
+        assert s.current_account_number() == "1"
+
+    def test_an_unlistable_directory_refuses(
+        self, temp_home, block_real_keychain, alive, monkeypatch
+    ):
+        s = _fleet()
+        _write_sessions(temp_home, PIDS)
+        alive.update(PIDS)
+        real_iterdir = pathlib.Path.iterdir
+
+        def iterdir(self):
+            if self.name == "sessions":
+                raise PermissionError(13, "Permission denied")
+            return real_iterdir(self)
+
+        monkeypatch.setattr(pathlib.Path, "iterdir", iterdir)
+        assert process_detection.scan_sessions() == ([], 1)
+        error = self._refused(s)
+        assert error.unreadable == 1
+        assert _has_login(block_real_keychain)
+
+    def test_a_reader_that_raises_refuses(
+        self, temp_home, block_real_keychain, alive, monkeypatch
+    ):
+        s = _fleet()
+
+        def boom(*_a, **_k):
+            raise RuntimeError("detection broke")
+
+        monkeypatch.setattr(process_detection, "scan_sessions", boom)
+        error = self._refused(s)
+        assert error.unreadable == 1
+        assert _has_login(block_real_keychain)
+
+    def test_json_envelope_counts_the_unreadable_records(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        self._torn(temp_home)
+        alive.add(4101)
+        code, out, _err = run(s, "switch", "5", "--json")
+        assert code == 1
+        error = json.loads(out)["error"]
+        assert error["type"] == "SessionsRunningError"
+        assert (error["sessions"], error["unreadable"]) == (0, 1)
+
+    def test_readable_sessions_keep_their_count(self, temp_home, block_real_keychain, alive):
+        s = _fleet()
+        _write_sessions(temp_home, [4101, 4102])
+        self._torn(temp_home, 4103)
+        alive.update({4101, 4102, 4103})
+        error = self._refused(s)
+        assert (error.sessions, error.unreadable) == (2, 1)
+        assert "2 Claude Code sessions" in str(error).replace("\n", " ")
+
+    def test_the_flag_still_goes_ahead(self, temp_home, block_real_keychain, alive):
+        s = _fleet()
+        self._torn(temp_home)
+        alive.add(4101)
+        assert s.switch_to("5", json_output=True, log_out_sessions=True)["switched"]
+
+    def test_rotation_skips_the_key(self, temp_home, block_real_keychain, alive, run):
+        s = _fleet()
+        s.add_account_from_token(SETUP_TOKEN.replace("p1", "q2"), email="sam@example.com", slot=7)
+        self._torn(temp_home)
+        alive.add(4101)
+        code, out, err = run(s, "switch")
+        assert code == 0, err
+        assert out.splitlines()[0] == (
+            "Skipped #5 ci: an API-key account, and running sessions could not be counted."
+        )
+        assert s.current_account_number() == "7"
+
+    def test_the_engine_holds(self, temp_home, alive):
+        h = TestEngine()._harness(temp_home)
+        self._torn(temp_home)
+        alive.add(4101)
+        assert h.tick_with_usage(TestEngine.EXHAUSTED) is TickOutcome.BLOCKED
+        assert h.active_number() == 1
+        held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
+        assert held.reason == "api-key-sessions"
+        assert held.human() == (
+            "Not switching to #2 ci: it is an API-key account and running sessions "
+            "could not be counted"
+        )
+
+    def test_the_engine_holds_when_the_reader_raises(self, temp_home, alive, monkeypatch):
+        h = TestEngine()._harness(temp_home)
+
+        def boom():
+            raise RuntimeError("detection broke")
+
+        monkeypatch.setattr(h.switcher, "shared_login_blocking", boom)
+        assert h.tick_with_usage(TestEngine.EXHAUSTED) is TickOutcome.BLOCKED
+        assert h.active_number() == 1
+
+    def test_the_menu_bar_asks_without_a_count(self, temp_home, block_real_keychain, alive):
+        s = _fleet()
+        self._torn(temp_home)
+        alive.add(4101)
+        title, message, button = menubar.api_key_switch_question(self._refused(s))
+        assert title == "Could not count the running sessions"
+        assert message.startswith("#5 ci is an API-key account, and qswap could not read")
+        assert button == "Switch and log out sessions"
+
+
+class TestFreshMachineRotation:
+    """No live login in ~/.claude.json (logged out), and only API-key
+    accounts can take over while sessions run."""
+
+    def _logged_out(self, s, sequence, active):
+        cfg = _config()
+        cfg.pop("oauthAccount", None)
+        get_global_config_path().write_text(json.dumps(cfg), encoding="utf-8")
+        data = s._get_sequence_data()
+        data["sequence"] = sequence
+        data["activeAccountNumber"] = active
+        s._write_json(s.sequence_file, data)
+
+    def test_it_names_the_flag_not_enable(self, temp_home, block_real_keychain, alive, run):
+        s = _fleet()
+        self._logged_out(s, [5, 6], 5)
+        _write_sessions(temp_home, PIDS)
+        alive.update(PIDS)
+        code, out, err = run(s, "switch")
+        assert code == 1
+        assert "Skipped #5 ci: an API-key account, and 6 Claude Code sessions are running." in out
+        assert "qswap enable" not in err
+        assert err.splitlines()[-1] == "  qswap switch 5 --log-out-sessions"
+        assert all(len(line) <= 80 for line in err.splitlines()), err
+        assert s._get_sequence_data()["activeAccountNumber"] == 5
+
+    def test_a_disabled_subscription_is_not_the_way_out(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        self._logged_out(s, [1, 5, 6], 5)
+        data = s._get_sequence_data()
+        data["accounts"]["1"]["disabled"] = True
+        s._write_json(s.sequence_file, data)
+        _write_sessions(temp_home, [4101])
+        alive.add(4101)
+        code, _out, err = run(s, "switch")
+        assert code == 1
+        assert "qswap switch 5 --log-out-sessions" in err
+
+    def test_with_no_sessions_it_lands_on_the_key(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        self._logged_out(s, [5, 6], 5)
+        code, _out, err = run(s, "switch")
+        assert code == 0, err
+        assert s._get_sequence_data()["activeAccountNumber"] == 5
+
+
+class TestReactivatingTheActiveKey:
+    def test_force_on_the_active_key_logs_no_one_out(
+        self, temp_home, block_real_keychain, alive
+    ):
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        _write_sessions(temp_home, [4101])
+        alive.add(4101)
+        result = s.switch_to("5", json_output=True, force=True)
+        assert result["to"]["number"] == 5
+
+    def test_a_login_back_in_the_item_is_still_guarded(
+        self, temp_home, block_real_keychain, alive
+    ):
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        block_real_keychain.set_password(
+            CLAUDE_CODE_KEYCHAIN_SERVICE, _acct(),
+            json.dumps({"claudeAiOauth": {"accessToken": "a"}, "mcpOAuth": MCP}),
+        )
+        _write_sessions(temp_home, [4101])
+        alive.add(4101)
+        with pytest.raises(SessionsRunningError):
+            s.switch_to("5", json_output=True, force=True)
+
+
+class TestKeyToKeyQuestion:
+    def test_menu_bar_does_not_ask_to_log_anyone_out(
+        self, temp_home, block_real_keychain, alive
+    ):
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        _write_sessions(temp_home, [4102], started_at=time.time() + 5)
+        alive.add(4102)
+        with pytest.raises(SessionsRunningError) as caught:
+            s.switch_to("6")
+        assert caught.value.from_key is True
+        title, _message, button = menubar.api_key_switch_question(caught.value)
+        assert title == "Switch keys with 1 session running?"
+        assert button == "Switch anyway"
+        assert "log out" not in (title + button).lower()
+
+    def test_the_flag_help_does_not_promise_a_logout_for_every_session(self, capsys):
+        from ai_quota_swap import helptext
+
+        text = helptext._switch().format_help()
+        assert "those on a subscription stop with" in " ".join(text.split())
+
+
+class TestAmbiguousEmail:
+    def test_the_flag_is_refused_when_no_match_is_a_key(
+        self, temp_home, block_real_keychain, alive, run
+    ):
+        s = _fleet()
+        data = s._get_sequence_data()
+        data["accounts"]["3"] = {
+            **data["accounts"]["1"], "organizationUuid": "org-other", "alias": "work",
+        }
+        data["sequence"].append(3)
+        s._write_json(s.sequence_file, data)
+        assert cli._is_api_key_target(s, MAYA) is False
+        code, _out, err = run(s, "switch", MAYA, "--log-out-sessions")
+        assert code == 64
+        assert "--log-out-sessions is only for switching to an API-key account" in err
+
+
+class TestSelfHealEverywhere:
+    """A key an older qswap pushed into the previous copy comes back before
+    anything moves or exports the account, and a heal that fails keeps it."""
+
+    _damage = TestSelfHeal._damage
+
+    def test_switching_away_from_a_damaged_active_key_restores_it(
+        self, temp_home, block_real_keychain
+    ):
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        self._damage(s, block_real_keychain)
+        s.switch_to("1", json_output=True)
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_5
+
+    def test_moving_a_damaged_account_keeps_its_key(self, temp_home, block_real_keychain):
+        s = _fleet()
+        self._damage(s, block_real_keychain)
+        s.move_account("5", "9")
+        assert s._read_account_credentials("9", EMAIL_5) == KEY_5
+
+    def test_swapping_a_damaged_account_keeps_its_key(self, temp_home, block_real_keychain):
+        s = _fleet()
+        self._damage(s, block_real_keychain)
+        s.swap_accounts("5", "6")
+        assert s._read_account_credentials("6", EMAIL_5) == KEY_5
+        assert s._read_account_credentials("5", EMAIL_6) == KEY_6
+
+    def test_moving_on_the_file_backend_keeps_the_key(self, temp_home):
+        s = _fleet(Platform.LINUX)
+        s._store._write_backup_enc("5", EMAIL_5, json.dumps({"mcpOAuth": MCP}))
+        s._store._atomic_b64_write(s._store._prev_backup_path("5", EMAIL_5), KEY_5)
+        s.move_account("5", "9")
+        assert s._read_account_credentials("9", EMAIL_5) == KEY_5
+
+    def test_exporting_a_damaged_account_carries_its_key(
+        self, temp_home, block_real_keychain, capsys
+    ):
+        from ai_quota_swap import transfer
+
+        s = _fleet()
+        self._damage(s, block_real_keychain)
+        capsys.readouterr()
+        transfer.export_accounts(s, "-", account="5")
+        entry = json.loads(capsys.readouterr().out)["accounts"][0]
+        assert entry.get("kind") == "api_key"
+        assert entry["credentials"] == KEY_5
+
+    def test_a_failed_main_write_keeps_the_key_in_the_previous_copy(
+        self, temp_home, block_real_keychain, monkeypatch
+    ):
+        s = _fleet()
+        self._damage(s, block_real_keychain)
+        user = s._store._backup_username("5", EMAIL_5)
+        real_set = block_real_keychain.set_password
+
+        def set_password(service, account, password):
+            if service == SECURITY_SERVICE and account == user:
+                raise macos_keychain.KeychainError("main item write failed")
+            real_set(service, account, password)
+
+        def no_enc(*_a, **_k):
+            raise OSError(28, "No space left on device")
+
+        with monkeypatch.context() as m:
+            m.setattr(macos_keychain, "set_password", set_password)
+            m.setattr(s._store, "_write_backup_enc", no_enc)
+            assert s._heal_api_key_backup("5", EMAIL_5) is False
+        assert _prev(s, "5", EMAIL_5) == KEY_5
+        # A fresh process (the failed one is in its Keychain cooldown) heals.
+        again = ClaudeAccountSwitcher()
+        again.platform = Platform.MACOS
+        assert again._heal_api_key_backup("5", EMAIL_5) is True
+        assert again._read_account_credentials("5", EMAIL_5) == KEY_5
+
+    def test_an_interrupted_heal_keeps_the_key_in_the_previous_copy(
+        self, temp_home, block_real_keychain, monkeypatch
+    ):
+        s = _fleet()
+        self._damage(s, block_real_keychain)
+        user = s._store._backup_username("5", EMAIL_5)
+        real_set = block_real_keychain.set_password
+
+        def set_password(service, account, password):
+            if service == SECURITY_SERVICE and account == user:
+                raise KeyboardInterrupt
+            real_set(service, account, password)
+
+        with monkeypatch.context() as m:
+            m.setattr(macos_keychain, "set_password", set_password)
+            with pytest.raises(KeyboardInterrupt):
+                s._heal_api_key_backup("5", EMAIL_5)
+        assert _prev(s, "5", EMAIL_5) == KEY_5
+        assert s._heal_api_key_backup("5", EMAIL_5) is True
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_5
+
+    def test_a_failed_file_write_keeps_the_key(self, temp_home, monkeypatch):
+        s = _fleet(Platform.LINUX)
+        s._store._write_backup_enc("5", EMAIL_5, json.dumps({"mcpOAuth": MCP}))
+        s._store._atomic_b64_write(s._store._prev_backup_path("5", EMAIL_5), KEY_5)
+
+        def no_enc(*_a, **_k):
+            raise OSError(28, "No space left on device")
+
+        with monkeypatch.context() as m:
+            m.setattr(s._store, "_write_backup_enc", no_enc)
+            assert s._heal_api_key_backup("5", EMAIL_5) is False
+        assert _prev(s, "5", EMAIL_5) == KEY_5
+        assert s._heal_api_key_backup("5", EMAIL_5) is True
+        assert s._read_account_credentials("5", EMAIL_5) == KEY_5
+
+
+class TestPinnedBehaviours:
+    """Reported behaviours that no other test would notice breaking."""
+
+    def test_active_since_is_the_start_of_the_last_run(self, temp_home, block_real_keychain):
+        from ai_quota_swap.ledger.activations import FILENAME
+
+        s = _fleet()
+        rows = [(1000.0, 5, EMAIL_5), (2000.0, 1, MAYA), (3000.0, 5, EMAIL_5),
+                (3500.0, 5, EMAIL_5)]
+        from datetime import datetime, timezone
+
+        with open(s.backup_dir / FILENAME, "w", encoding="utf-8") as log:
+            for ts, number, email in rows:
+                stamp = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                log.write(json.dumps({
+                    "ts": stamp.replace("+00:00", "Z"), "number": number,
+                    "email": email, "org": "", "source": "switch",
+                }) + "\n")
+        assert s._key_active_since("5") == 3000.0
+        assert s._key_active_since("1") is None
+
+    def test_a_switch_ends_the_notification_episode(self):
+        from ai_quota_swap.autoswitch import SwitchEvent, _api_key_sessions_event
+
+        notifier = Notifier()
+        held = _api_key_sessions_event("2", 6)
+        switched = SwitchEvent(
+            trigger="at-limit", from_ref={"number": 1, "email": "a@example.com"},
+            to_ref={"number": 3, "email": "c@example.com"},
+        )
+        said = [
+            notifier.event("claude", e, both=False, now=0.0)
+            for e in (held, held, switched, held)
+        ]
+        assert [n is not None for n in said] == [True, False, True, True]
+
+    def test_rotation_warns_about_an_exported_key(
+        self, temp_home, block_real_keychain, alive, run, monkeypatch
+    ):
+        s = _fleet()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-" + "z" * 40)
+        _code, out, _err = run(s, "switch")
+        assert (
+            "Warning: ANTHROPIC_API_KEY is set; claude started here ignores the switch."
+            in out
+        )
+
+    def test_the_menu_bar_asks_with_cancel_as_the_default(self):
+        source = Path(menubar.__file__).with_name("menubar_app.py").read_text(encoding="utf-8")
+        assert "if self._confirm_cancel_default(title, message, go):" in source

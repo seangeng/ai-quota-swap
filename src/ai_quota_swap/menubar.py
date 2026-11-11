@@ -1640,15 +1640,17 @@ def api_key_switch_question(error: BaseException | None) -> tuple[str, str, str]
     A switch from the menu to an API-key account while Claude Code sessions
     are running is refused by the switcher exactly as on the command line;
     here the same explanation becomes a question: ``(title, message, button)``
-    where ``button`` (:data:`API_KEY_SWITCH_BUTTON`) goes ahead and Cancel is
-    the default. The message drops the "To switch anyway" lines the button
+    where ``button`` (:data:`API_KEY_SWITCH_BUTTON`, or "Switch anyway" when
+    the active account is a key too and no one is logged out) goes ahead and
+    Cancel is the default. The message drops the "To switch anyway" lines the button
     stands for. Anything else is not a question (None)."""
     if not isinstance(error, SessionsRunningError):
         return None
+    from_key = bool(getattr(error, "from_key", False))
     return (
-        display.api_key_question_title(error.sessions),
+        display.api_key_question_title(error.sessions, from_key=from_key),
         display.api_key_question(str(error)),
-        API_KEY_SWITCH_BUTTON,
+        display.api_key_question_button(from_key=from_key),
     )
 
 

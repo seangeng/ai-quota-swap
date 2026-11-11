@@ -54,7 +54,7 @@ To switch anyway:
   qswap switch 5 --log-out-sessions
 ```
 
-The count is the "Running instances" `qswap list` shows. Sessions inside a `qswap run` profile have their own login and are not counted. Under `--json` the refusal is the error envelope, with the count in `error.sessions`.
+The count is the "Running instances" `qswap list` shows. Sessions inside a `qswap run` profile have their own login and are not counted. When qswap cannot read Claude Code's session records (a record half written, or in a shape it does not know), it cannot tell whether sessions are running, and refuses the same way; `--log-out-sessions` still goes ahead. Under `--json` the refusal is the error envelope, with the count in `error.sessions` and the records it could not read in `error.unreadable`.
 
 `--log-out-sessions` switches anyway and says what happens next:
 
@@ -66,13 +66,13 @@ Switched #1 personal → #5 ci (API key)
 Restart a session to put it on the key. Sessions started from now on use it.
 ```
 
-With no session running there is nothing to refuse, and the switch ends with `Claude Code sessions started from now on use the key.` A rotation (`qswap switch` with no account, and its strategies) skips an API-key account while sessions are running (`Skipped #5 ci: an API-key account, and 6 Claude Code sessions are running.`), and auto-switch never lands on one then ([auto-switch.md](auto-switch.md#api-key-accounts-and-budgets)). The menu bar asks first, with Cancel as the default and *Switch and log out sessions* to go ahead; the dashboard offers the same choice.
+With no session running there is nothing to refuse, and the switch ends with `Claude Code sessions started from now on use the key.` A rotation (`qswap switch` with no account, and its strategies) skips an API-key account while sessions are running (`Skipped #5 ci: an API-key account, and 6 Claude Code sessions are running.`), and auto-switch never lands on one then ([auto-switch.md](auto-switch.md#api-key-accounts-and-budgets)). The menu bar asks first, with Cancel as the default and *Switch and log out sessions* to go ahead; the dashboard offers the same choice. From one API key to another no one is logged out, so the question is *Switch keys with 6 sessions running?* and its button *Switch anyway*.
 
 What the switch changes: the key is saved where Claude Code reads it (the macOS Keychain item `Claude Code`, or `primaryApiKey` in `~/.claude.json` elsewhere), and the login is taken out of Claude Code's login item (`Claude Code-credentials`, or `~/.claude/.credentials.json`). The item itself stays, with your MCP server sign-ins in it, so Slack, Figma and other MCP servers stay signed in.
 
 Switching back is safe. qswap never rewrites an API-key account's saved key when it leaves it, and the account you switch to gets its own login together with the MCP sign-ins of the moment. Sessions started while the key was active move back on their own: `Sessions started while #5 ci was active move to #1 personal within about 30 seconds.` Sessions that stopped with "Not logged in" pick the login up again and continue their conversation. From one key to another it is different: sessions started on the first key keep using it until you restart them, and the switch lists them by process id and directory.
 
-`qswap doctor` warns when an API-key account is active while older sessions are still running, and when something makes Claude Code ignore the active account altogether: an `apiKeyHelper` in `~/.claude/settings.json`, or `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` exported in your shell. `qswap switch` warns about those variables too.
+`qswap doctor` warns when an API-key account is active while sessions that started on a subscription are still running, and when something makes Claude Code ignore the active account altogether: an `apiKeyHelper` in `~/.claude/settings.json`, or `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` exported in your shell. `qswap switch` warns about those variables too.
 
 ## See what it spent
 

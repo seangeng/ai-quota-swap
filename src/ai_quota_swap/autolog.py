@@ -599,7 +599,12 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         return "no quota to watch", "routine"
     if reason == "api-key-sessions":
         running = getattr(event, "sessions", None)
-        held = f"{running} sessions running" if running else "sessions running"
+        if running and running > 0:
+            held = f"{running} sessions running"
+        elif running:
+            held = "sessions could not be counted"
+        else:
+            held = "sessions running"
         return f"not moving to an API key, {held}", "wait"
     if reason == "active-idle":
         name = display.provider_name(getattr(context, "provider", None))

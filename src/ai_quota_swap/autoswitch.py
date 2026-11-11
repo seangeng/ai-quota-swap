@@ -434,12 +434,19 @@ class NoSwitchEvent(AutoSwitchEvent):
 def _api_key_sessions_event(number: str, sessions: int) -> NoSwitchEvent:
     """The engine stayed rather than land on the API-key account ``number``
     while ``sessions`` Claude Code sessions run on the shared login."""
-    return NoSwitchEvent(
-        reason="api-key-sessions",
-        detail=(
+    if sessions > 0:
+        detail = (
             f"account {number} is an API-key account and {sessions} running "
             "sessions could not follow"
-        ),
+        )
+    else:
+        detail = (
+            f"account {number} is an API-key account and running sessions "
+            "could not be counted"
+        )
+    return NoSwitchEvent(
+        reason="api-key-sessions",
+        detail=detail,
         account=str(number),
         sessions=sessions,
     )
@@ -3303,7 +3310,11 @@ class AutoSwitchEngine:
             except SessionsRunningError as e:
                 # Sessions started between the decision and the switch: the
                 # same refusal the decision makes, and nothing changed.
-                self._emit(_api_key_sessions_event(number, e.sessions))
+                from ai_quota_swap import display
+
+                self._emit(_api_key_sessions_event(
+                    number, display.blocking_sessions(e.sessions, e.unreadable),
+                ))
                 return TickOutcome.BLOCKED
             except RetryableSwitchError as e:
                 # Nothing changed, and the provider says a later try is safe
@@ -3654,15 +3665,19 @@ class AutoSwitchEngine:
         return datetime.fromtimestamp(earliest, tz=timezone.utc)
 
     def _shared_session_count(self) -> int:
-        """How many Claude Code sessions run on the provider's shared login;
-        0 for a provider that cannot tell (Codex) or when reading fails."""
-        reader = getattr(self.switcher, "shared_login_sessions", None)
+        """How many Claude Code sessions run on the provider's shared login:
+        ``display.SESSIONS_UNKNOWN`` (truthy) when they could not be counted,
+        because "could not tell" is never "nobody there"; 0 for a provider
+        with no shared-login sessions (Codex)."""
+        from ai_quota_swap import display
+
+        reader = getattr(self.switcher, "shared_login_blocking", None)
         if not callable(reader):
             return 0
         try:
-            return len(reader() or ())
+            return int(reader())
         except Exception:
-            return 0
+            return display.SESSIONS_UNKNOWN
 
     def _emit(self, event: AutoSwitchEvent) -> None:
         # Every event carries this tick's context for its human text (an

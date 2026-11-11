@@ -99,18 +99,30 @@ class SessionsRunningError(SwitchError):
     """A switch to an API-key account refused because Claude Code sessions
     are running on the shared login (docs/design/api-key-sessions.md).
 
-    Nothing was changed. ``sessions`` is how many were running; the JSON
-    error envelope carries it as ``error.sessions``.
+    Nothing was changed. ``sessions`` is how many were running (readable
+    session records); ``unreadable`` how many records could not be read, which
+    refuses too ("could not tell" is never "nobody there"). ``from_key``: the
+    active account is an API key as well, so the switch logs no one out. The
+    JSON error envelope carries ``error.sessions``, and ``error.unreadable``
+    when it is not 0.
     """
 
-    def __init__(self, message: str, *, number: str, sessions: int):
+    def __init__(
+        self, message: str, *, number: str, sessions: int, unreadable: int = 0,
+        from_key: bool = False,
+    ):
         super().__init__(message)
         self.number = str(number)
         self.sessions = sessions
+        self.unreadable = unreadable
+        self.from_key = from_key
 
     @property
     def envelope_fields(self) -> dict:
-        return {"sessions": self.sessions}
+        fields: dict = {"sessions": self.sessions}
+        if self.unreadable:
+            fields["unreadable"] = self.unreadable
+        return fields
 
 
 class SessionError(ClaudeSwitchError):

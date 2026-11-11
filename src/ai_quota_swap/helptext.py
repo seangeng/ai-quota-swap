@@ -135,8 +135,8 @@ def _switch() -> ArgumentParser:
                         "current one first (for example after an import)")
     p.add_argument("--log-out-sessions", action="store_true",
                    help="with an API-key ACCOUNT: switch even though Claude Code "
-                        "sessions are running; each one stops with \"Not logged "
-                        "in\" until you switch back or restart it")
+                        "sessions are running; those on a subscription stop with "
+                        "\"Not logged in\" until you switch back or restart them")
     p.add_argument("--strategy", metavar="NAME",
                    help="without ACCOUNT: 'best' picks the account with the most "
                         "quota left; 'next-available' skips accounts at their limit")

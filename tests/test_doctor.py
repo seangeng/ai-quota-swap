@@ -933,11 +933,76 @@ class TestOverrides:
         check = machine.checks()["claude.api_key_sessions"]
         assert check.status == "warn"
         assert check.summary.startswith(
-            "#5 ci (API key) is active and 2 Claude Code sessions that started before it"
+            "#5 ci (API key) is active and 2 Claude Code sessions that started on a "
+            "subscription"
         )
         assert check.fix == "restart them to use the key, or switch back: qswap switch 1"
         _code, out = machine.run(capsys)
         assert all(len(line) <= 80 for line in out.splitlines())
+
+    def test_sessions_started_on_an_earlier_key_are_not_logged_out(self, machine):
+        """Key to key: #5 ci, then #6 ops. Sessions started while #5 was
+        active keep using its key; only the one started on #1 personal is
+        logged out, and the way back is #1, not the earlier key (which the
+        guard would refuse while sessions run)."""
+        from datetime import datetime, timezone
+
+        def iso(ts):
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+        self._key_active(machine, activated_at=NOW - 300)
+        (machine.home / ".claude.json").write_text(json.dumps({"oauthAccount": {
+            "emailAddress": "api-key-6@token.local", "accountUuid": "",
+            "organizationUuid": None,
+        }}))
+        registry = json.loads((machine.data / "sequence.json").read_text())
+        registry["activeAccountNumber"] = 6
+        registry["sequence"] = [1, 5, 6]
+        registry["accounts"]["6"] = {
+            "email": "api-key-6@token.local", "uuid": "", "organizationUuid": "",
+            "alias": "ops", "kind": "api_key",
+        }
+        (machine.data / "sequence.json").write_text(json.dumps(registry))
+        with (machine.data / "activations.jsonl").open("a") as log:
+            log.write(json.dumps({"ts": iso(NOW - 100), "number": 6,
+                                  "email": "api-key-6@token.local", "org": "",
+                                  "source": "switch"}) + "\n")
+        # 11 and 12 started on #1, 13 on #5; add one more on #5.
+        from types import SimpleNamespace
+
+        machine.sessions.append(
+            SimpleNamespace(pid=14, cwd="/d", started_at=int((NOW - 200) * 1000))
+        )
+        check = machine.checks()["claude.api_key_sessions"]
+        assert check.summary.startswith(
+            "#6 ops (API key) is active and 2 Claude Code sessions that started on a "
+            "subscription"
+        )
+        assert check.fix == "restart them to use the key, or switch back: qswap switch 1"
+
+    def test_only_sessions_started_on_an_earlier_key_is_fine(self, machine):
+        from datetime import datetime, timezone
+
+        def iso(ts):
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+        self._key_active(machine, activated_at=NOW - 300)
+        (machine.home / ".claude.json").write_text(json.dumps({"oauthAccount": {
+            "emailAddress": "api-key-6@token.local", "accountUuid": "",
+            "organizationUuid": None,
+        }}))
+        registry = json.loads((machine.data / "sequence.json").read_text())
+        registry["accounts"]["6"] = {
+            "email": "api-key-6@token.local", "uuid": "", "organizationUuid": "",
+            "alias": "ops", "kind": "api_key",
+        }
+        (machine.data / "sequence.json").write_text(json.dumps(registry))
+        with (machine.data / "activations.jsonl").open("a") as log:
+            log.write(json.dumps({"ts": iso(NOW - 100), "number": 6,
+                                  "email": "api-key-6@token.local", "org": "",
+                                  "source": "switch"}) + "\n")
+        machine.sessions = machine.sessions[2:]  # pid 13: started while #5 was active
+        assert "claude.api_key_sessions" not in machine.checks()
 
     def test_api_key_active_with_only_newer_sessions_is_fine(self, machine):
         self._key_active(machine, activated_at=NOW - 300)

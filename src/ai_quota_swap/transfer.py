@@ -221,6 +221,11 @@ def export_accounts(
                 raise ConfigError("Claude config file not found")
             config_text = config_path.read_text(encoding="utf-8")
         else:
+            # A key an older qswap pushed into the previous copy is put back
+            # first, so the export carries the key, not the MCP sign-ins.
+            heal = getattr(switcher, "_heal_api_key_backup", None)
+            if callable(heal):
+                heal(num, email)
             creds_text = switcher._read_account_credentials(num, email)
             config_text = switcher._read_account_config(num, email)
             if not creds_text or not config_text:

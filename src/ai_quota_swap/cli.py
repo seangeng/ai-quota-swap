@@ -2038,10 +2038,21 @@ def _check_switch_target(switcher, identifier: str, *, anyway: bool) -> list[str
 
 
 def _is_api_key_target(switcher, identifier: str) -> bool:
-    """Whether ``identifier`` names an API-key account. One that does not
-    resolve counts as yes: ``switch_to`` then reports it in its own words."""
+    """Whether ``identifier`` names an API-key account. An email on several
+    accounts is one only when one of them is a key (``switch_to`` asks which).
+    One that does not resolve counts as yes: ``switch_to`` then reports it in
+    its own words."""
+    from ai_quota_swap.exceptions import ConfigError
+
     try:
         number, _email, _org = switcher.resolve_account(identifier)
+    except ConfigError:
+        accounts = (switcher._get_sequence_data() or {}).get("accounts", {})
+        return any(
+            switcher.account_kind_for(num) == "api_key"
+            for num, record in accounts.items()
+            if record.get("email") == identifier
+        )
     except (ProviderError, TypeError, ValueError):
         return True
     return switcher.account_kind_for(number) == "api_key"
@@ -2517,8 +2528,8 @@ def _dispatch(argv: list[str]) -> None:
         action="store_true",
         help=(
             "With 'switch ACCOUNT' for an API-key account: switch even though "
-            "Claude Code sessions are running (each one stops with "
-            "\"Not logged in\")"
+            "Claude Code sessions are running (those on a subscription stop "
+            "with \"Not logged in\")"
         ),
     )
     parser.add_argument(

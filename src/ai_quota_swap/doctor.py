@@ -654,8 +654,10 @@ def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
 
 
 def _api_key_session_check(p: Probes, f: _Facts) -> Check | None:
-    """An API-key account is active while sessions started before it was are
-    running: those sessions cannot use the key and are logged out."""
+    """An API-key account is active while sessions that started on a
+    subscription are running: those cannot use the key and are logged out.
+    A session that started while another API key was active keeps using
+    that key and is not counted."""
     if f.data_dir is None:
         return None
     config_path, err = _try(p.claude_config_path)
@@ -671,16 +673,35 @@ def _api_key_session_check(p: Probes, f: _Facts) -> Check | None:
     record = _accounts(registry).get(slot) if slot else None
     if not isinstance(record, dict) or record.get("kind") != "api_key":
         return None
-    since, previous = _activation_of(p, f.data_dir, email, org)
+    rows = _activations(p, f.data_dir)
+    since = _active_since(rows, email, org)
     if since is None:
         return None
+
+    def is_key(row_email: str, row_org: str) -> bool:
+        row_slot = claude_slot(registry, row_email, row_org)
+        row = _accounts(registry).get(row_slot) if row_slot else None
+        return isinstance(row, dict) and row.get("kind") == "api_key"
+
     sessions, _ = _try(p.claude_sessions, default=[])
-    older = [
-        s for s in sessions or []
-        if 0 < (getattr(s, "started_at", 0) or 0) / 1000.0 < since
-    ]
+    older = []
+    for session in sessions or []:
+        started = (getattr(session, "started_at", 0) or 0) / 1000.0
+        if not 0 < started < since:
+            continue
+        # The account active when it started; unknown (before the log)
+        # counts as a subscription, the safe reading for a warning.
+        at = next((r for r in reversed(rows) if r[0] <= started), None)
+        if at is not None and is_key(at[1], at[2]):
+            continue
+        older.append(session)
     if not older:
         return None
+    previous = next(
+        (str(r[3]) for r in reversed(rows)
+         if r[0] < since and isinstance(r[3], int) and not is_key(r[1], r[2])),
+        None,
+    )
     n = len(older)
     noun = "session" if n == 1 else "sessions"
     are, they = ("is", "it is") if n == 1 else ("are", "they are")
@@ -688,21 +709,20 @@ def _api_key_session_check(p: Probes, f: _Facts) -> Check | None:
     return Check(
         "claude.api_key_sessions", "claude", WARN,
         f"{_label(slot, record, email)} (API key) is active and {n} Claude Code "
-        f"{noun} that started before it {are} running; a running session "
-        f"cannot use a key, so {they} logged out",
+        f"{noun} that started on a subscription {are} running; a running "
+        f"session cannot use a key, so {they} logged out",
         fix=f"restart them to use the key, or switch back: {back}",
     )
 
 
-def _activation_of(p: Probes, data_dir: Path, email: str, org: str) -> tuple[float | None, str | None]:
-    """When the account ``(email, org)`` became active, from the activation
-    log (the start of the log's last run of lines naming it), and the number
-    of the account active before it; ``(None, None)`` when unknown."""
+def _activations(p: Probes, data_dir: Path) -> list[tuple[float, str, str, object]]:
+    """The activation log as ``(ts, email, org, number)`` rows, oldest first;
+    ``[]`` when it cannot be read."""
     from ai_quota_swap.ledger.activations import FILENAME, parse_ts
 
     raw, err = _try(p.read_bytes, data_dir / FILENAME)
     if err is not None or not raw:
-        return None, None
+        return []
     rows = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
         try:
@@ -714,15 +734,18 @@ def _activation_of(p: Probes, data_dir: Path, email: str, org: str) -> tuple[flo
             if ts is not None:
                 rows.append((ts, obj["email"], obj.get("org") or "", obj.get("number")))
     rows.sort(key=lambda r: r[0])
+    return rows
+
+
+def _active_since(rows, email: str, org: str) -> float | None:
+    """When the account ``(email, org)`` became active: the start of the
+    log's last run of rows naming it; None when the last row is another."""
     since = None
-    previous = None
-    for ts, row_email, row_org, number in reversed(rows):
-        if (row_email, row_org) == (email, org):
-            since = ts
-            continue
-        previous = str(number) if isinstance(number, int) else None
-        break
-    return since, previous
+    for ts, row_email, row_org, _number in reversed(rows):
+        if (row_email, row_org) != (email, org):
+            break
+        since = ts
+    return since
 
 
 def _codex_store_mode(p: Probes, config: Path) -> tuple[str, BaseException | None]:

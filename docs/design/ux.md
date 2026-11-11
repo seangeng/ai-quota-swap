@@ -56,8 +56,8 @@ wherever they are listed.
 - A command that would leave the user worse off says so first: switching to an account that
   needs re-login is refused unless `--anyway`; switching to one whose usage is unreadable or
   stale goes ahead with a one-line warning; switching to an API-key account while Claude
-  Code sessions are running is refused unless `--log-out-sessions`, since each one would stop
-  with "Not logged in". A rotation (`switch` with no account, its strategies,
+  Code sessions are running (or qswap cannot tell) is refused unless `--log-out-sessions`,
+  since a session started on a subscription would stop with "Not logged in". A rotation (`switch` with no account, its strategies,
   `qswap codex switch`) skips an account that needs re-login, as it skips a disabled one, with
   one line each ("Skipped #2 work: needs re-login."), and when nothing is left it stays put and
   says the next step. It skips an API-key account while sessions are running the same way.

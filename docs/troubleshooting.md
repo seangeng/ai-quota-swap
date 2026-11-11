@@ -157,7 +157,7 @@ Do not run `/login` in those sessions. Either:
 
 - or restart the sessions you want on the key (`/restart`, or quit and run `claude --continue`): a session that starts while the key is active uses it, and resumes its conversation.
 
-`qswap doctor` lists this state as `#5 ci (API key) is active and 6 Claude Code sessions that started before it are running`. After a switch from one API key to another, sessions started on the first key keep using it until you restart them.
+`qswap doctor` lists this state as `#5 ci (API key) is active and 6 Claude Code sessions that started on a subscription are running`. After a switch from one API key to another, sessions started on the first key keep using it until you restart them.
 
 ## Codex keeps its login in the OS keyring
 

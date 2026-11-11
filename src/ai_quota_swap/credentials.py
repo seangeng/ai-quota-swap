@@ -1605,7 +1605,7 @@ class CredentialStore:
         return "", bool(failed)
 
     def _write_account_credentials(
-        self, account_num: str, email: str, credentials: str
+        self, account_num: str, email: str, credentials: str, *, retain: bool = True
     ) -> None:
         """Write account credentials to backup (pure I/O — no session invalidation).
 
@@ -1621,9 +1621,12 @@ class CredentialStore:
         Before overwriting, the current generation is retained as a ``.prev`` file
         (one generation, best-effort): a refresh token exists in exactly one place,
         giving a misclassified overwrite a best-effort chance of recovery without
-        a /login.
+        a /login. ``retain=False`` skips that step, for a write whose value
+        comes from the previous copy itself (the API-key heal): retaining
+        first would overwrite the only copy before the main write lands.
         """
-        self._retain_previous_backup(account_num, email, credentials)
+        if retain:
+            self._retain_previous_backup(account_num, email, credentials)
         if self._use_keychain():
             try:
                 self._kc_write_backup(account_num, email, credentials)
