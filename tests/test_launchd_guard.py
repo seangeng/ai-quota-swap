@@ -354,9 +354,17 @@ def test_a_child_process_that_reaches_launchctl_fails_its_test(tmp_path):
 # process, started only once the launchctl its PATH leads to is the stand-in.
 
 SRC = str(Path(__file__).resolve().parent.parent / "src")
-# The child takes the darwin path on every runner, as `on_macos` does here.
+# The child takes the darwin path on every runner, as `on_macos` does here: it
+# imports first (urllib.request reads sys.platform as it loads), keeps this
+# system's account backend, then says darwin. On a Mac this changes nothing.
 # No word in it is `launchctl` alone, so this process's audit hook lets it start.
-_AS_ON_MACOS = "import sys; sys.platform = 'darwin'; "
+_AS_ON_MACOS = (
+    "import subprocess, sys, urllib.request; "
+    "from ai_quota_swap import cli, launch_agent, models, update_check; "
+    "native = models.Platform.detect(); "
+    "models.Platform.detect = classmethod(lambda cls: native); "
+    "sys.platform = 'darwin'; "
+)
 
 
 def _child_env(launchctl_guard, home: Path, bin_dir: Path | None = None) -> dict[str, str]:
@@ -414,8 +422,7 @@ def test_service_status_in_a_child_is_answered_by_the_stand_in(tmp_path, launchc
     sfltool.chmod(0o755)
     env = _child_env(launchctl_guard, tmp_path / "home", bin_dir)
     code = _AS_ON_MACOS + (
-        "sys.argv = ['qswap', 'menubar', '--service-status']; "
-        "from ai_quota_swap.cli import main; main()"
+        "sys.argv = ['qswap', 'menubar', '--service-status']; cli.main()"
     )
 
     result = _python(code, env, tmp_path)
