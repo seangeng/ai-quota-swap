@@ -610,8 +610,8 @@ class TestAnOrganizationKey:
         )
         assert api_spend.detail_text(reading, ORG_NOW) == (
             "Admin API error (HTTP 500); estimate from this machine's transcripts only; "
-            "auto-switch reads Anthropic's figure for this key before it moves to it: "
-            "qswap budget"
+            "auto-switch reads Anthropic's figure before it moves to this key; read it "
+            "now with: qswap budget"
         )
 
     def test_a_fresh_figure_from_anthropic_still_holds_it(self, temp_home, org):
@@ -1238,3 +1238,80 @@ class TestTheEngineNamesTheKeptReset:
         entries = {n: _entry_for(v, h.clock.now) for n, v in self._ten_hours_left().items()}
         kept = kept_resets_now(h.switcher, h.settings, entries, now=h.clock.now)
         assert [(k.account, k.reason) for k in kept] == [("1", "min-hours-left")]
+
+
+# == EM6: the dry run ==========================================================================
+
+
+class TestTheDryRun:
+    def test_the_row_does_not_promise_the_key_stays_off(self):
+        now = 1_794_000_000.0
+        reading = {
+            "spend": {"used": 14.0, "limit": 20.0, "pct": 70.0, "currency": "USD"},
+            "today": 1.0, "source": "ledger", "as_of": now - 25 * 60,
+            "unpriced_tokens": 0, "month": "2026-11",
+        }
+        detail = api_spend.detail_text(reading, now)
+        assert detail == (
+            "estimate as of the last qswap usage, 25m ago; auto-switch measures the spend "
+            "before it moves to this key; measure it now with: qswap usage"
+        )
+        assert "stays off" not in detail
+
+    def test_a_dry_run_says_a_real_run_scans_first(self, temp_home, scans):
+        """The re-check's case: with no menu bar, the dry run judged the
+        stored figure ("its spend could not be measured") while the real run
+        scanned and moved to the key."""
+        h = _fleet(temp_home)
+        h.engine = h._make_engine(dry_run=True)
+        assert _tick(h, EXHAUSTED, {"2": _reading(h, age=3 * 3600)}) is TickOutcome.BLOCKED
+        assert scans == []  # a dry run writes nothing, the ledger included
+        held = [e for e in _holds(h) if e.reason == "spend-unknown"]
+        assert held and held[0].human() == (
+            "Not switching to #2 ci: its spend could not be measured for 20 minutes. A "
+            "real run measures it first, and this dry run's figure may be older, so a "
+            "real run may move to it; check it with: qswap usage"
+        )
+
+    def test_leaving_a_key_in_a_dry_run_says_the_same(self, temp_home, scans):
+        h = _fleet(temp_home)
+        _enter(h)
+        h.engine = h._make_engine(dry_run=True)
+        h.clock.advance(60)
+        assert _tick(h, EXHAUSTED, {"2": _reading(h, age=30 * 60)}) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"  # nothing moved
+        assert _switches(h)[-1].human() == (
+            "Would switch #2 ci → #1 a@example.com · its spend could not be measured for "
+            "20 minutes; a real run measures it first and may stay; no subscription has "
+            "room, so back to the account underneath (dry run)"
+        )
+
+    def test_a_slot_that_cannot_give_a_key_is_checked_read_only(self, temp_home, scans):
+        """A12 in a dry run: the real run refuses the slot (key-unusable) and
+        the dry run used to say "Would switch"."""
+        h = _fleet(temp_home)
+        blob = json.dumps({"mcpOAuth": {"x": {"accessToken": "m"}}})
+        h.switcher._write_account_credentials("2", "key2@token.local", blob, retain=False)
+        before = h.switcher._read_account_credentials("2", "key2@token.local")
+        h.engine = h._make_engine(dry_run=True)
+        assert _tick(h, EXHAUSTED) is TickOutcome.BLOCKED
+        assert not _switches(h)
+        skipped = [e for e in _holds(h) if e.reason == "key-unusable"]
+        assert skipped and skipped[0].account == "2"
+        assert skipped[0].human() == (
+            "Not switching to #2 ci: #2 ci's saved credential is not an API key. Save the "
+            "key again with: qswap add-token KEY --slot 2"
+        )
+        assert h.switcher._read_account_credentials("2", "key2@token.local") == before
+        assert "limitLatch" not in _state(h) and "spendScan" not in _state(h)
+
+    def test_a_slot_a_real_switch_would_repair_is_usable(self, temp_home, scans):
+        """The older qswap's state: the key sits in the previous copy; a real
+        switch puts it back first, so the dry run says it would switch."""
+        h = _fleet(temp_home)
+        blob = json.dumps({"mcpOAuth": {"x": {"accessToken": "m"}}})
+        h.switcher._write_account_credentials("2", "key2@token.local", blob)  # key retained
+        h.engine = h._make_engine(dry_run=True)
+        assert _tick(h, EXHAUSTED) is TickOutcome.SWITCHED
+        assert _switches(h)[-1].dry_run
+        assert h.switcher._read_account_credentials("2", "key2@token.local") == blob

@@ -467,6 +467,9 @@ def switch_reason(event: object) -> str:
                 getattr(event, "limit_source", None) == api_spend.SOURCE_LEDGER
             ):
                 words += " (estimate)"  # this machine's count, not Anthropic's
+            if reason == api_spend.SPEND_UNKNOWN and getattr(event, "dry_run", False):
+                # A dry run does not scan; a real run does first (EM6).
+                words += "; a real run measures it first and may stay"
             return words + back
         tail = ""
         if getattr(event, "before_key", False):
@@ -841,6 +844,13 @@ def no_switch_sentence(event: object) -> str:
 
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "an API-key account"
+        if getattr(event, "dry_run", False):
+            # A dry run does not scan; a real run does first (decision EM6).
+            return (
+                f"Not switching to {who}: {api_spend.SPEND_UNKNOWN_WORDS}. A real run "
+                "measures it first, and this dry run's figure may be older, so a real "
+                "run may move to it; check it with: qswap usage"
+            )
         return (
             f"Not switching to {who}: {api_spend.SPEND_UNKNOWN_WORDS}; check it "
             "with: qswap usage"

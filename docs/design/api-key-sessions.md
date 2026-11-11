@@ -353,6 +353,10 @@ What the code does where this part leaves room, or where it had to differ:
   (`autoswitch.key_watch`, read through `engine_watching()`); the surfaces say "only a dry
   run is running" for a dry-run loop and "last checked 4m ago" for a recent `--once`, and
   doctor warns only when nothing watches.
+- **The dry run** writes nothing, the ledger included: it judges the stored figure and
+  says that a real run measures the spend first and that its own figure may be older,
+  and it checks read-only that a key's slot can give a key (A12). The rows say auto-switch
+  measures the spend before it moves to the key, never that it stays off it.
 - **The way back**, in status, list, the menu bar, the dashboard, doctor and the stopping
   engine: `qswap switch N` to the account underneath; `qswap add` over a login qswap does
   not manage; else `qswap switch N` to the first subscription; else log in to one and run

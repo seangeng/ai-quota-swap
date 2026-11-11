@@ -483,6 +483,8 @@ class NoSwitchEvent(AutoSwitchEvent):
     # can leave it for by hand.
     limit_reason: str | None = _human_only()
     way_off: str | None = _human_only()
+    # A dry run's hold, whose figure may be older than a real run's (EM6).
+    dry_run: bool = _human_only(False)
 
     def _fields(self) -> dict:
         return {"reason": self.reason, "detail": self.detail}
@@ -3011,7 +3013,19 @@ class AutoSwitchEngine:
                     return TickOutcome.NO_ACTION
             if self.dry_run:
                 # Dry-run stops at the decision: no token refresh, no
-                # quarantine writes — freshening is a mutation.
+                # quarantine writes — freshening is a mutation. A key slot is
+                # checked read-only, as a real switch would refuse it (A12,
+                # decision EM6).
+                problem = (
+                    self._dry_key_problem(num)
+                    if self.switcher.account_kind_for(num) == "api_key" else None
+                )
+                if problem is not None:
+                    self._emit(NoSwitchEvent(
+                        reason="key-unusable", detail=problem, account=str(num),
+                    ))
+                    skipped_keys = True
+                    continue
                 return self._perform(num, email, trigger, left_snapshot)
             status = self._freshen_target(num, email)
             if status == "identity-conflict":
@@ -4660,8 +4674,43 @@ class AutoSwitchEngine:
             self._emit(NoSwitchEvent(
                 reason=why, detail=detail, account=num,
                 limit_reason=brake if why == "limit-latched" else None,
+                dry_run=self.dry_run,
             ))
         return ok, entries
+
+    def _dry_key_problem(self, num: str) -> str | None:
+        """Why the slot ``num`` cannot give a key, in the words a real switch
+        refuses it with, or None (decision EM6: a dry run asks, reading
+        only). A slot whose key is in its previous copy is usable: a real
+        switch puts it back first. Never raises."""
+        reader = getattr(self.switcher, "_read_account_credentials_ex", None)
+        if not callable(reader):
+            return None
+        try:
+            from ai_quota_swap.key_helper import is_key
+
+            email = self.switcher.account_email(num) or ""
+            stored, unreadable = reader(num, email)
+            if is_key(stored):
+                return None
+            if stored:
+                previous = self.switcher._store._read_previous_backup(num, email)
+                if is_key(previous):
+                    return None
+            who = self.switcher.label(num, long=False)
+            if stored:
+                return (
+                    f"{who}'s saved credential is not an API key. Save the key again "
+                    f"with: qswap add-token KEY --slot {num}"
+                )
+            if unreadable:
+                return (
+                    f"{who}'s saved key is in the macOS Keychain but it is unreadable "
+                    "right now (locked or no GUI session). Unlock it and retry."
+                )
+            return f"{who} has no saved key. Save one with: qswap add-token KEY --slot {num}"
+        except Exception:
+            return None
 
     @staticmethod
     def _spend_source(num: str, entries: Mapping[str, object]) -> str | None:

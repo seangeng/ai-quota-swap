@@ -1181,11 +1181,17 @@ def _estimate_word(reading: dict) -> str:
     return "this machine only" if machine_only(reading) else "estimate"
 
 
-#: The detail line's next step while the limit is not enforced.
-UNENFORCED_NEXT = "auto-switch stays off this key until its spend is measured: qswap usage"
+#: The detail line's next step while the limit is not enforced. Auto-switch
+#: scans before it moves to a key, so this says it measures, never that it
+#: stays off (decision EM6).
+UNENFORCED_NEXT = (
+    "auto-switch measures the spend before it moves to this key; measure it now "
+    "with: qswap usage"
+)
 #: The same for a key linked to an organization, held to Anthropic's figure only.
 ORG_UNENFORCED_NEXT = (
-    "auto-switch reads Anthropic's figure for this key before it moves to it: qswap budget"
+    "auto-switch reads Anthropic's figure before it moves to this key; read it now "
+    "with: qswap budget"
 )
 
 

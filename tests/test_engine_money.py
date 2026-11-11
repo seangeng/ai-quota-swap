@@ -457,8 +457,8 @@ class TestRowsSayTheLimitIsNotEnforced:
             "limit not enforced: no spend figure"
         )
         assert api_spend.detail_text(reading, now) == (
-            "estimate as of the last qswap usage, 25m ago; auto-switch stays off "
-            "this key until its spend is measured: qswap usage"
+            "estimate as of the last qswap usage, 25m ago; auto-switch measures the "
+            "spend before it moves to this key; measure it now with: qswap usage"
         )
         # The menu row's room goes to the reason, which its limit must not cut.
         assert api_spend.menu_text(reading, now=now) == (
@@ -471,7 +471,8 @@ class TestRowsSayTheLimitIsNotEnforced:
             "API key · budget $500 a month · limit not enforced: no spend figure"
         )
         assert api_spend.detail_text(reading, NOW) == (
-            "auto-switch stays off this key until its spend is measured: qswap usage"
+            "auto-switch measures the spend before it moves to this key; measure it now "
+            "with: qswap usage"
         )
         assert api_spend.menu_text(reading, now=NOW) == "budget $500 · limit not enforced"
 
