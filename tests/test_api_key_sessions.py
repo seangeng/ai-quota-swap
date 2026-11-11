@@ -315,7 +315,10 @@ import time  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 
 from ai_quota_swap import cli, display, printer  # noqa: E402
-from ai_quota_swap.exceptions import SessionsRunningError  # noqa: E402
+from ai_quota_swap.exceptions import (  # noqa: E402
+    KeyHelperUnavailableError,
+    SessionsRunningError,
+)
 
 
 def _write_sessions(home: Path, pids, *, started_at: float | None = None, cwd="/work/app"):
@@ -372,9 +375,24 @@ def run(monkeypatch, capsys):
     return go
 
 
+# Part 2 (docs/design/api-key-sessions.md) moves a key in through Claude
+# Code's apiKeyHelper, which running sessions follow, so nothing is refused for
+# them there. The refusal these tests pin is what is left of part 1's guard:
+# the key helper cannot be added (another helper is set), so the only way is
+# the saved key, which running sessions cannot use.
+FOREIGN_HELPER = '{"apiKeyHelper": "/opt/vault/print-key"}'
+
+
+def _no_helper(home: Path) -> None:
+    """Make the key helper unavailable: another apiKeyHelper is set."""
+    (home / ".claude" / "settings.json").write_text(FOREIGN_HELPER, encoding="utf-8")
+
+
 REFUSAL = """\
-Error: not switched. #5 ci is an API-key account, and 6 Claude Code sessions
-are running on the shared login. A running session cannot move to an API key:
+Error: not switched. qswap cannot add the key helper for #5 ci to the Claude
+Code settings: ~/.claude/settings.json already sets another apiKeyHelper.
+Without it, the key can only be saved for Claude Code, which a running session
+does not pick up. 6 Claude Code sessions are running on the shared login:
 about 30 seconds after the switch each one stops with "Not logged in" until
 you switch back or restart it.
 Sessions started after the switch use the key.
@@ -398,6 +416,7 @@ class TestGuard:
         self, temp_home, block_real_keychain, alive, run
     ):
         s = _fleet()
+        _no_helper(temp_home)
         _write_sessions(temp_home, PIDS)
         alive.update(PIDS)
         before = _state(s, block_real_keychain)
@@ -413,6 +432,7 @@ class TestGuard:
         self, temp_home, block_real_keychain, alive, run
     ):
         s = _fleet()
+        _no_helper(temp_home)
         _write_sessions(temp_home, PIDS)
         alive.update(PIDS)
         before = _state(s, block_real_keychain)
@@ -422,13 +442,14 @@ class TestGuard:
         assert code == 1
         payload = json.loads(out)
         assert payload["schemaVersion"] == 1
-        assert payload["error"]["type"] == "SessionsRunningError"
+        assert payload["error"]["type"] == "KeyHelperUnavailableError"
         assert payload["error"]["sessions"] == 6
         assert payload["error"]["message"] == REFUSAL.removeprefix("Error: ").rstrip("\n")
         assert _state(s, block_real_keychain) == before
 
     def test_one_session_reads_in_the_singular(self, temp_home, block_real_keychain, alive):
         s = _fleet()
+        _no_helper(temp_home)
         _write_sessions(temp_home, [4101])
         alive.add(4101)
         with pytest.raises(SessionsRunningError) as caught:
@@ -476,12 +497,16 @@ class TestGuard:
         assert payload["followup"][0].startswith("6 running sessions will stop")
 
     def test_no_sessions_no_refusal(self, temp_home, block_real_keychain, alive, run):
+        """Through the key helper (part 2): no refusal, and the words say
+        the sessions follow it."""
         s = _fleet()
         code, out, err = run(s, "switch", "5")
         assert code == 0, err
         assert out.splitlines() == [
             "Switched #1 personal → #5 ci (API key)",
-            "Claude Code sessions started from now on use the key.",
+            "Running Claude Code sessions move to the key within a few seconds. #1 personal",
+            "stays logged in underneath. claude.ai connectors are unavailable while a key is",
+            "in use.",
         ]
         assert "within 30 seconds" not in out and "next message" not in out
 
@@ -531,6 +556,7 @@ class TestGuard:
         self, temp_home, block_real_keychain, alive, run
     ):
         s = _fleet()
+        _no_helper(temp_home)
         _write_sessions(temp_home, PIDS)
         alive.update(PIDS)
         for flags in (["--force"], ["--anyway"], ["--anyway", "--force"]):
@@ -546,6 +572,9 @@ class TestRotation:
         s.add_account_from_token(SETUP_TOKEN.replace("p1", "q2"), email="sam@example.com", slot=7)
         return s
 
+    # Part 2: rotation moves among subscriptions only, whether or not
+    # sessions run; an API-key account is entered by naming it.
+
     def test_rotation_skips_api_key_accounts_while_sessions_run(
         self, temp_home, block_real_keychain, alive, run
     ):
@@ -554,11 +583,7 @@ class TestRotation:
         alive.update({4101, 4102})
         code, out, err = run(s, "switch")
         assert code == 0, err
-        lines = out.splitlines()
-        assert lines[:2] == [
-            "Skipped #5 ci: an API-key account, and 2 Claude Code sessions are running.",
-            "Skipped #6 ops: an API-key account, and 2 Claude Code sessions are running.",
-        ]
+        assert "Skipped #5" not in out and "Skipped #6" not in out
         assert s.current_account_number() == "7"
 
     def test_json_rotation_names_the_skip(self, temp_home, block_real_keychain, alive, run):
@@ -568,7 +593,7 @@ class TestRotation:
         code, out, _err = run(s, "switch", "--json")
         assert code == 0
         payload = json.loads(out)
-        assert "Skipped Account-5 (API-key account, 2 sessions running)" in payload["warnings"]
+        assert not any("Account-5" in w for w in payload["warnings"])
         assert payload["to"]["number"] == 7
 
     def test_rotation_with_nothing_left_stays_and_says_how(
@@ -580,16 +605,18 @@ class TestRotation:
         code, out, _err = run(s, "switch")
         assert code == 0
         assert s.current_account_number() == "1"
-        assert "qswap switch 5 --log-out-sessions" in out
+        assert "use an API-key account by naming it: qswap switch 5" in " ".join(out.split())
 
     def test_rotation_lands_on_a_key_with_no_sessions(
         self, temp_home, block_real_keychain, alive, run
     ):
+        """Not any more: with no sessions running, rotation still stays among
+        subscriptions."""
         s = _fleet()
         code, out, _err = run(s, "switch")
         assert code == 0
-        assert s.current_account_number() == "5"
-        assert "Claude Code sessions started from now on use the key." in out
+        assert s.current_account_number() == "1"
+        assert "qswap switch 5" in out
 
 
 class TestLeavingAKey:
@@ -651,6 +678,7 @@ class TestLeavingAKey:
     ):
         s = _fleet()
         s.switch_to("5", json_output=True, log_out_sessions=True)
+        _no_helper(temp_home)
         _write_sessions(temp_home, [4102], started_at=time.time() + 5)
         alive.add(4102)
         with pytest.raises(SessionsRunningError) as caught:
@@ -658,6 +686,7 @@ class TestLeavingAKey:
         text = str(caught.value).replace("\n", " ")
         assert "Not logged in" not in text
         assert "started while #5 ci was active keep using its key" in text
+        assert isinstance(caught.value, KeyHelperUnavailableError)
 
 
 class TestEnvironment:
@@ -742,7 +771,12 @@ class TestEngine:
     def test_never_lands_on_a_key_while_sessions_run_and_notifies_once(
         self, temp_home, alive
     ):
+        """Part 2: through the key helper the engine moves onto a key while
+        sessions run (tests/test_key_helper_live.py). Where the helper cannot
+        be added it never takes the saved-key path by itself, and says so
+        once."""
         h = self._harness(temp_home)
+        _no_helper(temp_home)
         _write_sessions(temp_home, PIDS)
         alive.update(PIDS)
         notifier = Notifier()
@@ -753,13 +787,13 @@ class TestEngine:
             assert h.active_number() == 1
         held = [
             e for e in h.events
-            if isinstance(e, NoSwitchEvent) and e.reason == "api-key-sessions"
+            if isinstance(e, NoSwitchEvent) and e.reason == "key-helper-unavailable"
         ]
         assert len(held) == 3
-        assert held[0].to_json()["reason"] == "api-key-sessions"
+        assert held[0].to_json()["reason"] == "key-helper-unavailable"
         assert held[0].human() == (
-            "Not switching to #2 ci: it is an API-key account and 6 running "
-            "sessions could not follow"
+            "Not switching to #2 ci: qswap cannot add its key helper to Claude "
+            "Code's settings. qswap doctor says why"
         )
         for event in h.events:
             note = notifier.event("claude", event, both=False, now=0.0)
@@ -769,6 +803,7 @@ class TestEngine:
 
     def test_a_new_episode_notifies_again(self, temp_home, alive):
         h = self._harness(temp_home)
+        _no_helper(temp_home)
         _write_sessions(temp_home, PIDS)
         alive.update(PIDS)
         notifier = Notifier()
@@ -788,25 +823,22 @@ class TestEngine:
         assert h.active_number() == 2
 
     def test_a_refusal_at_switch_time_is_the_same_decision(self, temp_home, alive):
-        """Sessions that start between the decision and the switch."""
+        """Another helper set between the decision and the switch (part 2:
+        sessions no longer bar the move, the helper's availability does)."""
         h = self._harness(temp_home)
-        real = h.switcher.shared_login_scan
+        _no_helper(temp_home)
         calls = {"n": 0}
 
-        def sessions_after_the_decision():
+        def available_at_the_decision():
             calls["n"] += 1
-            if calls["n"] == 1:
-                return [], 0
-            _write_sessions(temp_home, [4101])
-            alive.add(4101)
-            return real()
+            return calls["n"] == 1
 
-        with patch.object(h.switcher, "shared_login_scan", sessions_after_the_decision):
+        with patch.object(h.switcher, "key_helper_available", available_at_the_decision):
             outcome = h.tick_with_usage(self.EXHAUSTED)
         assert outcome is TickOutcome.BLOCKED
         assert h.active_number() == 1
         assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)][-1] == (
-            "api-key-sessions"
+            "key-helper-unavailable"
         )
 
 
@@ -841,12 +873,15 @@ class TestMenuBar:
 
     def test_the_real_refusal_becomes_the_question(self, temp_home, block_real_keychain, alive):
         s = _fleet()
+        _no_helper(temp_home)
         _write_sessions(temp_home, PIDS)
         alive.update(PIDS)
         with pytest.raises(SessionsRunningError) as caught:
             s.switch_to("5", json_output=True)
-        title, _message, _button = menubar.api_key_switch_question(caught.value)
-        assert title == "Log out 6 running sessions?"
+        title, message, button = menubar.api_key_switch_question(caught.value)
+        assert title == "Use the saved key instead?"
+        assert "6 Claude Code sessions are running" in message
+        assert button == "Switch and log out sessions"
 
     def test_followup_for_a_key_never_says_the_generic_line(self):
         result = {"switched": True, "followup": [
@@ -985,7 +1020,12 @@ class TestUnreadableSessions:
             '{"pid": %d, "sessionId": "s-41' % pid, encoding="utf-8"
         )
 
+    # Part 2: through the key helper session records do not matter (the
+    # sessions follow it). Where the helper cannot be added, the refusal
+    # still counts them, and "could not tell" is still never "nobody there".
+
     def _refused(self, s) -> SessionsRunningError:
+        _no_helper(Path.home())
         with pytest.raises(SessionsRunningError) as caught:
             s.switch_to("5", json_output=True)
         return caught.value
@@ -998,7 +1038,7 @@ class TestUnreadableSessions:
         before = _state(s, block_real_keychain)
         error = self._refused(s)
         assert (error.sessions, error.unreadable) == (0, 1)
-        assert "could not read Claude Code's session records" in str(error).replace("\n", " ")
+        assert "could not read the Claude Code session records" in str(error).replace("\n", " ")
         assert _state(s, block_real_keychain) == before
         assert _has_login(block_real_keychain)
 
@@ -1013,12 +1053,14 @@ class TestUnreadableSessions:
                 json.dumps({"processId": pid, "sessionId": f"s-{pid}"}), encoding="utf-8"
             )
         alive.update(PIDS)
+        _no_helper(temp_home)
         code, out, err = run(s, "switch", "5")
         assert code == 1
         assert "Switched" not in out
         assert err.startswith(
-            "Error: not switched. #5 ci is an API-key account, and qswap could not read\n"
+            "Error: not switched. qswap cannot add the key helper for #5 ci to the Claude\n"
         )
+        assert "could not read the Claude Code session records" in " ".join(err.split())
         assert "qswap switch 5 --log-out-sessions" in err
         assert all(len(line) <= 80 for line in err.splitlines())
         assert s.current_account_number() == "1"
@@ -1061,10 +1103,11 @@ class TestUnreadableSessions:
         s = _fleet()
         self._torn(temp_home)
         alive.add(4101)
+        _no_helper(temp_home)
         code, out, _err = run(s, "switch", "5", "--json")
         assert code == 1
         error = json.loads(out)["error"]
-        assert error["type"] == "SessionsRunningError"
+        assert error["type"] == "KeyHelperUnavailableError"
         assert (error["sessions"], error["unreadable"]) == (0, 1)
 
     def test_readable_sessions_keep_their_count(self, temp_home, block_real_keychain, alive):
@@ -1089,31 +1132,31 @@ class TestUnreadableSessions:
         alive.add(4101)
         code, out, err = run(s, "switch")
         assert code == 0, err
-        assert out.splitlines()[0] == (
-            "Skipped #5 ci: an API-key account, and running sessions could not be counted."
-        )
+        assert "Skipped #5" not in out  # not in rotation at all now
         assert s.current_account_number() == "7"
 
     def test_the_engine_holds(self, temp_home, alive):
+        """Part 2: the hold is the key helper's, not the session count's
+        (unreadable records do not stop a move through the helper)."""
         h = TestEngine()._harness(temp_home)
         self._torn(temp_home)
         alive.add(4101)
+        _no_helper(temp_home)
         assert h.tick_with_usage(TestEngine.EXHAUSTED) is TickOutcome.BLOCKED
         assert h.active_number() == 1
         held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
-        assert held.reason == "api-key-sessions"
-        assert held.human() == (
-            "Not switching to #2 ci: it is an API-key account and running sessions "
-            "could not be counted"
-        )
+        assert held.reason == "key-helper-unavailable"
 
     def test_the_engine_holds_when_the_reader_raises(self, temp_home, alive, monkeypatch):
+        """A provider without a key helper still holds when sessions cannot
+        be counted (the engine's part 1 rule, kept for such hosts)."""
         h = TestEngine()._harness(temp_home)
 
         def boom():
             raise RuntimeError("detection broke")
 
         monkeypatch.setattr(h.switcher, "shared_login_blocking", boom)
+        monkeypatch.setattr(h.engine, "_key_helper_ready", lambda: None)
         assert h.tick_with_usage(TestEngine.EXHAUSTED) is TickOutcome.BLOCKED
         assert h.active_number() == 1
 
@@ -1122,8 +1165,8 @@ class TestUnreadableSessions:
         self._torn(temp_home)
         alive.add(4101)
         title, message, button = menubar.api_key_switch_question(self._refused(s))
-        assert title == "Could not count the running sessions"
-        assert message.startswith("#5 ci is an API-key account, and qswap could not read")
+        assert title == "Use the saved key instead?"
+        assert "could not read the Claude Code session records" in message
         assert button == "Switch and log out sessions"
 
 
@@ -1140,6 +1183,9 @@ class TestFreshMachineRotation:
         data["activeAccountNumber"] = active
         s._write_json(s.sequence_file, data)
 
+    # Part 2: a rotation never lands on a key, so with only keys left it
+    # names the way to use one (by name), sessions or not.
+
     def test_it_names_the_flag_not_enable(self, temp_home, block_real_keychain, alive, run):
         s = _fleet()
         self._logged_out(s, [5, 6], 5)
@@ -1147,9 +1193,9 @@ class TestFreshMachineRotation:
         alive.update(PIDS)
         code, out, err = run(s, "switch")
         assert code == 1
-        assert "Skipped #5 ci: an API-key account, and 6 Claude Code sessions are running." in out
+        assert "Skipped #5" not in out
         assert "qswap enable" not in err
-        assert err.splitlines()[-1] == "  qswap switch 5 --log-out-sessions"
+        assert err.splitlines()[-1] == "  qswap switch 5"
         assert all(len(line) <= 80 for line in err.splitlines()), err
         assert s._get_sequence_data()["activeAccountNumber"] == 5
 
@@ -1165,16 +1211,19 @@ class TestFreshMachineRotation:
         alive.add(4101)
         code, _out, err = run(s, "switch")
         assert code == 1
-        assert "qswap switch 5 --log-out-sessions" in err
+        assert err.splitlines()[-1] == "  qswap switch 5"
 
     def test_with_no_sessions_it_lands_on_the_key(
         self, temp_home, block_real_keychain, alive, run
     ):
+        """Not any more: a key is entered by naming it."""
         s = _fleet()
         self._logged_out(s, [5, 6], 5)
         code, _out, err = run(s, "switch")
-        assert code == 0, err
-        assert s._get_sequence_data()["activeAccountNumber"] == 5
+        assert code == 1
+        assert err.splitlines()[-1] == "  qswap switch 5"
+        s.switch_to("5", json_output=True)
+        assert s.current_account_number() == "5"
 
 
 class TestReactivatingTheActiveKey:
@@ -1199,8 +1248,14 @@ class TestReactivatingTheActiveKey:
         )
         _write_sessions(temp_home, [4101])
         alive.add(4101)
+        # Part 2: the key goes in through the helper line, which logs no one
+        # out, and the login in the item is left where it is.
+        result = s.switch_to("5", json_output=True, force=True)
+        assert result["how"] == "helper"
+        assert _has_login(block_real_keychain)
         with pytest.raises(SessionsRunningError):
-            s.switch_to("5", json_output=True, force=True)
+            _no_helper(temp_home)
+            s.switch_to("6", json_output=True)
 
 
 class TestKeyToKeyQuestion:
@@ -1209,13 +1264,14 @@ class TestKeyToKeyQuestion:
     ):
         s = _fleet()
         s.switch_to("5", json_output=True, log_out_sessions=True)
+        _no_helper(temp_home)
         _write_sessions(temp_home, [4102], started_at=time.time() + 5)
         alive.add(4102)
         with pytest.raises(SessionsRunningError) as caught:
             s.switch_to("6")
         assert caught.value.from_key is True
         title, _message, button = menubar.api_key_switch_question(caught.value)
-        assert title == "Switch keys with 1 session running?"
+        assert title == "Use the saved key instead?"
         assert button == "Switch anyway"
         assert "log out" not in (title + button).lower()
 
@@ -1223,7 +1279,7 @@ class TestKeyToKeyQuestion:
         from ai_quota_swap import helptext
 
         text = helptext._switch().format_help()
-        assert "those on a subscription stop with" in " ".join(text.split())
+        assert "sessions running on a subscription stop with" in " ".join(text.split())
 
 
 class TestAmbiguousEmail:

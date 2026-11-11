@@ -30,6 +30,11 @@ NOTIFY_TITLE = "ai-quota-swap"
 # unconditional drop is how a broken auto-switch looked healthy for two days.
 ENGINE_ERROR_REPEAT_S = 3600.0
 
+#: The engine holds that a notification says once per episode: it will not
+#: move onto an API key because sessions could not follow (no key helper) or
+#: because the key helper cannot be added (docs/design/api-key-sessions.md).
+_KEY_HOLDS = ("api-key-sessions", "key-helper-unavailable")
+
 
 @dataclass(frozen=True)
 class Notification:
@@ -181,17 +186,20 @@ class Notifier:
         context = getattr(event, "context", None)
         if kind == "switch":
             self.forget(provider, "exhausted")
-            self.forget(provider, "api-key-sessions")
+            for held in _KEY_HOLDS:
+                self.forget(provider, held)
             return Notification(switch_text(provider, event, both=both))
         if kind == "no-switch":
-            if getattr(event, "reason", "") != "api-key-sessions":
+            reason = getattr(event, "reason", "")
+            if reason not in _KEY_HOLDS:
                 # The engine decided something else: that episode is over.
-                self.forget(provider, "api-key-sessions")
+                for held in _KEY_HOLDS:
+                    self.forget(provider, held)
                 return None
             from ai_quota_swap.autolog import number_label
 
             number = getattr(event, "account", None)
-            if not self._once(("api-key-sessions", provider, str(number))):
+            if not self._once((reason, provider, str(number))):
                 return None
             label = number_label(number, "", context) if number else ""
             return Notification(_prefix(event.human(), label, provider, both))
