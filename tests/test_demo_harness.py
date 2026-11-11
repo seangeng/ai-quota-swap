@@ -16,6 +16,10 @@ audit hook, which must never land in the pytest process. The tests prove:
   the suite's conftest installs;
 * each scenario shows the state it is named for (first run, a mixed fleet,
   Codex attribution in ``qswap usage``, failure states);
+* the menu bar drawing (``--menubar --html``) draws every row ``build_menu``
+  returns, in both themes, opens the submenu it is asked to and refuses one
+  that does not exist, references nothing outside the page, and its frames
+  follow the menu bar's own engine;
 * the scenarios use invented identities only.
 """
 
@@ -27,6 +31,7 @@ import re
 import subprocess
 import sys
 import textwrap
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -485,6 +490,415 @@ class TestScenarioStates:
         poll, no_switch = (json.loads(line) for line in r.stdout.strip().splitlines()[-2:])
         assert poll["headroomPct"]["4"] == 70.0
         assert no_switch["reason"] == "no-comparison"
+
+
+class _Drawing(HTMLParser):
+    """A menu bar page read back: the status item's title and each menu's
+    rows in drawing order (None for a separator)."""
+
+    def __init__(self, page: str) -> None:
+        super().__init__()
+        self.menus: list[dict] = []
+        self.status = ""
+        self.stage_classes: set[str] = set()
+        self.sources: list[str] = []
+        self._text: dict | None = None
+        self._in_status = False
+        self.feed(page)
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        classes = set((a.get("class") or "").split())
+        for key in ("src", "href"):
+            if a.get(key):
+                self.sources.append(a[key])
+        if a.get("id") == "stage":
+            self.stage_classes = classes
+        if a.get("id") == "status":
+            self._in_status = True
+        elif "menu" in classes:
+            self.menus.append({"level": int(a["data-level"]), "title": a.get("data-title"), "rows": []})
+        elif "item" in classes:
+            self.menus[-1]["rows"].append({"classes": classes, "text": ""})
+        elif "sep" in classes:
+            self.menus[-1]["rows"].append(None)
+        elif tag == "span" and classes == {"t"}:
+            self._text = self.menus[-1]["rows"][-1]
+
+    def handle_endtag(self, tag):
+        if tag == "span":
+            self._text = None
+            self._in_status = False
+
+    def handle_data(self, data):
+        if self._text is not None:
+            self._text["text"] += data
+        elif self._in_status:
+            self.status += data
+
+    def outline(self, level: int) -> list[str]:
+        """One drawn menu in ``Menu.outline``'s words, without the indent."""
+        menu = next(m for m in self.menus if m["level"] == level)
+        lines = []
+        for row in menu["rows"]:
+            if row is None:
+                lines.append("────")
+                continue
+            c = row["classes"]
+            text = ("✓ " if "checked" in c else "  ") + ("⚠ " if "attention" in c else "") + row["text"]
+            if "submenu" in c:
+                text += " ▸"
+            elif "heading" in c:
+                text += "  (heading)"
+            elif "disabled" in c:
+                text += "  (greyed)"
+            lines.append(text)
+        return lines
+
+    def selected(self, level: int) -> list[str]:
+        menu = next(m for m in self.menus if m["level"] == level)
+        return [r["text"] for r in menu["rows"] if r is not None and "selected" in r["classes"]]
+
+
+def _outline_rows(stdout: str, parents: tuple[str, ...] = ()) -> tuple[str, list[str]]:
+    """``(title, rows)`` from a printed outline: the menu's own rows, or with
+    ``parents`` the rows of that submenu, each without its indent."""
+    lines = stdout.rstrip("\n").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("title: "))
+    title, body = lines[start][len("title: "):], lines[start + 1:]
+
+    def depth(line: str) -> int:
+        n = len(line) - len(line.lstrip(" "))
+        rest = line[n:]
+        return n // 4 if rest.startswith(("✓", "────")) else (n - 2) // 4
+
+    rows = [(depth(line), line) for line in body]
+    lo, hi, level = 0, len(rows), 0
+    for name in parents:
+        lo = next(i for i in range(lo, hi)
+                  if rows[i][0] == level and rows[i][1][4 * level:].endswith(f"{name} ▸")
+                  and rows[i][1][4 * level + 2:].startswith(name))
+        end = next((i for i in range(lo + 1, hi) if rows[i][0] <= level), hi)
+        lo, hi, level = lo + 1, end, level + 1
+    return title, [line[4 * level:] for d, line in rows[lo:hi] if d == level]
+
+
+@pytest.fixture(scope="module")
+def drawn(tmp_path_factory) -> dict:
+    """The menu bar drawn six ways: both themes, a submenu open, two open,
+    a key chosen by hand, and the hero's window behind the menu."""
+    out = tmp_path_factory.mktemp("menubar-drawing")
+    runs = {
+        "dark": ["showcase", "--menubar", "--auto-switch"],
+        "light": ["showcase", "--menubar", "--theme", "light"],
+        "resets": ["showcase", "--menubar", "--open", "Use a reset", "--highlight", "Codex #2"],
+        "nested": ["showcase", "--menubar", "--open", "Settings > Use resets automatically"],
+        "key": ["fleet", "--menubar", "--", "switch", "5"],
+        "hero": ["showcase", "--menubar", "--beside", str(REPO / "assets" / "screenshots" / "raw" / "dashboard.png")],
+    }
+    results = {}
+    for name, args in runs.items():
+        page = out / f"{name}.html"
+        head, tail = (args[:args.index("--")], args[args.index("--"):]) if "--" in args else (args, [])
+        r = _run([*head, "--html", str(page), *tail])
+        assert r.returncode == 0, (name, r.stderr)
+        assert "crossed the sandbox" not in r.stderr, name
+        results[name] = (r.stdout, page.read_text(encoding="utf-8"))
+    return results
+
+
+class TestMenuBarDrawing:
+    """``run.py --menubar --html`` draws the rows ``build_menu`` returns (the
+    outline it prints is the same ``Menu``), in both themes, with a named
+    submenu open, and references nothing outside the page."""
+
+    @pytest.mark.parametrize("name", ["dark", "light", "key"])
+    def test_every_row_of_the_menu_is_drawn(self, drawn, name):
+        stdout, page = drawn[name]
+        title, rows = _outline_rows(stdout)
+        d = _Drawing(page)
+        assert d.status == title
+        assert [m["level"] for m in d.menus] == [0]  # no submenu open
+        assert d.outline(0) == rows
+        assert d.selected(0) == []
+
+    def test_both_themes(self, drawn):
+        _, dark = drawn["dark"]
+        _, light = drawn["light"]
+        assert _Drawing(dark).stage_classes >= {"stage", "dark"}
+        assert _Drawing(light).stage_classes >= {"stage", "light"}
+        assert '<meta name="color-scheme" content="light">' in light
+        # The same rows whatever the theme (auto-switch aside).
+        assert _Drawing(dark).outline(0)[2:] == _Drawing(light).outline(0)[2:]
+
+    def test_the_drawing_shows_what_the_menu_says(self, drawn):
+        stdout, page = drawn["dark"]
+        assert "Auto-switch running for Claude Code and Codex" in stdout
+        rows = _Drawing(page).outline(0)
+        assert "✓ #1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset" in rows
+        assert "  ⚠ #3 night-shift · 5h 93% · 7d 81% · Fable 97% · 1 five-hour reset" in rows
+        assert "  Claude Code accounts  (heading)" in rows
+        assert "  Use a reset ▸" in rows
+        # A key chosen by hand: its row checked, the login underneath named.
+        key = _Drawing(drawn["key"][1])
+        assert key.status == "⇄ ci"
+        assert any(r.startswith("✓ #5 ci · API key · over #1 personal") for r in key.outline(0))
+        assert any(r.startswith("  #1 personal · underneath") for r in key.outline(0))
+
+    def test_a_named_submenu_opens_beside_the_menu(self, drawn):
+        stdout, page = drawn["resets"]
+        d = _Drawing(page)
+        assert [(m["level"], m["title"]) for m in d.menus] == [(1, "Use a reset"), (0, None)]
+        assert d.outline(0) == _outline_rows(stdout)[1]
+        assert d.outline(1) == _outline_rows(stdout, ("Use a reset",))[1]
+        assert d.selected(0) == ["Use a reset"]  # the open submenu's parent row
+        assert d.selected(1) == ["Codex #2 work · reset credit · clears all usage"]
+        stdout, page = drawn["nested"]
+        d = _Drawing(page)
+        assert [m["title"] for m in d.menus] == ["Use resets automatically", "Settings", None]
+        assert d.outline(1) == _outline_rows(stdout, ("Settings",))[1]
+        assert d.outline(2) == _outline_rows(stdout, ("Settings", "Use resets automatically"))[1]
+        assert d.selected(0) == ["Settings"] and d.selected(1) == ["Use resets automatically"]
+
+    def test_an_unknown_submenu_or_row_is_refused(self, tmp_path):
+        page = tmp_path / "menu.html"
+        r = _run(["showcase", "--menubar", "--html", str(page), "--open", "Use a rest"])
+        assert r.returncode == 2
+        assert "no submenu 'Use a rest' in the menu" in r.stderr
+        assert "'Use a reset'" in r.stderr  # it names the ones there are
+        assert not page.exists()
+        r = _run(["showcase", "--menubar", "--html", str(page), "--open", "Settings > Nope"])
+        assert r.returncode == 2 and "no submenu 'Nope' in submenu 'Settings'" in r.stderr
+        # An information row cannot be under the pointer.
+        r = _run(["showcase", "--menubar", "--html", str(page), "--highlight", "Today $"])
+        assert r.returncode == 2 and "no clickable row starting 'Today $'" in r.stderr
+        r = _run(["showcase", "--open", "Settings", "--", "list"])
+        assert r.returncode == 2 and "go with --menubar" in r.stderr
+
+    @pytest.mark.parametrize("name", ["dark", "light", "resets", "nested", "key", "hero"])
+    def test_the_page_references_nothing_outside_itself(self, drawn, name):
+        _, page = drawn[name]
+        assert "http://" not in page and "https://" not in page
+        assert "<script" not in page and "<link" not in page
+        assert "@import" not in page and "url(" not in page
+        assert all(s.startswith("data:image/png;base64,") for s in _Drawing(page).sources)
+        assert bool(_Drawing(page).sources) == (name == "hero")  # the window behind the menu
+        assert str(_real_home()) not in page
+
+    def test_frames_follow_the_engine(self, tmp_path):
+        # The menu bar's own engine, hosted as the app hosts it, climbs past
+        # its line and switches; a frame is drawn after each check.
+        r = _run(["autoswitch", "--menubar", "--auto-switch", "--frames", str(tmp_path),
+                  "--ticks", "3"])
+        assert r.returncode == 0, r.stderr
+        assert "crossed the sandbox" not in r.stderr
+        titles = [(tmp_path / f"frame-{i:02d}.txt").read_text().splitlines()[0] for i in range(3)]
+        assert titles == ["title: ⇄ personal · 86% · 38%", "title: ⇄ personal · 88% · 38%",
+                          "title: ⇄ work · 12% · 21%"]
+        last = (tmp_path / "frame-02.txt").read_text()
+        assert "Auto-switch running · usage read" in last
+        assert "  ⚠ #1 personal · 5h 91%" in last
+        assert "#1 personal → #2 work · 2026-11-10 14:22" in last
+        for i in range(3):
+            closed = _Drawing((tmp_path / f"frame-{i:02d}-closed.html").read_text())
+            assert "closed" in closed.stage_classes
+            assert closed.status == titles[i].removeprefix("title: ")
+
+
+QUICKSTART = ["add", "--alias", "work", "++", "list", "++", "switch", "1", "++", "status"]
+
+
+class _Typed(HTMLParser):
+    """A typing page read back: each command's text and its output's text."""
+
+    def __init__(self, page: str) -> None:
+        super().__init__()
+        self.commands: dict[str, str] = {}
+        self.outputs: dict[str, str] = {}
+        self.sources: list[str] = []
+        self.scripts: list[dict] = []
+        self._into: tuple[dict, str] | None = None
+        self._depth = 0
+        self._script: dict | None = None
+        self.feed(page)
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        for key in ("src", "href"):
+            if a.get(key):
+                self.sources.append(a[key])
+        if tag == "script":
+            self._script = {"type": a.get("type"), "id": a.get("id"), "text": ""}
+            self.scripts.append(self._script)
+            return
+        ident = a.get("id") or ""
+        if self._into is not None:
+            self._depth += 1
+        elif ident.startswith("cmd"):
+            self._into, self._depth = (self.commands, ident[3:]), 1
+            self.commands[ident[3:]] = ""
+        elif ident.startswith("out"):
+            self._into, self._depth = (self.outputs, ident[3:]), 1
+            self.outputs[ident[3:]] = ""
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self._script = None
+        elif self._into is not None:
+            self._depth -= 1
+            if not self._depth:
+                self._into = None
+
+    def handle_data(self, data):
+        if self._script is not None:
+            self._script["text"] += data
+        elif self._into is not None:
+            store, key = self._into
+            store[key] += data
+
+
+@pytest.fixture(scope="module")
+def typed(tmp_path_factory) -> dict:
+    """The quick start's typing page, written twice, and the same commands'
+    plain output on the same scenario."""
+    out = tmp_path_factory.mktemp("typing")
+    pages = []
+    for name in ("a.html", "b.html"):
+        r = _run(["quickstart", "--width", "80", "--height", "22", "--typing", "--zoom", "1.8",
+                  "--html", str(out / name), "--", *QUICKSTART])
+        assert r.returncode == 0, r.stderr
+        assert "crossed the sandbox" not in r.stderr
+        pages.append((out / name).read_text(encoding="utf-8"))
+    plain = _run(["quickstart", "--width", "80", "--", *QUICKSTART])
+    assert plain.returncode == 0, plain.stderr
+    return {"pages": pages, "plain": plain.stdout}
+
+
+class TestTypingPage:
+    """``run.py --typing``: the commands typed one after another, each
+    answered with what it really printed (``typing_page.py``)."""
+
+    def test_the_same_state_writes_the_same_page(self, typed):
+        a, b = typed["pages"]
+        assert a == b
+
+    def test_each_command_shows_its_real_output(self, typed):
+        page = _Typed(typed["pages"][0])
+        assert list(page.commands.values()) == [
+            "qswap add --alias work", "qswap list", "qswap switch 1", "qswap status",
+        ]
+        # The text of every output, in order, is what the commands print
+        # without a terminal (colour aside).
+        shown = "".join(page.outputs[str(i)].rstrip("\n") + "\n" for i in range(4))
+        assert shown == typed["plain"]
+        assert page.outputs["0"] == "Added #2 work (maya@northwind.example.com)"
+        assert page.outputs["2"].startswith("Switched #2 work → #1 personal (maya@example.com)\n")
+        assert "#1 personal (maya@example.com) · active · Max 20x" in page.outputs["3"]
+
+    def test_the_timeline_types_every_command_in_order(self, typed):
+        page = _Typed(typed["pages"][0])
+        data = {s["id"]: s for s in page.scripts if s["type"] == "application/json"}
+        commands = json.loads(data["commands"]["text"])
+        events = json.loads(data["timeline"]["text"])
+        assert [e["at"] for e in events] == sorted(e["at"] for e in events)
+        assert events[0]["kind"] == "clear" and events[-1]["kind"] == "end"
+        for b, command in enumerate(commands):
+            typed_chars = [e["chars"] for e in events if e["kind"] == "type" and e["block"] == b]
+            assert typed_chars == list(range(1, len(command) + 1))
+        kinds = [(e["kind"], e["block"]) for e in events if e["kind"] in ("enter", "output")]
+        assert kinds == [(k, b) for b in range(4) for k in ("enter", "output")]
+        assert 10_000 <= events[-1]["at"] <= 16_000  # a README recording's length
+
+    def test_the_page_references_nothing_outside_itself(self, typed):
+        page = typed["pages"][0]
+        assert "http://" not in page and "https://" not in page
+        assert "<link" not in page and "@import" not in page and "url(" not in page
+        parsed = _Typed(page)
+        assert parsed.sources == []  # every script is inline
+        assert str(_real_home()) not in page
+
+
+@pytest.fixture(scope="module")
+def played(tmp_path_factory) -> dict:
+    """The menu bar after two engine checks, drawn at one size, and the
+    player page built from those drawings twice."""
+    sys.path.insert(0, str(DEMO))
+    try:
+        import player_page
+    finally:
+        sys.path.remove(str(DEMO))
+    frames = tmp_path_factory.mktemp("menubar-frames")
+    r = _run(["autoswitch", "--menubar", "--auto-switch", "--ticks", "2", "--size", "760x480",
+              "--frames", str(frames)])
+    assert r.returncode == 0, r.stderr
+    drawings = [(frames / name).read_text(encoding="utf-8")
+                for name in ("frame-00.html", "frame-00-closed.html", "frame-01-closed.html")]
+    shots = [
+        player_page.Shot(drawings[0], hold_ms=2000),
+        player_page.Shot(drawings[1], hold_ms=1500, fade_ms=200, zoom=True),
+        player_page.Shot(drawings[2], hold_ms=1500, fade_ms=120, zoom=True),
+    ]
+    pages = [player_page.page(shots, width=760, height=480, scale=1.5) for _ in range(2)]
+    return {"drawings": drawings, "pages": pages, "shots": shots,
+            "duration": player_page.duration_ms(shots)}
+
+
+class _Played(HTMLParser):
+    def __init__(self, page: str) -> None:
+        super().__init__()
+        self.frames: list[dict] = []
+        self.sources: list[str] = []
+        self.timeline = ""
+        self._json = False
+        self.feed(page)
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "iframe":
+            self.frames.append(a)
+        elif a.get("src") or a.get("href"):
+            self.sources.append(a.get("src") or a.get("href"))
+        self._json = tag == "script" and a.get("id") == "timeline"
+
+    def handle_endtag(self, tag):
+        self._json = False
+
+    def handle_data(self, data):
+        if self._json:
+            self.timeline += data
+
+
+class TestPlayerPage:
+    """``player_page.py`` plays menu bar drawings (``--frames``) in order:
+    each shot is a drawing as the renderer made it, and nothing else."""
+
+    def test_the_same_drawings_make_the_same_page(self, played):
+        a, b = played["pages"]
+        assert a == b
+
+    def test_every_shot_is_a_drawing_unchanged(self, played):
+        page = _Played(played["pages"][0])
+        assert [f["srcdoc"] for f in page.frames] == played["drawings"]
+        titles = [_Drawing(f["srcdoc"]).status for f in page.frames]
+        assert titles == ["⇄ personal · 86% · 38%"] * 2 + ["⇄ personal · 88% · 38%"]
+        assert ["zoomed" in f["class"] for f in page.frames] == [False, True, True]
+        assert "on" in page.frames[0]["class"].split()  # the first frame shows before the play
+
+    def test_the_timeline_shows_each_shot_in_turn(self, played):
+        events = json.loads(_Played(played["pages"][0]).timeline)
+        assert events == [
+            {"at": 2000, "kind": "show", "shot": 1, "ms": 200},
+            {"at": 3500, "kind": "show", "shot": 2, "ms": 120},
+            {"at": 5000, "kind": "end"},
+        ]
+        assert played["duration"] == 5000
+
+    def test_the_page_references_nothing_outside_itself(self, played):
+        page = played["pages"][0]
+        assert "http://" not in page and "https://" not in page
+        assert "<link" not in page and "@import" not in page and "url(" not in page
+        assert _Played(page).sources == []
+        assert str(_real_home()) not in page
 
 
 class TestHarnessPieces:
