@@ -10,6 +10,8 @@ logic. It is split so that everything it says can be tested without
   state into the complete menu (title, sections, rows with their text,
   checked/disabled/attention state and an :class:`Action`); the title; the
   health row; the dialogs' words. Pure: no I/O, no clock unless passed in.
+- ``menubar_chart``: the cost row's data and the description of its
+  seven-day chart; ``menubar_chart_view`` draws that description (AppKit).
 - ``menubar_notify``: notification text and de-duplication.
 - ``menubar_engines``: hosting one engine per provider in its own thread,
   and noticing active-account changes made outside the menu bar.
@@ -17,6 +19,9 @@ logic. It is split so that everything it says can be tested without
   always run off the main thread.
 - ``menubar_app``: the ``rumps`` glue, which only draws a :class:`Menu` and
   maps each :class:`Action` to a handler.
+
+The cost row's types (``CostSummary``) live in ``menubar_chart`` and are
+re-exported here.
 
 Every word comes from :mod:`ai_quota_swap.display`, :mod:`ai_quota_swap.labels`
 and :mod:`ai_quota_swap.autolog`, so a state reads the same here as in
@@ -47,6 +52,7 @@ from ai_quota_swap.exceptions import (
 )
 from ai_quota_swap.fsutil import atomic_write_text
 from ai_quota_swap.labels import account_label, is_placeholder, shown_email
+from ai_quota_swap.menubar_chart import CostSummary, UsageChart, build_chart
 from ai_quota_swap.menubar_engines import (  # noqa: F401  (re-exported)
     EngineStoppedEvent,
     engine_exit_applies,
@@ -153,6 +159,7 @@ class MenuBarSettings:
     auto_switch_enabled: bool = False
     codex_auto_switch_enabled: bool = False
     title_follows: str = "claude"  # one of TITLE_FOLLOWS_CHOICES
+    usage_chart: bool = True  # the cost row as a seven-day chart by account
     extra: dict = field(default_factory=dict, compare=False, repr=False)
 
     @classmethod
@@ -695,25 +702,6 @@ class EngineState:
 
 
 @dataclass(frozen=True)
-class CostSummary:
-    """Today's and the last seven days' estimated cost from the ledger, both
-    providers together (``qswap usage``'s totals)."""
-
-    today: float
-    week: float
-    today_unpriced: int = 0
-    week_unpriced: int = 0
-
-    def text(self) -> str:
-        """``Today $12.40 · 7 days $179.72 (estimated)``."""
-        from ai_quota_swap.ledger.report import Totals, fmt_cost
-
-        today = fmt_cost(Totals(cost=self.today, unpriced_tokens=self.today_unpriced))
-        week = fmt_cost(Totals(cost=self.week, unpriced_tokens=self.week_unpriced))
-        return f"Today {today} · 7 days {week} (estimated)"
-
-
-@dataclass(frozen=True)
 class MenuInput:
     """Everything :func:`build_menu` reads."""
 
@@ -763,7 +751,8 @@ class Row:
     """One menu row. A row without an action is information (drawn greyed
     out); ``children`` make it a submenu; ``checked`` draws a check mark;
     ``attention`` marks a state that needs the user (needs re-login, a limit
-    reached, an engine that stopped)."""
+    reached, an engine that stopped). ``chart``, on the cost row, is drawn
+    in place of the row's text, which stays the chart's caption."""
 
     text: str
     action: Action | None = None
@@ -773,6 +762,7 @@ class Row:
     children: tuple["Row", ...] = ()
     separator: bool = False
     heading: bool = False
+    chart: UsageChart | None = None
 
     @property
     def disabled(self) -> bool:
@@ -826,7 +816,9 @@ class Menu:
 
     def outline(self, *, actions: bool = False) -> str:
         """The menu as indented text: ``✓`` checked, ``⚠`` attention, ``▸`` a
-        submenu, ``(greyed)`` information, ``───`` a separator."""
+        submenu, ``(greyed)`` information, ``───`` a separator. A row drawn
+        as a chart adds one line under it: ``chart:`` each day's total, then
+        the legend."""
         lines = [f"title: {self.title}"]
 
         def walk(rows: Sequence[Row], depth: int) -> None:
@@ -849,6 +841,8 @@ class Menu:
                     args = " ".join(str(x) for x in (a.provider, a.number, a.value) if x is not None)
                     text += f"  [{a.kind}{' ' + args if args else ''}]"
                 lines.append(text)
+                if row.chart is not None:
+                    lines.append(f"{pad}    {row.chart.outline()}")
                 walk(row.children, depth + 1)
 
         walk(self.rows(), 0)
@@ -1624,6 +1618,7 @@ def _settings_menu(inp: MenuInput) -> Row:
         for m in TITLE_PCT_CHOICES
     )))
     rows.append(Row("Show model limits in title", action=Action("toggle-scoped"), checked=s.title_scoped))
+    rows.append(Row("Show usage chart", action=Action("toggle-chart"), checked=s.usage_chart))
     rows.append(Row("Refresh interval", children=tuple(
         Row(_INTERVAL_LABELS[secs], action=Action("interval", value=secs), checked=s.refresh_interval == secs)
         for secs in REFRESH_CHOICES
@@ -1644,6 +1639,23 @@ def _settings_menu(inp: MenuInput) -> Row:
     # at login; read from disk on every rebuild so a CLI change shows here.
     rows.append(Row("Start at login", action=Action("toggle-login"), checked=inp.start_at_login))
     return Row("Settings", children=tuple(rows))
+
+
+def cost_row(inp: MenuInput) -> Row:
+    """The cost row: ``Today $12.40 · 7 days $179.72 (estimated)``, and with
+    *Show usage chart* on, the seven-day chart by account drawn in its place
+    (:func:`menubar_chart.build_chart`), the sentence as its caption. A
+    failure building the chart costs only the chart."""
+    text = inp.cost.text()
+    if not inp.settings.usage_chart:
+        return Row(text)
+    try:
+        names = {(a.provider, a.number): a.label(long=False) for a in _all_accounts(inp)}
+        chart = build_chart(inp.cost, names=names)
+    except Exception:
+        _logger.debug("menu bar: the usage chart could not be built", exc_info=True)
+        chart = None
+    return Row(text, chart=chart)
 
 
 def build_menu(inp: MenuInput) -> Menu:
@@ -1667,7 +1679,7 @@ def build_menu(inp: MenuInput) -> Menu:
     else:
         sections.append(Section("claude", tuple(_provider_rows(inp, inp.claude))))
     if inp.cost is not None:
-        sections.append(Section("cost", (Row(inp.cost.text()),)))
+        sections.append(Section("cost", (cost_row(inp),)))
     if inp.claude.accounts:
         sections.append(Section("switch", tuple(_strategy_rows(inp))))
     refresh = "Refresh current credentials" + (" (Claude Code)" if inp.codex_shown else "")
@@ -1856,7 +1868,7 @@ def guarded(fn, *, alert, log=None) -> bool:
 ACTION_KINDS = frozenset({
     "switch", "rotate", "add-current", "add-token", "codex-login-help", "remove",
     "toggle-disabled", "refresh-creds", "open-log", "restart-engines", "toggle-name",
-    "title-follows", "title-pct", "toggle-scoped", "interval", "toggle-auto",
+    "title-follows", "title-pct", "toggle-scoped", "toggle-chart", "interval", "toggle-auto",
     "threshold", "toggle-login", "refresh-now", "quit",
     "resets-auto", "toggle-weekly-for-model", "toggle-before-switch", "use-reset",
 })

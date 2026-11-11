@@ -85,6 +85,8 @@ A row is orange when it needs you (`⚠` in the outline `run.py --menubar` print
 
 **The cost row**, `Today $17.21 · 7 days $180.55 (estimated)`, totals both providers over today and the last seven days at API list prices, as `qswap usage` does ([usage.md](usage.md)). It appears once the ledger holds anything. Clicking it does nothing. The menu bar reads new session files a minute after it starts and every 15 minutes after that. A `qswap usage` run shows up at the next refresh.
 
+With *Settings → Show usage chart* on, as it is by default, the same sentence sits above a small chart: one column per day for the last seven days, today on the right, each split by account at the estimated cost `qswap usage --by account` gives it. The tallest day fills the chart. One line below names up to four accounts as their rows do, with their seven-day amounts in whole dollars; the rest are `other`, in grey. Turn the setting off for the plain row.
+
 **Below the cost row:**
 
 - *Rotate to next*, *Switch to best*, *Next available*: Claude Code's rotation strategies (`qswap switch`, `--strategy best`, `--strategy next-available`).
@@ -122,6 +124,7 @@ The menu's own preferences live in `menubar_settings.json` in the data directory
 | `auto_switch_enabled` | `false` | *Auto-switch Claude Code* |
 | `codex_auto_switch_enabled` | `false` | *Auto-switch Codex* |
 | `title_follows` | `"claude"` | whose active account the title shows: `claude`, `codex` or `closest` |
+| `usage_chart` | `true` | *Show usage chart*: the cost row as a seven-day chart by account |
 
 A file from an earlier build loads as it did, and a key this build does not know is kept. The switch lines are qswap settings, shared with the command line ([settings.md](settings.md)):
 

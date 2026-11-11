@@ -1,5 +1,6 @@
 """The menu bar's blocking reads: snapshots of both providers, the ledger's
-cost totals, the switch history, the engines' heartbeats.
+cost totals and each day's cost by account, the switch history, the
+engines' heartbeats.
 
 Everything here touches files, the Keychain or the network (through the
 usage store's paced read path), so the app calls it from a background
@@ -30,6 +31,7 @@ from ai_quota_swap.menubar import (
     error_text,
     parse_switch_history,
 )
+from ai_quota_swap.menubar_chart import CostAccount, CostDay
 
 _logger = logging.getLogger("ai-quota-swap")
 
@@ -260,10 +262,14 @@ def read_cost(data_root: Path, *, today: date | None = None) -> CostSummary | No
     from ``ledger.db`` as it is: opened read-only (a running scan is never
     blocked, a missing ledger is not created), priced at read time with the
     same table and ``pricing.json`` as ``qswap usage``, over the same local
-    days. None when there is no ledger or it holds nothing yet."""
+    days. None when there is no ledger or it holds nothing yet.
+
+    It also reads each of those days by account for the chart
+    (:func:`cost_days`); a failure there leaves the days empty and the
+    totals as they are."""
     from ai_quota_swap.ledger.pricing import PriceTable
     from ai_quota_swap.ledger.report import day_bounds
-    from ai_quota_swap.ledger.store import DB_FILENAME, SCHEMA_VERSION
+    from ai_quota_swap.ledger.store import DB_FILENAME, SCHEMA_VERSION, LedgerStore
 
     db = Path(data_root) / DB_FILENAME
     if not db.exists():
@@ -272,9 +278,10 @@ def read_cost(data_root: Path, *, today: date | None = None) -> CostSummary | No
     since_hour, until_hour = day_bounds(today - timedelta(days=6), today)
     today_hour = day_bounds(today, today)[0]
     try:
-        conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0)
+        store = LedgerStore.read_only(db, timeout=1.0)
     except sqlite3.Error:
         return None
+    conn = store.conn
     try:
         row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         if row is None or str(row[0]) != str(SCHEMA_VERSION):
@@ -287,11 +294,16 @@ def read_cost(data_root: Path, *, today: date | None = None) -> CostSummary | No
             "WHERE hour >= ? AND hour < ? GROUP BY 1, 2",
             (today_hour, since_hour, until_hour),
         ).fetchall()
+        prices = PriceTable.load(Path(data_root))
+        try:
+            days = cost_days(store, Path(data_root), today=today, prices=prices)
+        except Exception:
+            _logger.debug("menu bar: the cost by day could not be read", exc_info=True)
+            days = ()
     except sqlite3.Error:
         return None
     finally:
-        conn.close()
-    prices = PriceTable.load(Path(data_root))
+        store.close()
     totals = {"today": [0.0, 0], "week": [0.0, 0]}
     for is_today, model, *toks in rows:
         toks = [int(t or 0) for t in toks]
@@ -305,6 +317,48 @@ def read_cost(data_root: Path, *, today: date | None = None) -> CostSummary | No
     return CostSummary(
         today=round(totals["today"][0], 6), week=round(totals["week"][0], 6),
         today_unpriced=totals["today"][1], week_unpriced=totals["week"][1],
+        days=days,
+    )
+
+
+def cost_days(store, data_root: Path, *, today: date, prices) -> tuple[CostDay, ...]:
+    """The seven local days ending ``today``, oldest first, each day's
+    estimated cost by account: the accounts ``qswap usage --by account``
+    gives that usage (``ledger.report.attribute``, the same activation logs
+    and registries), priced as it prices them. Usage with no account is
+    its own entry, ``unattributed``. Reads files only; ``store`` is the
+    read-only ledger."""
+    from ai_quota_swap.ledger.report import Accounts, account_group, attribute, day_bounds, local_day
+    from ai_quota_swap.ledger.usage import _read_json, report_inputs
+
+    first = today - timedelta(days=6)
+    logs, registries = report_inputs(data_root, _read_json(Path(data_root) / "sequence.json"))
+    accounts = Accounts(registries, logs)
+    since_hour, until_hour = day_bounds(first, today)
+    attributed = attribute(
+        store, since_hour=since_hour, until_hour=until_hour, provider=None,
+        accounts=accounts, logs=logs,
+    )
+    per_day: dict[date, dict[tuple, float]] = {}
+    for prov, hour, account, model, _project, _session, toks in attributed.rows:
+        found = prices.lookup(model)
+        if found is None:
+            continue  # unpriced: in the caption's "+", not in a column
+        group = account_group(prov, account)
+        day = per_day.setdefault(local_day(hour), {})
+        day[group] = day.get(group, 0.0) + found[1].cost(*toks[:5])
+    who: dict[tuple, CostAccount] = {}
+    for group in {g for day in per_day.values() for g in day}:
+        prov, key = group
+        name = accounts.describe(key, prov)[0]
+        info = accounts.by_key.get((prov or "", key))
+        who[group] = CostAccount(prov, key, info["number"] if info else None, name)
+    return tuple(
+        CostDay(d, tuple(
+            (who[g], round(cost, 6))
+            for g, cost in sorted(per_day.get(d, {}).items(), key=lambda item: (item[0][0] or "", item[0][1]))
+        ))
+        for d in (first + timedelta(days=i) for i in range(7))
     )
 
 

@@ -101,3 +101,10 @@ jobs:
         # `timeout-minutes` is the backstop.
         timeout-minutes: 15
         run: uv run pytest -o faulthandler_timeout=600
+
+      - name: Draw the menu bar's usage chart off screen (AppKit)
+        # The suite above runs without the menubar extra, so the drawing
+        # test skips there. This step adds AppKit for itself only. The test
+        # draws into a bitmap: no window, no application, no run loop.
+        timeout-minutes: 5
+        run: uv run --with pyobjc-framework-Cocoa pytest tests/test_menubar_chart_view.py -n0 -o faulthandler_timeout=120

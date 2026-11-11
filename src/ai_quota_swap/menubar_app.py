@@ -425,6 +425,10 @@ def run_app(switcher, rumps, AppKit) -> int:
                     self._health_row = row
 
         def _item(self, row: Row):
+            if row.chart is not None:
+                item = _chart_item(rumps, row, logger)
+                if item is not None:
+                    return item
             if row.children:
                 item = rumps.MenuItem(row.text)
                 for j, child in enumerate(row.children):
@@ -793,6 +797,10 @@ def run_app(switcher, rumps, AppKit) -> int:
             self.settings.title_scoped = not self.settings.title_scoped
             self._save_and_rebuild()
 
+        def _do_toggle_chart(self, _a: Action):
+            self.settings.usage_chart = not self.settings.usage_chart
+            self._save_and_rebuild()
+
         def _do_title_pct(self, a: Action):
             self.settings.title_pct = str(a.value)
             self._save_and_rebuild()
@@ -848,6 +856,21 @@ def _codex_live_email():
     from ai_quota_swap import codex_cli
 
     return codex_cli.live_codex_email()
+
+
+def _chart_item(rumps, row: Row, logger):
+    """The cost row drawn as its chart (``menubar_chart_view``), or None
+    when the view cannot be made, so the plain text row shows instead."""
+    try:
+        from ai_quota_swap.menubar_chart_view import make_view
+
+        view = make_view(row.chart)
+        item = rumps.MenuItem(row.text)
+        item._menuitem.setView_(view)
+        return item
+    except Exception:
+        logger.debug("menu bar: the usage chart could not be drawn; showing the text row", exc_info=True)
+        return None
 
 
 def _mark_attention(AppKit, item, text: str) -> None:
