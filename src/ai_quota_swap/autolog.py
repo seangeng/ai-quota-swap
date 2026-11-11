@@ -727,7 +727,8 @@ def no_switch_sentence(event: object) -> str:
         if detail.startswith("you chose"):
             return (
                 "No switch: you chose the active API key; auto-switch leaves it at its "
-                "budget or when its credit is spent or expires"
+                "budget, when its credit is spent or expires, or when its spend cannot "
+                "be measured for 20 minutes"
             )
         return "No switch: the active account is an API key, which has no quota to watch"
     if reason == "no-subscription-room":

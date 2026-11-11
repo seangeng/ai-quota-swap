@@ -1364,8 +1364,8 @@ def key_helper_moved(number: str, fix_command: str) -> list[str]:
 
 #: Said when the user names the key auto-switch entered.
 KEY_KEPT = (
-    "Auto-switch keeps it now, and leaves it only at its budget or when its credit "
-    "is spent or expires."
+    "Auto-switch keeps it now, and leaves it at its budget, when its credit is "
+    "spent or expires, or when its spend cannot be measured for 20 minutes."
 )
 
 

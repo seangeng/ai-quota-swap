@@ -4451,8 +4451,9 @@ class AutoSwitchEngine:
             self._emit(NoSwitchEvent(
                 reason="active-api-key",
                 detail=(
-                    "you chose this API key; auto-switch leaves it at its budget or "
-                    "when its credit is spent or expires"
+                    "you chose this API key; auto-switch leaves it at its budget, "
+                    "when its credit is spent or expires, or when its spend cannot be "
+                    "measured for 20 minutes"
                 ),
             ))
             return TickOutcome.NO_ACTION

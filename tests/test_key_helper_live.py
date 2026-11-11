@@ -2157,6 +2157,17 @@ class TestEngine:
         held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
         assert held.reason == "active-api-key"
         assert "you chose the active API key" in held.human()
+        # The re-check: the 20-minute rule (A4) is one of the ways off it.
+        assert held.human().endswith(
+            "auto-switch leaves it at its budget, when its credit is spent or expires, "
+            "or when its spend cannot be measured for 20 minutes"
+        )
+        assert "only" not in display.KEY_KEPT
+        assert display.KEY_KEPT == (
+            "Auto-switch keeps it now, and leaves it at its budget, when its credit is "
+            "spent or expires, or when its spend cannot be measured for 20 minutes."
+        )
+        assert "20 minutes" in held.detail
 
     @pytest.mark.parametrize("reading, words", [
         ({"spend": {"used": 600.0, "limit": 500.0}, "source": "ledger"},
