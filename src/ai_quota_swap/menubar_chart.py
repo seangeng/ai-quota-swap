@@ -14,8 +14,10 @@ at the estimated cost ``qswap usage --by account`` reports; a weekday letter
 under each; the cost row's sentence above as its caption; one legend line
 below with at most four accounts by their seven-day amount, the rest merged
 into "other". No axis, no grid: the tallest day fills the height. Legend
-names read as the account rows read (``#2 work``); two that would read the
-same get their provider (``Claude #2 work``, ``Codex #2 work``).
+names read as the account rows read (``#2 work``). When the menu shows both
+providers, every Codex entry starts with ``Codex`` (``Codex #2 work``, down
+to ``Codex #2`` when cut) and a Claude Code entry never has a provider
+word, so even an entry cut to its number names one account.
 """
 
 from __future__ import annotations
@@ -50,8 +52,9 @@ OTHER = "other"
 UNATTRIBUTED = "unattributed"
 WEEKDAY_LETTERS = ("M", "T", "W", "T", "F", "S", "S")
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-#: A legend name keeps its number and this many characters after it before
-#: it is cut to the number alone (``#3 nig…``).
+#: A legend name cut with an ellipsis keeps its number and at least this
+#: many characters after it (``#3 nig…``); with less room it is its number
+#: alone (``#3``).
 NAME_KEEP = 3
 #: The legend line's width in characters, for the outline and the tests;
 #: the view fits the line to its real width with the same rule.
@@ -140,7 +143,7 @@ class Column:
 @dataclass(frozen=True)
 class LegendEntry:
     """A dot, a name, a seven-day amount. ``head`` is how much of ``name``
-    names the account's number (``#3``, ``Claude #3``), kept when the name
+    names the account's number (``#3``, ``Codex #3``), kept when the name
     is cut."""
 
     key: str
@@ -192,7 +195,8 @@ class UsageChart:
     def fit_legend(self, fits: Callable[[list[str]], bool] | None = None) -> list[str]:
         """The legend's names, cut so the line fits: ``fits(names)`` says
         whether a line with these names fits (by default
-        :data:`LEGEND_LIMIT` characters). See :func:`fit_names`."""
+        :data:`LEGEND_LIMIT` characters). See :func:`fit_names`. With a
+        ``fits`` that always says no, every name at its shortest."""
         if fits is None:
             def fits(names: list[str]) -> bool:
                 return len(self.legend_text(names)) <= LEGEND_LIMIT
@@ -222,52 +226,65 @@ def _cut(name: str, width: int) -> str:
     return name[: max(0, width - 1)].rstrip(" .,-_@·") + "…"
 
 
+def shortest_name(name: str, head: int) -> str:
+    """The shortest a legend name gets: its number (``#3``, ``Codex #3``),
+    the first ``head`` characters. A name with no number (``unattributed``,
+    ``… (not managed)``) keeps twice :data:`NAME_KEEP` characters
+    (``unattr…``), so a short one such as "other" is never cut."""
+    return name[:head] if head else _cut(name, 2 * NAME_KEEP + 1)
+
+
+def name_cuts(name: str, head: int) -> list[str]:
+    """Every cut of ``name`` with an ellipsis, shortest first: each keeps
+    its number and at least :data:`NAME_KEEP` characters after it (twice
+    as many with no number), and none ends in punctuation before the
+    ellipsis. Empty when the name is too short to cut."""
+    keep = head + 1 + NAME_KEEP if head else 2 * NAME_KEEP
+    out: list[str] = []
+    for width in range(keep + 1, len(name)):
+        cut = _cut(name, width)
+        if len(cut) - 1 >= keep and (not out or cut != out[-1]):
+            out.append(cut)
+    return out
+
+
 def fit_names(
     names: Sequence[str], heads: Sequence[int], fits: Callable[[list[str]], bool]
 ) -> list[str]:
-    """``names`` cut with an ellipsis until ``fits(names)``, so the legend
-    line never wraps. ``heads[i]`` is how much of ``names[i]`` is its
-    number (0 for none). Every name longer than a common length is cut to
-    it, the longest length that fits, so the longest names give way first;
-    a name keeps at least its number and :data:`NAME_KEEP` characters
-    (``#3 nig…``; one with no number keeps twice as many, ``unattr…``).
-    When even that does not fit, names are cut to their number alone
-    (``#3``), from the end of the legend (the smallest amounts) back, a
-    number another entry shares last. A
-    short name such as "other" is never cut. Returns the shortest it can
-    when nothing more can give way. ``fits`` must say yes to shorter names
-    whenever it says yes to longer ones."""
-    if fits(list(names)):
-        return list(names)
-    floors = [h + 1 + NAME_KEEP + 1 if h else 2 * NAME_KEEP + 1 for h in heads]
-    bare: set[int] = set()
+    """``names`` as long as the legend line has room for, so it never
+    wraps. ``heads[i]`` is how much of ``names[i]`` is its number (0 for
+    none); ``fits(names)`` says whether a line with these names fits.
 
-    def cut_to(length: int) -> list[str]:
-        return [
-            names[i][: heads[i]] if i in bare else _cut(names[i], max(floors[i], length))
-            for i in range(len(names))
-        ]
+    Every name starts at its shortest form (:func:`shortest_name`). Then,
+    in legend order (the largest amount first), each grows to the longest
+    form that still fits: the whole name if that fits, else its longest
+    cut (:func:`name_cuts`), else it stays at its shortest. So no room is
+    left that a name could have used, and a wider line never shows a
+    shorter name for the first entry. When even the shortest forms do not
+    fit, returns them. ``fits`` must say yes to a narrower line whenever it
+    says yes to a wider one."""
+    out = [shortest_name(n, h) for n, h in zip(names, heads)]
+    for i, (name, head) in enumerate(zip(names, heads)):
+        if out[i] == name:
+            continue
 
-    # Cut to the number from the end of the legend back, a number two
-    # entries share (Claude Code's #1 and Codex's #1) last: bare, the two
-    # would read the same.
-    bare_heads = [names[i][: heads[i]] for i in range(len(names))]
-    shared = {h for h in bare_heads if h and bare_heads.count(h) > 1}
-    numbered = sorted((i for i in reversed(range(len(names))) if heads[i]),
-                      key=lambda i: bare_heads[i] in shared)
-    while True:
-        lo, hi = 0, max((len(n) for n in names), default=0)
-        if fits(cut_to(lo)):
-            while lo < hi:  # the longest common length that fits
-                mid = (lo + hi + 1) // 2
-                if fits(cut_to(mid)):
-                    lo = mid
-                else:
-                    hi = mid - 1
-            return cut_to(lo)
-        if not numbered:
-            return cut_to(0)
-        bare.add(numbered.pop(0))
+        def fits_with(form: str, i: int = i) -> bool:
+            return fits([*out[:i], form, *out[i + 1:]])
+
+        if fits_with(name):
+            out[i] = name
+            continue
+        cuts = name_cuts(name, head)
+        lo, hi = 0, len(cuts)  # every cut before lo fits, none from hi on
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if fits_with(cuts[mid]):
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo:
+            out[i] = cuts[lo - 1]
+    return out
 
 
 # -- where it goes ---------------------------------------------------------------------------
@@ -298,7 +315,8 @@ GAP_MIN = 3.0
 MIN_SEGMENT = 1.0
 #: What a day with nothing draws on the baseline.
 STUB = 1.0
-#: The radius of a bar's top corners.
+#: The radius of a bar's top corners, the same on every bar (less only on
+#: a bar shorter than it).
 CORNER = 3.0
 DOT = 7.0
 DOT_GAP = 4.0
@@ -341,29 +359,38 @@ def frame(day_line: float, legend_line: float) -> Frame:
 
 @dataclass(frozen=True)
 class SegmentBox:
-    """Where one segment is painted. ``top``: the column's top segment,
-    whose top corners are rounded."""
+    """Where one segment is painted: a plain rectangle, inside its column's
+    outline."""
 
     segment: Segment
     box: Box
-    top: bool = False
 
 
 @dataclass(frozen=True)
 class ColumnBox:
     """Where one day goes: its bar's left edge and width, the centre its
-    weekday letter sits on, its segments bottom first, or the stub of a day
-    with nothing."""
+    weekday letter sits on, and either its segments, bottom first, with the
+    one outline they are clipped to (the whole stack, its top corners
+    rounded at :attr:`radius`), or the stub of a day with nothing."""
 
     column: Column
     x: float
     width: float
     segments: tuple[SegmentBox, ...] = ()
     stub: Box | None = None
+    outline: Box | None = None
 
     @property
     def centre(self) -> float:
         return self.x + self.width / 2
+
+    @property
+    def radius(self) -> float:
+        """The outline's top corners: :data:`CORNER`, less on a stack
+        shorter than that."""
+        if self.outline is None:
+            return 0.0
+        return max(0.0, min(CORNER, self.outline.h, self.outline.w / 2))
 
 
 def _snap(value: float) -> float:
@@ -394,21 +421,25 @@ def layout_columns(
     chart: UsageChart, *, left: float, width: float, base: float
 ) -> tuple[ColumnBox, ...]:
     """Where each day goes in a content area ``width`` wide from ``left``,
-    the bars standing on ``base``. The columns span the whole width, one
-    seventh each; a bar is :data:`BAR_SHARE` of its column, at most
-    :data:`MAX_BAR_WIDTH`, centred in it. The tallest day is
-    :data:`BAR_AREA` tall; a day with nothing is a :data:`STUB` on the
-    baseline. A gap of :data:`SEGMENT_GAP` comes off the top of a segment
-    whose upper neighbour is, like it, at least :data:`GAP_MIN` tall."""
+    the bars standing on ``base``. A bar is :data:`BAR_SHARE` of a seventh
+    of the width, at most :data:`MAX_BAR_WIDTH`. The bars run edge to
+    edge: the first bar's left edge is ``left``, the last bar's right edge
+    ``left + width``, the others evenly spaced between, each edge on a
+    device pixel (:data:`SNAP`). The tallest day is :data:`BAR_AREA` tall;
+    a day with nothing is a :data:`STUB` on the baseline. A gap of
+    :data:`SEGMENT_GAP` comes off the top of a segment whose upper
+    neighbour is, like it, at least :data:`GAP_MIN` tall. Each column's
+    segments are plain rectangles inside one outline, so every bar has the
+    same corners whatever its top segment's height."""
     n = len(chart.columns)
     if not n or width <= 0:
         return ()
-    pitch = width / n
-    bar = max(SNAP, _snap(min(MAX_BAR_WIDTH, BAR_SHARE * pitch)))
+    bar = max(SNAP, _snap(min(MAX_BAR_WIDTH, BAR_SHARE * width / n)))
+    step = (width - bar) / (n - 1) if n > 1 else 0.0
     peak = chart.peak
     out = []
     for i, column in enumerate(chart.columns):
-        x = _snap(left + i * pitch + (pitch - bar) / 2)
+        x = _snap(left + i * step)
         if not column.segments or peak <= 0:
             out.append(ColumnBox(column, x, bar, stub=Box(x, base - STUB, bar, STUB)))
             continue
@@ -419,8 +450,9 @@ def layout_columns(
             shown = h
             if j < last and h >= GAP_MIN and heights[j + 1] >= GAP_MIN:
                 shown = h - SEGMENT_GAP
-            boxes.append(SegmentBox(seg, Box(x, y + h - shown, bar, shown), top=j == last))
-        out.append(ColumnBox(column, x, bar, tuple(boxes)))
+            boxes.append(SegmentBox(seg, Box(x, y + h - shown, bar, shown)))
+        outline = Box(x, y, bar, base - y)
+        out.append(ColumnBox(column, x, bar, tuple(boxes), outline=outline))
     return tuple(out)
 
 
@@ -492,21 +524,27 @@ def _legend_name(acc: CostAccount, names: Mapping[tuple[str, str], str]) -> tupl
 
 
 def _with_provider(acc: CostAccount, name: str, head: int) -> tuple[str, int]:
-    """``Claude #1 maya@example.com``: for two entries that would otherwise
-    read the same, one per provider."""
+    """``Codex #1 maya@example.com``: the name with its provider in front,
+    the provider kept with the number when the name is cut."""
     prefix = PROVIDER_SHORT.get(acc.provider or "", acc.provider or "") + " "
     return prefix + name, head + len(prefix) if head else 0
 
 
 def build_chart(
-    cost: CostSummary, *, names: Mapping[tuple[str, str], str] | None = None
+    cost: CostSummary, *, names: Mapping[tuple[str, str], str] | None = None, both: bool = False,
 ) -> UsageChart | None:
     """The chart for ``cost``'s seven days, or None when there is nothing to
     draw (the days could not be read, or no usage has a price).
 
     ``names`` maps ``(provider, number)`` to the name the account's row
     shows (``#2 work``), which wins over the one the ledger read carried;
-    without it the legend uses ``qswap usage``'s."""
+    without it the legend uses ``qswap usage``'s.
+
+    ``both``: whether the menu shows both providers (``MenuInput.codex_shown``,
+    which also gives Codex its own section). Then every Codex account's
+    entry starts with ``Codex`` (``Codex #2 work``, ``Codex #2`` when cut)
+    and a Claude Code account's has no provider word. Without it no entry
+    of an account qswap manages has one."""
     names = names or {}
     days = cost.days
     if not days:
@@ -531,24 +569,25 @@ def build_chart(
     # Over every account of the week, not only the legend's: an account
     # entering or leaving the top four moves no other account's colour.
     colours = account_colours([who[k] for k in ranked])
-    named = {k: _legend_name(who[k], names) for k in shown}
-    # A name that reads the same as another account's gets its provider:
-    # another in the legend, one merged into "other", or one the menu lists
-    # with no usage this week (Claude Code's and Codex's #2 both "work").
-    readings = {(p, str(n)): name for (p, n), name in names.items()}
-    for k in ranked:
-        acc = who[k]
-        ident = (acc.provider, str(acc.number)) if acc.number is not None else acc.ident
-        readings[ident] = _legend_name(acc, names)[0]
-    seen: dict[str, int] = {}
-    for name in readings.values():
-        seen[name] = seen.get(name, 0) + 1
+    # The provider word goes by provider, not by a clash of names: decided
+    # on the whole name, a clash test misses two entries that read the same
+    # once cut ("#1" and "#1"). An account qswap does not manage
+    # ("… (not managed)") gets its provider only when another such account
+    # reads the same.
+    unmanaged = [
+        _legend_name(who[k], names)[0] for k in ranked
+        if who[k].number is None and who[k].provider is not None
+    ]
     legend = []
     for k in shown:
-        name, head = named[k]
-        if seen[name] > 1 and who[k].provider is not None:
-            name, head = _with_provider(who[k], name, head)
-        legend.append(LegendEntry(_segment_key(who[k]), name, week[k], colours[k], head))
+        acc = who[k]
+        name, head = _legend_name(acc, names)
+        if acc.number is not None:
+            if both and acc.provider == "codex":
+                name, head = _with_provider(acc, name, head)
+        elif acc.provider is not None and unmanaged.count(name) > 1:
+            name, head = _with_provider(acc, name, head)
+        legend.append(LegendEntry(_segment_key(acc), name, week[k], colours[k], head))
     if rest:
         legend.append(LegendEntry(OTHER, OTHER, sum(week[k] for k in rest), OTHER_COLOUR))
     columns = []

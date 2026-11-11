@@ -123,11 +123,22 @@ SHAPES: dict[str, tuple[int, dict[str, tuple[float, ...]]]] = {
         "night": (0.8, 0.0, 1.1, 1.5, 0.9, 0.6, 0.4),
         "side": (0.0, 0.6, 0.4, 0.0, 0.9, 0.0, 0.3),
     }),
+    # Both providers with a #1 and a #2 in the top four: each Codex entry
+    # says "Codex" at every cut, so no two entries read the same.
+    "twin-numbers": (360, {
+        "personal": (14.2, 18.9, 6.1, 22.4, 19.8, 11.0, 9.3),
+        "codex1": (9.8, 12.1, 0.0, 15.6, 13.2, 8.4, 7.7),
+        "codex2": (4.1, 0.0, 3.2, 6.8, 5.5, 2.9, 4.3),
+        "work": (0.0, 5.4, 4.1, 0.0, 6.6, 3.0, 4.6),
+        "night": (1.9, 2.2, 0.0, 2.5, 2.1, 1.7, 0.6),
+    }),
 }
 
 
 def shape_chart(name: str):
-    """The chart for a shape, built as the menu builds it from a read."""
+    """The chart for a shape, built as the menu builds it from a read. A
+    shape with a Codex account stands for a menu that shows both
+    providers."""
     from ai_quota_swap.menubar_chart import CostDay, CostSummary, build_chart
 
     _width, rows = SHAPES[name]
@@ -138,7 +149,8 @@ def shape_chart(name: str):
         days.append(CostDay(TODAY - timedelta(days=6 - i), costs))
     today = sum(c for _a, c in days[-1].costs)
     week = sum(c for d in days for _a, c in d.costs)
-    return build_chart(CostSummary(today=round(today, 6), week=round(week, 6), days=tuple(days)))
+    both = any(accounts[k].provider == "codex" for k in rows)
+    return build_chart(CostSummary(today=round(today, 6), week=round(week, 6), days=tuple(days)), both=both)
 
 
 # -- scenarios: read in the sandbox --------------------------------------------------------
@@ -286,7 +298,9 @@ def render(chart, out: Path, *, width: float, dark: bool, scale: float = 2.0) ->
 
     backdrop_cls = _backdrop_class()
     view = menubar_chart_view.make_view(chart)
-    w = max(float(width), float(view.frame().size.width))
+    # As wide as the menu: never narrower than the view with the check-mark
+    # column NSMenu adds to it (the view draws as in a menu with check marks).
+    w = max(float(width), menubar_chart_view.menu_width(chart))
     h = float(view.frame().size.height) + 2 * MARGIN
     backdrop = backdrop_cls.alloc().initWithFrame_(((0, 0), (w, h)))
     view.setFrame_(((0, MARGIN), (w, view.frame().size.height)))

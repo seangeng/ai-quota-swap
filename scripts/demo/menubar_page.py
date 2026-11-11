@@ -20,7 +20,8 @@ What it mirrors from ``menubar_app._item`` and ``_draw``:
 * the open submenu's parent row is selected, as AppKit draws it;
 * a row with a ``chart`` (the cost row) is drawn as the chart, as
   ``menubar_chart_view`` draws it: the caption, the columns stacked by
-  account, the weekday letters and the legend line, laid out by the same
+  account (each clipped to one outline with rounded top corners), the
+  weekday letters and the legend line, laid out by the same
   ``menubar_chart.layout_columns`` in inline SVG, in the system colours'
   light and dark values (:data:`SYSTEM_COLOURS`).
 
@@ -33,7 +34,9 @@ A status item near the right-hand end of the bar gets its menu pushed left
 to stay on screen, so submenus open to the left. That is what this draws.
 
 No external fonts, scripts or images: the page renders the same offline and
-the demo sandbox refuses the network. Not imported by anything in
+the demo sandbox refuses the network. The only ``url(…)`` in it names one of
+the chart's own clip paths by its id (``url(#chart-m0-r7-day0)``). Not
+imported by anything in
 ``ai_quota_swap``; it reads only the attributes of the menu it is handed,
 and lays the chart out with ``menubar_chart``'s pure functions.
 
@@ -274,36 +277,40 @@ def _colour_class(index: int) -> str:
 
 
 def _top_rounded_path(x: float, y: float, w: float, h: float, radius: float) -> str:
-    """A rectangle with its top corners rounded, as the AppKit view draws
-    a column's top segment."""
+    """A rectangle with its top corners rounded, as the AppKit view clips
+    a column to."""
     r = max(0.0, min(radius, w / 2, h))
     return (f"M{x:g} {y + h:g}V{y + r:g}A{r:g} {r:g} 0 0 1 {x + r:g} {y:g}H{x + w - r:g}"
             f"A{r:g} {r:g} 0 0 1 {x + w:g} {y + r:g}V{y + h:g}Z")
 
 
-def _chart_html(row, width: int) -> str:
+def _chart_html(row, width: int, ident: str = "chart") -> str:
     """The cost row's chart, ``width`` px wide: the caption and the legend
-    as text, the columns and weekday letters as SVG."""
-    from ai_quota_swap.menubar_chart import (
-        CORNER, WEEKDAY_NAMES, layout_columns, legend_width,
-    )
+    as text, the columns and weekday letters as SVG. Each column's segments
+    are plain rectangles clipped to one outline, as the AppKit view draws
+    them; ``ident`` starts the clip paths' ids, unique in the page."""
+    from ai_quota_swap.menubar_chart import WEEKDAY_NAMES, layout_columns, legend_width
 
     chart = row.chart
     bands = _chart_frame()
     inner = width - ITEM_LEFT - ITEM_RIGHT
     days = []
-    for col in layout_columns(chart, left=ITEM_LEFT, width=inner, base=bands.base):
+    for i, col in enumerate(layout_columns(chart, left=ITEM_LEFT, width=inner, base=bands.base)):
         c = col.column
         parts = []
         if col.stub is not None:
             b = col.stub
             parts.append(f'<rect class="stub" x="{b.x:g}" y="{b.y:g}" width="{b.w:g}" height="{b.h:g}"/>')
-        for part in col.segments:
-            b, cls = part.box, f"seg {_colour_class(part.segment.colour)}"
-            if part.top:
-                parts.append(f'<path class="{cls}" d="{_top_rounded_path(b.x, b.y, b.w, b.h, CORNER)}"/>')
-            else:
-                parts.append(f'<rect class="{cls}" x="{b.x:g}" y="{b.y:g}" width="{b.w:g}" height="{b.h:g}"/>')
+        if col.outline is not None:
+            o, clip = col.outline, f"{ident}-day{i}"
+            parts.append(f'<clipPath id="{clip}"><path class="outline" '
+                         f'd="{_top_rounded_path(o.x, o.y, o.w, o.h, col.radius)}"/></clipPath>')
+            rects = "".join(
+                f'<rect class="seg {_colour_class(p.segment.colour)}" x="{p.box.x:g}" y="{p.box.y:g}" '
+                f'width="{p.box.w:g}" height="{p.box.h:g}"/>'
+                for p in col.segments
+            )
+            parts.append(f'<g clip-path="url(#{clip})">{rects}</g>')
         letter = "letter today" if c.today else "letter"
         parts.append(f'<text class="{letter}" x="{col.centre:g}" y="{bands.letters_top + DAY_LINE / 2:g}">'
                      f"{html.escape(c.label)}</text>")
@@ -399,11 +406,11 @@ def _height(rows: Sequence) -> int:
     return 2 * PAD_V + _row_top(rows, len(rows))
 
 
-def _row_html(row, *, selected: bool, chart_width: int = 0) -> str:
+def _row_html(row, *, selected: bool, chart_width: int = 0, ident: str = "chart") -> str:
     if row.separator:
         return '<div class="sep" role="separator"></div>'
     if getattr(row, "chart", None) is not None:
-        return _chart_html(row, chart_width)
+        return _chart_html(row, chart_width, ident)
     classes = ["item"]
     if row.checked:
         classes.append("checked")
@@ -430,8 +437,11 @@ def _menu_html(rows: Sequence, *, level: int, title: str | None, selected: int |
     chart_width = next(
         (chart_row_width(r.chart, rows) for r in rows if getattr(r, "chart", None) is not None), 0,
     )
+    # A chart's clip paths are named after its menu and row, so no two
+    # charts in a page share an id.
     body = "".join(
-        _row_html(r, selected=(i == selected), chart_width=chart_width) for i, r in enumerate(rows)
+        _row_html(r, selected=(i == selected), chart_width=chart_width, ident=f"chart-m{level}-r{i}")
+        for i, r in enumerate(rows)
     )
     name = "" if title is None else f' data-title="{html.escape(title, quote=True)}"'
     return (

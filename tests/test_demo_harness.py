@@ -547,9 +547,16 @@ class _Drawing(HTMLParser):
         if "cap" in classes:
             self._into = (row, "caption")
         elif "day" in classes:
-            row["days"].append({"day": a["data-day"], "total": a["data-total"], "parts": [], "letter": ""})
+            row["days"].append({"day": a["data-day"], "total": a["data-total"], "parts": [], "letter": "",
+                                "clip": None, "outline": None, "clipped": None})
+        elif tag == "clippath":
+            row["days"][-1]["clip"] = a.get("id")
+        elif tag == "path" and "outline" in classes:
+            row["days"][-1]["outline"] = a.get("d")
+        elif tag == "g" and a.get("clip-path"):
+            row["days"][-1]["clipped"] = a["clip-path"]
         elif tag in ("rect", "path") and classes & {"seg", "stub"}:
-            row["days"][-1]["parts"].append({"classes": classes, **a})
+            row["days"][-1]["parts"].append({"classes": classes, "tag": tag, **a})
         elif "letter" in classes:
             row["days"][-1]["today"] = "today" in classes
             self._into = (row["days"][-1], "letter")
@@ -727,12 +734,17 @@ class TestMenuBarDrawing:
         assert f"  {chart['caption']}  (greyed)" == caption
         assert chart["label"].startswith(chart["caption"] + ". Wednesday $")  # VoiceOver's words
         # Seven columns, a weekday letter under each, today's in the label
-        # colour; each column a stack of segments, the top one rounded.
+        # colour; each column a stack of plain rectangles clipped to one
+        # outline with rounded top corners, its clip path's id its own.
         assert [d["letter"] for d in chart["days"]] == list("WTFSSMT")
         assert [d["today"] for d in chart["days"]] == [False] * 6 + [True]
         for day in chart["days"]:
             assert day["parts"] and all("seg" in part["classes"] for part in day["parts"])
-            assert day["parts"][-1].get("d", "").startswith("M")  # the rounded top
+            assert all(part["tag"] == "rect" for part in day["parts"])
+            assert day["outline"].startswith("M") and "A3 3 0 0 1" in day["outline"]
+            assert day["clipped"] == f"url(#{day['clip']})"
+        clips = [d["clip"] for d in chart["days"]]
+        assert len(set(clips)) == 7 and re.findall(r'id="([^"]+)"', page).count(clips[0]) == 1
         # The legend: a coloured dot each, the name shown whole or cut with
         # an ellipsis (or to its number), the amount whole.
         entries = chart["entries"]
@@ -775,24 +787,33 @@ class TestMenuBarDrawing:
             cols = layout_columns(chart, left=menubar_page.ITEM_LEFT, width=inner, base=base)
             expect = [[[p.box.x, p.box.y, p.box.w, p.box.h] for p in c.segments]
                       or [[c.stub.x, c.stub.y, c.stub.w, c.stub.h]] for c in cols]
-            print(json.dumps({"html": html, "expect": expect, "centres": [c.centre for c in cols]}))
+            outlines = [None if c.outline is None else
+                        [c.outline.x, c.outline.y, c.outline.w, c.outline.h, c.radius] for c in cols]
+            print(json.dumps({"html": html, "expect": expect, "outlines": outlines,
+                              "centres": [c.centre for c in cols],
+                              "insets": [menubar_page.ITEM_LEFT, 420 - menubar_page.ITEM_RIGHT]}))
         """)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         chart = _Drawing('<div class="menu" data-level="0">' + data["html"] + "</div>").chart()
-        drawn = []
+        drawn, outlines = [], []
         for day in chart["days"]:
-            boxes = []
-            for part in day["parts"]:
-                if "d" in part:  # M x y+h V y+r A r r 0 0 1 x+r y H .. A r r 0 0 1 x+w y+r V y+h Z
-                    n = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", part["d"])]
-                    x, bottom, top, right = n[0], n[1], n[9], n[16]
-                    boxes.append([x, top, right - x, bottom - top])
-                else:
-                    boxes.append([float(part[k]) for k in ("x", "y", "width", "height")])
-            drawn.append(boxes)
+            drawn.append([[float(part[k]) for k in ("x", "y", "width", "height")] for part in day["parts"]])
+            if day["outline"] is None:
+                outlines.append(None)
+                continue
+            # M x y+h V y+r A r r 0 0 1 x+r y H x+w-r A r r 0 0 1 x+w y+r V y+h Z
+            n = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", day["outline"])]
+            x, bottom, radius, top, right = n[0], n[1], n[3], n[9], n[16]
+            outlines.append([x, top, right - x, bottom - top, radius])
         assert drawn == data["expect"]
+        assert outlines == data["outlines"]
+        # The bars run edge to edge: the first from where the caption starts,
+        # the last to the row's right inset.
+        left, right = data["insets"]
+        assert drawn[0][0][0] == left and drawn[-1][0][0] + drawn[-1][0][2] == right
         assert any(len(b) == 1 and b[0][3] == 1.0 for b in drawn)  # Thursday's stub
+        assert {o[4] for o in outlines if o is not None and o[3] >= 3} == {3.0}  # the same corners
 
     def test_the_page_draws_the_chart_or_the_plain_row(self, tmp_path):
         on, off = tmp_path / "on.html", tmp_path / "off.html"
@@ -806,7 +827,7 @@ class TestMenuBarDrawing:
         assert plain.outline(0) == _outline_rows(r_off.stdout)[1]
         chart = with_chart.chart()
         assert chart is not None and len(chart["days"]) == 7
-        assert [e["name"] for e in chart["entries"]] == ["#1 personal", "Claude #2 work", "#3 night-shift", "other"]
+        assert [e["name"] for e in chart["entries"]] == ["#1 personal", "#2 work", "#3 night-shift", "other"]
         # Off: the same sentence as a plain greyed row, and no chart.
         assert plain.chart() is None and "chart:" not in r_off.stdout
         assert f"  {chart['caption']}  (greyed)" in plain.outline(0)
@@ -832,8 +853,14 @@ class TestMenuBarDrawing:
     def test_the_page_references_nothing_outside_itself(self, drawn, name):
         _, page = drawn[name]
         assert "http://" not in page and "https://" not in page
-        assert "<script" not in page and "<link" not in page
-        assert "@import" not in page and "url(" not in page
+        assert "<script" not in page and "<link" not in page and "@import" not in page
+        # The only url() names one of the chart's clip paths, in the page.
+        ids = re.findall(r'id="([^"]+)"', page)
+        assert len(ids) == len(set(ids))
+        refs = re.findall(r"url\(([^)]*)\)", page)
+        assert all(r.startswith("#") and r[1:] in ids for r in refs)
+        assert bool(refs) == ('class="chart"' in page)  # a page with a chart has its clip paths
+        assert page.count("url(") == len(refs)
         assert all(s.startswith("data:image/png;base64,") for s in _Drawing(page).sources)
         assert bool(_Drawing(page).sources) == (name == "hero")  # the window behind the menu
         assert str(_real_home()) not in page

@@ -95,12 +95,10 @@ def test_the_caption_is_the_cost_rows_sentence():
 
 
 def test_the_legend_names_the_top_four_and_merges_the_rest_into_other():
-    chart = build_chart(_cost(SEVEN))
+    chart = build_chart(_cost(SEVEN), both=True)
     names = [e.name for e in chart.legend]
     # By seven-day amount: #1 $101.70, #2 $66.80, Codex #1 $26.60, #3 $24.30.
-    # Codex's #2 is "work" too (in "other"), so Claude Code's is named with
-    # its provider.
-    assert names == ["#1 personal", "Claude #2 work", "#1 maya@example.com", "#3 night-shift", "other"]
+    assert names == ["#1 personal", "#2 work", "Codex #1 maya@example.com", "#3 night-shift", "other"]
     other = chart.legend[-1]
     assert other.colour == OTHER_COLOUR
     assert other.amount == pytest.approx(sum(sum(SEVEN[a]) for a in (A4, A5, X2)))
@@ -206,30 +204,55 @@ def test_unattributed_usage_is_its_own_segment_named_as_qswap_usage_names_it():
     assert chart.legend[-1].name == "other" and chart.legend[-1].amount == pytest.approx(7.0)
 
 
-def test_names_read_as_the_rows_read_and_the_provider_only_to_tell_two_apart():
-    chart = build_chart(_cost({A1: (5,) * 7, X1: (4,) * 7}))
+def test_with_both_providers_every_codex_entry_says_codex_and_no_claude_entry_says_claude():
+    # The menu shows both providers: a Codex entry starts with "Codex",
+    # with its number in the part a cut keeps, whatever the other names.
+    chart = build_chart(_cost({A1: (5,) * 7, X1: (4,) * 7}), both=True)
+    assert [e.name for e in chart.legend] == ["#1 personal", "Codex #1 maya@example.com"]
+    assert [e.head for e in chart.legend] == [len("#1"), len("Codex #1")]
+    chart = build_chart(_cost({A2: (5,) * 7, X2: (4,) * 7}), both=True)
+    assert [e.name for e in chart.legend] == ["#2 work", "Codex #2 work"]
+    assert [e.head for e in chart.legend] == [len("#2"), len("Codex #2")]
+    # The menu shows Claude Code only: no entry has a provider word.
+    chart = build_chart(_cost({A1: (5,) * 7, A2: (4,) * 7}))
+    assert [e.name for e in chart.legend] == ["#1 personal", "#2 work"]
+    chart = build_chart(_cost({A1: (5,) * 7, X1: (4,) * 7}), both=False)
     assert [e.name for e in chart.legend] == ["#1 personal", "#1 maya@example.com"]
-    chart = build_chart(_cost({A2: (5,) * 7, X2: (4,) * 7}))
-    assert [e.name for e in chart.legend] == ["Claude #2 work", "Codex #2 work"]
-    assert [e.head for e in chart.legend] == [len("Claude #2"), len("Codex #2")]
     # The rows' names win over the ones the read carried (an alias set since).
     chart = build_chart(_cost({A2: (5,) * 7}), names={("claude", "2"): "#2 renamed"})
     assert chart.legend[0].name == "#2 renamed"
 
 
-def test_a_name_another_account_shares_gets_its_provider_even_outside_the_legend():
-    # Codex #2 "work" leads the legend; Claude Code's #2 "work" is merged
-    # into "other", or has no usage this week but is in the menu. Either
-    # way a bare "#2 work" would read as either, so the legend says which.
+def test_the_provider_word_goes_by_provider_not_by_a_clash_of_names():
+    # Codex #2 "work" leads; Claude Code's #2 "work" is merged into "other",
+    # or has no usage this week. Only the Codex entry says its provider,
+    # and a Claude Code entry never does, clash or not.
     week = {X2: (50,) * 7, A1: (40,) * 7, A3: (30,) * 7, X1: (20,) * 7, A2: (1,) * 7, A4: (1,) * 7}
-    chart = build_chart(_cost(week))
+    chart = build_chart(_cost(week), both=True)
     assert "claude#2" not in [e.key for e in chart.legend]
-    assert chart.legend[0].name == "Codex #2 work" and chart.legend[0].head == len("Codex #2")
+    assert [e.name for e in chart.legend] == [
+        "Codex #2 work", "#1 personal", "#3 night-shift", "Codex #1 maya@example.com", "other",
+    ]
     del week[A2]
     rows = {("claude", "2"): "#2 work", ("codex", "2"): "#2 work", ("claude", "1"): "#1 personal"}
-    chart = build_chart(_cost(week), names=rows)
-    assert chart.legend[0].name == "Codex #2 work"
-    assert chart.legend[1].name == "#1 personal"  # no other account reads so
+    chart = build_chart(_cost(week), names=rows, both=True)
+    assert chart.legend[0].name == "Codex #2 work" and chart.legend[1].name == "#1 personal"
+
+
+def test_entries_that_are_not_a_managed_account_are_named_as_before():
+    # Usage with no account, and a login qswap does not manage, carry no
+    # number; the provider is added only to two such logins that read the
+    # same, one per provider, with or without both providers in the menu.
+    stranger = CostAccount("claude", "jordan@example.org|", None, "jordan@example.org (not managed)")
+    twin = CostAccount("codex", "jordan@example.org|", None, "jordan@example.org (not managed)")
+    for both in (False, True):
+        chart = build_chart(_cost({A1: (5,) * 7, stranger: (2,) * 7, UNATTRIBUTED: (1,) * 7}), both=both)
+        assert [e.name for e in chart.legend] == ["#1 personal", "jordan@example.org (not managed)", "unattributed"]
+        assert [e.head for e in chart.legend] == [2, 0, 0]
+        chart = build_chart(_cost({stranger: (2,) * 7, twin: (1,) * 7}), both=both)
+        assert [e.name for e in chart.legend] == [
+            "Claude jordan@example.org (not managed)", "Codex jordan@example.org (not managed)",
+        ]
 
 
 def test_nothing_to_draw_is_no_chart():
@@ -270,17 +293,27 @@ def _layout(week, width=384.0, left=30.0):
     return chart, bands, menubar_chart.layout_columns(chart, left=left, width=width, base=bands.base)
 
 
-def test_columns_span_the_width_and_bars_are_centred_in_them():
-    # The owner's numbers: a bar is 64% of its seventh, at most 40 points.
-    for width in (300.0, 384.0, 520.0, 700.0):
-        _chart, _bands, cols = _layout(SEVEN, width=width)
-        pitch = width / 7
-        bar = min(40.0, 0.64 * pitch)
+def test_the_bars_run_edge_to_edge():
+    # The owner's numbers: a bar is 64% of a seventh of the width, at most
+    # 40 points. The first bar's left edge is the content's left edge (the
+    # caption's), the last bar's right edge its right edge, the others
+    # evenly spaced, every edge on a device pixel.
+    snap = menubar_chart.SNAP
+    for left, width in ((30.0, 300.0), (30.0, 384.0), (16.0, 381.0), (30.0, 520.0), (30.0, 700.0), (17.0, 367.9)):
+        _chart, _bands, cols = _layout(SEVEN, width=width, left=left)
+        bar = min(40.0, 0.64 * width / 7)
+        assert len({c.width for c in cols}) == 1
+        assert cols[0].width == pytest.approx(bar, abs=snap)
+        assert cols[0].x == left
+        assert cols[-1].x + cols[-1].width == pytest.approx(left + width, abs=snap / 2)
+        steps = [b.x - a.x for a, b in zip(cols, cols[1:])]
+        assert max(steps) - min(steps) <= snap
         for i, col in enumerate(cols):
-            assert col.width == pytest.approx(bar, abs=menubar_chart.SNAP)
-            assert col.centre == pytest.approx(30.0 + (i + 0.5) * pitch, abs=menubar_chart.SNAP)
+            assert col.x == pytest.approx(left + i * (width - col.width) / 6, abs=snap / 2)
+            assert col.x / snap == int(col.x / snap)  # on a device pixel
+            assert col.centre == col.x + col.width / 2  # the weekday letter's
             assert all(p.box.x == col.x and p.box.w == col.width for p in col.segments)
-    # A wide menu: the bars stop at 40 points, still one per seventh.
+    # A wide menu: the bars stop at 40 points and the gaps between them grow.
     _chart, _bands, cols = _layout(SEVEN, width=700.0)
     assert {c.width for c in cols} == {40.0}
 
@@ -289,13 +322,38 @@ def test_the_tallest_day_fills_the_bar_area_and_every_segment_shows():
     chart, bands, cols = _layout(SEVEN)
     tallest = max(cols, key=lambda c: c.column.total)
     assert tallest.segments[-1].box.y == bands.base - menubar_chart.BAR_AREA
-    assert tallest.segments[-1].top and not any(p.top for p in tallest.segments[:-1])
+    assert tallest.outline.y == bands.base - menubar_chart.BAR_AREA
     for col in cols:
         assert col.stub is None
         assert len(col.segments) == len(col.column.segments)
         assert all(p.box.h >= menubar_chart.MIN_SEGMENT - menubar_chart.SEGMENT_GAP for p in col.segments)
         assert col.segments[0].box.y + col.segments[0].box.h == bands.base  # on the baseline
         assert all(p.box.y >= bands.bars_top for p in col.segments)
+
+
+def test_each_column_is_one_outline_with_the_same_corners():
+    # The segments are plain rectangles inside one outline per column: from
+    # the top of the stack to the baseline, its top corners rounded at 3
+    # points whatever the top segment's height (here a 1 point "other" on
+    # every day, which rounded on its own gave 1 point corners).
+    week = {A1: (12, 9, 14, 8, 11, 10, 13), A2: (6, 7, 2, 5, 4, 3, 6), A3: (3, 2, 4, 1, 2, 3, 2),
+            A4: (1, 2, 1, 2, 1, 2, 1), A5: (0.1,) * 7, X2: (0.1,) * 7}
+    chart, bands, cols = _layout(week)
+    assert all(c.column.segments[-1].key == "other" for c in cols)
+    assert {c.segments[-1].box.h for c in cols} == {menubar_chart.MIN_SEGMENT}
+    for col in cols:
+        top = col.segments[-1].box
+        assert col.outline == menubar_chart.Box(col.x, top.y, col.width, bands.base - top.y)
+        assert col.radius == menubar_chart.CORNER == 3.0
+        for part in col.segments:  # inside the outline
+            b = part.box
+            assert col.outline.x <= b.x and b.x + b.w <= col.outline.x + col.outline.w
+            assert col.outline.y <= b.y and b.y + b.h <= col.outline.y + col.outline.h
+    # Only a stack shorter than the corner has smaller corners; an empty
+    # day has no outline, only its stub.
+    _chart, _bands, cols = _layout({A1: (50, 0, 0.01, 50, 50, 50, 50)})
+    assert cols[2].outline.h == menubar_chart.MIN_SEGMENT and cols[2].radius == menubar_chart.MIN_SEGMENT
+    assert cols[1].outline is None and cols[1].radius == 0.0 and cols[1].stub is not None
 
 
 def test_a_thin_segment_is_one_point_and_gaps_only_between_two_tall_ones():
@@ -375,33 +433,162 @@ def test_the_legend_is_never_longer_than_its_width_budget(week):
     assert names[-1] == chart.legend[-1].name or chart.legend[-1].name != "other"
 
 
-def test_fit_names_cuts_the_longest_first_and_keeps_numbers():
+def test_fit_names_starts_short_and_grows_in_legend_order():
     names = ["#1 personal", "#2 a-very-long-account-name", "other"]
     heads = [2, 2, 0]
-    out = fit_names(names, heads, lambda ns: sum(map(len, ns)) <= 30)
-    assert out == ["#1 personal", "#2 a-very-lon…", "other"]
-    # Tighter: both cut to the same length, down to the number and 3 letters.
-    out = fit_names(names, heads, lambda ns: sum(map(len, ns)) <= 20)
-    assert out == ["#1 per…", "#2 a-v…", "other"]
-    # Tighter still: the end of the legend goes to its number first, and
-    # the room that frees goes back to the others.
-    out = fit_names(names, heads, lambda ns: sum(map(len, ns)) <= 15)
-    assert out == ["#1 pers…", "#2", "other"]
-    # Nothing fits: as short as it goes; "other" is never cut.
+
+    def chars(limit):
+        return lambda ns: sum(map(len, ns)) <= limit
+
+    # Room for every whole name: nothing is cut.
+    assert fit_names(names, heads, chars(60)) == names
+    # The first entry takes its whole name, the next the longest cut left.
+    assert fit_names(names, heads, chars(30)) == ["#1 personal", "#2 a-very-lon…", "other"]
+    # No room for the second's three letters once the first is whole: it
+    # stays at its number. Names are not cut to one common length.
+    assert fit_names(names, heads, chars(20)) == ["#1 personal", "#2", "other"]
+    assert fit_names(names, heads, chars(15)) == ["#1 pers…", "#2", "other"]
+    # Nothing fits: every name at its shortest; "other" is never cut.
     assert fit_names(names, heads, lambda ns: False) == ["#1", "#2", "other"]
-    # A cut never ends in a dot before the ellipsis.
-    assert fit_names(["jordan.lee@example.org"], [0], lambda ns: len(ns[0]) <= 8) == ["jordan…"]
+    # A cut never ends in a dot before the ellipsis, and a name with no
+    # number keeps six characters.
+    assert fit_names(["jordan.lee@example.org"], [0], chars(8)) == ["jordan…"]
+    assert fit_names(["unattributed"], [0], lambda ns: False) == ["unattr…"]
 
 
-def test_fit_names_cuts_a_shared_number_to_itself_last():
-    # Claude Code's #1 and Codex's #1 both cut to "#1" would read the same:
-    # the other numbers go bare first, even nearer the front.
-    names = ["#1 personal", "Claude #2 work", "#1 maya@example.com", "#3 night-shift", "other"]
-    heads = [2, 9, 2, 2, 0]
-    out = fit_names(names, heads, lambda ns: sum(map(len, ns)) <= 30)
-    assert out == ["#1 per…", "Claude #2", "#1 may…", "#3", "other"]
-    # With no room even for that, they go bare too.
-    assert fit_names(names, heads, lambda ns: False) == ["#1", "Claude #2", "#1", "#3", "other"]
+def test_the_shortest_forms_keep_the_provider_word():
+    # With both providers in the menu, cut to its number a Codex entry
+    # still says "Codex": no two entries read the same at their shortest.
+    chart = build_chart(_cost(SEVEN), both=True)
+    shortest = chart.fit_legend(lambda _names: False)
+    assert shortest == ["#1", "#2", "Codex #1", "#3", "other"]
+    names = ["Codex #2 work", "#1 personal"]
+    assert fit_names(names, [8, 2], lambda ns: False) == ["Codex #2", "#1"]
+    assert menubar_chart.name_cuts("Codex #2 work", 8) == []  # too short to cut: whole or "Codex #2"
+    assert menubar_chart.name_cuts("Codex #1 maya@example.com", 8)[0] == "Codex #1 may…"
+
+
+#: A width model for the legend line: the view's dot, gap and spacing, and
+#: six points a character, about the 11 point system font's average.
+CHAR = 6.0
+
+
+def legend_measure(chart):
+    def measure(names):
+        return menubar_chart.legend_width(
+            [CHAR * len(f"{n} {e.amount_text}") for n, e in zip(names, chart.legend)])
+    return measure
+
+
+def _forms(name: str, head: int) -> list[str]:
+    """Every form fit_names may show for a name, shortest first."""
+    return list(dict.fromkeys(
+        [menubar_chart.shortest_name(name, head), *menubar_chart.name_cuts(name, head), name]))
+
+
+def assert_legend_uses_its_room(chart, inners, measure) -> list[list[str]]:
+    """The legend's rule at each content width in ``inners`` (ascending),
+    for a ``measure`` of a line of names. Returns the names at each."""
+    full = [e.name for e in chart.legend]
+    heads = [e.head for e in chart.legend]
+    shortest = [menubar_chart.shortest_name(n, h) for n, h in zip(full, heads)]
+    out, first = [], 0
+    for inner in inners:
+        def fits(ns, inner=inner):
+            return measure(ns) <= inner
+
+        names = chart.fit_legend(fits)
+        out.append(names)
+        # It fits, or nothing does and every name is at its shortest.
+        assert fits(names) or names == shortest, (inner, names)
+        # No two entries read the same.
+        assert len(set(names)) == len(names), (inner, names)
+        # A wider line never shows a shorter name for the first entry.
+        assert len(names[0]) >= first, (inner, names)
+        first = len(names[0])
+        for i, (name, whole, head) in enumerate(zip(names, full, heads)):
+            forms = _forms(whole, head)
+            assert name in forms, (inner, name)
+            if name == whole:
+                continue
+            longer = forms[forms.index(name) + 1:]
+            # No room is left that this name could have used.
+            assert not any(fits([*names[:i], f, *names[i + 1:]]) for f in longer), (inner, i, names)
+            # Bare only when its next form did not fit in the room the
+            # entries before it left.
+            if name == shortest[i]:
+                assert not any(fits([*names[:i], f, *shortest[i + 1:]]) for f in longer), (inner, i, names)
+    return out
+
+
+#: The showcase scenario's week (scripts/demo/scenarios.py, as read in the
+#: demo sandbox): its legend reads "#1 personal $34 · #2 work $23 · #5 ci
+#: $16 · Codex #2 work $3 · other $3" (checked against the scenario below).
+SHOWCASE = {
+    A1: (5.591012, 4.326862, 11.046293, 1.218191, 5.672755, 5.757831, 0.0),
+    A2: (7.7149, 4.637641, 3.644558, 1.054096, 0.0, 3.846731, 1.919129),
+    A5: (0.78694, 6.611378, 1.747924, 0.0, 0.0, 5.193986, 2.060336),
+    X2: (0.484412, 0.0, 0.34524, 0.0, 0.0, 0.555237, 1.183374),
+    A3: (2.0, 0.273495, 0.123706, 0.0, 0.0, 0.0, 0.0),
+    X1: (0.457605, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+}
+#: The view's insets in a menu with check marks: content = width - 46.
+INSETS = 16.0 + 14.0 + 16.0
+
+
+def test_the_showcase_legend_from_360_to_600_points():
+    chart = build_chart(_cost(SHOWCASE), both=True)
+    assert [(e.name, e.amount_text) for e in chart.legend] == [
+        ("#1 personal", "$34"), ("#2 work", "$23"), ("#5 ci", "$16"), ("Codex #2 work", "$3"), ("other", "$3"),
+    ]
+    widths = range(360, 601, 4)
+    shown = assert_legend_uses_its_room(chart, [w - INSETS for w in widths], legend_measure(chart))
+    assert shown[0] == ["#1", "#2", "#5", "Codex #2", "other"]  # 360: the shortest forms
+    assert shown[-1] == [e.name for e in chart.legend]  # 600: every name whole
+    # Somewhere between, the first entry is cut but not bare.
+    assert any(names[0].startswith("#1 ") and names[0].endswith("…") for names in shown)
+
+
+def test_both_providers_sharing_numbers_one_and_two():
+    chart = build_chart(_cost({A1: SEVEN[A1], X1: SEVEN[A2], A2: SEVEN[X1], X2: SEVEN[A3], A5: SEVEN[A5]}), both=True)
+    assert [e.name for e in chart.legend] == [
+        "#1 personal", "Codex #1 maya@example.com", "#2 work", "Codex #2 work", "other",
+    ]
+    shown = assert_legend_uses_its_room(chart, [w - INSETS for w in range(300, 601, 4)], legend_measure(chart))
+    assert shown[0] == ["#1", "Codex #1", "#2", "Codex #2", "other"]
+    for names in shown:
+        assert [n.startswith("Codex #") for n in names] == [False, True, False, True, False]
+        assert not any(n.startswith("Claude") for n in names)
+
+
+def test_long_names_with_a_shared_prefix():
+    a1 = CostAccount("claude", "platform@northwind.example.com|", 1, "#1 northwind-platform-production")
+    a2 = CostAccount("claude", "staging@northwind.example.com|", 2, "#2 northwind-platform-staging")
+    x1 = CostAccount("codex", "ci@northwind.example.com|", 1, "#1 northwind-platform-ci")
+    chart = build_chart(_cost({a1: (16, 12, 19, 4, 3, 15, 11), a2: (6, 9, 5, 0, 2, 7, 4), x1: (1, 2, 1, 0, 1, 2, 1)}),
+                        both=True)
+    shown = assert_legend_uses_its_room(chart, [w - INSETS for w in range(300, 601, 4)], legend_measure(chart))
+    for names in shown:
+        assert names[2].startswith("Codex #1")
+        for name, entry in zip(names, chart.legend):
+            kept = name.removesuffix("…")[entry.head + 1:]
+            assert name == entry.name[: entry.head] or len(kept) >= menubar_chart.NAME_KEEP
+
+
+def test_amounts_of_a_thousand_dollars_and_more():
+    week = {A1: (700, 650, 720, 690, 680, 700, 672), A2: (420, 430, 410, 425, 415, 440, 410),
+            A3: (170, 175, 168, 172, 171, 174, 174), A4: (160, 165, 166, 162, 168, 164, 165),
+            A5: (80, 81, 79, 80, 82, 78, 80), X1: (78, 79, 77, 80, 80, 79, 79)}
+    chart = build_chart(_cost(week), both=True)
+    assert [e.amount_text for e in chart.legend] == ["$4,812", "$2,950", "$1,204", "$1,150", "$1,112"]
+    assert_legend_uses_its_room(chart, [w - INSETS for w in range(300, 701, 4)], legend_measure(chart))
+
+
+def test_one_provider_only():
+    chart = build_chart(_cost({a: SEVEN[a] for a in (A1, A2, A3, A4, A5)}))
+    shown = assert_legend_uses_its_room(chart, [w - INSETS for w in range(300, 601, 4)], legend_measure(chart))
+    assert shown[0] == ["#1", "#2", "#3", "#5", "other"]
+    assert not any(n.startswith(("Claude", "Codex")) for names in shown for n in names)
 
 
 # --- the cost row in the menu -----------------------------------------------------------------
@@ -807,7 +994,8 @@ def test_show_usage_chart_flips_the_setting_saves_it_and_the_menu_follows(tmp_pa
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the demo sandbox's guards are POSIX-only")
-def test_the_renderer_reads_a_scenario_inside_the_demo_sandbox():
+@pytest.mark.parametrize("scenario", ["usage", "showcase"])
+def test_the_renderer_reads_a_scenario_inside_the_demo_sandbox(scenario):
     # scripts/demo/menubar_chart.py builds a scenario's chart in a child
     # process under the demo guards and hands back only its description.
     import os
@@ -815,14 +1003,25 @@ def test_the_renderer_reads_a_scenario_inside_the_demo_sandbox():
 
     repo = Path(__file__).resolve().parents[1]
     proc = subprocess.run(
-        [sys.executable, str(repo / "scripts" / "demo" / "menubar_chart.py"), "--describe", "usage"],
+        [sys.executable, str(repo / "scripts" / "demo" / "menubar_chart.py"), "--describe", scenario],
         capture_output=True, text=True, timeout=120, cwd=repo,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
     assert proc.returncode == 0, proc.stderr
     data = json.loads(proc.stdout)
     chart = data["chart"]
-    assert chart["caption"].endswith("7 days $180.55 (estimated)")  # qswap usage's total
-    assert [e["name"] for e in chart["legend"]] == ["#1 personal", "Claude #2 work", "#3 night-shift", "other"]
+    legend = [(e["name"], menubar_chart.whole_dollars(e["amount"])) for e in chart["legend"]]
     assert len(chart["columns"]) == 7 and chart["columns"][-1]["today"]
     assert any(r["checked"] for r in data["rows"])  # the rows that set the menu's width
+    if scenario == "usage":
+        assert chart["caption"].endswith("7 days $180.55 (estimated)")  # qswap usage's total
+        # Codex is in the menu: only its entries say their provider.
+        assert [name for name, _amount in legend] == ["#1 personal", "#2 work", "#3 night-shift", "other"]
+    else:
+        # The week the legend tests above use is this scenario's.
+        mirror = build_chart(_cost(SHOWCASE), both=True)
+        assert chart["caption"] == mirror.caption
+        assert legend == [(e.name, e.amount_text) for e in mirror.legend]
+        assert [round(sum(s["amount"] for s in c["segments"]), 4) for c in chart["columns"]] == [
+            round(c.total, 4) for c in mirror.columns
+        ]

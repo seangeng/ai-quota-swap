@@ -1669,7 +1669,7 @@ def cost_row(inp: MenuInput) -> Row:
         return Row(text)
     try:
         names = {(a.provider, a.number): a.label(long=False) for a in _all_accounts(inp)}
-        chart = build_chart(inp.cost, names=names)
+        chart = build_chart(inp.cost, names=names, both=inp.codex_shown)
     except Exception:
         _logger.debug("menu bar: the usage chart could not be built", exc_info=True)
         chart = None

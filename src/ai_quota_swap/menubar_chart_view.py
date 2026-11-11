@@ -15,8 +15,11 @@ drawing of the menu uses too. Only the insets are this view's own.
 16 on each side, and adds a 14 point check-mark column before the titles
 once any row has a check mark. So the caption and the chart start 16 points
 in, 30 once the menu shows check marks (as it does while an account is
-active), to line up with the titles above. Neither number is public API;
-they are measured, not promised.
+active), to line up with the titles above. NSMenu adds that column to a
+view's width as well (a view W wide in a menu with a checked row makes the
+menu W + 14, measured off screen on macOS 27), so the width the view asks
+for leaves the column out (:func:`min_width`). None of these numbers is
+public API; they are measured, not promised, and only off screen.
 """
 
 from __future__ import annotations
@@ -28,7 +31,6 @@ import AppKit
 from ai_quota_swap.menubar_chart import (
     ACCOUNT_COLOURS,
     CAPTION_BAND,
-    CORNER,
     DOT,
     DOT_GAP,
     ENTRY_GAP,
@@ -137,18 +139,25 @@ def _draw(view, chart: UsageChart, left: float) -> None:
 
     # The columns: oldest left, today right, the tallest day full height,
     # laid out by menubar_chart.layout_columns as the HTML drawing does.
+    # Each column is clipped to one outline with its top corners rounded,
+    # and its segments are plain rectangles inside it, so every bar has the
+    # same corners whatever its top segment's height.
     bands = _frame()
     for col in layout_columns(chart, left=left, width=inner, base=bands.base):
         if col.stub is not None:
             AppKit.NSColor.tertiaryLabelColor().setFill()
             AppKit.NSBezierPath.fillRect_(((col.stub.x, col.stub.y), (col.stub.w, col.stub.h)))
-        for part in col.segments:
-            b = part.box
-            _colour(part.segment.colour).setFill()
-            if part.top:
-                _top_rounded(b.x, b.y, b.w, b.h, CORNER).fill()
-            else:
-                AppKit.NSBezierPath.fillRect_(((b.x, b.y), (b.w, b.h)))
+        if col.outline is not None:
+            o = col.outline
+            AppKit.NSGraphicsContext.saveGraphicsState()
+            try:
+                _top_rounded(o.x, o.y, o.w, o.h, col.radius).addClip()
+                for part in col.segments:
+                    b = part.box
+                    _colour(part.segment.colour).setFill()
+                    AppKit.NSBezierPath.fillRect_(((b.x, b.y), (b.w, b.h)))
+            finally:
+                AppKit.NSGraphicsContext.restoreGraphicsState()
         # The weekday letter, centred under its bar, today's in the primary
         # label colour.
         colour = AppKit.NSColor.labelColor() if col.column.today else secondary
@@ -218,27 +227,36 @@ class QswapUsageChartView(AppKit.NSView):
                 pass
 
 
-def min_width(chart: UsageChart, *, check_marks: bool = True) -> float:
-    """The narrowest the view gets: room for the caption, and for the
-    legend with its names as short as they go. The menu is at least this
-    wide, usually wider (its account rows)."""
+def min_width(chart: UsageChart) -> float:
+    """The width the view asks its menu for: the insets, and room for the
+    caption and for the legend line at its shortest forms. It leaves out
+    the check-mark column: once a row has a check mark NSMenu adds those
+    :data:`STATE_COLUMN` points to the view's width by itself, and the view
+    then draws that much further in. The menu is at least this wide,
+    usually wider (its account rows)."""
     caption_font, _day, legend_font = _fonts()
     caption = float(_text(chart.caption, caption_font, AppKit.NSColor.labelColor()).size().width)
     shortest = chart.fit_legend(lambda _names: False)
     legend = _legend_width(chart, shortest, legend_font)
-    left = TITLE_INSET + (STATE_COLUMN if check_marks else 0.0)
-    return left + max(caption, legend) + RIGHT_INSET
+    return TITLE_INSET + max(caption, legend) + RIGHT_INSET
+
+
+def menu_width(chart: UsageChart, *, check_marks: bool = True) -> float:
+    """The narrowest the view is drawn: :func:`min_width`, and the
+    check-mark column NSMenu adds to it when ``check_marks``. For drawing
+    it off screen at a menu's width."""
+    return min_width(chart) + (STATE_COLUMN if check_marks else 0.0)
 
 
 def make_view(chart: UsageChart, *, check_marks: bool = True) -> QswapUsageChartView:
     """A view drawing ``chart``, :func:`min_width` wide and stretched to the
-    menu's width by the menu. ``check_marks``: whether to leave room for the
-    check-mark column where the view cannot ask its menu (off screen); in a
-    menu it asks. Raises after a drawing failure, so the caller shows the
+    menu's width by the menu. ``check_marks``: whether the menu shows the
+    check-mark column, for a view that cannot ask its menu (off screen); in
+    a menu it asks. Raises after a drawing failure, so the caller shows the
     text row."""
     if _failed:
         raise RuntimeError("the usage chart failed to draw earlier")
-    width = min_width(chart, check_marks=check_marks)
+    width = min_width(chart)
     view = QswapUsageChartView.alloc().initWithFrame_(((0, 0), (width, height())))
     view.chart = chart
     view.check_marks = check_marks
