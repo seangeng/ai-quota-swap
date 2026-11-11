@@ -261,10 +261,28 @@ class TestKeyHelper:
         assert _helper(["5"])[0] == 1  # the default directory has no accounts
         assert _helper(["5", "--data-dir", str(root)]) == (0, KEY_5 + "\n", "")
 
-    def test_the_default_data_directory_is_not_named(self, temp_home, monkeypatch):
+    def test_on_linux_the_line_always_names_the_data_directory(
+        self, temp_home, monkeypatch, tmp_path
+    ):
+        """The other direction of the XDG case (F4): qswap ran without
+        XDG_DATA_HOME, the session that runs the helper has one. The line
+        names the directory in use, so the helper still finds the key."""
         monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
-        assert claude_settings.helper_command(5) == f"{QSWAP} key-helper 5"
-        monkeypatch.setattr(key_helper, "_platform", lambda: "macos")
+        root = key_helper.data_dir()
+        assert root == temp_home / ".local" / "share" / "ai-quota-swap"
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        line = claude_settings.helper_command(5)
+        assert line == f"{QSWAP} key-helper 5 --data-dir {claude_settings._quote(str(root))}"
+        args = line.split(" key-helper ", 1)[1]
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "elsewhere"))
+        parts = claude_settings.read_line(line)
+        assert parts is not None and parts.data_dir == str(root)
+        assert _helper([args.split()[0], "--data-dir", parts.data_dir]) == (0, KEY_5 + "\n", "")
+
+    @pytest.mark.parametrize("name", ["macos", "windows"])
+    def test_elsewhere_the_data_directory_is_not_named(self, temp_home, monkeypatch, name):
+        monkeypatch.setattr(key_helper, "_platform", lambda: name)
         assert claude_settings.helper_command(5) == f"{QSWAP} key-helper 5"
 
     def test_the_previous_copy_when_the_saved_one_is_not_a_key(self, temp_home, monkeypatch):
@@ -474,6 +492,8 @@ class TestSettingsStates:
         ("C:\\Users\\a\\.local\\bin\\qswap.exe key-helper 3", "3"),
         ("/home/u/.local/bin/ai-quota-swap key-helper 4", "4"),
         ("/usr/bin/python3 -m ai_quota_swap key-helper 6", "6"),
+        ("/usr/bin/python3 -P -m ai_quota_swap key-helper 6", "6"),
+        ("'/a b/python3.12' -P -m ai_quota_swap key-helper 6 --data-dir /d", "6"),
         ("qswap key-helper 05", "5"),
     ])
     def test_qswaps_line_by_its_structure(self, tmp_path, line, number):
@@ -680,6 +700,124 @@ class TestSettingsWrites:
         assert _REAL_COMMAND_MISSING(line) is False
         exe.unlink()
         assert _REAL_COMMAND_MISSING(line) is True
+
+
+def _random_path(rng, alphabet: str, sep: str, head: str, tail: str) -> str:
+    segments = [
+        "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 8)))
+        for _ in range(rng.randint(1, 3))
+    ]
+    return head + sep.join(segments) + sep + tail
+
+
+#: Every character _quote treats specially on POSIX, both quotes together,
+#: and some that are not special at all.
+_POSIX_CHARS = "ab Z.-_é'\"$`\\!*?&;|<>()[]{}#~=\t\n%^,"
+#: What a Windows path can hold (no double quote), with cmd.exe's specials.
+_WINDOWS_CHARS = "ab Z.-_é'$`!&;()^%#~=[]{},"
+
+
+class TestTheLineReadsBack:
+    """Quoting is a round trip (F3, F19): every line _quote can write reads
+    back as qswap's line for the same account, with the same program and
+    data directory, and command_missing tests the path the line runs."""
+
+    def _line(self, monkeypatch, program: str, data_dir: str | None, number: int = 5) -> str:
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [program])
+        monkeypatch.setattr(key_helper, "pinned_data_dir", lambda: data_dir)
+        return claude_settings.helper_command(number)
+
+    @POSIX_ONLY
+    def test_posix_paths_with_every_special_character(self, monkeypatch, tmp_path):
+        import random
+
+        rng = random.Random(20261110)
+        cases = [("/Users/o'brien/say \"hi\"/bin/qswap", "/d/it's \"x\"")] + [
+            (
+                _random_path(rng, _POSIX_CHARS, "/", "/", "qswap"),
+                _random_path(rng, _POSIX_CHARS, "/", "/", "ai-quota-swap"),
+            )
+            for _ in range(300)
+        ]
+        for i, (program, data_dir) in enumerate(cases):
+            line = self._line(monkeypatch, program, data_dir, number=i)
+            parts = claude_settings.read_line(line)
+            assert parts is not None, line
+            assert (parts.program, parts.data_dir, parts.number) == (program, data_dir, str(i))
+            assert claude_settings.parse_line(line) == str(i)
+            if i % 20 == 0:
+                # The shell reads the same words the parser does.
+                done = subprocess.run(
+                    ["/bin/sh", "-c", "printf '%s\\0' " + line], capture_output=True,
+                )
+                words = done.stdout.decode("utf-8").split("\0")[:-1]
+                assert words == [program, "key-helper", str(i), "--data-dir", data_dir]
+
+    @POSIX_ONLY
+    def test_command_missing_tests_the_path_the_line_runs(self, monkeypatch, tmp_path):
+        exe = tmp_path / "it's \"x\" $y" / "qswap"
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        line = self._line(monkeypatch, str(exe), None)
+        assert _REAL_COMMAND_MISSING(line) is False
+        exe.unlink()
+        assert _REAL_COMMAND_MISSING(line) is True
+
+    def test_windows_paths_are_not_unescaped(self, monkeypatch):
+        """cmd.exe takes nothing out of a double-quoted word: a UNC path and
+        a backslash before $ keep every backslash."""
+        import random
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        rng = random.Random(1110)
+        cases = [
+            (r"\\fileserver\home$\jsmith\.local\bin\qswap.exe", None),
+            (r"C:\Users\John Smith\$x\qswap.exe", r"C:\Users\John Smith\data$"),
+        ] + [
+            (
+                _random_path(rng, _WINDOWS_CHARS, "\\", rng.choice(["C:\\", "\\\\srv\\s$\\"]),
+                             "qswap.exe"),
+                _random_path(rng, _WINDOWS_CHARS, "\\", "D:\\", "data"),
+            )
+            for _ in range(300)
+        ]
+        for program, data_dir in cases:
+            line = self._line(monkeypatch, program, data_dir)
+            parts = claude_settings.read_line(line)
+            assert parts is not None, line
+            assert (parts.program, parts.data_dir) == (program, data_dir)
+            assert claude_settings.parse_line(line) == "5"
+            seen: list[str] = []
+            monkeypatch.setattr(claude_settings.os.path, "exists", lambda p: seen.append(p))
+            assert _REAL_COMMAND_MISSING(line) is True
+            assert seen == [program]
+            monkeypatch.setattr(claude_settings.os.path, "exists", lambda p: p == program)
+            assert _REAL_COMMAND_MISSING(line) is False
+            monkeypatch.undo()
+            monkeypatch.setattr(sys, "platform", "win32")
+
+    def test_a_line_qswap_could_not_read_back_is_never_written(self, monkeypatch, tmp_path):
+        """A command that would not read as qswap's line for that account is
+        refused before the write (F19): qswap could never remove it."""
+        path = tmp_path / "settings.json"
+        path.write_text('{"a": 1}\n', encoding="utf-8")
+        for command in ("/opt/tool/print-key key-helper 5", f"{QSWAP} key-helper 6"):
+            with pytest.raises(claude_settings.SettingsError) as caught:
+                claude_settings.install(5, path=path, command=command)
+            assert caught.value.kind == "command"
+            assert path.read_text(encoding="utf-8") == '{"a": 1}\n'
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: ["/opt/tool/notqswap"])
+        with pytest.raises(claude_settings.SettingsError):
+            claude_settings.install(5, path=path)
+        assert path.read_text(encoding="utf-8") == '{"a": 1}\n'
+
+    def test_the_switch_is_refused_rather_than_writing_it(self, temp_home, monkeypatch):
+        s = _fleet()
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: ["/opt/tool/notqswap"])
+        with pytest.raises(KeyHelperUnavailableError):
+            s.switch_to("5", json_output=True)
+        assert not _settings(temp_home).exists()
+        assert s.current_account_number() == "1"
 
 
 # == C. who is active =====================================================================

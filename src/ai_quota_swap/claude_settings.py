@@ -17,8 +17,11 @@ Reading gives a :class:`HelperState`:
 ``ours``
     ``apiKeyHelper`` is qswap's line for account ``number``. The line is
     recognised by its structure (a ``qswap`` or ``ai-quota-swap`` command, or
-    ``python -m ai_quota_swap``, then ``key-helper`` and a number), not by an
-    exact path, so a reinstall that moved the command still reads as ours.
+    ``python -P -m ai_quota_swap``, or ``-m`` alone as older lines have it,
+    then ``key-helper`` and a number), not by an exact path, so a reinstall
+    that moved the command still reads as ours. Every line qswap writes reads
+    back this way: the quoting is a round trip on each platform, and a line
+    that would not read back is refused before it is written.
 ``foreign``
     ``apiKeyHelper`` is someone else's. Its value is never shown: a helper
     command may carry a key.
@@ -129,22 +132,43 @@ def settings_path() -> Path:
 
 
 # -- recognising qswap's line -------------------------------------------------------
+#
+# The reading side is the exact inverse of _quote on each platform: on POSIX a
+# word is single-quoted (taken as it is), double-quoted with backslash escapes
+# (undone as sh undoes them), or bare; on Windows cmd.exe takes nothing out of
+# a double-quoted word, so neither does qswap (a UNC path keeps its leading
+# backslashes, and a backslash before $ stays).
 
-_LINE_RE = re.compile(
-    r"""^\s*(?P<exe>"[^"]+"|'[^']+'|\S+)(?P<mod>\s+-m\s+ai_quota_swap)?"""
-    r"""\s+key-helper\s+(?P<num>\d+)"""
-    r"""(?:\s+--data-dir\s+(?P<dir>"[^"]+"|'[^']+'|\S+))?\s*$"""
-)
+_POSIX_WORD = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)"""
+_WINDOWS_WORD = r"""(?:"[^"]*"|\S+)"""
+
+
+def _line_re() -> re.Pattern:
+    word = _WINDOWS_WORD if sys.platform == "win32" else _POSIX_WORD
+    return re.compile(
+        rf"""^\s*(?P<exe>{word})(?P<mod>(?:\s+-P)?\s+-m\s+ai_quota_swap)?"""
+        rf"""\s+key-helper\s+(?P<num>\d+)"""
+        rf"""(?:\s+--data-dir\s+(?P<dir>{word}))?\s*$""",
+        re.DOTALL,
+    )
 
 
 def _unquote(token: str) -> str:
-    """A program path as the shell reads it: single quotes taken off as they
-    are, double quotes with their backslash escapes undone."""
+    """A word as the shell Claude Code runs the line in reads it."""
     token = token.strip()
+    if sys.platform == "win32":
+        if len(token) >= 2 and token[0] == token[-1] == '"':
+            return token[1:-1]
+        return token
     if len(token) >= 2 and token[0] == token[-1] == "'":
         return token[1:-1]
     if len(token) >= 2 and token[0] == token[-1] == '"':
-        return re.sub(r'\\([\\"$`])', r"\1", token[1:-1])
+        # Inside double quotes sh undoes a backslash before \ " $ ` and drops
+        # one before a newline; any other backslash stays.
+        return re.sub(r'\\([\\"$`\n])', lambda m: "" if m.group(1) == "\n" else m.group(1),
+                      token[1:-1])
+    # A bare word: _quote writes one only when it holds nothing the shell
+    # would change.
     return token
 
 
@@ -157,44 +181,77 @@ def _base_name(token: str) -> str:
     return name
 
 
-def parse_line(value: object) -> str | None:
-    """The account number a helper command is qswap's line for, or None."""
+@dataclass(frozen=True)
+class HelperLine:
+    """qswap's line taken apart, each word as the shell reads it."""
+
+    #: The program the line runs: qswap's console script, or an interpreter.
+    program: str
+    number: str
+    #: ``-m`` or ``-P -m`` when ``program`` is an interpreter, else None.
+    module: str | None = None
+    data_dir: str | None = None
+
+
+def read_line(value: object) -> HelperLine | None:
+    """qswap's line taken apart, or None when ``value`` is not one: a
+    ``qswap`` or ``ai-quota-swap`` program, or a Python interpreter with
+    ``-P -m ai_quota_swap`` (``-m`` alone, as older lines have it), then
+    ``key-helper N`` and optionally ``--data-dir DIR``."""
     if not isinstance(value, str):
         return None
-    m = _LINE_RE.match(value)
+    m = _line_re().match(value)
     if not m:
         return None
     base = _base_name(m.group("exe"))
+    module = None
     if m.group("mod"):
         if not base.startswith("python") and base != "py":
             return None
+        module = "-P -m" if re.search(r"\s-P\s", m.group("mod")) else "-m"
     elif base not in COMMAND_NAMES:
         return None
-    return str(int(m.group("num")))
+    return HelperLine(
+        program=_unquote(m.group("exe")),
+        number=str(int(m.group("num"))),
+        module=module,
+        data_dir=_unquote(m.group("dir")) if m.group("dir") else None,
+    )
+
+
+def parse_line(value: object) -> str | None:
+    """The account number a helper command is qswap's line for, or None."""
+    line = read_line(value)
+    return None if line is None else line.number
+
+
+def _is_absolute(path: str) -> bool:
+    import ntpath
+    import posixpath
+
+    if sys.platform == "win32":
+        return ntpath.isabs(path)
+    return posixpath.isabs(path)
 
 
 def command_missing(command: str | None) -> bool:
     """Whether qswap's line names a program by absolute path that does not
-    exist. A bare name (found on PATH by the shell) is not checked."""
-    if not command:
+    exist. A bare name (found on PATH by the shell) is not checked here."""
+    line = read_line(command)
+    if line is None or not _is_absolute(line.program):
         return False
-    m = _LINE_RE.match(command)
-    if not m:
-        return False
-    exe = _unquote(m.group("exe"))
-    if not (os.path.isabs(exe) or re.match(r"^[A-Za-z]:[\\/]", exe)):
-        return False
-    return not os.path.exists(exe)
+    return not os.path.exists(line.program)
 
 
 def _quote(path: str) -> str:
-    """``path`` as one word for the shell Claude Code runs the helper in. On
-    Windows (cmd.exe) double quotes, which a Windows path cannot contain. On
-    POSIX single quotes, inside which ``sh`` expands nothing; a path with a
-    single quote in it gets double quotes with ``\\``, ``"``, ``$`` and the
-    backtick escaped."""
+    """``path`` as one word for the shell Claude Code runs the helper in.
+    :func:`read_line` reads back every word this writes. On Windows (cmd.exe)
+    double quotes, which a Windows path cannot contain. On POSIX single
+    quotes, inside which ``sh`` expands nothing; a path with a single quote
+    in it gets double quotes with ``\\``, ``"``, ``$`` and the backtick
+    escaped."""
     if sys.platform == "win32":
-        if re.search(r"""[\s"'$`!*?&;|<>()^%]""", path):
+        if re.search(r"""[\s"'$`!*?&;|<>()^%,=]""", path):
             return '"' + path + '"'
         return path
     if not re.search(r"""[\s"'$`\\!*?&;|<>()\[\]{}#~=]""", path):
@@ -226,9 +283,9 @@ def qswap_executable() -> list[str]:
 
 def helper_command(number: str | int) -> str:
     """qswap's line for account ``number``: ``/abs/path/qswap key-helper 5``.
-    When the data directory comes from ``XDG_DATA_HOME`` it is named too
-    (``--data-dir``): Claude Code runs the line with its own environment,
-    which may not have that variable."""
+    On Linux the data directory is named too (``--data-dir``): Claude Code
+    runs the line with its own environment, whose ``XDG_DATA_HOME`` may
+    differ from qswap's in either direction."""
     from ai_quota_swap import key_helper
 
     parts = [_quote(p) for p in qswap_executable()]
@@ -587,6 +644,12 @@ def install(number: str | int, *, path: Path | None = None,
     the file cannot be parsed or holds another helper."""
     path = settings_path() if path is None else path
     value = command if command is not None else helper_command(number)
+    if parse_line(value) != str(int(number)):
+        # qswap could neither recognise nor remove a line it cannot read back.
+        raise SettingsError(
+            "would get a key line qswap cannot read back as its own", kind="command",
+            path=path,
+        )
     before, _after = _change(path, value)
     return before is None, read_state(path)
 

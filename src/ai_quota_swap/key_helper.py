@@ -111,14 +111,13 @@ def data_dir() -> Path:
 
 
 def pinned_data_dir() -> Path | None:
-    """The data directory to name in the helper line: the one in use when it
-    is not the one the rule gives without ``XDG_DATA_HOME`` (Linux with the
-    variable set), else None."""
-    current = data_dir()
+    """The data directory to name in the helper line: on Linux always the
+    one in use, since the session that runs the line may have another
+    ``XDG_DATA_HOME`` than qswap had, or none, in either direction; None
+    elsewhere (the directory there follows only the home)."""
     if _platform() != "linux":
         return None
-    default = Path.home() / ".local" / "share" / "ai-quota-swap"
-    return None if current == default else current
+    return data_dir()
 
 
 def is_key(value: str | None) -> bool:
