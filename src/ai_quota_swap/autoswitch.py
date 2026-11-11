@@ -402,6 +402,10 @@ class SwitchEvent(AutoSwitchEvent):
     # went back to the account underneath.
     limit_reason: str | None = _human_only()
     back_underneath: bool = _human_only(False)
+    # Entering a key with resets.auto off: which account holds a reset that
+    # was not spent, and the command that spends it ("#1 personal holds 1
+    # weekly reset: qswap reset 1").
+    reset_note: str | None = _human_only()
 
     def _fields(self) -> dict:
         return {
@@ -910,6 +914,11 @@ def preview_reset_plan(
     quarantined = set(state.get("quarantine") or {}) if isinstance(state.get("quarantine"), dict) else set()
     claims = state.get("resetClaims") if isinstance(state.get("resetClaims"), dict) else {}
     current = switcher.current_account_number()
+    entered_by = getattr(switcher, "key_entered_by", None)
+    if current is not None and callable(entered_by) and entered_by() == "engine":
+        # As the engine plans: the subscription underneath its key.
+        under = getattr(switcher, "underneath_account_number", None)
+        current = (under() if callable(under) else None) or current
     policies = switcher.account_policies()
     thresholds = ThresholdMap(
         {n: p.threshold for n, p in policies.items() if p.threshold is not None},
@@ -1396,6 +1405,8 @@ class AutoSwitchEngine:
         # a dry run keeps its own in memory.
         self._latches: dict = {}
         self._dry_latches: dict = {}
+        # Whether this tick claimed a usage reset (free before paid).
+        self._reset_claimed = False
 
     # -- state file ---------------------------------------------------------
 
@@ -1458,6 +1469,10 @@ class AutoSwitchEngine:
             n for n in self.switcher.switchable_account_numbers()
             if n not in quarantined and self.switcher.account_kind_for(n) != "api_key"
         ]
+        # On a key the engine entered, the account underneath stands for the
+        # active one (the active and last-resort policies key on it), so a
+        # reset that becomes usable there is claimed and the return follows.
+        current = self._reset_planning_account(current, rotation)
         accounts = rotation if current in rotation else [current, *rotation]
 
         def plan_on(entries_now: dict, usage_now: dict, claims: dict, at: float):
@@ -1526,6 +1541,8 @@ class AutoSwitchEngine:
         )
         if not reserved:
             return None
+        # Free before paid: whatever the answer, this tick enters no key.
+        self._reset_claimed = True
         result = self.switcher.claim_usage_reset(
             plan.account, plan.grant_id, reserved["requestId"]
         )
@@ -1550,6 +1567,65 @@ class AutoSwitchEngine:
         entries = self.switcher.usage_entries_by_account(fetch=set())
         usage = {num: entry.decision_value() for num, entry in entries.items()}
         return entries, usage, _headroom_by_account(usage, self._models)
+
+    def _reset_planning_account(self, current: str, rotation: Sequence[str]) -> str:
+        """The account the reset planner treats as active: the subscription
+        underneath a key the engine entered, else ``current``. On a key the
+        user entered nothing changes (only the expiry runway spends)."""
+        if self._helper_key_mode(current) != "engine":
+            return current
+        underneath_of = getattr(self.switcher, "underneath_account_number", None)
+        try:
+            under = underneath_of() if callable(underneath_of) else None
+        except Exception:
+            under = None
+        return under if under is not None and under in rotation else current
+
+    def _reset_in_flight(self, state: dict, entries: Mapping[str, object]) -> bool:
+        """Whether a usage reset claim on any account may still be on its way."""
+        claims = state.get("resetClaims")
+        if not isinstance(claims, dict):
+            return False
+        now = self.clock()
+        return any(
+            reset_claim_in_flight(
+                record, getattr(entries.get(str(num)), "fetched_at", None), now
+            )
+            for num, record in claims.items()
+        )
+
+    def _unspent_reset_note(self, usage: Mapping[str, object], quarantined: set[str]) -> str | None:
+        """With ``resets.auto`` off, the first rotation account holding a reset
+        usable now, as the words a switch onto a key adds; None otherwise."""
+        from ai_quota_swap import resets
+
+        try:
+            rs = self.switcher.reset_settings()
+        except Exception:
+            return None
+        if rs.enabled and rs.auto != "off":
+            return None
+        now = self.clock()
+        for num in self.switcher.switchable_account_numbers():
+            if num in quarantined or self.switcher.account_kind_for(num) == "api_key":
+                continue
+            value = usage.get(num)
+            status = value.get("resets") if isinstance(value, dict) else None
+            usable = [
+                g for g in resets.unused_grants(status, now)
+                if resets.grant_unusable_reason(g, now) is None
+            ]
+            if not usable:
+                continue
+            counts = resets.counts_by_kind({"grants": usable}, now)
+            held = " and ".join(
+                f"{n} {label} reset{'' if n == 1 else 's'}" for label, n in counts
+            )
+            from ai_quota_swap.autolog import number_label
+
+            who = number_label(num, self.switcher.account_email(num) or "", self._context)
+            return f"{who} holds {held}: qswap reset {num}"
+        return None
 
     # -- quarantine -----------------------------------------------------------
 
@@ -1886,6 +1962,7 @@ class AutoSwitchEngine:
         self._blocked_wait_long = False
         self._idle_hold_slow = False
         self._tick_cause = {}
+        self._reset_claimed = False
         self._context = EventContext(
             provider=self._provider_id(), names=self._alias_names()
         )
@@ -2357,7 +2434,15 @@ class AutoSwitchEngine:
             # saved key and would stop with "Not logged in"
             # (docs/design/api-key-sessions.md).
             helper = self._key_helper_ready()
-            if helper is False:
+            if self._reset_claimed or self._reset_in_flight(state, entries):
+                # Free before paid: a reset claimed this tick, or one whose
+                # answer is still out, may give a subscription room.
+                self._emit(NoSwitchEvent(
+                    reason="reset-pending",
+                    detail="a usage reset was claimed; its refill comes before an API key",
+                ))
+                held_for_sessions = True
+            elif helper is False:
                 self._emit(NoSwitchEvent(
                     reason="key-helper-unavailable",
                     detail=(
@@ -2375,6 +2460,10 @@ class AutoSwitchEngine:
             else:
                 ordered, entries = self._enterable_keys(state, entries, api_key_candidates)
                 held_for_sessions = not ordered
+                if ordered:
+                    self._tick_cause["reset_note"] = self._unspent_reset_note(
+                        usage, quarantined
+                    )
 
         if held_for_sessions:
             # The way out was a key the engine cannot move to now. When every
@@ -3576,6 +3665,7 @@ class AutoSwitchEngine:
             "priority_up": priority_up,
             "limit_reason": cause.get("limit_reason"),
             "back_underneath": bool(cause.get("back_underneath")),
+            "reset_note": cause.get("reset_note"),
         }
 
     def _account_views(

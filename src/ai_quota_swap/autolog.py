@@ -447,9 +447,11 @@ def switch_reason(event: object) -> str:
                 api_spend.NO_LIMIT: api_spend.NO_LIMIT_WORDS,
             }.get(getattr(event, "limit_reason", None) or "", "monthly budget reached")
             return words + back
+        note = getattr(event, "reset_note", None)
+        tail = f"; {note}" if note else ""
         if binding is not None and binding.pct >= 100.0:
-            return f"{binding.label} limit reached"
-        return "limit reached"
+            return f"{binding.label} limit reached{tail}"
+        return f"limit reached{tail}"
     if trigger == "failover":
         return "usage unreadable"
     if trigger == "consume-first":
@@ -619,6 +621,8 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         return "not moving to an API key, its helper cannot be added", "wait"
     if reason == "key-no-limit":
         return "not moving to an API key, it has no budget or credit", "wait"
+    if reason == "reset-pending":
+        return "a usage reset comes before an API key", "wait"
     if reason == "spend-unknown":
         return "not moving to an API key, its spend is not measured", "wait"
     if reason == "api-key-sessions":
@@ -701,6 +705,11 @@ def no_switch_sentence(event: object) -> str:
         return (
             f"Not switching to {who}: qswap cannot add its key helper to Claude "
             "Code's settings. qswap doctor says why"
+        )
+    if reason == "reset-pending":
+        return (
+            "Not switching to an API key yet: a usage reset was claimed, and its "
+            "refill comes first"
         )
     if reason == "key-no-limit":
         account = getattr(event, "account", None)

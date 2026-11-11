@@ -562,3 +562,112 @@ class TestTheLatch:
         _tick(h, EXHAUSTED, {"2": _over(h)})
         assert _tick(h, EXHAUSTED, {"2": _lower(h)}) is TickOutcome.BLOCKED
         assert "limitLatch" not in h.state()
+
+
+# == A7: free before paid ====================================================================
+
+from unittest.mock import patch  # noqa: E402
+
+from ai_quota_swap.resets import ClaimResult  # noqa: E402
+from tests.test_resets import _grant, _usage as _rusage  # noqa: E402
+
+
+def _week(**kw):
+    return _grant("g-week", clears=("seven_day",), **kw)
+
+
+def _tick_resets(h, usage, *, result=None, after=None, readings=None):
+    """A tick on reset-carrying usage; a claim answers ``result`` (a reset
+    by default) and the next read gives ``after``."""
+    claims = []
+    state = {"claimed": False}
+
+    def claim(num, grant_id, request_id):
+        claims.append(num)
+        state["claimed"] = True
+        return result or ClaimResult("reset", resets_left=0, cleared=("seven_day",))
+
+    def refresh(nums):
+        return {n: _entry_for(usage[n], h.clock.now) for n in nums if n in usage}
+
+    def entries(fetch=None, scheduled=False):
+        current = after if state["claimed"] and after else usage
+        out = {}
+        for num, value in current.items():
+            out[num] = (_key((readings or {}).get(num, _reading(h))) if value == "api key"
+                        else _entry_for(value, h.clock.now))
+        return out
+
+    with (
+        patch.object(h.switcher, "usage_entries_by_account", side_effect=entries),
+        patch.object(h.switcher, "refresh_usage", side_effect=refresh),
+        patch.object(h.switcher, "claim_usage_reset", side_effect=claim),
+    ):
+        return h.engine.tick(), claims
+
+
+class TestFreeBeforePaid:
+    def test_a_tick_that_claimed_a_reset_enters_no_key(self, temp_home):
+        h = _fleet(temp_home)
+        usage = {"1": _rusage(d7=100, grants=[_week()]), "2": "api key", "3": _rusage(d7=100)}
+        outcome, claims = _tick_resets(h, usage, result=ClaimResult("error", detail="network"))
+        assert claims == ["1"]
+        assert outcome is not TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        assert _holds(h)[-1].reason == "reset-pending"
+        assert "reset" in _holds(h)[-1].human()
+
+    def test_a_claim_in_flight_holds_the_key_back(self, temp_home):
+        h = _fleet(temp_home)
+        path = h.switcher.backup_dir / "autoswitch_state.json"
+        path.write_text(json.dumps({"schemaVersion": 1, "resetClaims": {"1": {
+            "at": h.clock.now - 30, "grantId": "g-week", "result": "pending",
+            "settled": False, "auto": True, "requestId": "r1",
+        }}}))
+        usage = {"1": _rusage(d7=100, grants=[_week()]), "2": "api key", "3": _rusage(d7=100)}
+        outcome, claims = _tick_resets(h, usage)
+        assert claims == []
+        assert outcome is not TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+
+    @pytest.mark.parametrize("auto", ["last-resort", "active"])
+    def test_on_a_key_it_entered_a_reset_underneath_is_claimed_and_it_returns(
+        self, temp_home, auto
+    ):
+        from ai_quota_swap.settings import set_setting
+
+        h = _fleet(temp_home)
+        set_setting(h.switcher.backup_dir, "resets.auto", auto)
+        _enter(h)
+        h.clock.advance(10 * 60)  # past the cooldown since the key was entered
+        usage = {"1": _rusage(d7=100, grants=[_week()]), "2": "api key", "3": _rusage(d7=100)}
+        after = {"1": _rusage(d7=0, grants=[_week(left=0)]), "2": "api key",
+                 "3": _rusage(d7=100)}
+        outcome, claims = _tick_resets(h, usage, after=after)
+        assert claims == ["1"]
+        assert outcome is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        assert _settings_line(temp_home) is None
+
+    def test_on_a_key_the_user_entered_nothing_changes(self, temp_home):
+        h = _fleet(temp_home)
+        h.switcher.switch_to("2", json_output=True)
+        usage = {"1": _rusage(d7=100, grants=[_week()]), "2": "api key", "3": _rusage(d7=100)}
+        outcome, claims = _tick_resets(h, usage)
+        assert claims == []
+        assert h.switcher.current_account_number() == "2"
+
+    def test_with_resets_auto_off_the_key_is_entered_and_the_reset_named(self, temp_home):
+        from ai_quota_swap.settings import set_setting
+
+        h = _fleet(temp_home)
+        set_setting(h.switcher.backup_dir, "resets.auto", "off")
+        usage = {"1": _rusage(d7=100, grants=[_week()]), "2": "api key", "3": _rusage(d7=100)}
+        outcome, claims = _tick_resets(h, usage)
+        assert claims == []
+        assert outcome is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+        assert _switches(h)[-1].human() == (
+            "Switched #1 a@example.com → #2 ci · 7d limit reached; #1 a@example.com "
+            "holds 1 weekly reset: qswap reset 1"
+        )
