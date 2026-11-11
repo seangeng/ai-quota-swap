@@ -1335,3 +1335,29 @@ class TestTheLedgerKeepsTheKeysUsage:
         hour = int((t + 2 * 3600) // 3600)
         assert log.saved_key_owner("key5@token.local|", hour, t + 300) == "a@example.com|"
         assert log.saved_key_owner("key5@token.local|", hour, t + 900) is None
+
+
+# == A14: credit and budget survive import --force =========================================
+
+
+class TestImportKeepsTheBrakes:
+    def test_import_force_keeps_the_records_settings(self, temp_home):
+        from ai_quota_swap.transfer import export_accounts, import_accounts
+        from tests.test_transfer import _linux_switcher, _seed_account
+
+        s = _linux_switcher(temp_home)
+        _seed_account(s, 5, "ci@example.com")
+        data = s._get_sequence_data()
+        data["accounts"]["5"]["kind"] = "api_key"
+        s._write_json(s.sequence_file, data)
+        s._write_account_credentials("5", "ci@example.com", KEY)
+        api_spend.set_budget(s, "5", 500)
+        api_spend.set_credit(s, "5", 1187, expires="2027-12-31", now=NOW)
+        before = dict(s._get_sequence_data()["accounts"]["5"])
+        out = temp_home / "ci.qswap"
+        export_accounts(s, str(out), account="5")
+        import_accounts(s, str(out), force=True)
+        after = s._get_sequence_data()["accounts"]["5"]
+        assert after["budget"] == 500.0
+        assert after["credit"] == before["credit"]
+        assert api_spend.credit_from_record(after)["amount"] == 1187.0
