@@ -1137,12 +1137,15 @@ class TestDoctorReadsTheOtherLayers:
         checks = [c for c in doctor.run_checks(probes) if c.id == "claude.other_settings"]
         assert len(checks) == 3
         lines = [line for c in checks for line in doctor._check_lines(c, 80)]
-        for path in (managed, project / "settings.json", project / "settings.local.json"):
-            shown = doctor._abbr(path, temp_home)
+        shown_paths = {
+            doctor._abbr(path, temp_home)
+            for path in (managed, project / "settings.json", project / "settings.local.json")
+        }
+        for shown in shown_paths:
             assert any(line.strip() == shown for line in lines), (shown, lines)
         for line in lines:
             assert "…" not in line, line
-            if not line.strip().startswith(("/", "~")):
+            if line.strip() not in shown_paths:  # a path stays whole, even past 80
                 assert len(line) <= 80, line
         summaries = " ".join(c.summary for c in checks)
         assert "managed settings" in summaries and "local settings" in summaries
