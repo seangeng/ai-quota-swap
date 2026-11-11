@@ -402,7 +402,8 @@ What the code does where this part leaves room, or where it had to differ:
   not manage; else `qswap switch N` to the first subscription; else log in to one and run
   `qswap add`. It is also the fix for a record whose line is gone (the line deleted by
   hand): the switch clears the record and `activeAccountNumber`, which doctor reports as
-  one warning; `qswap switch 5`, to use the key again, is offered second and labelled so.
+  one warning (over a login qswap does not manage, `qswap add` saves the login and clears
+  the record); `qswap switch 5`, to use the key again, is offered second and labelled so.
   No surface names re-entering the key as that fix.
 - **Notes in JSON.** `list --json` and `status --json` carry `keyNotes`, one `{code, account,
   fix}` for each note the text view prints, in its order (`switcher.key_notes_json`; the

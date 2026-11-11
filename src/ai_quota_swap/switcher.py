@@ -4670,8 +4670,20 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
 
     def _say_key_still_active(self, key: str | None, number: str) -> None:
         """Decision B7: after saving the login under an active key, say that
-        sessions stay on the key and name the switch onto that login."""
-        if key is None or str(key) == str(number):
+        sessions stay on the key and name the switch onto that login. With no
+        key line in, a record whose line is gone (deleted by hand) is cleared
+        now: over a login qswap did not manage, ``qswap add`` is the fix every
+        surface names for it (decision E1), and the login it saved is where
+        sessions already are."""
+        if key is None:
+            try:
+                if self.key_findings().lost is not None:
+                    for what in self.reconcile_key_helper():
+                        self._logger.info(f"Key line repaired: {what}")
+            except Exception as e:
+                self._logger.debug(f"Could not clear a lost key record: {e!r}")
+            return
+        if str(key) == str(number):
             return
         from ai_quota_swap import display
 

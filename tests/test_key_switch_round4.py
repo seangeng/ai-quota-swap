@@ -211,3 +211,31 @@ class TestKeyToKeyOverAnUnmanagedLogin:
         assert text.endswith("To go back, add that login first: qswap add")
         result = s.switch_to("5", json_output=True)
         assert "new@example.com stays logged in underneath." in " ".join(result["followup"])
+
+
+# == E1: a lost record over a login qswap does not manage ======================================
+
+
+class TestALostRecordOverAnUnmanagedLogin:
+    """E1: the fix every surface names clears the record. Over a login
+    qswap does not manage that fix is `qswap add`, which left the record
+    and the warning in place."""
+
+    def test_qswap_add_clears_it(self, temp_home):
+        from ai_quota_swap import doctor
+        from tests.test_key_switch_round3 import _login, _notes, _removed_by_hand
+
+        s = _removed_by_hand(temp_home)
+        _login("new@example.com")
+        assert "To leave it: qswap add." in _notes(s)
+        assert [n["fix"] for n in s.key_notes() if n["code"] == "line-lost"] == ["qswap add"]
+        s.add_account(assume_yes=True)
+        f = s.key_findings()
+        assert (f.lost, f.stale_active) == (None, None)
+        assert "no longer in" not in _notes(s)
+        assert not [n for n in s.key_notes() if n["code"] == "line-lost"]
+        lost = [c for c in doctor.run_checks() if "no longer in" in c.summary]
+        assert not lost
+        assert s.current_account_number() == s._find_account_slot(
+            s._get_sequence_data(), "new@example.com", ""
+        )

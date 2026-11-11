@@ -188,7 +188,7 @@ Claude Code
         to use the key again: qswap switch 5
 ```
 
-`qswap list`, `qswap status`, the dashboard and the menu bar say the same, the two steps in the same order. Without qswap, delete the `apiKeyHelper` line from `~/.claude/settings.json` by hand ([api-accounts.md](api-accounts.md#removing-the-line-by-hand)).
+`qswap list`, `qswap status`, the dashboard and the menu bar say the same, the two steps in the same order. When the login under it is one qswap does not manage, the first step is `qswap add`, which saves that login and clears the record too. Without qswap, delete the `apiKeyHelper` line from `~/.claude/settings.json` by hand ([api-accounts.md](api-accounts.md#removing-the-line-by-hand)).
 
 When `~/.claude/settings.json` is not valid JSON while qswap's record names a key, qswap cannot tell whether its line is still in the file, and every command that would change accounts stops with the same sentence:
 
