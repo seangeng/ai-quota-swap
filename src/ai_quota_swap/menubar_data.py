@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -245,15 +246,22 @@ def read_history(log_path: Path) -> tuple[SwitchRecord, ...]:
 # -- cost --------------------------------------------------------------------------
 
 
-#: The files the cost read depends on: the ledger, and the two registries
-#: whose numbers the chart's legend names accounts by (``qswap swap`` and
-#: ``qswap move`` renumber accounts without touching the ledger).
-STAMPED_FILES = ("ledger.db", "ledger.db-wal", "sequence.json", "codex/sequence.json")
+#: The files the cost read depends on: the ledger; the two registries whose
+#: numbers the chart's legend names accounts by (``qswap swap`` and ``qswap
+#: move`` renumber accounts without touching the ledger); and the two
+#: activation logs, which decide whose each hour is (a saved key's helper
+#: line or a ``qswap run`` session moves an hour from one account to
+#: another without touching the ledger or a registry).
+STAMPED_FILES = (
+    "ledger.db", "ledger.db-wal", "sequence.json", "codex/sequence.json",
+    "activations.jsonl", "codex/activations.jsonl",
+)
 
 
 def ledger_stamp(data_root: Path) -> tuple:
     """Changes whenever the ledger does (a scan here or by ``qswap usage``),
-    and whenever an account's number does."""
+    whenever an account's number does, and whenever a line is added to an
+    activation log."""
     out = []
     for name in STAMPED_FILES:
         try:
@@ -264,16 +272,46 @@ def ledger_stamp(data_root: Path) -> tuple:
     return tuple(out)
 
 
-def read_cost(data_root: Path, *, today: date | None = None) -> CostSummary | None:
+class CostCache:
+    """The cost read the menu shows, read again only when it could differ:
+    when :func:`ledger_stamp` changes, or when the chart is turned on or off
+    (a read made without the days must not stand in for one with them).
+    The app's refresh worker and its ledger scan both read through it, so
+    it reads for one thread at a time."""
+
+    def __init__(self) -> None:
+        self.cost: CostSummary | None = None
+        self._key: tuple | None = None
+        self._lock = threading.Lock()
+
+    def read(self, data_root: Path, *, days: bool, again: bool = False,
+             today: date | None = None) -> CostSummary | None:
+        """The cost, and with ``days`` each day by account (the chart's),
+        from the last read when nothing it depends on changed since;
+        ``again`` reads whatever the stamp says (after a scan). The stamp is
+        taken before the read, so a change made while it reads is read at
+        the next call."""
+        with self._lock:
+            key = (ledger_stamp(data_root), bool(days))
+            if again or key != self._key:
+                self.cost = read_cost(data_root, today=today, days=days)
+                self._key = key
+            return self.cost
+
+
+def read_cost(data_root: Path, *, today: date | None = None, days: bool = True) -> CostSummary | None:
     """Today's and the last seven local days' estimated cost, both providers,
     from ``ledger.db`` as it is: opened read-only (a running scan is never
     blocked, a missing ledger is not created), priced at read time with the
     same table and ``pricing.json`` as ``qswap usage``, over the same local
     days. None when there is no ledger or it holds nothing yet.
 
-    It also reads each of those days by account for the chart
-    (:func:`cost_days`); a failure there leaves the days empty and the
-    totals as they are."""
+    With ``days`` it also reads each of those days by account for the chart
+    (:func:`cost_days`); without, the days are left empty (the chart is
+    off, and that read is most of the cost). A failure there leaves the
+    days empty and the totals as they are. Both reads are one read
+    transaction, so a scan that commits between them changes neither: the
+    columns always add up to the caption they sit under."""
     from ai_quota_swap.ledger.pricing import PriceTable
     from ai_quota_swap.ledger.report import day_bounds
     from ai_quota_swap.ledger.store import DB_FILENAME, SCHEMA_VERSION, LedgerStore
@@ -290,6 +328,10 @@ def read_cost(data_root: Path, *, today: date | None = None) -> CostSummary | No
         return None
     conn = store.conn
     try:
+        # One snapshot for the totals and the days: in WAL mode a read
+        # transaction sees the ledger as it was at its first read, whatever
+        # a scan commits meanwhile. Nothing here writes; closing ends it.
+        conn.execute("BEGIN")
         row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         if row is None or str(row[0]) != str(SCHEMA_VERSION):
             return None
@@ -302,11 +344,12 @@ def read_cost(data_root: Path, *, today: date | None = None) -> CostSummary | No
             (today_hour, since_hour, until_hour),
         ).fetchall()
         prices = PriceTable.load(Path(data_root))
-        try:
-            days = cost_days(store, Path(data_root), today=today, prices=prices)
-        except Exception:
-            _logger.debug("menu bar: the cost by day could not be read", exc_info=True)
-            days = ()
+        by_day: tuple[CostDay, ...] = ()
+        if days:
+            try:
+                by_day = cost_days(store, Path(data_root), today=today, prices=prices)
+            except Exception:
+                _logger.debug("menu bar: the cost by day could not be read", exc_info=True)
     except sqlite3.Error:
         return None
     finally:
@@ -324,7 +367,7 @@ def read_cost(data_root: Path, *, today: date | None = None) -> CostSummary | No
     return CostSummary(
         today=round(totals["today"][0], 6), week=round(totals["week"][0], 6),
         today_unpriced=totals["today"][1], week_unpriced=totals["week"][1],
-        days=days,
+        days=by_day,
     )
 
 
@@ -334,7 +377,17 @@ def cost_days(store, data_root: Path, *, today: date, prices) -> tuple[CostDay, 
     gives that usage (``ledger.report.attribute``, the same activation logs
     and registries), priced as it prices them. Usage with no account is
     its own entry, ``unattributed``. Reads files only; ``store`` is the
-    read-only ledger."""
+    read-only ledger.
+
+    The days are cut as the caption cuts its week, not as a single-day
+    ``qswap usage`` cuts one day: each hour bucket is counted once, on the
+    day the caption counts it, so the columns add up to the caption's week
+    and the last one is its today. The two differ only in a zone that is
+    not a whole number of hours from UTC (Asia/Kolkata). There a bucket
+    holds each midnight, and ``qswap usage --since D --until D`` takes the
+    buckets at both ends of D, so a column can be one or two buckets less
+    than that day's ``qswap usage``; the first, yesterday's and today's
+    columns can also differ by one bucket from ``--by day``'s rows."""
     from ai_quota_swap.ledger.report import Accounts, account_group, attribute, day_bounds, local_day
     from ai_quota_swap.ledger.usage import _read_json, report_inputs
 

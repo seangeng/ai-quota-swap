@@ -826,7 +826,12 @@ def test_a_swap_changes_the_stamp_and_the_legend_follows(temp_home):
         chart = menubar.build_menu(_inp(_claude(*rows), cost=cost)).section("cost").rows[0].chart
         return [(e.name, e.amount_text) for e in chart.legend]
 
-    stamp, cost = menubar_data.ledger_stamp(root), menubar_data.read_cost(root, today=TODAY)
+    # The stamp as the app holds it: taken after a read, which leaves
+    # SQLite's -wal and -shm beside the ledger (taken before, the read
+    # alone would change it, whatever the swap did).
+    cost = menubar_data.read_cost(root, today=TODAY)
+    stamp = menubar_data.ledger_stamp(root)
+    assert menubar_data.read_cost(root, today=TODAY) == cost and menubar_data.ledger_stamp(root) == stamp
     big, small = menubar_chart.whole_dollars(_price(10_000_000)), menubar_chart.whole_dollars(_price(1_000_000))
     assert legend(cost) == [("#1 account1@example.com", big), ("#2 account2@example.com", small)]
     s.swap_accounts("1", "2")
@@ -838,6 +843,117 @@ def test_a_swap_changes_the_stamp_and_the_legend_follows(temp_home):
     (root / "codex").mkdir(exist_ok=True)
     (root / "codex" / "sequence.json").write_text(json.dumps({"accounts": {}}))
     assert menubar_data.ledger_stamp(root) != stamp
+
+
+def test_a_helper_line_changes_the_stamp_and_the_split_follows(tmp_path):
+    # Whose an hour is also comes from the activation logs: a key's helper
+    # line (or a `qswap run` session) moves usage between accounts without
+    # touching the ledger or a registry. Each provider's log is watched.
+    from ai_quota_swap.ledger.activations import record_activation
+
+    _registry(tmp_path)
+    (tmp_path / "sequence.json").write_text(json.dumps({"accounts": {
+        "1": {"email": "a@example.com", "uuid": "uuid-a", "organizationUuid": ""},
+        "5": {"email": "key5@token.local", "uuid": "", "organizationUuid": ""},
+    }}))
+    h = _hour(TODAY)
+    record_activation(tmp_path, number=1, email="a@example.com", org="", now=(h - 30) * 3600)
+    record_activation(tmp_path, number=5, email="key5@token.local", org="", now=(h - 20) * 3600, how="saved-key")
+    _write_ledger(
+        tmp_path, [("claude", h, "key5@token.local|", MODEL, "p", "sess-old", *_toks(1_000_000))],
+        sessions=[("claude", "sess-old", "", (h - 25) * 3600.0, 1)],
+    )
+
+    def split():
+        return {a.number: round(c, 6) for a, c in menubar_data.read_cost(tmp_path, today=TODAY).days[-1].costs}
+
+    # Under the saved-key line, a session started before it stays with #1.
+    assert split() == {1: pytest.approx(_price(1_000_000))}
+    stamp = menubar_data.ledger_stamp(tmp_path)
+    # The same key entered again by its helper line: the hour is the key's.
+    record_activation(tmp_path, number=5, email="key5@token.local", org="", now=(h - 10) * 3600, how="helper")
+    assert menubar_data.ledger_stamp(tmp_path) != stamp
+    assert split() == {5: pytest.approx(_price(1_000_000))}
+    # Codex's log counts too.
+    stamp = menubar_data.ledger_stamp(tmp_path)
+    record_activation(tmp_path / "codex", number=1, email="c@example.com", org="", now=(h - 5) * 3600)
+    assert menubar_data.ledger_stamp(tmp_path) != stamp
+
+
+def test_the_stamp_follows_a_scan_whether_or_not_its_wal_is_checkpointed(tmp_path):
+    from ai_quota_swap.ledger.store import LedgerStore
+
+    # The first scan makes the ledger: the stamp, taken while there was
+    # none, changes with ledger.db (the scan's WAL is folded in and gone).
+    stamp = menubar_data.ledger_stamp(tmp_path)
+    assert menubar_data.read_cost(tmp_path, today=TODAY) is None
+    _write_ledger(tmp_path, [("claude", _hour(TODAY), "a@example.com|", MODEL, "p", "s1", *_toks(1_000))])
+    assert not (tmp_path / "ledger.db-wal").exists()
+    assert menubar_data.ledger_stamp(tmp_path) != stamp
+    # A scan that commits while it still holds the ledger open (or while
+    # another reader does): the commit is in ledger.db-wal alone.
+    menubar_data.read_cost(tmp_path, today=TODAY)
+    store = LedgerStore(tmp_path / "ledger.db")
+    try:
+        stamp = menubar_data.ledger_stamp(tmp_path)
+        db = (tmp_path / "ledger.db").stat()
+        store.begin()
+        store.add_buckets([("claude", _hour(TODAY), "a@example.com|", MODEL, "p", "s2", *_toks(2_000))])
+        store.commit()
+        assert (tmp_path / "ledger.db").stat().st_mtime_ns == db.st_mtime_ns  # not in ledger.db yet
+        assert menubar_data.ledger_stamp(tmp_path) != stamp
+        assert menubar_data.read_cost(tmp_path, today=TODAY).today == pytest.approx(_price(3_000))
+    finally:
+        store.close()
+
+
+def test_one_cost_read_is_one_snapshot_of_the_ledger(tmp_path, monkeypatch):
+    # The caption's totals and the columns are two queries. A scan that
+    # commits between them changes neither: the columns add up to the
+    # caption they sit under, and the next read has the new usage in both.
+    _write_ledger(tmp_path, [("claude", _hour(TODAY), "a@example.com|", MODEL, "p", "s1", *_toks(1_000_000))])
+    real = menubar_data.cost_days
+    commits = []
+
+    def scan_commits_first(*a, **kw):
+        if not commits:
+            _write_ledger(tmp_path, [("claude", _hour(TODAY), "a@example.com|", MODEL, "p", "s2", *_toks(2_000_000))])
+            commits.append(1)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(menubar_data, "cost_days", scan_commits_first)
+    cost = menubar_data.read_cost(tmp_path, today=TODAY)
+    assert commits
+    columns = sum(c for d in cost.days for _a, c in d.costs)
+    assert cost.week == pytest.approx(_price(1_000_000)) and columns == pytest.approx(cost.week)
+    cost = menubar_data.read_cost(tmp_path, today=TODAY)
+    columns = sum(c for d in cost.days for _a, c in d.costs)
+    assert cost.week == pytest.approx(_price(3_000_000)) and columns == pytest.approx(cost.week)
+
+
+def test_with_the_chart_off_the_days_are_not_read(tmp_path, monkeypatch):
+    _write_ledger(tmp_path, [("claude", _hour(TODAY), "a@example.com|", MODEL, "p", "s1", *_toks(1_000_000))])
+    calls = []
+    real = menubar_data.cost_days
+    monkeypatch.setattr(menubar_data, "cost_days", lambda *a, **kw: calls.append(1) or real(*a, **kw))
+    off = menubar_data.read_cost(tmp_path, today=TODAY, days=False)
+    assert calls == [] and off.days == () and off.today == pytest.approx(_price(1_000_000))
+    on = menubar_data.read_cost(tmp_path, today=TODAY)
+    assert calls == [1] and on.days and (on.today, on.week) == (off.today, off.week)
+    # The cache: a read without the days never stands in for one with
+    # them, though the ledger has not changed; otherwise it reads only when
+    # the stamp changes, or when asked to after a scan.
+    cache = menubar_data.CostCache()
+    calls.clear()
+    assert cache.read(tmp_path, days=False, today=TODAY).days == () and calls == []
+    assert cache.read(tmp_path, days=False, today=TODAY).days == () and calls == []
+    assert cache.read(tmp_path, days=True, today=TODAY).days and calls == [1]
+    assert cache.read(tmp_path, days=True, today=TODAY).days and calls == [1]
+    assert cache.read(tmp_path, days=True, again=True, today=TODAY).days and calls == [1, 1]
+    _write_ledger(tmp_path, [("claude", _hour(TODAY), "a@example.com|", MODEL, "p", "s2", *_toks(1_000))])
+    assert cache.read(tmp_path, days=True, today=TODAY).today == pytest.approx(_price(1_001_000))
+    assert calls == [1, 1, 1]
+    assert cache.read(tmp_path, days=False, today=TODAY).days == () and calls == [1, 1, 1]
 
 
 @pytest.fixture
@@ -954,14 +1070,26 @@ def test_the_app_draws_the_chart_or_falls_back_to_the_text_row(monkeypatch):
     assert menubar_app._chart_item(_FakeRumps, row, log) is None
 
 
-def test_show_usage_chart_flips_the_setting_saves_it_and_the_menu_follows(tmp_path):
-    # The click goes where the menu's other on/off settings go:
+#: Each on/off row of Settings and the setting its click flips.
+TOGGLE_ROWS = {
+    "Show account name in menu bar": "show_account_name",
+    "Show model limits in title": "title_scoped",
+    "Show usage chart": "usage_chart",
+}
+
+
+@pytest.mark.parametrize("text", list(TOGGLE_ROWS))
+def test_each_on_off_setting_flips_only_itself_saves_it_and_the_menu_follows(tmp_path, text):
+    # Each click goes where the menu's other on/off settings go:
     # menubar.toggle_menu_setting with the row's own action, which the
-    # app's handler calls with the file it saves to.
+    # app's handler for that action calls with the file it saves to.
+    import dataclasses
     import inspect
 
     from ai_quota_swap import menubar_app
 
+    assert set(TOGGLE_ROWS.values()) == set(menubar.SETTING_TOGGLES.values())
+    name = TOGGLE_ROWS[text]
     path = tmp_path / "menubar_settings.json"
     settings = MenuBarSettings()
     cost = _cost({A1: (5,) * 7})
@@ -969,25 +1097,174 @@ def test_show_usage_chart_flips_the_setting_saves_it_and_the_menu_follows(tmp_pa
 
     def save(s):
         s.save(path)
-        saved.append(s.usage_chart)
+        saved.append(getattr(s, name))
 
-    for expect in (False, True):
-        click = menubar.build_menu(_cost_inp(cost, settings=settings)).find("Show usage chart").action
-        menubar.toggle_menu_setting(click, settings, save=save)
-        assert settings.usage_chart is expect and saved[-1] is expect
-        assert MenuBarSettings.load(path).usage_chart is expect
+    def values(s):
+        return {f.name: getattr(s, f.name) for f in dataclasses.fields(s) if f.name != "extra"}
+
+    for _click in range(2):
+        before = values(settings)
+        row = menubar.build_menu(_cost_inp(cost, settings=settings)).find(text)
+        assert row.checked is before[name]
+        menubar.toggle_menu_setting(row.action, settings, save=save)
+        assert values(settings) == {**before, name: not before[name]}  # only its own setting
+        assert saved[-1] is (not before[name]) and MenuBarSettings.load(path) == settings
         menu = menubar.build_menu(_cost_inp(cost, settings=settings))
-        assert menu.find("Show usage chart").checked is expect
-        assert (menu.section("cost").rows[0].chart is not None) is expect
-    # The other two on/off settings flip their own setting only.
-    menubar.toggle_menu_setting(menubar.Action("toggle-scoped"), settings, save=save)
-    assert settings.title_scoped and settings.usage_chart and settings.show_account_name
-    assert set(menubar.SETTING_TOGGLES) <= menubar.ACTION_KINDS
+        assert menu.find(text).checked is (not before[name])
+        if name == "show_account_name":
+            assert ("personal" in menu.title) is settings.show_account_name
+        if name == "usage_chart":
+            assert (menu.section("cost").rows[0].chart is not None) is settings.usage_chart
+    # The app's handler for the row's action calls that same function, then
+    # draws the menu again.
     source = inspect.getsource(menubar_app.run_app)
-    assert "def _do_toggle_chart(self, a: Action):\n            self._toggle_setting(a)" in source
+    handler = "_do_" + row.action.kind.replace("-", "_")
+    assert f"def {handler}(self, a: Action):\n            self._toggle_setting(a)\n" in source
     body = source[source.index("def _toggle_setting"):source.index("def _do_toggle_name")]
     assert "toggle_menu_setting(a, self.settings, save=lambda s: s.save(settings_path))" in body
     assert "self.rebuild_menu()" in body
+    assert row.action.kind in menubar.ACTION_KINDS
+
+
+class _AppItem:
+    def __init__(self, title, callback=None):
+        self.title, self.callback, self.state = title, callback, 0
+        self.children, self._menuitem = [], _FakeNSItem()
+
+    def add(self, item):
+        self.children.append(item)
+
+    def __setitem__(self, key, item):
+        self.children.append(item)
+
+
+class _AppMenu:
+    def __init__(self):
+        self.items = []
+        self._menu = types.SimpleNamespace(itemArray=lambda: [])
+
+    def clear(self):
+        self.items = []
+
+    def add(self, item):
+        self.items.append(item)
+
+    def __setitem__(self, key, item):
+        self.items.append(item)
+
+
+def _start_app(switcher, monkeypatch):
+    """The real MenuBarApp over a fake rumps and no AppKit: its handlers,
+    its reads and its drawing of rows, with nothing shown anywhere. Waits
+    for its first background read."""
+    from unittest.mock import MagicMock
+
+    from ai_quota_swap import menubar_app
+
+    # No AppKit view: the chart row is a plain item here.
+    view_module = types.ModuleType("ai_quota_swap.menubar_chart_view")
+    view_module.make_view = lambda chart: (_ for _ in ()).throw(RuntimeError("no view in tests"))
+    monkeypatch.setitem(sys.modules, "ai_quota_swap.menubar_chart_view", view_module)
+    made = []
+
+    class App:
+        def __init__(self, name, quit_button=None):
+            self.menu, self.title = _AppMenu(), None
+
+        def run(self):
+            made.append(self)
+
+    class Timer:
+        def __init__(self, callback, interval):
+            self.interval = interval
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    rumps = types.SimpleNamespace(
+        App=App, MenuItem=_AppItem, Timer=Timer, notification=lambda *a, **k: None,
+        alert=lambda *a, **k: 0, quit_application=lambda: None,
+        rumps=types.SimpleNamespace(NSApp=types.SimpleNamespace()),
+    )
+    assert menubar_app.run_app(switcher, rumps, MagicMock()) == 0
+    app = made[0]
+    _wait_for_read(app)
+    return app
+
+
+def _wait_for_read(app):
+    import time
+
+    deadline = time.monotonic() + 30
+    while app._refreshing and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not app._refreshing
+
+
+def _switcher(temp_home):
+    from ai_quota_swap.models import Platform
+    from ai_quota_swap.switcher import ClaudeAccountSwitcher
+
+    s = ClaudeAccountSwitcher()
+    s.platform = Platform.LINUX
+    s._setup_directories()
+    s._init_sequence_file()
+    return s
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the menu bar app is macOS's; its fakes are POSIX paths")
+def test_the_app_reads_the_days_only_for_the_chart_and_turning_it_on_shows_it(temp_home, monkeypatch):
+    s = _switcher(temp_home)
+    root = s.backup_dir
+    _write_ledger(root, [("claude", _hour(_dt.date.today()), "a@example.com|", MODEL, "p", "s1", *_toks(1_000))])
+    MenuBarSettings(usage_chart=False).save(root / "menubar_settings.json")
+    calls = []
+    real = menubar_data.cost_days
+    monkeypatch.setattr(menubar_data, "cost_days", lambda *a, **kw: calls.append(1) or real(*a, **kw))
+    app = _start_app(s, monkeypatch)
+    # Off: the cost read leaves the days out, and the menu has no chart.
+    assert app._cost is not None and app._cost.days == () and calls == []
+    stamp = menubar_data.ledger_stamp(root)
+    app.dispatch(menubar.Action("toggle-chart"))
+    # On: read again at once, with the days, though the ledger is as it was.
+    _wait_for_read(app)
+    assert menubar_data.ledger_stamp(root) == stamp
+    assert calls == [1] and app._cost.days
+    app.on_sync_tick(None)
+    assert menubar.build_menu(app._menu_input()).section("cost").rows[0].chart is not None
+    # A refresh with nothing changed reads nothing.
+    app.refresh_async()
+    _wait_for_read(app)
+    assert calls == [1]
+    # Off again: no days read.
+    app.dispatch(menubar.Action("toggle-chart"))
+    _wait_for_read(app)
+    assert calls == [1] and app._cost.days == ()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the menu bar app is macOS's; its fakes are POSIX paths")
+def test_the_apps_on_off_rows_flip_their_own_setting_save_it_and_redraw(temp_home, monkeypatch):
+    s = _switcher(temp_home)
+    path = s.backup_dir / "menubar_settings.json"
+    app = _start_app(s, monkeypatch)
+
+    def settings_rows():
+        settings = next(i for i in app.menu.items if i is not None and i.title == "Settings")
+        return {c.title: c.state for c in settings.children if c is not None and c.title in TOGGLE_ROWS}
+
+    for text, name in TOGGLE_ROWS.items():
+        for _click in range(2):
+            before = json.loads(path.read_text()) if path.exists() else MenuBarSettings().to_json()
+            click = menubar.build_menu(app._menu_input()).find(text).action
+            app.dispatch(click)
+            after = json.loads(path.read_text())
+            assert after == {**before, name: not before[name]}, text
+            assert getattr(app.settings, name) is after[name]
+            assert settings_rows()[text] == int(after[name])
+            _wait_for_read(app)
 
 
 # --- the off-screen renderer's scenario path ----------------------------------------------------

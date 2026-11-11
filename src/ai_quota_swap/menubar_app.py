@@ -64,11 +64,10 @@ from ai_quota_swap.menubar_data import (
     COST_FIRST_SCAN_DELAY_S,
     COST_SCAN_INTERVAL_S,
     CodexReader,
+    CostCache,
     Gathered,
     claude_state,
     heartbeats,
-    ledger_stamp,
-    read_cost,
     read_history,
     scan_ledger,
 )
@@ -116,7 +115,10 @@ def run_app(switcher, rumps, AppKit) -> int:
             self._codex = CodexReader(data_root)
             self._data = Gathered(ProviderState("claude"), ProviderState("codex"))
             self._cost = None
-            self._cost_stamp: tuple | None = None
+            # Read again when the ledger, a registry or an activation log
+            # changes, or when the chart is turned on (the read for the
+            # chart also reads each day by account; without it, it does not).
+            self._cost_cache = CostCache()
             self._dirty = False
             self._refreshing = False
             self._scanning = False
@@ -187,10 +189,7 @@ def run_app(switcher, rumps, AppKit) -> int:
                 except Exception:
                     logger.debug("menu bar Codex read failed", exc_info=True)
                     codex = previous.codex
-                stamp = ledger_stamp(data_root)
-                if stamp != self._cost_stamp:
-                    self._cost = read_cost(data_root)
-                    self._cost_stamp = stamp
+                self._cost = self._cost_cache.read(data_root, days=self.settings.usage_chart)
                 self._data = Gathered(
                     claude, codex, read_history(log_path), heartbeats(data_root), now,
                 )
@@ -233,8 +232,7 @@ def run_app(switcher, rumps, AppKit) -> int:
                 except Exception:
                     pass
                 scan_ledger(data_root, registry=registry)
-                self._cost = read_cost(data_root)
-                self._cost_stamp = ledger_stamp(data_root)
+                self._cost = self._cost_cache.read(data_root, days=self.settings.usage_chart, again=True)
                 self._dirty = True
             except Exception:
                 logger.debug("menu bar ledger scan failed", exc_info=True)
@@ -802,6 +800,9 @@ def run_app(switcher, rumps, AppKit) -> int:
 
         def _do_toggle_chart(self, a: Action):
             self._toggle_setting(a)
+            # The cost read without the days cannot draw the chart: read it
+            # again now rather than at the next refresh tick.
+            self.refresh_async()
 
         def _do_title_pct(self, a: Action):
             self.settings.title_pct = str(a.value)
