@@ -54,7 +54,15 @@ To switch anyway:
   qswap switch 5 --log-out-sessions
 ```
 
-The count is the "Running instances" `qswap list` shows. Sessions inside a `qswap run` profile have their own login and are not counted. When qswap cannot read Claude Code's session records (a record half written, or in a shape it does not know), it cannot tell whether sessions are running, and refuses the same way; `--log-out-sessions` still goes ahead. Under `--json` the refusal is the error envelope, with the count in `error.sessions` and the records it could not read in `error.unreadable`.
+The count is the "Running instances" `qswap list` shows. Sessions inside a `qswap run` profile have their own login and are not counted, and neither is a process that has exited. When qswap cannot read Claude Code's session records (a record half written, or in a shape it does not know), it cannot tell whether sessions are running, and refuses the same way; `--log-out-sessions` still goes ahead. Claude Code names each record after its process id, so a record qswap cannot read is ignored when that process is no longer running. Otherwise the refusal names the file and what to do:
+
+```text
+This session record could not be read:
+  /Users/maya/.claude/sessions/4101.json
+If Claude Code process 4101 is gone, delete the file.
+```
+
+`qswap doctor` lists such records too. Under `--json` the refusal is the error envelope, with the count in `error.sessions`, the records it could not read counted in `error.unreadable` and listed in `error.unreadableRecords`.
 
 `--log-out-sessions` switches anyway and says what happens next:
 
@@ -70,7 +78,7 @@ With no session running there is nothing to refuse, and the switch ends with `Cl
 
 What the switch changes: the key is saved where Claude Code reads it (the macOS Keychain item `Claude Code`, or `primaryApiKey` in `~/.claude.json` elsewhere), and the login is taken out of Claude Code's login item (`Claude Code-credentials`, or `~/.claude/.credentials.json`). The item itself stays, with your MCP server sign-ins in it, so Slack, Figma and other MCP servers stay signed in.
 
-Switching back is safe. qswap never rewrites an API-key account's saved key when it leaves it, and the account you switch to gets its own login together with the MCP sign-ins of the moment. Sessions started while the key was active move back on their own: `Sessions started while #5 ci was active move to #1 personal within about 30 seconds.` Sessions that stopped with "Not logged in" pick the login up again and continue their conversation. From one key to another it is different: sessions started on the first key keep using it until you restart them, and the switch lists them by process id and directory.
+Switching back is safe. qswap never rewrites an API-key account's saved key when it leaves it, and the account you switch to gets its own login together with the MCP sign-ins of the moment. Sessions started while the key was active move back on their own: `Sessions started while #5 ci was active move to #1 personal within about 30 seconds.` Sessions that stopped with "Not logged in" pick the login up again and continue their conversation. From one key to another it is different: a session started on a key keeps using that key until you restart it, and the switch lists every such session under the key it keeps, by process id and directory. Loading a changed key for the account already active (`qswap switch 5 --force` after an import) lists the sessions that keep the previous key the same way.
 
 `qswap doctor` warns when an API-key account is active while sessions that started on a subscription are still running, and when something makes Claude Code ignore the active account altogether: an `apiKeyHelper` in `~/.claude/settings.json`, or `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` exported in your shell. `qswap switch` warns about those variables too.
 

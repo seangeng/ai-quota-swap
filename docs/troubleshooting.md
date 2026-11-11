@@ -157,7 +157,19 @@ Do not run `/login` in those sessions. Either:
 
 - or restart the sessions you want on the key (`/restart`, or quit and run `claude --continue`): a session that starts while the key is active uses it, and resumes its conversation.
 
-`qswap doctor` lists this state as `#5 ci (API key) is active and 6 Claude Code sessions that started on a subscription are running`. After a switch from one API key to another, sessions started on the first key keep using it until you restart them.
+`qswap doctor` lists this state as `#5 ci (API key) is active and 6 Claude Code sessions that started on a subscription are running`. After a switch from one API key to another, sessions started on an earlier key keep using it until you restart them.
+
+## An API-key switch is refused, but no session is running
+
+`qswap switch 5` stops with `qswap could not read Claude Code's session records, so it cannot tell whether sessions are running`, and auto-switch never moves onto the key. A Claude Code that was killed while writing can leave a record half written, and qswap cannot tell whether its process still runs. The refusal and `qswap doctor` name the file:
+
+```text
+This session record could not be read:
+  /Users/maya/.claude/sessions/4101.json
+If Claude Code process 4101 is gone, delete the file.
+```
+
+Check with `ps -p 4101` (or Task Manager on Windows) and delete the file when no Claude Code runs as that process. A record whose process has already exited is ignored without asking.
 
 ## Codex keeps its login in the OS keyring
 
