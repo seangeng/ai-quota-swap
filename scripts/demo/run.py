@@ -55,6 +55,12 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("--height", type=int, default=32, help="terminal rows (default 32)")
     p.add_argument("--html", type=Path, help="render the output to this terminal-window page")
     p.add_argument("--title", help="window title for --html (default: the command)")
+    p.add_argument("--typing", action="store_true",
+                   help="with --html: a page that types each command and then shows its "
+                        "output, one after another, on a screen of --height lines (for "
+                        "recordings; a key press starts it)")
+    p.add_argument("--zoom", type=float, default=1.0,
+                   help="with --typing: scale the window, for a recording")
     p.add_argument("--ansi", type=Path, help="also write the raw ANSI output here")
     p.add_argument("--audit-log", type=Path, help="record every file, process and network event")
     p.add_argument("--serve", action="store_true", help="serve the TUI in a browser (loopback)")
@@ -108,6 +114,10 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
                 "--frames go with --menubar")
     if args.frames is not None and not args.auto_switch:
         p.error("--frames draws one picture per engine check: add --auto-switch")
+    if args.typing and (args.html is None or args.menubar):
+        p.error("--typing writes the --html page of the commands after --, not with --menubar")
+    if args.zoom != 1.0 and not args.typing:
+        p.error("--zoom goes with --typing")
     if args.ticks < 1:
         p.error("--ticks takes a number of engine checks, 1 or more")
     if args.size is not None:
@@ -239,12 +249,18 @@ def run_cli(args: argparse.Namespace, qswap_args: list[str]) -> int:
         if args.ansi:
             args.ansi.write_text("".join(f"$ {s}\n{out}" for s, (_, out) in zip(shown, blocks)),
                                  encoding="utf-8")
-        if args.html:
+        theme = scenario.settings.get("ui", {}).get("theme", "dark")
+        rendered = [render.Block(s, out) for s, (_, out) in zip(shown, blocks)]
+        if args.html and args.typing:
+            import typing_page
+
+            args.html.write_text(typing_page.page(
+                rendered, title=args.title or "qswap", theme=theme, columns=args.width,
+                rows=args.height, zoom=args.zoom,
+            ), encoding="utf-8")
+        elif args.html:
             render.write_page(
-                args.html,
-                [render.Block(s, out) for s, (_, out) in zip(shown, blocks)],
-                title=args.title or shown[0],
-                theme=scenario.settings.get("ui", {}).get("theme", "dark"),
+                args.html, rendered, title=args.title or shown[0], theme=theme,
                 columns=args.width,
             )
 
