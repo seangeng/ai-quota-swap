@@ -966,11 +966,15 @@ class KeyActivationMixin:
         from_ref = None
         if source is not None:
             from_ref = account_ref(int(source), self.account_email(source))
+        # Decision DS11: a way back is always named, the one every other
+        # surface gives (key_way_back), also over a login qswap does not
+        # manage and with no login at all.
+        back = f"qswap switch {underneath}" if underneath else self.key_way_back()
         followup = display.key_switch_followup(
             target=self.label(number, long=False),
             underneath=self.label(underneath, long=False) if underneath else unmanaged,
             from_key=self.label(previous_key, long=False) if previous_key else None,
-            back=f"qswap switch {underneath}" if underneath else None,
+            back=back, no_way_back=back is None,
         )
         sent = (
             [display.key_sent_elsewhere(state.shown_path(), host, self.label(number, long=False))]

@@ -149,8 +149,9 @@ return to it when the key is left.
   a key picks its target before it touches the line, and stays on the key when there is none.
 - **Messages.** To a key: running sessions move to it within a few seconds, the account
   underneath stays logged in, claude.ai connectors and Remote Control are unavailable while a
-  key is in use, and the way back (`Go back with: qswap switch 1`). Away from a key: sessions
-  are back on the named account within a few seconds.
+  key is in use, and the way back (`Go back with: qswap switch 1`; over a login qswap does
+  not manage, or with no login, the way back the other surfaces give). Away from a key:
+  sessions are back on the named account within a few seconds.
 - **The settings file.** Read, change one key, write atomically, keep everything else as it
   was (key order, indentation, file mode, a byte order mark). In a file of several lines the
   line goes in as the first member, so that deleting it by hand leaves valid JSON. If the

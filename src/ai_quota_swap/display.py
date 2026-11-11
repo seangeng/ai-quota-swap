@@ -1166,12 +1166,15 @@ def over_fact(underneath: str) -> str:
 
 def key_switch_followup(
     *, target: str, underneath: str | None, from_key: str | None = None,
-    back: str | None = None,
+    back: str | None = None, no_way_back: bool = False,
 ) -> list[str]:
     """What follows "Switched … (API key)" on the helper path: where running
     sessions go, the login that stays underneath (an account, or the address
     of a login qswap does not manage), what a key turns off, and the way back
-    (``back``, the switch to the account underneath)."""
+    (``back``, the one ``key_way_back`` gives every surface: the switch to the
+    account underneath or to a subscription, or ``qswap add`` over a login
+    qswap does not manage). ``no_way_back``: there is no subscription to go
+    back to, so it says how to leave (decision DS11)."""
     if from_key:
         first = (
             f"Running Claude Code sessions move from {from_key} to {target} within "
@@ -1183,8 +1186,12 @@ def key_switch_followup(
     if underneath:
         parts.append(f"{underneath} stays logged in underneath.")
     parts.append(KEY_CONNECTORS)
-    if back:
+    if back == "qswap add":
+        parts.append(f"To go back, add that login first: {back}")
+    elif back:
         parts.append(f"Go back with: {back}")
+    elif no_way_back:
+        parts.append(f"To leave it, {KEY_NO_WAY_BACK}")
     return wrap(" ".join(parts))
 
 

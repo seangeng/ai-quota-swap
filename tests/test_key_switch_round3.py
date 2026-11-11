@@ -762,3 +762,63 @@ class TestOneNamePerAccount:
         code, out, err = run(s, "credit", "1")
         assert code == 1
         assert "#1 personal is a subscription account" in " ".join(err.split())
+
+
+# == DS11: a way back is always named ==============================================
+
+
+def _login(email: str | None) -> None:
+    from ai_quota_swap.paths import get_global_config_path
+
+    body = {} if email is None else {"oauthAccount": {
+        "emailAddress": email, "accountUuid": "", "organizationUuid": None,
+    }}
+    get_global_config_path().write_text(json.dumps(body), encoding="utf-8")
+
+
+class TestAWayBackIsAlwaysNamed:
+    def test_over_a_login_qswap_does_not_manage(self, temp_home, run):
+        from tests.test_key_helper_live import _fits
+
+        s = _fleet()
+        _login("new@example.com")
+        code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        text = " ".join(out.split())
+        assert "new@example.com stays logged in underneath." in text
+        assert text.endswith("To go back, add that login first: qswap add")
+        _fits(out)
+        assert s.key_way_back() == "qswap add"
+
+    def test_with_no_login_it_names_the_switch_to_a_subscription(self, temp_home, run):
+        s = _fleet()
+        _login(None)
+        code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        text = " ".join(out.split())
+        assert text.endswith("Go back with: qswap switch 1")
+        assert s.key_way_back() == "qswap switch 1"
+
+    def test_with_no_login_and_no_subscription_it_says_how_to_leave(self, temp_home, run):
+        from tests.test_key_helper_live import KEY_5, _fits, _switcher
+        from ai_quota_swap.models import Platform
+
+        s = _switcher(Platform.MACOS)
+        s.add_account_from_token(KEY_5, slot=5)
+        s.set_alias("5", "ci")
+        _login(None)
+        code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        text = " ".join(out.split())
+        assert text.endswith(
+            "To leave it, log in to a subscription (claude, then /login), then run: qswap add"
+        )
+        _fits(out)
+
+    def test_json_carries_it_in_the_followup(self, temp_home):
+        s = _fleet()
+        _login("new@example.com")
+        result = s.switch_to("5", json_output=True)
+        assert " ".join(result["followup"]).endswith(
+            "To go back, add that login first: qswap add"
+        )

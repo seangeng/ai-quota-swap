@@ -94,7 +94,7 @@ Claude Code accounts
 ...
 ```
 
-`qswap status` shows only the active account, so it shows the key's row, `over #1 personal`. The key is the active account; the subscription is *underneath* it and is not active. Its windows still read as usual. When auto-switch entered the key, the row adds `by auto-switch`. Under `--json`, the key's row has `"active": true`, `"how": "helper"` and `"enteredBy"` (`user` or `engine`), and the subscription's row has `"underneath": true` ([json-output.md](json-output.md)).
+`qswap status` shows only the active account, so it shows the key's row, `over #1 personal`. The key is the active account; the subscription is *underneath* it and is not active. Its windows still read as usual. When auto-switch entered the key, the row adds `by auto-switch`. When the login underneath is one qswap does not manage, the switch to the key ends with `To go back, add that login first: qswap add` (`qswap add` then names the switch to it); with no login at all it names the switch to your first subscription (`Go back with: qswap switch 1`), which logs it in, and with no subscription either, how to log in to one. Under `--json`, the key's row has `"active": true`, `"how": "helper"` and `"enteredBy"` (`user` or `engine`), and the subscription's row has `"underneath": true` ([json-output.md](json-output.md)).
 
 ### Leaving the key
 
