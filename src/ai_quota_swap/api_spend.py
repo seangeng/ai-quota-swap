@@ -169,13 +169,19 @@ def credit_expired(expires: str | None, now: float) -> bool:
     return now >= end.timestamp()
 
 
-def credit_reading(credit: dict, used: float | None, source: str | None, now: float) -> dict:
-    """The ``credit`` part of a reading: what is left of it."""
+def credit_reading(
+    credit: dict, used: float | None, source: str | None, now: float,
+    *, unpriced_tokens: int = 0,
+) -> dict:
+    """The ``credit`` part of a reading: what is left of it. ``used`` counts
+    ``unpriced_tokens`` (tokens of models with no price, over the whole
+    credit period) at the dearest rate."""
     from ai_quota_swap.admin_api import iso_z
     from datetime import datetime, timezone
 
     left = None if used is None else round(credit["amount"] - used, 4)
     return {
+        "unpriced_tokens": int(unpriced_tokens or 0),
         "amount": credit["amount"],
         "used": None if used is None else round(used, 4),
         "left": left,
@@ -576,6 +582,53 @@ def _blank(source: str | None, used: float | None, today: float | None,
     }
 
 
+@dataclass(frozen=True)
+class AdminPriced:
+    month: float
+    today: float
+    unpriced: int  # this month
+    since: float
+    unpriced_since: int  # since the credit's day
+
+
+def price_admin(
+    days: dict[str, list[tuple[str, str | None, tuple[int, ...]]]],
+    prices,
+    today_label: str,
+    month_label: str = "",
+    since_label: str | None = None,
+) -> AdminPriced:
+    """Spend from a report's daily buckets: this month from ``month_label``
+    (the report may start earlier for a credit), today, and from
+    ``since_label`` for a credit (Anthropic's figures are whole UTC days, so
+    the credit's first day counts in full). Tokens of a model with no price
+    count at the table's dearest rate for their kind, never as zero."""
+    from ai_quota_swap.ledger.pricing import FAST_SUFFIX
+
+    month = today = since = 0.0
+    unpriced = unpriced_since = 0
+    dearest = None
+    for day, rows in days.items():
+        for model, speed, toks in rows:
+            found = prices.lookup(model + FAST_SUFFIX if speed == "fast" else model)
+            if found is None:
+                dearest = dearest or prices.dearest()
+                cost = dearest.cost(*toks)
+                if day >= month_label:
+                    unpriced += sum(toks)
+                if since_label is not None and day >= since_label:
+                    unpriced_since += sum(toks)
+            else:
+                cost = found[1].cost(*toks)
+            if day >= month_label:
+                month += cost
+            if day == today_label:
+                today += cost
+            if since_label is not None and day >= since_label:
+                since += cost
+    return AdminPriced(month, today, unpriced, since, unpriced_since)
+
+
 def _price_admin(
     days: dict[str, list[tuple[str, str | None, tuple[int, ...]]]],
     prices,
@@ -583,29 +636,9 @@ def _price_admin(
     month_label: str = "",
     since_label: str | None = None,
 ) -> tuple[float, float, int, float]:
-    """``(month, today, unpriced tokens, since)`` from a report's daily
-    buckets: this month from ``month_label`` (the report may start earlier
-    for a credit), and from ``since_label`` for a credit (Anthropic's figures
-    are whole UTC days, so the credit's first day counts in full)."""
-    from ai_quota_swap.ledger.pricing import FAST_SUFFIX
-
-    month = today = since = 0.0
-    unpriced = 0
-    for day, rows in days.items():
-        for model, speed, toks in rows:
-            found = prices.lookup(model + FAST_SUFFIX if speed == "fast" else model)
-            if found is None:
-                if day >= month_label:
-                    unpriced += sum(toks)
-                continue
-            cost = found[1].cost(*toks)
-            if day >= month_label:
-                month += cost
-            if day == today_label:
-                today += cost
-            if since_label is not None and day >= since_label:
-                since += cost
-    return month, today, unpriced, since
+    """``(month, today, unpriced tokens, since)``: :func:`price_admin` as a tuple."""
+    p = price_admin(days, prices, today_label, month_label=month_label, since_label=since_label)
+    return p.month, p.today, p.unpriced, p.since
 
 
 def readings(
@@ -689,6 +722,7 @@ def readings(
         budget = budget_from_record(record)
         credit = credits.get(num)
         credit_used: float | None = None
+        credit_unpriced = 0
         link = links.get(num)
         reading: dict | None = None
         note = notes.get(num)
@@ -699,13 +733,16 @@ def readings(
                 since_label = (
                     admin_api.utc_day_label(credit["since"]) if credit is not None else None
                 )
-                cost, today_cost, unpriced, since_cost = _price_admin(
+                priced = price_admin(
                     parsed.get(link.key_id, {}), prices, today_label,
                     month_label=month.date().isoformat(), since_label=since_label,
                 )
                 if credit is not None:
-                    credit_used = since_cost
-                reading = _blank(SOURCE_ADMIN, cost, today_cost, unpriced, res.fetched_at)
+                    credit_used = priced.since
+                    credit_unpriced = priced.unpriced_since
+                reading = _blank(
+                    SOURCE_ADMIN, priced.month, priced.today, priced.unpriced, res.fetched_at
+                )
                 reading["org"] = link.org
                 reading["api_key_id"] = link.key_id
                 if link.key_name:
@@ -726,6 +763,7 @@ def readings(
                 reading = _blank(SOURCE_LEDGER, ls.month, ls.today, ls.unpriced_tokens, ls.last_scan_at)
                 if credit is not None:
                     credit_used = ls.since
+                    credit_unpriced = ls.unpriced_since
             elif not note and (root / DB_FILENAME).exists():
                 note = LEDGER_UNREADABLE
         if reading is None:
@@ -733,7 +771,10 @@ def readings(
                 continue
             reading = _blank(None, None, None, 0, None)
         if credit is not None:
-            reading["credit"] = credit_reading(credit, credit_used, reading.get("source"), now)
+            reading["credit"] = credit_reading(
+                credit, credit_used, reading.get("source"), now,
+                unpriced_tokens=credit_unpriced,
+            )
         spend = reading["spend"]
         spend["resets_at"] = admin_api.iso_z(next_month)
         if budget is not None:
@@ -857,7 +898,8 @@ def credit_text(credit: dict) -> str:
     left = credit.get("left")
     if left is None:
         return f"{amount} credit"
-    return f"{credit_money(left)} of {amount} credit left"
+    plus = "+" if credit.get("unpriced_tokens") else ""
+    return f"{credit_money(left)}{plus} of {amount} credit left"
 
 
 def _has_figure(reading: dict) -> bool:
@@ -939,6 +981,9 @@ def detail_text(reading: dict, now: float | None = None) -> str | None:
     old the figure is and what auto-switch does about it."""
     now = time.time() if now is None else now
     base = _detail_text(reading, now)
+    unpriced = _unpriced_words(reading)
+    if unpriced:
+        base = f"{unpriced} · {base}" if base else unpriced
     if limit_not_enforced(reading, now) and not spend_unknown(reading):
         age = figure_age(reading, now) if _has_figure(reading) else None
         as_of = reading.get("as_of")
@@ -960,6 +1005,18 @@ def detail_text(reading: dict, now: float | None = None) -> str | None:
     if not words:
         return base
     return f"{base} · {words}" if base else words
+
+
+def _unpriced_words(reading: dict) -> str | None:
+    """What the row's ``+`` means, said once: the tokens of models with no
+    price, which count at the dearest rate."""
+    credit = reading.get("credit") if isinstance(reading.get("credit"), dict) else {}
+    tokens = max(int(reading.get("unpriced_tokens") or 0), int(credit.get("unpriced_tokens") or 0))
+    if not tokens:
+        return None
+    from ai_quota_swap.ledger.report import fmt_tokens
+
+    return f"+ counts {fmt_tokens(tokens)} tokens of models with no price at the dearest rate"
 
 
 def _detail_text(reading: dict, now: float) -> str | None:

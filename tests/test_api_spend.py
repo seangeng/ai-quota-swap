@@ -239,7 +239,7 @@ class TestAdminSource:
         _readings(s, now=NOW + 100)
         assert anthropic.paths().count("/v1/organizations/usage_report/messages") == 1
 
-    def test_unknown_model_is_counted_not_priced(self, env, anthropic):
+    def test_unknown_model_is_counted_at_the_dearest_rate(self, env, anthropic):
         anthropic.routes["/v1/organizations/usage_report/messages"] = [json_response(report([
             bucket("2026-11-10", [
                 usage_result("apikey_A", OPUS, inp=1_000_000),
@@ -250,8 +250,10 @@ class TestAdminSource:
         seed_api_key(s, 3, KEY_A)
         _register()
         reading = _readings(s)["3"]
-        assert reading["spend"]["used"] == 4.0 and reading["unpriced_tokens"] == 123
-        assert "$4.00+ this month" in api_spend.spend_text(reading)
+        # Never zero toward a limit: the dearest input rate in the table ($16).
+        assert reading["spend"]["used"] == pytest.approx(4.0 + 123 * 16 / 1e6, abs=1e-4)
+        assert reading["unpriced_tokens"] == 123
+        assert "$4.00+ this month" in api_spend.spend_text(reading, now=NOW)
 
     def test_failure_falls_back_to_the_ledger_with_a_note(self, env, anthropic):
         anthropic.routes["/v1/organizations/usage_report/messages"] = [error_response(429)]

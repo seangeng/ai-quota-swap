@@ -1073,3 +1073,132 @@ class TestWhenTheEngineStops:
         assert note is not None and "nothing watches its limit now" in note.body
         sup.start("claude")
         assert sup.stop_all() == [said[0].human()]
+
+
+# == A6: unpriced tokens never count as zero toward a limit =================================
+
+
+def _seed_ledger(root, account: str, rows):
+    """``(epoch, model, input)`` buckets in ``root``'s ledger, scanned now."""
+    from ai_quota_swap.ledger.store import DB_FILENAME, LAST_SCAN_META, LedgerStore
+
+    store = LedgerStore(root / DB_FILENAME)
+    store.add_buckets([
+        ("claude", int(ts // 3600), account, model, "/p", f"s{i}", inp, 0, 0, 0, 0, 0, 1)
+        for i, (ts, model, inp) in enumerate(rows)
+    ])
+    store.set_meta(LAST_SCAN_META, str(NOW))
+    store.close()
+
+
+class TestUnpricedTokens:
+    def test_the_dearest_rate_per_kind_of_token(self):
+        from ai_quota_swap.ledger.pricing import PriceTable
+
+        dear = PriceTable().dearest()
+        # Fable 5.2 fast: $16 in, $20 5m, $32 1h, $80 out; Opus 4.1: $1.50 hits.
+        assert (dear.input, dear.cache_write_5m, dear.cache_write_1h, dear.cache_read,
+                dear.output) == (16, 20, 32, 1.50, 80)
+
+    def test_the_ledger_charges_them_at_it(self, tmp_path):
+        from ai_quota_swap.ledger import spend as ledger_spend
+
+        _seed_ledger(tmp_path, "ci@example.com|", [
+            (NOW - 60, "claude-fable-5-3", 1_000_000),   # no price: $16 at the dearest
+            (NOW - 60, "claude-opus-5-5", 1_000_000),    # $4
+        ])
+        month0 = NOW - 9 * 86400
+        ls = ledger_spend.account_spend(tmp_path, "ci@example.com", "", month_start=month0,
+                                        day_start=NOW - 3600, since_start=NOW - 7200)
+        assert ls.month == pytest.approx(20.0) and ls.since == pytest.approx(20.0)
+        assert ls.unpriced_tokens == 1_000_000 and ls.unpriced_since == 1_000_000
+
+    def test_over_the_whole_credit_period(self, tmp_path):
+        from ai_quota_swap.ledger import spend as ledger_spend
+
+        month_start = NOW - 86400
+        _seed_ledger(tmp_path, "ci@example.com|", [
+            (NOW - 5 * 86400, "claude-fable-5-3", 1_000_000),  # before this month
+        ])
+        ls = ledger_spend.account_spend(tmp_path, "ci@example.com", "", month_start=month_start,
+                                        day_start=NOW - 3600, since_start=NOW - 9 * 86400)
+        assert ls.month == 0 and ls.unpriced_tokens == 0
+        assert ls.since == pytest.approx(16.0) and ls.unpriced_since == 1_000_000
+
+    def test_the_admin_figures_charge_them_at_it(self):
+        from ai_quota_swap.ledger.pricing import PriceTable
+
+        days = {"2026-11-07": [("claude-fable-5-3", None, (1_000_000, 0, 0, 0, 0)),
+                               ("claude-sonnet-5-5", "fast", (0, 1_000_000, 0, 0, 0))],
+                "2026-10-30": [("claude-fable-5-3", None, (1_000_000, 0, 0, 0, 0))]}
+        priced = api_spend.price_admin(days, PriceTable(), "2026-11-07",
+                                       month_label="2026-11-01", since_label="2026-10-30")
+        assert priced.month == pytest.approx(16.0 + 80.0)
+        assert priced.since == pytest.approx(16.0 + 80.0 + 16.0)
+        assert priced.unpriced == 2_000_000 and priced.unpriced_since == 3_000_000
+
+    def test_the_reviewers_case_reaches_the_credit(self):
+        """110M tokens of a model with no price used to count $0 against a
+        $1,187 credit; at the dearest input rate they spend it."""
+        credit = api_spend.credit_reading({"amount": 1187.0, "since": NOW, "expires": None},
+                                          110 * 16.0 + 4.0, "ledger", NOW,
+                                          unpriced_tokens=111_000_000)
+        assert credit["spent"] and credit["unpriced_tokens"] == 111_000_000
+        assert api_spend.limit_reason({"credit": credit}) == "credit-spent"
+
+    def test_the_credit_row_carries_the_mark_and_the_detail_explains_it(self):
+        credit = api_spend.credit_reading({"amount": 1187.0, "since": NOW, "expires": None},
+                                          37.0, "ledger", NOW, unpriced_tokens=1_200_000)
+        reading = {"spend": {"used": 37.0, "limit": None}, "today": 0.0, "source": "ledger",
+                   "as_of": NOW, "unpriced_tokens": 1_200_000, "credit": credit}
+        assert api_spend.spend_text(reading, now=NOW) == (
+            "API key · $1,150+ of $1,187 credit left · estimate"
+        )
+        assert api_spend.credit_text(credit) == "$1,150+ of $1,187 credit left"
+        detail = api_spend.detail_text(reading, NOW)
+        assert detail.startswith(
+            "+ counts 1.2M tokens of models with no price at the dearest rate"
+        )
+        from ai_quota_swap.json_output import api_spend_to_json
+
+        assert api_spend_to_json(reading)["credit"]["unpricedTokens"] == 1_200_000
+
+    def test_a_month_row_explains_its_mark_too(self):
+        reading = {"spend": {"used": 37.0, "limit": None}, "today": 0.0, "source": "ledger",
+                   "as_of": NOW, "unpriced_tokens": 500}
+        assert api_spend.spend_text(reading, now=NOW).endswith("$37.00+ this month · estimate")
+        assert api_spend.detail_text(reading, NOW) == (
+            "+ counts 500 tokens of models with no price at the dearest rate"
+        )
+
+
+class TestHaikuLongPrompts:
+    """Anthropic's pricing page: Claude Haiku 5.5 prompts over 100,000 tokens
+    (input plus cache reads and writes) pay the higher prices."""
+
+    def test_the_reader_tags_a_long_prompt(self):
+        from ai_quota_swap.ledger.readers import parse_claude_line
+        from tests.ledger_fixtures import claude_line
+
+        short = parse_claude_line(claude_line(mid="a", ts=NOW, model="claude-haiku-5-5",
+                                              inp=10, cr=99_990, w5=0).encode() + b"\n")
+        long = parse_claude_line(claude_line(mid="b", ts=NOW, model="claude-haiku-5-5",
+                                             inp=10, cr=99_991, w5=0).encode() + b"\n")
+        opus = parse_claude_line(claude_line(mid="c", ts=NOW, model="claude-opus-5-5",
+                                             inp=10, cr=500_000).encode() + b"\n")
+        assert short.model == "claude-haiku-5-5"
+        assert long.model == "claude-haiku-5-5/long"
+        assert opus.model == "claude-opus-5-5"
+
+    def test_the_long_prompt_price(self):
+        from ai_quota_swap.ledger.pricing import PriceTable
+
+        key, price = PriceTable().lookup("claude-haiku-5-5-20261101/long")
+        assert key == "claude-haiku-5-5/long"
+        assert (price.input, price.cache_write_5m, price.cache_write_1h, price.cache_read,
+                price.output) == (0.50, 0.625, 1, 0.05, 2.50)
+
+    def test_the_report_names_it(self):
+        from ai_quota_swap.ledger import report
+
+        assert report.model_label("claude-haiku-5-5/long") == "claude-haiku-5-5 (prompt over 100K)"

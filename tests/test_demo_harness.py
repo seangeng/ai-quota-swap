@@ -431,7 +431,9 @@ class TestScenarioStates:
         assert all(len(row) <= 72 for row in self._account_rows(r.stdout))
         r = _run(["usage", "--menubar"])
         assert r.returncode == 0, r.stderr
-        assert "7 days $179.72 (estimated)" in r.stdout  # qswap usage's total
+        # qswap usage's total; Haiku 5.5 prompts over 100,000 tokens at
+        # their own price (pricing.py, ANTHROPIC_LONG).
+        assert "7 days $180.55 (estimated)" in r.stdout
         r = _run(["empty-claude", "--menubar"])
         assert "Claude Code is logged in as maya@example.com. Add it with: qswap add" in r.stdout
 

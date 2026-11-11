@@ -35,6 +35,8 @@ from ai_quota_swap.ledger.activations import ActivationLog, identity_key
 from ai_quota_swap.ledger.pricing import (
     ANTHROPIC_SOURCE,
     FAST_SUFFIX,
+    LONG_SUFFIX,
+    long_prompt_tier,
     OPENAI_SOURCE,
     PRICES_FETCHED,
     PriceTable,
@@ -397,14 +399,23 @@ def _short_path(path: str) -> str:
     return home_path(path) if path else "(no project)"
 
 
+def model_label(model: str) -> str:
+    """A ledger model id as a report row names it: ``claude-opus-5-5 (fast)``,
+    ``claude-haiku-5-5 (prompt over 100K)``."""
+    if model.endswith(FAST_SUFFIX):
+        return model[: -len(FAST_SUFFIX)] + " (fast)"
+    if model.endswith(LONG_SUFFIX):
+        base = model[: -len(LONG_SUFFIX)]
+        tier = long_prompt_tier(base)
+        return f"{base} (prompt over {fmt_tokens(tier)})" if tier else base
+    return model
+
+
 def _label(row: Row, by: str, accounts: Accounts, *, show_provider: bool = False) -> None:
     if by == "day":
         row.label = row.key.strftime("%a %Y-%m-%d")  # type: ignore[union-attr]
     elif by == "model":
-        model = str(row.key)
-        row.label = (
-            model[: -len(FAST_SUFFIX)] + " (fast)" if model.endswith(FAST_SUFFIX) else model
-        )
+        row.label = model_label(str(row.key))
     elif by == "account":
         prov, key = row.key  # type: ignore[misc]
         row.label, info, row.tail = accounts.describe(key, prov, show_provider=show_provider)

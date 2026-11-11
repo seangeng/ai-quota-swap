@@ -341,6 +341,10 @@ def api_spend_to_json(reading: dict) -> dict:
             "spent": bool(credit.get("spent")),
             "source": credit.get("source"),
         }
+        if credit.get("unpriced_tokens"):
+            # Tokens of models with no price since the credit's start,
+            # counted at the dearest rate in ``used``.
+            out["credit"]["unpricedTokens"] = credit["unpriced_tokens"]
     return out
 
 
