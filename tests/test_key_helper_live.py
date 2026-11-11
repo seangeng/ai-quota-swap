@@ -1002,6 +1002,18 @@ class TestSwitching:
         assert out.splitlines()[0] == "Switched #5 ci → #6 ops (API key)"
         assert "move from #5 ci to #6 ops within a few seconds" in " ".join(out.split())
 
+    @pytest.mark.parametrize("blank", ["", "\n", "  \n\n"])
+    def test_a_blank_settings_file_is_blank_again_after_the_key(self, temp_home, blank):
+        """Claude Code reads a blank file as no settings; the round trip
+        through a key (and from one key to another) leaves it as it was."""
+        s = _fleet()
+        _settings(temp_home).write_bytes(blank.encode("utf-8"))
+        _activate(s)
+        assert _settings_obj(temp_home)["apiKeyHelper"].endswith("key-helper 5")
+        s.switch_to("6", json_output=True)
+        s.switch_to("1", json_output=True)
+        assert _settings(temp_home).read_bytes() == blank.encode("utf-8")
+
     def test_back_to_the_account_underneath_removes_the_line_only(
         self, temp_home, block_real_keychain, run
     ):

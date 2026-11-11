@@ -387,6 +387,7 @@ class KeyActivationMixin:
                 if previous_key is None:
                     self.restore_run_profiles(force=True)
                 raise self._key_unavailable(number, self._profiles_unisolated_reason(shared))
+            blank = claude_settings.blank_text(state.path) if previous_key is None else None
             try:
                 created, _ = claude_settings.install(number)
             except claude_settings.SettingsError as e:
@@ -400,18 +401,24 @@ class KeyActivationMixin:
             # see the line and copy by themselves.
             shared = self.isolate_run_profiles()
             if shared is None or shared:
-                self._undo_install(previous_key, created)
+                self._undo_install(previous_key, created, blank)
                 raise self._key_unavailable(number, self._profiles_unisolated_reason(shared))
             old = self._key_state()
             created = bool(created or (previous_key is not None and old.get("createdSettings")))
+            if previous_key is not None and isinstance(old.get("blankSettings"), str):
+                blank = old["blankSettings"]
             self._record_active_number(number)
-            self._write_key_state({
+            key_state = {
                 "number": number,
                 "enteredBy": entered_by if entered_by in ENTERED_BY else "user",
                 "since": time.time(),
                 "createdSettings": created,
                 "settingsPath": str(state.path),
-            })
+            }
+            if blank is not None:
+                # The file was there but blank: leaving puts that back.
+                key_state["blankSettings"] = blank
+            self._write_key_state(key_state)
         self._logger.info(
             f"Activated account {number} through the key helper "
             f"(entered by {entered_by}; from {source or 'none'})"
@@ -434,7 +441,9 @@ class KeyActivationMixin:
         op["how"] = display.HOW_HELPER
         return op
 
-    def _undo_install(self, previous_key: str | None, created: bool) -> None:
+    def _undo_install(
+        self, previous_key: str | None, created: bool, blank: str | None = None,
+    ) -> None:
         """Take back a line just installed: the previous key's line again, or
         no line (and the file qswap created removed) with the profiles put
         back. Logged, never raised: the refusal that follows says why."""
@@ -442,7 +451,7 @@ class KeyActivationMixin:
             if previous_key is not None:
                 claude_settings.install(previous_key)
                 return
-            claude_settings.remove(remove_file_if_empty=bool(created))
+            claude_settings.remove(remove_file_if_empty=bool(created), restore_blank=blank)
             self.restore_run_profiles(force=True)
         except Exception as e:
             self._logger.warning(f"Could not take back the key line: {e!r}")
@@ -472,8 +481,10 @@ class KeyActivationMixin:
         state = self._key_state()
         with FileLock(self.lock_file):
             try:
+                blank = state.get("blankSettings")
                 removed = claude_settings.remove(
                     remove_file_if_empty=bool(state.get("createdSettings")),
+                    restore_blank=blank if isinstance(blank, str) else None,
                 )
             except claude_settings.SettingsError as e:
                 path = claude_settings.shown_path(e.path or claude_settings.settings_path())

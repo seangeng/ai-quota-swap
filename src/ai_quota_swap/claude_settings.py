@@ -522,9 +522,12 @@ def _publish(path: Path, text: str | None, mode: int | None) -> None:
 
 
 def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
-            want: str | None = None) -> tuple[str | None, str | None]:
+            want: str | None = None,
+            restore_blank: str | None = None) -> tuple[str | None, str | None]:
     """Set (or remove) the helper, re-reading before the write and starting
-    again when the file changed. Returns ``(before, after)`` texts."""
+    again when the file changed. Returns ``(before, after)`` texts.
+    ``restore_blank``: the blank text the file held before qswap's line, put
+    back when removing the line leaves an empty object."""
     for attempt in range(WRITE_ATTEMPTS):
         try:
             before = _read(path)
@@ -541,10 +544,10 @@ def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
         if want is not None and value is None and state.number != want:
             return before, before
         after = edited(before, value)
-        if value is None and remove_if_empty and after is not None:
+        if value is None and after is not None and (remove_if_empty or restore_blank is not None):
             obj, _ = _parse(after)
             if obj == {}:
-                after = None
+                after = None if remove_if_empty else restore_blank
         if after == before:
             return before, after
         mode = _mode_of(path)
@@ -578,8 +581,19 @@ def install(number: str | int, *, path: Path | None = None,
     return before is None, read_state(path)
 
 
+def blank_text(path: Path | None = None) -> str | None:
+    """The file's text when it exists and holds only whitespace (Claude Code
+    reads it as no settings); None otherwise. Never raises."""
+    path = settings_path() if path is None else path
+    try:
+        text = _read(path)
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text if text is not None and not text.strip() else None
+
+
 def remove(*, path: Path | None = None, remove_file_if_empty: bool = False,
-           number: str | None = None) -> bool:
+           number: str | None = None, restore_blank: str | None = None) -> bool:
     """Take qswap's line out of the settings (only qswap's; ``number`` limits
     it to the line for that account). With ``remove_file_if_empty`` a file
     left holding nothing is removed (qswap created it). Returns whether
@@ -587,7 +601,10 @@ def remove(*, path: Path | None = None, remove_file_if_empty: bool = False,
     parsed; another helper is left alone (and is not an error)."""
     path = settings_path() if path is None else path
     try:
-        before, after = _change(path, None, remove_if_empty=remove_file_if_empty, want=number)
+        before, after = _change(
+            path, None, remove_if_empty=remove_file_if_empty, want=number,
+            restore_blank=restore_blank,
+        )
     except SettingsError as e:
         if e.kind == FOREIGN:
             return False
