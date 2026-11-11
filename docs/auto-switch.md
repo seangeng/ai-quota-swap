@@ -18,7 +18,7 @@ Auto-switch running: switch at 90% · checks every 60s · Ctrl-C to stop
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/screenshots/raw/auto.png">
-  <img src="../assets/screenshots/raw/auto-light.png" alt="qswap auto: two checks of #1 personal below its 90% line, then a switch to #2 work when its 5h window reaches 91%" width="800">
+  <img src="../assets/screenshots/raw/auto-light.png" alt="qswap auto: two checks of #1 personal below its 90% line, then, when #1 personal's 5-hour window reaches 91%, a switch to #2 work" width="800">
 </picture>
 
 The dashboard's auto view (`qswap`, then `g`) runs the same engine. Here it goes live, and the active account climbs past its 90% line:
@@ -274,6 +274,5 @@ Change one with `qswap config set autoswitch.cooldownSeconds 600`; remove it wit
 ## Limits
 
 - A check every 60 seconds is not a usage request every 60 seconds. A check reads the active account and at most one other account when they are due, and reads every account only when the active one is within 15 points of a line or unreadable. A reading younger than 3 minutes is reused; the active account is read once a minute while it climbs within 15 points of its line; idle accounts and accounts at their limit are read about every 10 minutes. Request volume stays about flat however many accounts you manage.
-- Codex switching has been tested only against fakes, never with two real Codex accounts.
-- The latest menu bar build (both providers, auto-switch per provider) has not yet been run by hand.
+- Codex switching has been tested against fakes and with one real account, not yet with two real Codex accounts.
 - The systemd unit above has not been run against real accounts, and cron on macOS has not been tested.

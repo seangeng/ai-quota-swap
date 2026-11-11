@@ -204,5 +204,5 @@ Change one with `qswap config set ui.theme light`. An account's own line (`qswap
 - The auto view's engines run only while the view is open. Leaving it or quitting stops them.
 - A switch line set with `t` lasts for the session only. For a lasting one, use `qswap config set autoswitch.threshold 85` or `qswap threshold`.
 - `f` asks for a read now, but the usage store's pacing still caps what is fetched.
-- Codex account switching has only been tested with fakes, never with two real Codex accounts ([codex.md](codex.md)).
+- Codex account switching has been tested against fakes and with one real account, not yet with two real Codex accounts ([codex.md](codex.md)).
 - The token form adds Claude Code accounts only.

@@ -53,7 +53,14 @@ are such rows), a checked row has a check mark, a row that needs you is
 orange, and a submenu row ends in a chevron. Other apps' status icons are
 neutral placeholders, and the clock shows the scenario's time. A status item
 near the right of the bar has its menu pushed left to stay on screen, so
-submenus open to the left, as they do on a Mac.
+submenus open to the left, as they do on a Mac. *Start at login* is drawn
+checked, the state the first `qswap menubar` leaves: the app reads it from
+launchd, which the sandbox never reaches.
+
+A drawing can also carry a notification banner, top right under the bar,
+as macOS shows one. Its title and body come from the app's own
+`menubar_notify.Notifier`, fed the events the hosted engines emitted; the
+sender's icon is a neutral placeholder.
 
 | Option | Does |
 |---|---|
@@ -82,15 +89,19 @@ its result is drawn.
 
 For the menu bar recording, `--frames DIR` writes three files after each check:
 `frame-NN.html` (open, or as `--open` and `--closed` say), `frame-NN-closed.html`
-and `frame-NN.txt`, the outline. On a scenario with time compression the
-checks come one scenario minute apart, a few real seconds each:
+(with the banner of the notification the app would post for that check, if
+any) and `frame-NN.txt`, the outline, followed by a `notification:` line for
+each notification. On a scenario with time compression the checks come one
+scenario minute apart, a few real seconds each:
 
     uv run python scripts/demo/run.py autoswitch --menubar --auto-switch \
         --frames frames --open "Switch history"
 
 The titles go `⇄ personal · 86% · 38%`, `⇄ personal · 88% · 38%`, then
-`⇄ work · 12% · 21%` once the engine switches at 91%; from then on Switch
-history lists `#1 personal → #2 work · 2026-11-10 14:22`. Screenshot each
+`⇄ work · 12% · 21%` once the engine switches at 91%. That check's closed
+frame carries the notification `Switched #1 personal → #2 work · 5h reached
+91%`, and from then on Switch history lists
+`#1 personal → #2 work · 2026-11-10 14:22`. Screenshot each
 page's `#stage` element at 2x, as `capture.py` does, to get the frames.
 
 ## Why it is safe
@@ -230,9 +241,10 @@ published from `docs/shots/` with `index.html` as the entry.
 Menu bar shots (`MENUBAR_SHOTS`) render to `docs/shots/<name>.html` with
 `run.py --menubar --html` and are captured after the dashboard shots, because
 `hero` and `hero-light` put `dashboard.png` and `dashboard-light.png` behind
-the menu. `menubar-settings` is not in the README's table; it shows the
-auto-switch toggles for `docs/menubar.md`. ScreenFramed does not frame these:
-they come with their own desktop.
+the menu. `menubar-settings` (Settings open) and `menubar-auto-resets`
+(Settings > Use resets automatically) are used only by `docs/menubar.md`, one
+submenu level each so the menus stay readable at their natural size.
+ScreenFramed does not frame these: they come with their own desktop.
 
 The README and the docs use the PNGs in `assets/screenshots/raw/`. The README
 links them by absolute `raw.githubusercontent.com` URL, so they render on PyPI
@@ -277,15 +289,15 @@ limit it to some shots.
 ## Recordings
 
 Each GIF in `assets/demos/` is 960 px wide at most, under 1.5 MB and about
-14 to 15 seconds. `capture.py record NAME` remakes one; `recordings.json`
+13 to 17 seconds. `capture.py record NAME` remakes one; `recordings.json`
 records how each was made.
 
 | GIF | Scenario | Shows | Storyboard |
 |---|---|---|---|
-| `menubar.gif` | `autoswitch` | The menu open on `#1 personal` at 86%; the bar magnified while the title's 5-hour figure climbs to 88% and changes to `work` when the menu bar's own engine switches at 91%; then the menu open on Switch history (`#1 personal → #2 work · 2026-11-10 14:22`) | a played page (`player_page.py`) |
+| `menubar.gif` | `autoswitch` | The menu open on `#1 personal` at 86%; the bar magnified while the title's 5-hour figure climbs to 88%, then changes to `work` when the menu bar's own engine switches at 91%, with the app's notification (`Switched #1 personal → #2 work · 5h reached 91%`) under the bar; then the menu open on that check, on Switch history (`#1 personal → #2 work · 2026-11-10 14:22`) | a played page (`player_page.py`) |
 | `quickstart.gif` | `quickstart` | `qswap add --alias work`, `qswap list`, `qswap switch 1`, `qswap status`, typed and answered with their real output | a played page (`run.py --typing`) |
 | `dashboard.gif` | `showcase` | The dashboard's main view, then `w` (watch), `g` (the auto view, in dry run) and `u` (usage), each closed with `esc` | keys into the served dashboard, 100x40 cells |
-| `autoswitch.gif` | `autoswitch` | The auto view goes live; `#1 personal` climbs from 86% and the engine switches to `#2 work` at 92% | keys into the served dashboard |
+| `autoswitch.gif` | `autoswitch` | The auto view goes live (the Go live dialog held long enough to read); `#1 personal` climbs from 86% and the engine switches to `#2 work` at 92% | keys into the served dashboard |
 | `reset.gif` | `reset` | The auto view goes live, spends the Fable reset on `#1 personal` and Fable drops from 100% to 0% | keys into the served dashboard |
 
 Two kinds of storyboard drive the recorder:
@@ -309,7 +321,8 @@ Two kinds of storyboard drive the recorder:
   history open) and two to draw every frame at that size. Each shot is a
   whole `menubar_page` drawing, embedded unchanged (`<iframe srcdoc>`); the
   player adds cross-fades and can show a drawing magnified on the bar's
-  right-hand end, and adds no row or title of its own.
+  right-hand end (one scale for every magnified shot, the largest that keeps
+  each title and banner in view), and adds no row or title of its own.
 
 The recorder adds time after each step: 500 ms after typed text and 1.3 s
 after a pressed key (its key overlay, then its delay), which the storyboards

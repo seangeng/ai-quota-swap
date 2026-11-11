@@ -16,14 +16,18 @@ uv tool install git+https://github.com/seangeng/ai-quota-swap
 pipx install git+https://github.com/seangeng/ai-quota-swap
 ```
 
+On a Mac, install it with the `menubar` extra instead, for the menu bar app ([menubar.md](menubar.md)):
+
+```bash
+uv tool install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
+```
+
 It needs Python 3.12 or newer and runs on macOS, Linux (WSL included) and Windows. Check that it is on your PATH:
 
 ```text
 $ qswap --version
 qswap 0.1.0
 ```
-
-For the macOS menu bar app, install the `menubar` extra instead; [menubar.md](menubar.md) has the command.
 
 ## 2. Save your first account
 
@@ -86,7 +90,7 @@ Each account shows its plan and its windows: `5h` (the 5-hour window), `7d` (the
 The account you added last is the one Claude Code is logged in to, so it is the active one. Switch back to the first, naming it by number, email or alias:
 
 ```text
-$ qswap switch personal
+$ qswap switch 1
 Switched #2 work → #1 personal (maya@example.com)
 ...
 Claude Code picks up the new account within 30 seconds; restart it to apply now.

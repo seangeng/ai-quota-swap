@@ -1,13 +1,13 @@
 # Menu bar (macOS)
 
-The menu bar app keeps the active account's usage in the macOS menu bar, and its menu lists every Claude Code and Codex account. Click an account to switch to it, or turn on auto-switch and let the app switch for you. This page walks through the menu from top to bottom, then covers auto-switch, the settings, starting and stopping, notifications and files.
+The menu bar app keeps the active account's usage in the macOS menu bar, and its menu lists every Claude Code and Codex account. Click an account to switch to it, or turn on auto-switch and let the app switch for you. This page covers installing it and turning auto-switch on, then walks through the menu from top to bottom, the settings, starting and stopping, notifications and files.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="../assets/screenshots/raw/menubar-light.png">
-  <img src="../assets/screenshots/raw/menubar.png" alt="The menu bar's title and its open menu: Claude Code and Codex accounts with their usage, a check mark on each active account, held usage resets, today's estimated cost, and whether auto-switch is on" width="560">
+  <img src="../assets/screenshots/raw/menubar.png" alt="The menu bar's title and its open menu: Claude Code and Codex accounts with their usage, a check mark on each active account, held usage resets, today's estimated cost, and auto-switch running for both" width="561">
 </picture>
 
-The pictures on this page are drawings of the menu, not screenshots of the app: the [demo harness](../scripts/demo/README.md) draws the rows that `menubar.build_menu`, the function the app builds its menu from, returns for made-up accounts.
+The pictures on this page are drawings of the menu, not screenshots of the app: the [demo harness](../scripts/demo/README.md) draws the rows that `menubar.build_menu`, the function the app builds its menu from, returns for made-up accounts, with auto-switch turned on. The recording's notification is the text the app posts for that switch.
 
 ## Install and start
 
@@ -27,14 +27,39 @@ If qswap is already installed without the extra, `qswap menubar` stops with `The
 
 Keep the install out of `~/Documents`, `~/Desktop` and `~/Downloads`. The uv and pipx defaults already are. See [Limits](#limits).
 
+## Turn on auto-switch
+
+Either of these turns on Claude Code's engine:
+
+- *Settings → Auto-switch Claude Code* in the menu;
+- `qswap menubar --auto-switch` in a terminal, which also starts the menu bar, or restarts a running one to apply it (`--no-auto-switch` turns it off).
+
+*Settings → Auto-switch Codex* appears once Codex manages an account. Turning it on asks first, because a Codex switch restarts Codex's background server, which interrupts work in progress.
+
+<img src="../assets/demos/menubar.gif" alt="Recording: the qswap menu bar with made-up accounts. The menu is open on #1 personal at 86% of its 5-hour window; it closes and the title climbs to 88%; when #1 personal's 5-hour window reaches 91%, auto-switch moves to #2 work, the title changes to work and a notification says Switched #1 personal → #2 work · 5h reached 91%; the menu opens again on Switch history: #1 personal → #2 work at 14:22" width="800">
+
+Each toggle runs the same engine as `qswap auto` or `qswap codex auto` ([auto-switch.md](auto-switch.md)), in a thread of its own. Both use the `autoswitch.*` settings, and Codex uses `codex.threshold` as its switch line. The menu bar's engines switch for real; there is no dry run here.
+
+*Settings → Claude Code threshold* and *Codex threshold* (with Claude Code alone, *Auto-switch threshold*) write the switch line to `settings.json` and restart that engine.
+
+An engine's heartbeat names `qswap menubar`, so `qswap status` and `qswap doctor` can tell it from a `qswap auto` in a terminal.
+
+Turning *Auto-switch Claude Code* off, or quitting the menu bar, while sessions are on an API key the engine entered moves nothing: a notification says that nothing watches the key's limit now, and how to go back. An engine started again carries on with the key.
+
+### Automatic resets
+
+<img src="../assets/screenshots/raw/menubar-auto-resets.png" alt="The menu with Settings and Use resets automatically open: As a last resort, when no account can take over, checked; Use a weekly reset for a single model's limit; and Use the active account's reset before switching, greyed under the last-resort mode" width="1054">
+
+*Settings → Use resets automatically* chooses when the engines spend a usage reset by themselves (`resets.auto`): *Off*, *When the active account reaches its limit* (`active`), *As a last resort, when no account can take over* (`last-resort`, the default) or *When any account reaches its limit* (`on-limit`); hover a choice for `qswap reset`'s line for it. *Use a weekly reset for a single model's limit* is `resets.weeklyForModelLimit`. *Use the active account's reset before switching* is `resets.beforeSwitch` ([resets.md](resets.md#before-switching)); it is greyed, and keeps its check mark, under *Off* and *As a last resort* and while `resets.enabled` is off, where the setting has no effect, and its tooltip says so. All of them apply to Claude Code and Codex, which the submenu's first line says once Codex manages an account. Turning automatic use on from *Off* asks once, since a spent reset cannot be taken back (at most three in 24 hours, per provider); the question is judged on `settings.json` at the click, so a `qswap config set resets.auto off` made since the menu was drawn still asks. The engines read these settings on every check, so a change applies without a restart.
+
 ## The menu, top to bottom
 
 The demo harness also prints the menu as an outline, which this page quotes. In it, `✓` is a check mark, `⚠` a row drawn in orange, `▸` a submenu, `(heading)` a section heading and `(greyed)` a row you cannot click:
 
 ```text
-$ uv run python scripts/demo/run.py showcase --menubar
+$ uv run python scripts/demo/run.py showcase --menubar --auto-switch
 title: ⇄ personal · 46% · 38%
-  Auto-switch off · usage read 1m ago  (greyed)
+  Auto-switch running for Claude Code and Codex · usage read 1m ago  (greyed)
 ────
   Claude Code accounts  (heading)
 ✓ #1 personal · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset
@@ -86,13 +111,13 @@ Click a row to switch that provider to the account. For an account that needs re
 
 ### With an API key active
 
-<img src="../assets/screenshots/raw/menubar-key.png" alt="The menu with an API-key account active: what it spent today and this month against its budget, and the subscription logged in underneath it" width="560">
+<img src="../assets/screenshots/raw/menubar-key.png" alt="The menu with an API-key account active: what it spent today and this month against its budget, and the subscription logged in underneath it" width="572">
 
-A click on an API-key account switches to it at once: running Claude Code sessions follow the key within a few seconds, and the subscription row says `underneath`. The title shows the key's name alone, `⇄ ci`. In the harness, `run.py showcase --menubar -- switch 5` switches to the key and prints the menu; its top part:
+A click on an API-key account switches to it at once: running Claude Code sessions follow the key within a few seconds, and the subscription row says `underneath`. The title shows the key's name alone, `⇄ ci`. In the harness, `run.py showcase --menubar --auto-switch -- switch 5` switches to the key and prints the menu; its top part:
 
 ```text
 title: ⇄ ci
-  Auto-switch off · usage read 1m ago  (greyed)
+  Auto-switch running for Claude Code and Codex · usage read 1m ago  (greyed)
 ────
   Claude Code accounts  (heading)
   #1 personal · underneath · 5h 46% · 7d 38% · Fable 52% · 1 Fable reset
@@ -131,7 +156,7 @@ The notes `qswap list` prints about the line get one orange row under the accoun
 
 ### Use a reset
 
-<img src="../assets/screenshots/raw/menubar-resets.png" alt="The menu with its Use a reset submenu open to the left: Claude #1 personal's Fable reset and #3 night-shift's 5-hour reset greyed until a limit is reached, and Codex #2 work's reset credit, which clears all usage, under the pointer" width="720">
+<img src="../assets/screenshots/raw/menubar-resets.png" alt="The menu with its Use a reset submenu open to the left: Claude #1 personal's Fable reset and #3 night-shift's 5-hour reset greyed until a limit is reached, and Codex #2 work's reset credit, which clears all usage, highlighted" width="934">
 
 One row per account and kind, grouped by provider when both have some:
 
@@ -153,34 +178,11 @@ When the engines spend resets by themselves is *Settings → Use resets automati
 
 The accounts section says `No accounts are managed yet.` and the next step for each login on this machine (`Claude Code is logged in as maya@example.com. Add it with: qswap add`). Click a line that names a login to add it; *Add account* offers the same logins.
 
-## Turn on auto-switch
-
-Either of these turns on Claude Code's engine:
-
-- *Settings → Auto-switch Claude Code* in the menu;
-- `qswap menubar --auto-switch` in a terminal, which also starts the menu bar, or restarts a running one to apply it (`--no-auto-switch` turns it off).
-
-*Settings → Auto-switch Codex* appears once Codex manages an account. Turning it on asks first, because a Codex switch restarts Codex's background server, which interrupts work in progress.
-
-<img src="../assets/demos/menubar.gif" alt="Recording: the qswap menu bar with made-up accounts. The menu is open on #1 personal at 86% of its 5-hour window; it closes, the title climbs to 88% and changes to work when auto-switch moves to #2 work at 91%, and the menu opens again on Switch history: #1 personal → #2 work at 14:22" width="720">
-
-Each toggle runs the same engine as `qswap auto` or `qswap codex auto` ([auto-switch.md](auto-switch.md)), in a thread of its own. Both use the `autoswitch.*` settings, and Codex uses `codex.threshold` as its switch line. The menu bar's engines switch for real; there is no dry run here.
-
-*Settings → Claude Code threshold* and *Codex threshold* (with Claude Code alone, *Auto-switch threshold*) write the switch line to `settings.json` and restart that engine.
-
-An engine's heartbeat names `qswap menubar`, so `qswap status` and `qswap doctor` can tell it from a `qswap auto` in a terminal.
-
-Turning *Auto-switch Claude Code* off, or quitting the menu bar, while sessions are on an API key the engine entered moves nothing: a notification says that nothing watches the key's limit now, and how to go back. An engine started again carries on with the key.
-
-### Automatic resets
-
-*Settings → Use resets automatically* chooses when the engines spend a usage reset by themselves (`resets.auto`): *Off*, *When the active account reaches its limit* (`active`), *As a last resort, when no account can take over* (`last-resort`, the default) or *When any account reaches its limit* (`on-limit`); hover a choice for `qswap reset`'s line for it. *Use a weekly reset for a single model's limit* is `resets.weeklyForModelLimit`. *Use the active account's reset before switching* is `resets.beforeSwitch` ([resets.md](resets.md#before-switching)); it is greyed, and keeps its check mark, under *Off* and *As a last resort* and while `resets.enabled` is off, where the setting has no effect, and its tooltip says so. All of them apply to Claude Code and Codex, which the submenu's first line says once Codex manages an account. Turning automatic use on from *Off* asks once, since a spent reset cannot be taken back (at most three in 24 hours, per provider); the question is judged on `settings.json` at the click, so a `qswap config set resets.auto off` made since the menu was drawn still asks. The engines read these settings on every check, so a change applies without a restart.
-
 ## Settings
 
 *Settings* in the menu holds, from the top: *Show account name in menu bar*, *Title follows* (with Codex managed), *Title percentage*, *Show model limits in title* and *Refresh interval*; then the auto-switch toggles, their thresholds and *Use resets automatically*; then *Start at login*.
 
-<img src="../assets/screenshots/raw/menubar-settings.png" alt="The menu with Settings and Use resets automatically open: Auto-switch Claude Code and Auto-switch Codex checked, the two threshold submenus, and As a last resort, when no account can take over, checked" width="720">
+<img src="../assets/screenshots/raw/menubar-settings.png" alt="The menu with Settings open: the title settings and Refresh interval, Auto-switch Claude Code and Auto-switch Codex checked, the two threshold submenus, Use resets automatically, and Start at login checked" width="729">
 
 The menu's own preferences live in `menubar_settings.json` in the data directory (`~/.ai-quota-swap` on macOS). Change them from the menu; the menu bar reads the file when it starts.
 
@@ -265,7 +267,7 @@ The wrapper app gives the process the bundle identifier `com.ai-quota-swap.menub
 
 ## Limits
 
-- Codex account switching has only been tested with fakes ([codex.md](codex.md)).
+- Codex account switching has been tested against fakes and with one real account, not yet with two real Codex accounts ([codex.md](codex.md)).
 - macOS only. Elsewhere `qswap menubar` prints `The menu bar is only available on macOS.` and exits 1. `qswap auto` switches accounts on every platform.
 - Install location: macOS privacy rules keep launchd agents out of `~/Documents`, `~/Desktop` and `~/Downloads`, so the service cannot start when qswap runs from there (an editable install from a checkout in `~/Documents`, for example). `qswap menubar` does not notice. `qswap doctor` reports it as `qswap runs from ~/Documents/…; macOS keeps background services out of ~/Documents`. Reinstall outside those folders with `uv tool install --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'`, then run `qswap menubar` ([troubleshooting.md](troubleshooting.md)).
 - On macOS 26, a framework build of Python (Homebrew's, python.org's) has been seen not to draw the icon: the process runs and logs nothing. `qswap menubar` warns about it. With uv, reinstall on uv's own Python: `uv tool install --managed-python --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'`.
