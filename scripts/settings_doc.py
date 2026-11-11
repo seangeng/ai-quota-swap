@@ -119,6 +119,16 @@ MEANINGS: dict[str, str] = {
         "Let auto mode spend a weekly or full reset when only a per-model limit, "
         "such as Fable's, is reached. `qswap reset N` is never held back by it."
     ),
+    "resets.beforeSwitch": (
+        "Under `resets.auto` `active` or `on-limit`, stay on the active account past "
+        "its switch line while it holds a reset of its own that auto mode spends at "
+        "`resets.threshold`, and spend it there instead of moving at the line. With "
+        "`resets.threshold` 100 the account is at its limit until a check reads it "
+        "there and spends the reset. A reset usable only once a limit is reached "
+        "never holds the switch, and neither does an active account qswap cannot "
+        "read again. No effect under `off` and `last-resort`; see "
+        "[resets.md](resets.md#before-switching)."
+    ),
     "codex.restartDaemon": (
         "After `qswap codex switch`, restart Codex's background server so new "
         "sessions use the new account. The restart interrupts work in progress on it."
@@ -151,6 +161,7 @@ EXAMPLES: dict[str, str] = {
     "resets.expiryDays": "0",
     "resets.expiryThreshold": "70",
     "resets.weeklyForModelLimit": "true",
+    "resets.beforeSwitch": "true",
     "codex.restartDaemon": "false",
     "codex.threshold": "90",
 }

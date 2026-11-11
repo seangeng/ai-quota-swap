@@ -74,8 +74,8 @@ Every auto-switch engine can spend resets: `qswap auto`, `qswap codex auto`, the
 `resets.auto` decides when:
 
 - `last-resort` (default): only when the active account has reached `resets.threshold` (95%) on a window one of its resets is for, and switching cannot relieve it. That means no other account is below its switch lines, or the engine does not watch that window at all (a Fable limit when `autoswitch.model` does not name Fable). When the active account holds no reset that helps, qswap refills another account that the engine can then switch to.
-- `active`: spends the active account's own reset as soon as a window it is for reaches `resets.threshold`, even when another account has room. Which comes first, the reset or the switch, depends on where `resets.threshold` sits against the switch line ([auto-switch.md](auto-switch.md#switch-lines)). At or below the line, the reset comes first, since the engine spends before it decides whether to switch; to spend the reset before moving with a switch line of 98: `qswap config set resets.threshold 98`. Above the line (the default 95 against a line of 90, or `qswap config set resets.threshold 100` to spend only at the limit), auto-switch moves at the line to another account with room, and the reset stays banked. It is spent when the active account reaches `resets.threshold` anyway: when there is nowhere to move, or when its usage passes the line between two checks.
-- `on-limit`: spends on any account in rotation whose window reaches `resets.threshold`, the active account first.
+- `active`: spends the active account's own reset as soon as a window it is for reaches `resets.threshold`, even when another account has room. Which comes first, the reset or the switch, depends on where `resets.threshold` sits against the switch line ([auto-switch.md](auto-switch.md#switch-lines)). At or below the line, the reset comes first, since the engine spends before it decides whether to switch; to spend the reset before moving with a switch line of 98: `qswap config set resets.threshold 98`. Above the line (the default 95 against a line of 90, or `qswap config set resets.threshold 100` to spend only at the limit), auto-switch moves at the line to another account with room, and the reset stays banked. It is spent when the active account reaches `resets.threshold` anyway: when there is nowhere to move, or when its usage passes the line between two checks. With `resets.beforeSwitch` on, auto-switch stays past the line for that reset instead ([Before switching](#before-switching)).
+- `on-limit`: spends on any account in rotation whose window reaches `resets.threshold`, the active account first. Against the switch line it keeps the same order as `active`: above the line, auto-switch moves first, unless `resets.beforeSwitch` is on.
 - `off`: never spends automatically. `qswap reset N` still works.
 
 Here the dashboard's auto view goes live, and the engine spends the narrowest reset that helps:
@@ -92,6 +92,44 @@ $ qswap auto --once --dry-run
             #2 work         5h 12% · 7d 21%
             #3 night-shift  5h 93% · 7d 81% · Fable 97% · over its switch line
             #4 side         disabled
+```
+
+### Before switching
+
+`resets.beforeSwitch` (off by default) puts the active account's own reset before the switch when `resets.threshold` is above the switch line, under `active` and `on-limit`. While the active account is over its switch line on a window one of its own resets clears, and auto mode would spend that reset once the window reaches `resets.threshold`, auto-switch stays, and the reset is spent there. With a switch line of 98 and `resets.threshold` 100, the log says:
+
+```text
+14:20:00  #1 personal at 7d 98% (switch at 98%) · its own weekly reset comes
+          first, at 7d 100%
+            #2 work         5h 12% · 7d 21%
+            #3 night-shift  5h 40% · 7d 60%
+```
+
+The dashboard's log says `No switch yet: auto mode spends #1 personal's own weekly reset when 7d reaches 100%, rather than switching away (resets.beforeSwitch)`, and `--json` gives the reason `reset-ahead` ([json-output.md](json-output.md#auto-switch-events)).
+
+It changes when auto-switch moves, not the rules for spending: the reset is spent at `resets.threshold`, as auto mode spends it with the setting off. In these cases auto-switch moves at the line as usual:
+
+- A reset auto mode would keep: its window refills within `resets.minHoursLeft`, it is a kind that does not clear the window over the line ([Kinds](#kinds)), today's limit on automatic resets is reached, a claim on the account is still settling, or another window would stay over its line ([Guards](#guards)).
+- A reset whose last claim failed or was refused.
+- A reset marked `usable once a limit is reached`. Nothing can spend it below the limit, and the server may still refuse it there, so it stays banked as with the setting off.
+- An active account qswap cannot read again: no reading from the last five minutes, or a read that failed since the last one (the server answered 429, say). Auto mode spends a reset only on a fresh reading ([Guards](#guards)), so the last one is no reason to stay.
+
+The cost: the active account runs past its switch line, up to `resets.threshold`. With `resets.threshold` 100 the account is at its limit until a check reads it there and spends the reset. That check needs a reading from the last two minutes, as every automatic spend does. Setting `resets.threshold` at or below the switch line avoids that, and then the reset comes first without this setting.
+
+To turn it on, `qswap config set resets.beforeSwitch true`, or *Use the active account's reset before switching* in the menu bar. It has no effect under `off` and `last-resort`, or while `resets.enabled` is false. `qswap config` says so, and names `resets.enabled` first when both apply:
+
+```text
+$ qswap config set resets.beforeSwitch true
+resets.beforeSwitch = true
+No effect while resets.auto is last-resort: qswap config set resets.auto active
+```
+
+With it on, a later change that leaves it doing nothing says so too:
+
+```text
+$ qswap config set resets.auto off
+resets.auto = off
+resets.beforeSwitch has no effect while resets.auto is off
 ```
 
 ## Guards
@@ -177,6 +215,7 @@ Reading reset status identifies as Claude Code. Anthropic's server reports reset
 | `resets.expiryDays` | `7` | Days of runway per unused reset before its use-by date (0 to 60; 0 turns the expiry rule off). |
 | `resets.expiryThreshold` | `50` | Inside that runway, spend once the reset's window reaches this percent (0 to 100). |
 | `resets.weeklyForModelLimit` | `false` | Let auto mode spend a weekly or full reset when only a per-model limit is reached. |
+| `resets.beforeSwitch` | `false` | Under `active` and `on-limit`, stay past the switch line to spend the active account's own reset at `resets.threshold` ([Before switching](#before-switching)). |
 
 Change one with `qswap config set resets.auto off`. Every setting is in [settings.md](settings.md).
 
