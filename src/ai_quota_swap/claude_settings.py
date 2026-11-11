@@ -80,6 +80,14 @@ class HelperState:
     path: Path
     number: str | None = None
     error: str | None = None
+    #: qswap's own line (``ours`` only; a foreign helper's value is never kept).
+    command: str | None = None
+
+    @property
+    def stale_command(self) -> bool:
+        """qswap's line runs a command that is not there any more (qswap was
+        reinstalled elsewhere): Claude Code would fail to get the key."""
+        return self.ours and command_missing(self.command)
 
     @property
     def ours(self) -> bool:
@@ -153,6 +161,20 @@ def parse_line(value: object) -> str | None:
     return str(int(m.group("num")))
 
 
+def command_missing(command: str | None) -> bool:
+    """Whether qswap's line names a program by absolute path that does not
+    exist. A bare name (found on PATH by the shell) is not checked."""
+    if not command:
+        return False
+    m = _LINE_RE.match(command)
+    if not m:
+        return False
+    exe = m.group("exe").strip().strip("\"'")
+    if not (os.path.isabs(exe) or re.match(r"^[A-Za-z]:[\\/]", exe)):
+        return False
+    return not os.path.exists(exe)
+
+
 def _quote(path: str) -> str:
     if re.search(r"""[\s"'$`\\!*?&;|<>()]""", path) and not (
         sys.platform == "win32" and "\\" in path and not re.search(r"\s", path)
@@ -220,7 +242,7 @@ def state_of_text(text: str | None, path: Path) -> HelperState:
     number = parse_line(obj[HELPER_KEY])
     if number is None:
         return HelperState(FOREIGN, path)
-    return HelperState(OURS, path, number=number)
+    return HelperState(OURS, path, number=number, command=obj[HELPER_KEY])
 
 
 def _read(path: Path) -> str | None:

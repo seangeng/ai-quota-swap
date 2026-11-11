@@ -1150,6 +1150,16 @@ def key_helper_problem(number: str, why: str, fix_command: str) -> list[str]:
     )
 
 
+def key_helper_moved(number: str, fix_command: str) -> list[str]:
+    """qswap's key line runs a qswap that is no longer there (a reinstall
+    moved it), so sessions on the key cannot get it."""
+    return wrap(
+        f"The key line for #{number} in the Claude Code settings runs a qswap that "
+        f"is no longer there, so Claude Code sessions cannot get the key. Point it "
+        f"at this qswap: {fix_command}"
+    )
+
+
 def stale_copies_line(count: int, fix_command: str) -> list[str]:
     """The run profiles left with a copy of the settings after the key line
     was removed (a crash between the two steps)."""

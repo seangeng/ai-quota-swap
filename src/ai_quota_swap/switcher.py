@@ -4943,6 +4943,14 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             warning(f"Warning: {name} is the active API key")
         elif str(active_account) == account_num:
             warning(f"Warning: {name} is the active account")
+        runs = self.key_run_pids(account_num) if self._account_kind(account_num) == "api_key" else []
+        if runs:
+            noun = "session" if len(runs) == 1 else "sessions"
+            warning(
+                f"Warning: {len(runs)} {noun} started with qswap run {account_num} "
+                f"(pid {', '.join(map(str, runs))}) use this key and fail with "
+                '"apiKeyHelper script is failing" once it is removed. Exit them first.'
+            )
 
         from ai_quota_swap import display
 
@@ -6834,6 +6842,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         fix = self.helper_fix_command()
         if problem is not None:
             out.extend(display.key_helper_problem(problem["number"], problem["why"], fix))
+        elif self.helper_account() is not None and self.key_helper_state().stale_command:
+            key = self.helper_account()
+            out.extend(display.key_helper_moved(key, f"qswap switch {key}"))
         elif self.helper_account() is None:
             stale = self.stale_profile_copies()
             if stale:

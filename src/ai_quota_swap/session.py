@@ -1008,6 +1008,9 @@ class SessionManager:
                 # A qswap run profile's shell: run on the shared profile.
                 env.pop("CLAUDE_CONFIG_DIR", None)
         flag = json.dumps({claude_settings.HELPER_KEY: claude_settings.helper_command(account_num)})
+        # The pid claude will run under (exec keeps it): removing the account
+        # names this session, whose key would stop working.
+        self.switcher.record_key_run(account_num, os.getpid())
         print(
             f"{accent('Launching')} {self.switcher.label(account_num, long=False)} (API key) "
             f"{muted('[this session only]')}",

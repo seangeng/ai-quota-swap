@@ -41,6 +41,8 @@ from ai_quota_swap.locking import FileLock
 from ai_quota_swap.printer import accent
 
 KEY_STATE_FILENAME = "key_helper.json"
+#: ``qswap run N`` sessions on a key: one JSON line per launch (pid, number).
+KEY_RUNS_FILENAME = "key_runs.jsonl"
 ENTERED_BY = ("user", "engine")
 
 
@@ -170,6 +172,40 @@ class KeyActivationMixin:
         except Exception:
             pass
         return f"qswap switch {login}" if login else "qswap switch N"
+
+    # -- qswap run on a key ---------------------------------------------------------
+
+    def record_key_run(self, number: str, pid: int) -> None:
+        """Remember a ``qswap run N`` session on a key (its pid survives the
+        exec into claude), so removing the account can name it. Never raises."""
+        try:
+            path = Path(self.backup_dir) / KEY_RUNS_FILENAME
+            line = json.dumps({"pid": int(pid), "number": str(number), "ts": time.time()})
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception as e:
+            self._logger.debug(f"Could not record the key run: {e!r}")
+
+    def key_run_pids(self, number: str) -> list[int]:
+        """The live ``qswap run N`` sessions on account N's key."""
+        from ai_quota_swap.process_detection import is_pid_alive
+
+        pids: list[int] = []
+        try:
+            lines = (Path(self.backup_dir) / KEY_RUNS_FILENAME).read_text(
+                encoding="utf-8"
+            ).splitlines()
+        except OSError:
+            return pids
+        for raw in lines:
+            try:
+                row = json.loads(raw)
+                pid = int(row["pid"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if str(row.get("number")) == str(number) and pid not in pids and is_pid_alive(pid):
+                pids.append(pid)
+        return pids
 
     # -- run profiles --------------------------------------------------------------
 
@@ -362,7 +398,15 @@ class KeyActivationMixin:
         words. Never raises."""
         done: list[str] = []
         try:
-            _number, problem = self._helper_verdict()
+            state = self.key_helper_state()
+            number, problem = self._helper_verdict(state)
+            if number is not None and state.stale_command:
+                # qswap moved (a reinstall): the line runs a command that is
+                # gone. The same line, pointing at this qswap.
+                claude_settings.install(number)
+                done.append(
+                    f"Updated the key line for #{number} to run qswap from its new place."
+                )
             if problem is not None:
                 self._leave_key()
                 done.append(

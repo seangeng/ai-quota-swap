@@ -63,6 +63,9 @@ EMAIL_5 = "api-key-5@token.local"
 EMAIL_6 = "api-key-6@token.local"
 QSWAP = "/opt/qswap/bin/qswap"
 
+#: The real check, before the autouse fixture below replaces it.
+_REAL_COMMAND_MISSING = claude_settings.command_missing
+
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
 
 
@@ -103,8 +106,10 @@ def _fleet(platform: Platform = Platform.MACOS) -> ClaudeAccountSwitcher:
 
 @pytest.fixture(autouse=True)
 def _fixed_command(monkeypatch):
-    """The installed command every helper line names, fixed for the tests."""
+    """The installed command every helper line names, fixed for the tests
+    (and taken to exist: TestMovedQswap is about one that does not)."""
     monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [QSWAP])
+    monkeypatch.setattr(claude_settings, "command_missing", lambda command: False)
 
 
 @pytest.fixture
@@ -1657,3 +1662,103 @@ class TestSurfaces:
             display.key_switch_followup(target="#6 ops", underneath=None, from_key="#5 ci"),
         ):
             assert display.KEY_CONNECTORS in " ".join(lines)
+
+
+class TestMovedQswap:
+    """A reinstall moved qswap: the line still reads as qswap's, but the
+    command it runs is gone, and every session on the key would fail."""
+
+    @pytest.fixture(autouse=True)
+    def _real_check(self, monkeypatch):
+        from ai_quota_swap import claude_settings as cs
+
+        monkeypatch.setattr(cs, "command_missing", TestMovedQswap._missing)
+
+    @staticmethod
+    def _missing(command):
+        return "/gone/" in (command or "")
+
+    def test_reported_everywhere_and_repaired_by_a_switch(self, temp_home):
+        s = _fleet()
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": "/gone/bin/qswap key-helper 5"}), encoding="utf-8"
+        )
+        assert s.current_account_number() == "5"
+        notes = " ".join(s.key_helper_notes())
+        assert "runs a qswap that is no longer there" in notes
+        assert "qswap switch 5" in notes
+        checks = {c.id: c for c in doctor.run_checks()}
+        assert checks["claude.key_helper"].status == "fail"
+        assert checks["claude.key_helper"].fix == "qswap switch 5"
+        s.switch_to("5", json_output=True)
+        assert _settings_obj(temp_home)["apiKeyHelper"] == f"{QSWAP} key-helper 5"
+        assert s.key_helper_notes() == []
+
+    def test_the_real_check(self, tmp_path):
+        command_missing = _REAL_COMMAND_MISSING
+        exe = tmp_path / "qswap"
+        exe.write_text("", encoding="utf-8")
+        assert command_missing(f"{exe} key-helper 5") is False
+        assert command_missing(f"{tmp_path / 'nope' / 'qswap'} key-helper 5") is True
+        assert command_missing("qswap key-helper 5") is False  # found on PATH
+
+
+class TestProblemEverywhere:
+    def _broken(self, home):
+        _settings(home).write_text(
+            json.dumps({"apiKeyHelper": f"{QSWAP} key-helper 9"}), encoding="utf-8"
+        )
+
+    def test_list_and_status_say_it(self, temp_home, capsys):
+        s = _fleet()
+        self._broken(temp_home)
+        capsys.readouterr()
+        s.list_accounts()
+        out = " ".join(capsys.readouterr().out.split())
+        assert "make #9 the active API key, but #9 does not exist" in out
+        assert "Remove the line: qswap switch 1" in out
+        status = " ".join(" ".join(s.status_lines()).split())
+        assert "make #9 the active API key" in status
+
+    def test_json_says_it(self, temp_home):
+        s = _fleet()
+        self._broken(temp_home)
+        expected = {"number": "9", "why": "missing", "fix": "qswap switch 1"}
+        assert s.list_accounts(json_output=True)["keyHelperProblem"] == expected
+        assert s.status(json_output=True)["keyHelperProblem"] == expected
+
+    def test_the_snapshot_carries_it(self, temp_home):
+        s = _fleet()
+        self._broken(temp_home)
+        snap = s.accounts_snapshot(fetch=set())
+        assert snap.active_number == "1"
+        assert "qswap switch 1" in " ".join(snap.key_notes)
+
+
+class TestRemovingAKeyInUse:
+    def test_remove_names_the_run_sessions_on_the_key(self, temp_home, capsys, monkeypatch):
+        s = _fleet()
+        s.record_key_run("5", 4242)
+        s.record_key_run("6", 4343)
+        monkeypatch.setattr(
+            "ai_quota_swap.process_detection.is_pid_alive", lambda pid: pid in (4242, 4343)
+        )
+        assert s.key_run_pids("5") == [4242]
+        capsys.readouterr()
+        s.remove_account("5", assume_yes=True)
+        out = " ".join(capsys.readouterr().out.split())
+        assert "1 session started with qswap run 5 (pid 4242) use this key" in out
+        assert "apiKeyHelper script is failing" in out
+
+    def test_run_records_its_pid(self, temp_home, monkeypatch):
+        from ai_quota_swap import clis
+        from ai_quota_swap.session import SessionManager
+
+        s = _fleet()
+        monkeypatch.setattr(clis, "find_cli", lambda name: "/fake/claude")
+        mgr = SessionManager(s)
+        monkeypatch.setattr(mgr, "_exec", lambda *a, **k: (_ for _ in ()).throw(SystemExit(0)))
+        with pytest.raises(SystemExit):
+            mgr.run("5", [], share=True)
+        monkeypatch.setattr("ai_quota_swap.process_detection.is_pid_alive", lambda pid: True)
+        assert s.key_run_pids("5") == [os.getpid()]

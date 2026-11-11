@@ -710,6 +710,13 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
                 f"{what}; every Claude Code session fails to get a key",
                 fix=fix,
             ))
+        elif state.stale_command:
+            checks.append(Check(
+                "claude.key_helper", "claude", FAIL,
+                f"{where} makes #{state.number} the active API key with a qswap that "
+                "is no longer there; Claude Code sessions cannot get the key",
+                fix=f"qswap switch {state.number}",
+            ))
         else:
             email = record.get("email") if isinstance(record.get("email"), str) else ""
             checks.append(Check(
