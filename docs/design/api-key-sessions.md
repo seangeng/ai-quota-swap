@@ -338,8 +338,10 @@ What the code does where this part leaves room, or where it had to differ:
   enters a key, from the earlier of the start of the UTC month and the start of the key's
   credit (`scan_recent(start=...)`; others keep the 7-day default). A scan that raises, or
   that finds session files it cannot read, covers nothing: until one covers the period
-  (`spendScan` in the state file: when, from when, whether it did) the ledger's figure is
-  `spend-unknown`. For a key linked to an organization only Anthropic's figure counts: the
+  (`spendScan` in the state file: when, from when, whether it did, and how many files it could
+  not read, the first named) the ledger's figure is `spend-unknown`, said with that cause and
+  its step rather than an age. For 20 minutes after such a scan every reading of a ledger
+  figure carries `scan_failed`, so the rows say `limit not enforced` and a dry run agrees. For a key linked to an organization only Anthropic's figure counts: the
   ledger's is shown (`this machine only`) but never fresh. So for a key whose link this pass
   could not decide (an active organization's keys could not be listed: `link_unknown` on the
   reading); a listing that answers without the key leaves the ledger's figure. With each of those scans the

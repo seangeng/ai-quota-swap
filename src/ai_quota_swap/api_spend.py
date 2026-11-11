@@ -416,8 +416,12 @@ def figure_fresh(reading: object, now: float) -> bool:
     """Whether the reading has a spend figure no older than :data:`SPEND_FRESH_S`.
     For a key linked to an organization only Anthropic's figure counts
     (decision EM2): this machine's ledger misses the other machines on the
-    key, so its figure is never fresh for one (:func:`machine_only`)."""
+    key, so its figure is never fresh for one (:func:`machine_only`). Nor is
+    the ledger's after auto-switch's last scan could not cover the period
+    (``scan_failed``, decision EM3)."""
     if machine_only(reading):
+        return False
+    if isinstance(reading, dict) and reading.get("scan_failed"):
         return False
     age = figure_age(reading, now)
     return age is not None and age <= SPEND_FRESH_S
@@ -433,6 +437,56 @@ def machine_only(reading: object) -> bool:
         isinstance(reading, dict)
         and (bool(reading.get("org")) or bool(reading.get("link_unknown")))
         and reading.get("source") != SOURCE_ADMIN
+    )
+
+
+def failed_scan_record(record: object, now: float) -> dict | None:
+    """``record`` (the engine's ``spendScan``) when it is a ledger scan that
+    could not cover the period it was for (it raised, or found session files
+    it could not read) and ran no more than :data:`SPEND_FRESH_S` ago; None
+    otherwise. Until a scan covers the period the ledger's figure is no
+    figure for a limit (decision EM3)."""
+    if not isinstance(record, dict) or record.get("ok") is not False:
+        return None
+    at = record.get("at")
+    if not isinstance(at, (int, float)) or isinstance(at, bool) or not math.isfinite(at):
+        return None
+    return record if 0 <= now - at <= SPEND_FRESH_S else None
+
+
+def failed_scan(root: Path, now: float) -> dict | None:
+    """:func:`failed_scan_record` of the engine's state file under ``root``.
+    Never raises."""
+    try:
+        from ai_quota_swap.autoswitch import STATE_FILENAME, _read_state_file
+
+        record = _read_state_file(Path(root) / STATE_FILENAME).get("spendScan")
+    except Exception:
+        return None
+    return failed_scan_record(record, now)
+
+
+def scan_failure_words(record: object) -> tuple[str, str]:
+    """``(cause, next step)`` for a failed scan (:func:`failed_scan_record`):
+    ``2 session files on this machine could not be read`` and ``make them
+    readable, or move them away (one is ~/.claude/projects/x.jsonl)``; or
+    that the scan failed, and that auto-switch tries again."""
+    from ai_quota_swap.printer import abbreviate_path
+
+    record = record if isinstance(record, dict) else {}
+    count = record.get("unreadable")
+    if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+        one = count == 1
+        them = "it" if one else "them"
+        cause = (
+            f"{count} session file{'' if one else 's'} on this machine could not be read"
+        )
+        paths = [p for p in record.get("paths") or () if isinstance(p, str) and p]
+        where = f" ({'it' if one else 'one'} is {abbreviate_path(paths[0])})" if paths else ""
+        return cause, f"make {them} readable, or move {them} away{where}"
+    return (
+        "the scan of this machine's session files failed",
+        "auto-switch scans again at its next check, and qswap's log file has the error",
     )
 
 
@@ -917,6 +971,7 @@ def readings(
     prices = None
     today_label = day.date().isoformat()
     latches = _latches(root)
+    scan_failure = failed_scan(root, now)
     out: dict[str, dict] = {}
     for num, info in infos.items():
         num = str(num)
@@ -980,6 +1035,12 @@ def readings(
             # Maybe linked: an organization's keys could not be listed. The
             # same: shown, never held to the limit (EM2).
             reading["link_unknown"] = True
+        if scan_failure is not None and reading.get("source") == SOURCE_LEDGER:
+            # Auto-switch's last scan could not cover the period: the
+            # ledger's figure may miss usage, so it holds nothing (EM3).
+            reading["scan_failed"] = {
+                k: scan_failure[k] for k in ("at", "unreadable", "paths") if k in scan_failure
+            }
         if credit is not None:
             reading["credit"] = credit_reading(
                 credit, credit_used, reading.get("source"), now,
@@ -1245,7 +1306,11 @@ def detail_text(
     latched = _latched_words(reading)
     if latched:
         base = f"{base} · {latched}" if base else latched
-    if limit_not_enforced(reading, now) and not spend_unknown(reading):
+    if limit_not_enforced(reading, now) and reading.get("scan_failed"):
+        # Auto-switch's scan could not cover the period: why, and the way out.
+        cause, step = scan_failure_words(reading["scan_failed"])
+        base = f"{cause}; {step}"
+    elif limit_not_enforced(reading, now) and not spend_unknown(reading):
         age = figure_age(reading, now) if _has_figure(reading) else None
         as_of = reading.get("as_of")
         org = machine_only(reading)  # why: Anthropic's figure, not the ledger's age

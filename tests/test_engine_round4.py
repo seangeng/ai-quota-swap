@@ -501,3 +501,113 @@ class TestALinkThatCannotBeDecided:
         reading = _key2_reading(h, {})
         assert not api_spend.machine_only(reading)
         assert api_spend.figure_fresh(reading, ORG_NOW)
+
+
+# == EM3: a scan that cannot cover the period, in words ======================================
+
+
+class _Stats:
+    def __init__(self, missing=0, paths=()):
+        self.missing = missing
+        self.missing_paths = list(paths)
+        self.older_not_in_ledger = 0
+        self.modified_since = None
+
+
+def _failing_scan(monkeypatch, temp_home, how: str) -> str:
+    """The engine's scan raises (``raises``) or finds two session files it
+    cannot read (``unreadable``); returns the first one's path as shown."""
+    from ai_quota_swap.ledger import usage as ledger_usage
+    from ai_quota_swap.printer import abbreviate_path
+
+    first = temp_home / ".claude" / "projects" / "demo" / "a.jsonl"
+    second = temp_home / ".claude" / "projects" / "demo" / "b.jsonl"
+
+    def scan(*a, **k):
+        if how == "raises":
+            raise OSError("the disk went away")
+        return _Stats(missing=2, paths=[str(first), str(second)])
+
+    monkeypatch.setattr(ledger_usage, "scan_recent", scan)
+    return abbreviate_path(str(first))
+
+
+class TestAScanThatCannotCoverThePeriod:
+    """EM3 counts a scan that raised, or found session files it could not
+    read, as no figure. The re-check: the words said "could not be measured
+    for 20 minutes" seconds after the scan, named `qswap usage`, which does
+    not cure it, the rows said the opposite, and the dry run would switch."""
+
+    def test_the_hold_names_the_files_and_the_way_out(self, temp_home, monkeypatch):
+        path = _failing_scan(monkeypatch, temp_home, "unreadable")
+        h = _fleet(temp_home)
+        assert _tick(h, EXHAUSTED, {"2": _reading(h, age=0)}) is TickOutcome.BLOCKED
+        held = [e for e in h.events if isinstance(e, NoSwitchEvent)
+                and e.reason == "spend-unknown"]
+        assert held[-1].human() == (
+            "Not switching to #2 ci: its spend is not known (2 session files on this "
+            f"machine could not be read); make them readable, or move them away (one is "
+            f"{path})"
+        )
+        # The rows under the hold agree (A4): no "used as a last resort".
+        from ai_quota_swap.autolog import account_facts
+
+        rows = {v.number: v for v in held[-1].context.accounts}
+        assert account_facts(rows["2"])[0] == "API key, limit not enforced: no spend figure"
+        # Recorded for the other surfaces.
+        scan = _state(h)["spendScan"]
+        assert (scan["ok"], scan["unreadable"]) == (False, 2)
+
+    def test_a_scan_that_raised_leaves_the_key_in_its_own_words(self, temp_home, monkeypatch):
+        h = _fleet(temp_home, cooldown_seconds=3600)
+        _tick(h, EXHAUSTED)
+        assert h.switcher.current_account_number() == "2"
+        _failing_scan(monkeypatch, temp_home, "raises")
+        h.clock.advance(5 * 60)
+        assert _tick(h, EXHAUSTED, {"2": _reading(h, age=0)}) is TickOutcome.SWITCHED
+        assert _switches(h)[-1].human() == (
+            "Switched #2 ci → #1 a@example.com · its spend is not known (the scan of this "
+            "machine's session files failed); no subscription has room, so back to the "
+            "account underneath"
+        )
+        held = [e for e in h.events if isinstance(e, NoSwitchEvent)]
+        h.clock.advance(60)
+        _tick(h, EXHAUSTED, {"2": _reading(h, age=0)})
+        texts = [e.human() for e in h.events[len(held):] if isinstance(e, NoSwitchEvent)]
+        assert not any("20 minutes" in t or "qswap usage" in t for t in texts), texts
+
+    def test_the_rows_say_the_limit_is_not_enforced(self, temp_home, monkeypatch):
+        """list, status, the dashboard and the menu bar read the reading the
+        collector builds: after the engine's failed scan it says so."""
+        from ai_quota_swap.ledger.store import DB_FILENAME, LAST_SCAN_META, LedgerStore
+
+        path = _failing_scan(monkeypatch, temp_home, "unreadable")
+        h = _fleet(temp_home)
+        _tick(h, EXHAUSTED, {"2": _reading(h, age=0)})
+        store = LedgerStore(h.switcher.backup_dir / DB_FILENAME)
+        store.set_meta(LAST_SCAN_META, str(h.clock.now))  # the ledger looks fresh
+        store.close()
+        infos = {str(i[0]): i for i in h.switcher._build_accounts_info() if str(i[0]) == "2"}
+        reading = api_spend.readings(h.switcher, infos, fetch=set(), now=h.clock.now,
+                                     env={})["2"]
+        assert api_spend.limit_not_enforced(reading, h.clock.now)
+        assert api_spend.spend_text(reading, now=h.clock.now).endswith(
+            "· limit not enforced: no spend figure"
+        )
+        assert api_spend.detail_text(reading, h.clock.now) == (
+            "2 session files on this machine could not be read; make them readable, or "
+            f"move them away (one is {path})"
+        )
+
+    def test_the_dry_run_agrees_with_the_real_run(self, temp_home, monkeypatch):
+        _failing_scan(monkeypatch, temp_home, "unreadable")
+        h = _fleet(temp_home)
+        _tick(h, EXHAUSTED, {"2": _reading(h, age=0)})
+        h.engine = h._make_engine(dry_run=True)
+        h.clock.advance(60)
+        before = len(h.events)
+        _tick(h, EXHAUSTED, {"2": _reading(h, age=0)})
+        assert not [e for e in h.events[before:] if isinstance(e, SwitchEvent)]
+        assert [e.reason for e in h.events[before:] if isinstance(e, NoSwitchEvent)] == [
+            "spend-unknown"
+        ]

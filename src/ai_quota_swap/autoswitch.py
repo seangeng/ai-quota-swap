@@ -442,6 +442,9 @@ class SwitchEvent(AutoSwitchEvent):
     # EM9), and its binding window, which may be over its own switch line.
     before_key: bool = _human_only(False)
     target_binding: BindingWindow | None = _human_only()
+    # Leaving a key at spend-unknown because the ledger scan could not cover
+    # the period (decision EM3): that scan's ``spendScan`` record.
+    scan_failure: dict | None = _human_only()
 
     def _fields(self) -> dict:
         fields = {
@@ -489,6 +492,9 @@ class NoSwitchEvent(AutoSwitchEvent):
     # reset") and the resets.threshold it is spent at.
     reset_noun: str | None = _human_only()
     reset_line: float | None = _human_only()
+    # spend-unknown because the ledger scan could not cover the period: that
+    # scan's ``spendScan`` record (decision EM3).
+    scan_failure: dict | None = _human_only()
 
     def _fields(self) -> dict:
         return {"reason": self.reason, "detail": self.detail}
@@ -1782,6 +1788,10 @@ class AutoSwitchEngine:
         # API keys whose ledger figure this tick's scan could not vouch for
         # (decision EM3): their spend counts as unknown.
         self._ledger_unsure: set[str] = set()
+        # The last ledger scan, when it could not cover the period (its
+        # ``spendScan`` record): every ledger figure counts as unknown until
+        # one does, and the words name why (``api_spend.scan_failure_words``).
+        self._scan_failure: dict | None = None
         # Whether this tick wanted an API key (no subscription could take the
         # sessions), and since when checks have (``keyWanted`` in the state
         # file; a dry run keeps it here only): the unreadable hold of EM9.
@@ -2471,6 +2481,15 @@ class AutoSwitchEngine:
         priority_mode = settings.strategy == "priority-consume-first"
         state = self._read_state()
         self._tick_state = state
+        from ai_quota_swap.api_spend import failed_scan_record
+
+        scan = state.get("spendScan")
+        # Read the clock only for a failed scan: a tick's clock reads are part
+        # of its decision snapshot.
+        self._scan_failure = (
+            failed_scan_record(scan, self.clock())
+            if isinstance(scan, dict) and scan.get("ok") is False else None
+        )
         self._key_wait_recorded = "keyWanted" in state
         if not self.dry_run:
             # Dry-run must not write anything, so recovered quarantines are
@@ -2755,6 +2774,7 @@ class AutoSwitchEngine:
             "policies": policies,
             "limit_reason": active_limit,
             "limit_source": self._spend_source(current, entries),
+            "scan_failure": self._scan_failure_of(current, active_limit, entries),
         }
 
         if trigger in ("proactive", "consume-first", "priority") and self._in_cooldown(state):
@@ -4312,6 +4332,7 @@ class AutoSwitchEngine:
             "limit_source": cause.get("limit_source"),
             "before_key": bool(cause.get("before_key")),
             "target_binding": (cause.get("target_bindings") or {}).get(number),
+            "scan_failure": cause.get("scan_failure"),
         }
 
     def _account_views(
@@ -4429,6 +4450,8 @@ class AutoSwitchEngine:
         left = self._key_left(self._tick_state)
         if left is not None and left[0] != str(num):
             return "key-left"  # another key was left at its limit (A10)
+        if self._ledger_unsure_for(num, {num: entry}):
+            return "spend-unknown"  # the last scan could not cover the period (EM3)
         scans = (
             not self.dry_run and self._scans_ledger()
             and self._spend_source(num, {num: entry}) != api_spend.SOURCE_ADMIN
@@ -4600,6 +4623,27 @@ class AutoSwitchEngine:
         reading = getattr(entries.get(num), "api_spend", None)
         return api_spend.has_limit(reading, self._account_record(num))
 
+    def _ledger_unsure_for(self, num: str, entries: Mapping[str, object]) -> bool:
+        """Whether the key ``num``'s figure is the ledger's and the last scan
+        could not cover the period (this tick's, or the stored record's for
+        a tick that does not scan, a dry run included): no figure (EM3)."""
+        from ai_quota_swap import api_spend
+
+        if self._spend_source(num, entries) == api_spend.SOURCE_ADMIN:
+            return False
+        return num in self._ledger_unsure or self._scan_failure is not None
+
+    def _scan_failure_of(
+        self, num: str, reason: str | None, entries: Mapping[str, object],
+    ) -> dict | None:
+        """The failed scan behind ``num``'s ``spend-unknown``, for its words;
+        None for any other reason, or one the scan does not explain."""
+        from ai_quota_swap import api_spend
+
+        if reason != api_spend.SPEND_UNKNOWN or not self._ledger_unsure_for(num, entries):
+            return None
+        return self._scan_failure or {"ok": False}
+
     def _key_brake(self, num: str, entries: Mapping[str, object]) -> str | None:
         """Why the engine treats the API key ``num`` as at its limit, or None:
         its budget or credit reached (now, or earlier and still latched), or
@@ -4615,10 +4659,7 @@ class AutoSwitchEngine:
         if reason is not None:
             return reason
         limited = self._key_limited(num, entries)
-        if (
-            limited and num in self._ledger_unsure
-            and self._spend_source(num, entries) != api_spend.SOURCE_ADMIN
-        ):
+        if limited and self._ledger_unsure_for(num, entries):
             # This tick's scan could not cover the period the limit is
             # measured over: the ledger's figure may miss usage (EM3).
             return api_spend.SPEND_UNKNOWN
@@ -4949,6 +4990,7 @@ class AutoSwitchEngine:
                 reason=why, detail=detail, account=num,
                 limit_reason=brake if why == "limit-latched" else None,
                 dry_run=self.dry_run,
+                scan_failure=self._scan_failure_of(num, brake, entries),
             ))
         return ok, entries
 
@@ -5038,10 +5080,12 @@ class AutoSwitchEngine:
         ):
             if not last.get("ok"):
                 self._ledger_unsure.update(nums)
+                self._scan_failure = self._scan_failure or last
             return entries
         from ai_quota_swap.ledger import usage as ledger_usage
 
         ok = False
+        record: dict = {"at": now, "from": start, "ok": False}
         try:
             stats = ledger_usage.scan_recent(
                 Path(self.switcher.backup_dir),
@@ -5055,11 +5099,20 @@ class AutoSwitchEngine:
                     "The usage ledger scan could not read %s session files; API-key "
                     "spend counts as unknown", unreadable,
                 )
+                record["unreadable"] = unreadable
+                paths = getattr(stats, "missing_paths", None)
+                if isinstance(paths, (list, tuple)):
+                    record["paths"] = [str(p) for p in paths[:3]]
         except Exception as e:  # no figure until a scan covers the period
             _logger.warning("Could not scan the usage ledger for API-key spend: %r", e)
-        if not ok:
+            record["error"] = type(e).__name__
+        record["ok"] = ok
+        if ok:
+            self._scan_failure = None
+            self._ledger_unsure.difference_update(nums)
+        else:
             self._ledger_unsure.update(nums)
-        record = {"at": now, "from": start, "ok": ok}
+            self._scan_failure = record
         state["spendScan"] = record
 
         def remember(s: dict) -> None:
@@ -5081,8 +5134,26 @@ class AutoSwitchEngine:
                 fresh = self.switcher.usage_entries_by_account(fetch=set(nums))
         except Exception as e:
             _logger.debug("Could not re-read API-key spend after a scan: %r", e)
+            self._refresh_key_views(entries)
             return entries
-        return {**entries, **{n: fresh[n] for n in nums if n in fresh}}
+        entries = {**entries, **{n: fresh[n] for n in nums if n in fresh}}
+        self._refresh_key_views(entries)
+        return entries
+
+    def _refresh_key_views(self, entries: Mapping[str, object]) -> None:
+        """The API-key rows of this tick's text, judged again after a scan
+        (A4: a row agrees with what the engine then does). Never raises."""
+        context = self._context
+        if context is None or not context.accounts:
+            return
+        try:
+            self._context = replace(context, accounts=tuple(
+                replace(v, key_hold=self._view_key_hold(v.number, entries.get(v.number)))
+                if v.state == "api-key" and v.used else v
+                for v in context.accounts
+            ))
+        except Exception as e:  # labels only
+            _logger.debug("could not describe the API keys again: %r", e)
 
     # -- the key line and the one reconcile (decision B5) ----------------------
     #
@@ -5211,9 +5282,11 @@ class AutoSwitchEngine:
             ))
             return TickOutcome.NO_ACTION
         source = self._spend_source(current, entries)
+        scan_failure = self._scan_failure_of(current, reason, entries)
         self._tick_cause = {
             "binding": None, "over_budget": reason is not None, "policies": policies,
             "limit_reason": reason, "back_underneath": False, "limit_source": source,
+            "scan_failure": scan_failure,
         }
         if self._unmanaged_login_underneath():
             # A live login qswap does not manage is under the key (a /login
@@ -5276,6 +5349,7 @@ class AutoSwitchEngine:
                 "limit_reason": reason,
                 "back_underneath": back,
                 "limit_source": source,
+                "scan_failure": scan_failure,
             }
 
         self._tick_cause = cause(False)
@@ -5361,6 +5435,7 @@ class AutoSwitchEngine:
             "binding": None, "over_budget": True, "priority_up": None,
             "limit_reason": reason, "back_underneath": True,
             "limit_source": self._tick_cause.get("limit_source"),
+            "scan_failure": self._tick_cause.get("scan_failure"),
         }
         if self.dry_run:
             # Nothing is changed in a dry run: say what a real run would do

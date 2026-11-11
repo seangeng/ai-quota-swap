@@ -64,6 +64,8 @@ _CHUNK = 1024 * 1024
 # wrote a line and the server that stamps a network share's mtimes, and the
 # report's rounding of local days to UTC hours.
 MTIME_MARGIN = 86_400
+#: How many unreadable entries a scan keeps by name (``ScanStats.missing_paths``).
+MISSING_PATHS_KEPT = 3
 
 _THREAD_ID = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$"
@@ -78,6 +80,8 @@ class ScanStats:
     events: int = 0  # new events counted (after dedupe)
     duplicates: int = 0
     missing: int = 0  # unreadable entries, such as symlinks to an unmounted volume
+    # The first few of them, to name in a message (not in the JSON).
+    missing_paths: list = field(default_factory=list)
     skipped_compressed: int = 0  # .zst files with no zstd support
     # The scan window: files last changed before ``modified_since`` (epoch
     # seconds; None when every file was in scope) were not opened.
@@ -341,7 +345,7 @@ class Scanner:
                 st = stats[path]
                 if st is None:
                     self.stats.files_seen += 1
-                    self.stats.missing += 1
+                    self._missing(path)
                     continue
                 if not self._outside_window(st, cutoff_ns, claude_cursors.get(path), path):
                     work.append((st.st_mtime_ns, path, "claude", path, st, 1, account))
@@ -368,6 +372,12 @@ class Scanner:
         finally:
             self.stats.seconds = time.monotonic() - start
         return self.stats
+
+    def _missing(self, path: str) -> None:
+        """Count an entry that could not be read, keeping the first few."""
+        self.stats.missing += 1
+        if len(self.stats.missing_paths) < MISSING_PATHS_KEPT:
+            self.stats.missing_paths.append(path)
 
     def _outside_window(
         self, st: os.stat_result, cutoff_ns: int | None, cursor: tuple | None, path: str
@@ -398,7 +408,7 @@ class Scanner:
         try:
             f = open(path, "rb")
         except OSError:
-            self.stats.missing += 1
+            self._missing(path)
             return
         self.stats.files_read += 1
         with f:
@@ -474,7 +484,10 @@ class Scanner:
         """The file a thread is read from, or None when no copy is readable
         (counted as missing, or as compressed with no zstd support)."""
         found = self._pick(candidates, stats)
-        self.stats.missing += len(candidates) - len(found)
+        readable = {p for p, _s in found}
+        for p in candidates:
+            if p not in readable:
+                self._missing(p)
         if found and not ZSTD_AVAILABLE:
             self.stats.skipped_compressed += sum(1 for p, _s in found if p.endswith(".zst"))
             found = [x for x in found if not x[0].endswith(".zst")]
@@ -503,7 +516,7 @@ class Scanner:
                     state, offset = new_codex_state(), 0  # truncated: start over
         stream = self._open_codex(path)
         if stream is None:
-            self.stats.missing += 1
+            self._missing(path)
             return
         self.stats.files_read += 1
         with stream:
@@ -517,7 +530,7 @@ class Scanner:
                     stream.close()
                     stream = self._open_codex(path)
                     if stream is None:
-                        self.stats.missing += 1
+                        self._missing(path)
                         return
                     state, pos = new_codex_state(), 0
             for raw in stream:

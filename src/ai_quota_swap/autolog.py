@@ -467,6 +467,10 @@ def switch_reason(event: object) -> str:
                 getattr(event, "limit_source", None) == api_spend.SOURCE_LEDGER
             ):
                 words += " (estimate)"  # this machine's count, not Anthropic's
+            failure = getattr(event, "scan_failure", None)
+            if reason == api_spend.SPEND_UNKNOWN and failure:
+                # The scan could not cover the period: say why, not an age (EM3).
+                words = f"its spend is not known ({api_spend.scan_failure_words(failure)[0]})"
             if reason == api_spend.SPEND_UNKNOWN and getattr(event, "dry_run", False):
                 # A dry run does not scan; a real run does first (EM6).
                 words += "; a real run measures it first and may stay"
@@ -899,6 +903,16 @@ def no_switch_sentence(event: object) -> str:
 
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "an API-key account"
+        failure = getattr(event, "scan_failure", None)
+        if failure:
+            # The last scan could not cover the period (EM3): why, and the
+            # way out; a dry run adds that a real run scans again first.
+            cause, step = api_spend.scan_failure_words(failure)
+            tail = (
+                ". A real run scans again first, and may move to it"
+                if getattr(event, "dry_run", False) else ""
+            )
+            return f"Not switching to {who}: its spend is not known ({cause}); {step}{tail}"
         if getattr(event, "dry_run", False):
             # A dry run does not scan; a real run does first (decision EM6).
             return (
