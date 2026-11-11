@@ -611,3 +611,22 @@ class TestAScanThatCannotCoverThePeriod:
         assert [e.reason for e in h.events[before:] if isinstance(e, NoSwitchEvent)] == [
             "spend-unknown"
         ]
+
+
+# == EM6: a dry run that would move to a key ===================================================
+
+
+class TestTheDryRunsMoveToAKey:
+    @pytest.mark.parametrize("source", ["ledger", "admin-api"])
+    def test_it_says_a_real_run_measures_first(self, temp_home, source):
+        h = _fleet(temp_home)
+        h.engine = h._make_engine(dry_run=True)
+        assert _tick(h, EXHAUSTED, {"2": _reading(h, source=source)}) is TickOutcome.SWITCHED
+        text = _switches(h)[-1].human()
+        if source == "ledger":
+            assert text == (
+                "Would switch #1 a@example.com → #2 ci · 5h limit reached (dry run); a "
+                "real run measures the spend first, and may not move"
+            )
+        else:
+            assert text == "Would switch #1 a@example.com → #2 ci · 5h limit reached (dry run)"

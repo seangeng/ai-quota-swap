@@ -513,6 +513,8 @@ def switch_sentence(
     verb = "Would switch" if getattr(event, "dry_run", False) else "Switched"
     move = f"{src} → {dst}" if src else f"to {dst}"
     tail = " (dry run)" if getattr(event, "dry_run", False) else ""
+    if tail and getattr(event, "measures_first", False):
+        tail += "; a real run measures the spend first, and may not move"
     kept = "".join(f"; {note}" for note in getattr(event, "reset_notes", ()) or ()) if notes else ""
     return f"{verb} {move} · {switch_reason(event)}{tail}{kept}"
 

@@ -445,6 +445,9 @@ class SwitchEvent(AutoSwitchEvent):
     # Leaving a key at spend-unknown because the ledger scan could not cover
     # the period (decision EM3): that scan's ``spendScan`` record.
     scan_failure: dict | None = _human_only()
+    # A dry run moving to a key on this machine's figure, which a real run
+    # measures first and may then not move (decision EM6).
+    measures_first: bool = _human_only(False)
 
     def _fields(self) -> dict:
         fields = {
@@ -3045,6 +3048,13 @@ class AutoSwitchEngine:
                 if left is not None and not ordered:
                     self._emit_key_left(left, api_key_candidates)
                 if ordered:
+                    # A dry run judges the stored figure: on the ledger's, a
+                    # real run scans first and may not move (EM6).
+                    from ai_quota_swap.api_spend import SOURCE_ADMIN
+
+                    self._tick_cause["ledger_keys"] = {
+                        n for n in ordered if self._spend_source(n, entries) != SOURCE_ADMIN
+                    }
                     # A reset the user's settings keep stays banked, and is
                     # named with the command that spends it (decision EM4).
                     kept = self._kept_resets(state, entries, usage, thresholds, quarantined, current)
@@ -4333,6 +4343,7 @@ class AutoSwitchEngine:
             "before_key": bool(cause.get("before_key")),
             "target_binding": (cause.get("target_bindings") or {}).get(number),
             "scan_failure": cause.get("scan_failure"),
+            "measures_first": self.dry_run and number in (cause.get("ledger_keys") or ()),
         }
 
     def _account_views(

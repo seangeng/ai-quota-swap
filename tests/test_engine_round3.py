@@ -1223,9 +1223,10 @@ class TestTheEngineNamesTheKeptReset:
         switch = _switches(h)[-1]
         assert switch.dry_run
         assert switch.human() == (
-            "Would switch #1 a@example.com → #2 ci · 7d limit reached (dry run); #1 "
-            "a@example.com holds 1 weekly reset auto mode keeps (its 7d window refills "
-            "in 10h); to spend it instead: qswap reset 1"
+            "Would switch #1 a@example.com → #2 ci · 7d limit reached (dry run); a real "
+            "run measures the spend first, and may not move; #1 a@example.com holds 1 "
+            "weekly reset auto mode keeps (its 7d window refills in 10h); to spend it "
+            "instead: qswap reset 1"
         )
 
     def test_the_surfaces_ask_the_same_function(self, temp_home):
