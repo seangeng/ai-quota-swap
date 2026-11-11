@@ -2113,7 +2113,11 @@ class AutoSwitchEngine:
         )
         candidates = list(picked.considered)
         oauth_candidates = list(picked.oauth)
-        api_key_candidates = list(picked.api_key)
+        # Never from one key to another, in any branch (a key made active
+        # the older way included): from a key the way out is a subscription.
+        api_key_candidates = (
+            [] if self.switcher.account_kind_for(current) == "api_key" else list(picked.api_key)
+        )
         if (
             trigger in ("consume-first", "priority")
             and not oauth_candidates
@@ -2286,12 +2290,15 @@ class AutoSwitchEngine:
         held_for_sessions = False
         if (
             not ordered and api_key_candidates
-            and trigger not in ("consume-first", "priority")
+            and trigger == "at-limit"
             and not priority_active_ready
         ):
             # Last resort when we must move: metered API-key accounts
-            # (unmeasurable headroom). Never for a below-threshold consume-first
-            # nudge — those API-key accounts have no weekly window to consume.
+            # (unmeasurable headroom). Only at the limit: the active
+            # subscription has no room left. Never on the proactive trigger
+            # (its last points come first) or on unreadable usage (no
+            # evidence any subscription is out), and never for a consume-first
+            # nudge — API-key accounts have no weekly window to consume.
             # Through the key helper, running sessions follow the move, so
             # they do not hold it. Where the helper cannot be installed the
             # engine does not take the saved-key path by itself, and a
