@@ -372,6 +372,20 @@ class TestAnotherQswapsLineComesThroughEveryCommand:
         assert s.reconcile_key_helper() == []
         assert _settings(temp_home).read_bytes() == raw
 
+    def test_the_engines_reconcile_leaves_a_line_that_names_no_data_directory(
+        self, temp_home, monkeypatch, rules
+    ):
+        """This qswap runs with another data directory than the default; the
+        line names none, so it is the default directory's qswap's, for an
+        account number this qswap does not have. The engine took it for its
+        own (a line with no --data-dir) and removed it."""
+        from ai_quota_swap.autoswitch import AutoSwitchEngine, AutoSwitchSettings
+
+        s, _mine, _default = _on(monkeypatch, temp_home, rules, data_dir="other")
+        raw = _put(temp_home, _other_line(9, None))
+        AutoSwitchEngine(s, AutoSwitchSettings(), lambda e: None)._reconcile_key_line()
+        assert _settings(temp_home).read_bytes() == raw
+
     def test_the_engine_does_not_enter_a_key_over_it(self, temp_home, monkeypatch):
         """The engine's harness: the line names another data
         directory, the subscriptions are at their limit, and the engine
