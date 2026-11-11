@@ -62,7 +62,7 @@ Claude Code watches that file. About a second after the write (measured on Claud
 
 - Claude Code does not load claude.ai connectors (the MCP servers that come with the claude.ai login) while a key is in use, and Remote Control does not work with an API key, so a session you drive from your phone loses that link (Anthropic's documentation). Neither has been tested here, nor whether a running session gets them back after you leave the key.
 - The first request on the key cannot reuse the login's prompt cache, so it pays for the cache again, at the key's price.
-- Claude Code keeps the key it read for 5 minutes, and reads it again sooner after any change to the settings or a rejected request.
+- Claude Code keeps the key it read for 5 minutes, and reads it again sooner after any change to the settings or a rejected request (Claude Code 2.1.322; `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` changes the 5 minutes).
 
 ### Which sessions follow the line
 
