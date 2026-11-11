@@ -123,8 +123,10 @@ MEANINGS: dict[str, str] = {
         "Under `resets.auto` `active` or `on-limit`, stay on the active account past "
         "its switch line while it holds a reset of its own that auto mode spends at "
         "`resets.threshold`, and spend it there instead of moving at the line. With "
-        "`resets.threshold` 100 the account is at its limit until the next check "
-        "spends the reset. No effect under `off` and `last-resort`; see "
+        "`resets.threshold` 100 the account is at its limit until a check reads it "
+        "there and spends the reset. A reset usable only once a limit is reached "
+        "never holds the switch, and neither does an active account qswap cannot "
+        "read again. No effect under `off` and `last-resort`; see "
         "[resets.md](resets.md#before-switching)."
     ),
     "codex.restartDaemon": (

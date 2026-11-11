@@ -103,9 +103,14 @@ $ qswap auto --once --dry-run
 
 The dashboard's log says `No switch yet: auto mode spends #1 personal's own weekly reset when 7d reaches 100%, rather than switching away (resets.beforeSwitch)`, and `--json` gives the reason `reset-ahead` ([json-output.md](json-output.md#auto-switch-events)).
 
-It changes when auto-switch moves, not the rules for spending: the reset is spent at `resets.threshold`, as auto mode spends it with the setting off. A reset auto mode would keep does not hold the switch: its window refills within `resets.minHoursLeft`, it is a kind that does not clear the window over the line ([Kinds](#kinds)), today's limit on automatic resets is reached, a claim on the account is still settling, or another window would stay over its line ([Guards](#guards)). Neither does a reset whose last claim failed or was refused: the next check switches as usual.
+It changes when auto-switch moves, not the rules for spending: the reset is spent at `resets.threshold`, as auto mode spends it with the setting off. In these cases auto-switch moves at the line as usual:
 
-The cost: the active account runs past its switch line, up to `resets.threshold`. With `resets.threshold` 100 the account is at its limit until the next check spends the reset. Setting `resets.threshold` at or below the switch line avoids that, and then the reset comes first without this setting.
+- A reset auto mode would keep: its window refills within `resets.minHoursLeft`, it is a kind that does not clear the window over the line ([Kinds](#kinds)), today's limit on automatic resets is reached, a claim on the account is still settling, or another window would stay over its line ([Guards](#guards)).
+- A reset whose last claim failed or was refused.
+- A reset marked `usable once a limit is reached`. Nothing can spend it below the limit, and the server may still refuse it there, so it stays banked as with the setting off.
+- An active account qswap cannot read again: no reading from the last five minutes, or a read that failed since the last one (the server answered 429, say). Auto mode spends a reset only on a fresh reading ([Guards](#guards)), so the last one is no reason to stay.
+
+The cost: the active account runs past its switch line, up to `resets.threshold`. With `resets.threshold` 100 the account is at its limit until a check reads it there and spends the reset. That check needs a reading from the last two minutes, as every automatic spend does. Setting `resets.threshold` at or below the switch line avoids that, and then the reset comes first without this setting.
 
 To turn it on, `qswap config set resets.beforeSwitch true`, or *Use the active account's reset before switching* in the menu bar. Under `off` and `last-resort` it has no effect, and `qswap config` says so:
 

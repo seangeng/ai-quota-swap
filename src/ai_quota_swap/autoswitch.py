@@ -720,6 +720,25 @@ _BRAKE_RESULTS = frozenset({"reset", "already_used", "unavailable", "error", "pe
 MAX_AUTO_RESETS_PER_DAY = 3
 
 
+def _reading_holds(entry: object, now: float) -> bool:
+    """Whether the active account's stored reading can hold the switch for
+    its own reset (``resets.beforeSwitch``): one taken in the last
+    ``STALE_OK_S``, with no failed read since. The reset is spent only on a
+    reading from the last ``RESET_FRESH_READ_S``, which the engine takes
+    first; an account that no longer answers cannot give one, though its last
+    reading stays trusted for the switch (an hour after a failure, up to two
+    after a 429). Held on that, the engine would stay on an account nothing
+    can spend the reset on. Over its line, the active account is read again
+    each check once its reading is older than ``SERVE_TTL_S``, so a healthy
+    one stays inside this."""
+    fetched = getattr(entry, "fetched_at", None)
+    return (
+        isinstance(fetched, (int, float))
+        and now - fetched <= STALE_OK_S
+        and not getattr(entry, "consecutive_failures", 0)
+    )
+
+
 def _state_lock_for(state_path: Path) -> FileLock:
     return FileLock(state_path.parent / ".autoswitch_state.lock")
 
@@ -2026,7 +2045,8 @@ class AutoSwitchEngine:
         reads nothing else. Asks the planner with the window's own figure as
         its line, so every other guard (the time left, the kind, the daily
         cap, a claim settling) still applies; a reset whose last claim failed
-        or was refused never holds. Never raises."""
+        or was refused never holds. Neither does a reading the account no
+        longer gives (``_reading_holds``). Never raises."""
         from ai_quota_swap import resets
         from ai_quota_swap.settings import RESET_BEFORE_SWITCH_MODES
 
@@ -2047,6 +2067,8 @@ class AutoSwitchEngine:
             ):
                 return None
             now = self.clock()
+            if not _reading_holds(entries.get(current), now):
+                return None
             if reset_claims_today(state, now) >= MAX_AUTO_RESETS_PER_DAY:
                 return None
             rotation = [

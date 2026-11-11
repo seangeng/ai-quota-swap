@@ -17,10 +17,11 @@ faked and never claimed.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from ai_quota_swap import autolog, claude_settings
+from ai_quota_swap import autolog, claude_settings, oauth
 from ai_quota_swap.autoswitch import (
     MAX_AUTO_RESETS_PER_DAY,
     NoSwitchEvent,
@@ -29,7 +30,8 @@ from ai_quota_swap.autoswitch import (
 )
 from ai_quota_swap.resets import ClaimResult
 from ai_quota_swap.settings import ResetSettings, load_reset_settings, set_setting
-from tests.test_autoswitch import EngineHarness
+from ai_quota_swap.usage_store import UsageEntry
+from tests.test_autoswitch import EngineHarness, _entry_for
 from tests.test_engine_money import _fleet, _switches, _tick_resets
 from tests.test_resets import _grant
 from tests.test_resets import _usage as _rusage
@@ -285,6 +287,170 @@ class TestAFailedClaimDoesNotHold:
         assert outcome is TickOutcome.SWITCHED
         assert h.switcher.current_account_number() == "3"
         assert len(_held(h)) == 1
+
+
+# -- a reset usable only once a limit is reached ------------------------------------------
+
+
+class TestAResetUsableOnlyAtTheLimit:
+    """A reset the server marks usable only once a limit is reached cannot be
+    spent below the limit, so it never holds the switch: auto-switch moves at
+    the line and the reset stays banked, as with the setting off
+    (docs/resets.md, "Before switching"). Holding for it would run the
+    account to its limit for a reset the server may still refuse there."""
+
+    @pytest.mark.parametrize("auto", ["active", "on-limit"])
+    @pytest.mark.parametrize("before_switch", [True, False])
+    def test_it_does_not_hold_the_switch(self, temp_home, auto, before_switch):
+        h = _fleet(temp_home, threshold=98.0)
+        _settings(h, auto=auto, before_switch=before_switch)
+        grant = _week(usable=False, use_requires_limit=True)
+        outcome, claims = _tick_resets(h, _usage(99.0, grants=[grant]))
+        assert outcome is TickOutcome.SWITCHED and claims == []
+        assert h.switcher.current_account_number() == "3" and not _held(h)
+
+    def test_the_documents_say_so(self):
+        from ai_quota_swap.display import grant_state
+        from ai_quota_swap.resets import grant_unusable_reason
+
+        state = grant_state(grant_unusable_reason(
+            _week(usable=False, use_requires_limit=True), 1_000_000.0))
+        section = _page("docs/resets.md").split("### Before switching")[1].split("\n## ")[0]
+        assert f"`{state}`" in section, state
+        assert "usable only once a limit is reached never holds" in _page("docs/settings.md")
+
+
+# -- the hold needs a reading the reset could be spent on -------------------------------
+#
+# Auto mode spends a reset only on a reading of the account from the last two
+# minutes ("A fresh reading first", docs/resets.md). A stored reading stays
+# trusted for switch decisions long after the account stops answering (an
+# hour after a failure, up to two after a 429), and a hold on it would keep
+# the engine on an account that nothing can spend the reset on.
+
+
+def _tick_entries(h, entries: dict) -> TickOutcome:
+    """A tick on these store entries; a claim fails the test."""
+
+    def claim(*args):
+        raise AssertionError(f"claimed a reset: {args!r}")
+
+    with (
+        patch.object(h.switcher, "usage_entries_by_account",
+                     side_effect=lambda fetch=None, scheduled=False: dict(entries)),
+        patch.object(h.switcher, "refresh_usage",
+                     side_effect=lambda nums: {n: entries[n] for n in nums if n in entries}),
+        patch.object(h.switcher, "claim_usage_reset", side_effect=claim),
+    ):
+        return h.engine.tick()
+
+
+class TestTheHoldNeedsAFreshReading:
+    def _entries(self, h, **active) -> dict:
+        usage = _usage(99.0)
+        age = active.pop("age", 0.0)
+        out = {n: _entry_for(v, h.clock.now) for n, v in usage.items()}
+        out["1"] = UsageEntry(last_good=usage["1"], fetched_at=h.clock.now - age,
+                              age_s=age, **active)
+        return out
+
+    @pytest.mark.parametrize("active", [
+        {"age": 30.0, "consecutive_failures": 1, "last_error": "http-429",
+         "trust_extended": True},
+        {"age": 30.0, "consecutive_failures": 2, "last_error": "timeout",
+         "trust_extended": True},
+        {"age": 301.0, "trust_extended": True, "next_poll_at": 1_000_000.0 + 60},
+        {"age": 3000.0, "consecutive_failures": 4, "last_error": "http-429",
+         "trust_extended": True},
+    ], ids=["429-since", "failure-since", "older-than-5-minutes", "an-hour-of-429s"])
+    def test_a_reading_the_account_no_longer_gives_does_not_hold(self, temp_home, active):
+        """Each of these readings is still trusted for the switch, so with
+        the setting off the engine moves at the line on it: so does it with
+        the setting on."""
+        h = _fleet(temp_home, threshold=98.0)
+        _settings(h)
+        assert _tick_entries(h, self._entries(h, **active)) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "3" and not _held(h)
+
+    @pytest.mark.parametrize("age", [0.0, 120.0, 299.0])
+    def test_a_reading_from_the_last_five_minutes_holds(self, temp_home, age):
+        h = _fleet(temp_home, threshold=98.0)
+        _settings(h)
+        entries = self._entries(h, age=age, next_poll_at=h.clock.now + 60)
+        assert _tick_entries(h, entries) is TickOutcome.NO_ACTION
+        assert h.switcher.current_account_number() == "1" and len(_held(h)) == 1
+
+
+class TestAnAccountThatStopsAnswering:
+    """End to end through the real usage store: #1 is read once at 7d 99%
+    with its own weekly reset, then every read of it answers 429. Its last
+    reading stays trusted for up to two hours, but no reset can be spent on
+    it, so the engine moves once #1 stops answering, as it does with the
+    setting off at the first check."""
+
+    @pytest.fixture(autouse=True)
+    def _no_profile_probe(self):
+        with patch("ai_quota_swap.oauth.fetch_oauth_profile", return_value=None):
+            yield
+
+    def _harness(self, temp_home, monkeypatch, *, before_switch: bool):
+        monkeypatch.setattr("ai_quota_swap.switcher._FETCH_STAGGER_S", 0)
+        h = EngineHarness(temp_home, threshold=98.0)
+        for n, email in ((1, "a@example.com"), (2, "b@example.com"), (3, "c@example.com")):
+            h.seed(n, email)
+        h.make_live("a@example.com", 1)
+        monkeypatch.setattr(h.switcher, "_live_session_pids", lambda *a: [])
+        _settings(h, before_switch=before_switch)
+        return h
+
+    def _run(self, h, checks: int) -> tuple[list[TickOutcome], list[str]]:
+        usage = {
+            "1": _rusage(h5=10, d7=99, reset_in=3 * 86400, grants=[_week()]),
+            "2": _rusage(h5=10, d7=30),
+            "3": _rusage(h5=10, d7=20),
+        }
+        reads: list[str] = []
+
+        def fetch(num, email, creds, is_active=False, persist_credentials=None, **kw):
+            reads.append(num)
+            if num == "1" and reads.count("1") > 1:
+                return oauth.UsageOutcome(None, error="http-429")
+            return oauth.UsageOutcome(dict(usage[num]))
+
+        def claim(*args):
+            raise AssertionError(f"claimed a reset: {args!r}")
+
+        outcomes = []
+        with (
+            patch("ai_quota_swap.oauth.try_fetch_usage_for_account", side_effect=fetch),
+            patch.object(h.switcher, "claim_usage_reset", side_effect=claim),
+        ):
+            for _ in range(checks):
+                outcomes.append(h.engine.tick())
+                if outcomes[-1] is TickOutcome.SWITCHED:
+                    break
+                h.clock.advance(60)
+        return outcomes, reads
+
+    def test_with_it_off_the_first_check_switches(self, temp_home, monkeypatch):
+        h = self._harness(temp_home, monkeypatch, before_switch=False)
+        outcomes, _ = self._run(h, 3)
+        assert outcomes == [TickOutcome.SWITCHED] and not _held(h)
+
+    def test_with_it_on_the_hold_ends_when_the_account_stops_answering(
+        self, temp_home, monkeypatch
+    ):
+        h = self._harness(temp_home, monkeypatch, before_switch=True)
+        outcomes, reads = self._run(h, 15)
+        assert outcomes[0] is TickOutcome.NO_ACTION and len(_held(h)) >= 1
+        assert outcomes[-1] is TickOutcome.SWITCHED, (outcomes, reads)
+        assert h.switcher.current_account_number() in ("2", "3")
+        # Held only while #1's reading was its last good answer, then the
+        # first check after the refused read switched.
+        assert reads.count("1") >= 2
+        assert len(outcomes) <= 6, outcomes
+        (switch,) = [e for e in h.events if type(e).__name__ == "SwitchEvent"]
+        assert switch.trigger == "proactive"
 
 
 # -- qswap config ----------------------------------------------------------------------

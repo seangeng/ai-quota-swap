@@ -164,7 +164,9 @@ class ResetSettings:
     ``threshold`` (every guard applies), auto-switch stays and the reset is
     spent there, rather than moving at the line and keeping the reset. Off
     (the default), auto-switch moves at its line. It never changes what the
-    planner spends. Under ``off`` and ``last-resort`` it does nothing.
+    planner spends. A reset usable only once a limit is reached never holds
+    the switch, and neither does an active account whose reading cannot be
+    refreshed. Under ``off`` and ``last-resort`` it does nothing.
     """
 
     enabled: bool = True
