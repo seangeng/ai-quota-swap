@@ -819,9 +819,9 @@ class SessionManager:
             # says: that is the file whose key line matters.
             from ai_quota_swap import claude_settings
 
-            key = self.switcher._helper_verdict(
-                claude_settings.read_state(Path.home() / ".claude" / "settings.json")
-            )[0]
+            key = self.switcher._helper_verdict(claude_settings.read_state(
+                Path.home() / ".claude" / "settings.json", data_dir=self.switcher.backup_dir,
+            ))[0]
             if key is not None:
                 # Plain claude on the default login would follow the key
                 # helper line onto the key, not run this account.
@@ -1680,12 +1680,12 @@ class SessionManager:
 
     # -- settings.json while a key is active (docs/design/api-key-sessions.md) --
 
-    @staticmethod
-    def _settings_carry_key(src: Path) -> bool:
-        """Whether the shared settings file holds qswap's apiKeyHelper line."""
+    def _settings_carry_key(self, src: Path) -> bool:
+        """Whether the shared settings file holds this qswap's apiKeyHelper
+        line (another qswap's, for another data directory, is not: SS4)."""
         from ai_quota_swap import claude_settings
 
-        return claude_settings.read_state(src).ours
+        return claude_settings.read_state(src, data_dir=self.switcher.backup_dir).ours
 
     @staticmethod
     def _settings_unknown(src: Path) -> bool:

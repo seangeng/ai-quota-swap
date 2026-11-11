@@ -255,6 +255,24 @@ class TestAnotherDataDirectorysLine:
         assert _settings(temp_home).read_bytes() == raw
 
 
+def test_run_profiles_judge_the_line_by_this_qswaps_data_directory(temp_home, monkeypatch):
+    """A qswap whose data directory is not the default names it in its line;
+    its run profiles keep their copy while that line is in, and a restore
+    does not link them back to settings that carry it."""
+    from tests.test_key_helper_live import _profile
+
+    elsewhere = temp_home / "elsewhere" / "ai-quota-swap"
+    monkeypatch.setattr("ai_quota_swap.switcher.get_backup_root", lambda: elsewhere)
+    s = _fleet()
+    d = _profile(s)
+    s.switch_to("5", json_output=True)
+    assert s.helper_account() == "5"
+    assert not (d / "settings.json").is_symlink()
+    s.restore_run_profiles()
+    assert not (d / "settings.json").is_symlink()
+    assert s.key_findings().linked == ()
+
+
 def _another_qswaps_line(temp_home, monkeypatch) -> tuple[object, bytes, Path]:
     s, _mine, _default = _on(monkeypatch, temp_home, "macos")
     other = temp_home / "other" / "ai-quota-swap"
