@@ -671,3 +671,170 @@ class TestFreeBeforePaid:
             "Switched #1 a@example.com → #2 ci · 7d limit reached; #1 a@example.com "
             "holds 1 weekly reset: qswap reset 1"
         )
+
+
+# == A8: the way back needs real room and a minimum stay =====================================
+
+
+class TestTheWayBack:
+    def test_not_before_the_cooldown_since_the_key_was_entered(self, temp_home):
+        h = _fleet(temp_home)  # cooldown 300 s
+        _enter(h)
+        h.clock.advance(60)
+        roomy = {"1": _usage(100), "2": "api key", "3": _usage(10)}
+        assert _tick(h, roomy) is TickOutcome.NO_ACTION
+        assert h.switcher.current_account_number() == "2"
+        h.clock.advance(250)
+        assert _tick(h, roomy) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "3"
+        assert _switches(h)[-1].trigger == "key-return"
+
+    def test_under_its_line_but_with_less_than_5_points_of_room_it_waits(self, temp_home):
+        from ai_quota_swap.autoswitch import RETURN_ROOM_PCT
+
+        assert RETURN_ROOM_PCT == 5.0
+        h = _fleet(temp_home, threshold=98.0)
+        _enter(h)
+        h.clock.advance(600)
+        assert _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(96)}) is (
+            TickOutcome.NO_ACTION
+        )
+        assert h.switcher.current_account_number() == "2"
+        assert _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(95)}) is (
+            TickOutcome.SWITCHED
+        )
+
+    def test_every_window_needs_the_room(self, temp_home):
+        h = _fleet(temp_home, threshold=98.0)
+        _enter(h)
+        h.clock.advance(600)
+        weekly_full = {"five_hour": {"pct": 10.0}, "seven_day": {"pct": 96.0}}
+        assert _tick(h, {"1": _usage(100), "2": "api key", "3": weekly_full}) is (
+            TickOutcome.NO_ACTION
+        )
+
+    def test_at_the_limit_both_are_ignored(self, temp_home):
+        h = _fleet(temp_home, threshold=98.0, cooldown_seconds=3600)
+        _enter(h)
+        h.clock.advance(60)
+        over = _reading(h, used=600.0)
+        assert _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(97)}, {"2": over}) is (
+            TickOutcome.SWITCHED
+        )
+        assert h.switcher.current_account_number() == "3"
+
+
+# == Flapping: many ticks, one engine and two with different lines ==========================
+
+from ai_quota_swap.autoswitch import AutoSwitchEngine  # noqa: E402
+from ai_quota_swap.settings import AutoSwitchSettings  # noqa: E402
+
+
+def _engines(h, *lines: float) -> list[AutoSwitchEngine]:
+    """The harness's engine, plus one more per extra line (a qswap auto with
+    --threshold beside the menu bar's), all on one switcher and state file."""
+    out = [h.engine]
+    for line in lines:
+        settings = AutoSwitchSettings(threshold=line, include_api_key_accounts=True)
+        out.append(AutoSwitchEngine(h.switcher, settings, h.events.append, clock=h.clock))
+    return out
+
+
+def _run(h, engines, readings, ticks: int, step: float = 60.0) -> list[str]:
+    """``ticks`` minutes; each minute every engine ticks once on
+    ``readings(minute)``. Returns where each switch went."""
+    moves = []
+    for minute in range(ticks):
+        usage = readings(minute)
+        for engine in engines:
+            before = len(_switches(h))
+            entries = {
+                num: _key(_reading(h)) if value == "api key" else _entry_for(value, h.clock.now)
+                for num, value in usage.items()
+            }
+            with patch.object(h.switcher, "usage_entries_by_account", return_value=entries):
+                engine.tick()
+            moves.extend(str((e.to_ref or {}).get("number")) for e in _switches(h)[before:])
+        h.clock.advance(step)
+    return moves
+
+
+def _windows(h5: float, d7: float = 0.0) -> dict:
+    return {"five_hour": {"pct": h5}, "seven_day": {"pct": d7}}
+
+
+class TestNoFlapping:
+    @pytest.mark.parametrize("p1, p3", [
+        (85, 85), (91, 85), (95, 89.9), (99, 92), (100, 100), (100, 89.9), (100, 97.9),
+        (92, 100), (100, 50),
+    ])
+    @pytest.mark.parametrize("lines", [(), (80.0,)], ids=["one-engine", "two-engines"])
+    def test_constant_readings_move_sessions_at_most_once(self, temp_home, p1, p3, lines):
+        h = _fleet(temp_home)
+        engines = _engines(h, *lines)
+        moves = _run(h, engines, lambda m: {"1": _windows(p1), "2": "api key",
+                                            "3": _windows(p3)}, ticks=90)
+        assert len(moves) <= 1, moves
+        if p1 < 100:
+            assert "2" not in moves  # never a key with room left on the active
+
+    @pytest.mark.parametrize("lines", [(), (80.0,), (98.0,)],
+                             ids=["one-engine", "two-engines", "two-engines-high"])
+    def test_a_window_that_fills_and_resets(self, temp_home, lines):
+        """#1 climbs half a point a minute to 100, stays a while, resets to
+        10 after its five hours; #3 sits at its limit. One move to the key
+        when #1 is full, one move back after the reset, per window."""
+        h = _fleet(temp_home)
+        engines = _engines(h, *lines)
+
+        def readings(minute):
+            cycle = minute % 300
+            p1 = min(100.0, 80.0 + 0.5 * cycle)
+            return {"1": _windows(p1), "2": "api key", "3": _windows(100)}
+
+        moves = _run(h, engines, readings, ticks=900)  # three windows
+        assert moves.count("2") <= 3 and len(moves) <= 6, moves
+
+    @pytest.mark.parametrize("lines", [(), (80.0,)], ids=["one-engine", "two-engines"])
+    def test_a_weekly_window_a_sliver_under_the_line(self, temp_home, lines):
+        """The reviewer's monotone case: the 5h window full, the 7d window at
+        89.9 then creeping up. Back once the 5h window resets, never onto
+        the key again for the tenth of a point."""
+        h = _fleet(temp_home)
+        engines = _engines(h, *lines)
+
+        def readings(minute):
+            h5 = 100.0 if minute < 30 else 10.0
+            d7 = 89.9 + 0.01 * minute
+            return {"1": _windows(h5, d7), "2": "api key", "3": _windows(100, 100)}
+
+        moves = _run(h, engines, readings, ticks=120)
+        assert moves[:1] == ["2"] and moves.count("2") == 1 and len(moves) <= 2, moves
+
+    def test_a_subscription_hovering_at_its_line_does_not_bounce_through_the_key(
+        self, temp_home
+    ):
+        """On the engine's key, #3 drifts between 88 and 92 around its line
+        of 90; #1 is full. Sessions go to #3 once and stay there."""
+        import math
+
+        h = _fleet(temp_home)
+        _enter(h)
+        engines = _engines(h, 80.0)
+        moves = _run(h, engines, lambda m: {
+            "1": _windows(100), "2": "api key",
+            "3": _windows(90 + 2 * math.sin(m / 7)),
+        }, ticks=240)
+        assert moves.count("2") == 0 and len(moves) <= 1, moves
+
+    def test_readings_alternating_between_full_and_room_are_bounded_by_the_cooldown(
+        self, temp_home
+    ):
+        """The reviewer's alternating case (100 / 89.9 every minute) switched
+        every tick. Back from the key at most once per cooldown now."""
+        h = _fleet(temp_home)
+        moves = _run(h, [h.engine], lambda m: {
+            "1": _windows(100 if m % 2 == 0 else 89.9), "2": "api key", "3": _windows(100),
+        }, ticks=60)
+        returns = [m for m in moves if m != "2"]
+        assert len(returns) <= 60 * 60 / h.settings.cooldown_seconds, moves

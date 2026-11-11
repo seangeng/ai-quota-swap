@@ -162,6 +162,14 @@ SPENT_HEADROOM_PCT = 3.0
 SPEND_SCAN_INTERVAL_S = 5 * 60.0
 # Before entering a key it scans again unless a scan ran this recently.
 SPEND_SCAN_MIN_GAP_S = 60.0
+# The way back from a key the engine entered: a subscription is a target
+# only with at least this many points of room in every window it is judged
+# by (and under its own lines), and only once the engine's cooldown has run
+# since the key was entered. Without the margin a subscription a sliver
+# under its line takes every session back, crosses the line on its first
+# requests and sends them onto the key again. Leaving at the budget, the
+# credit or spend-unknown ignores both.
+RETURN_ROOM_PCT = 5.0
 
 
 def _all_above_margin_met(candidate_headroom: float, active_headroom: float) -> bool:
@@ -3500,7 +3508,9 @@ class AutoSwitchEngine:
         # state lock.
         with self._state_lock():
             state = self._read_state()
-            if trigger in ("proactive", "consume-first", "priority") and self._in_cooldown(state):
+            if trigger in (
+                "proactive", "consume-first", "priority", "key-return",
+            ) and self._in_cooldown(state):
                 self._emit(
                     NoSwitchEvent(reason="cooldown", wait_s=self._cooldown_left(state))
                 )
@@ -4183,10 +4193,13 @@ class AutoSwitchEngine:
             kind_of=self.switcher.account_kind_for,
             include_api_key_accounts=False, entries=entries,
         )
+        # At the limit any subscription with room will do; the way back
+        # needs RETURN_ROOM_PCT of it in every window.
+        floor = 0.0 if reason is not None else RETURN_ROOM_PCT
         roomy = []
         for num in picked.oauth:
             room = headroom.get(num)
-            if room is None or room <= 0:
+            if room is None or room <= 0 or room < floor:
                 continue
             binding = self._binding(usage.get(num), settings, thresholds[num])
             if binding is not None and binding.over:
@@ -4194,6 +4207,13 @@ class AutoSwitchEngine:
             roomy.append((room, num))
         roomy.sort(key=lambda r: (-r[0], int(r[1]) if r[1].isdigit() else 0))
         ordered = [num for _room, num in roomy]
+        if ordered and reason is None:
+            # A minimum stay: not back before the cooldown has run since the
+            # engine entered the key (its last switch).
+            state = self._read_state() if state is None else state
+            if self._in_cooldown(state):
+                self._emit(NoSwitchEvent(reason="cooldown", wait_s=self._cooldown_left(state)))
+                return TickOutcome.NO_ACTION
         back_underneath = False
         underneath_of = getattr(self.switcher, "underneath_account_number", None)
         under = underneath_of() if callable(underneath_of) else None

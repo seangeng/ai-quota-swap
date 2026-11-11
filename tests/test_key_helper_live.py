@@ -1670,6 +1670,7 @@ class TestEngine:
             TickOutcome.NO_ACTION
         )
         assert h.switcher.current_account_number() == "2"
+        h.clock.advance(h.settings.cooldown_seconds)  # the minimum stay on the key
         assert h.tick_with_usage({"1": _usage(100), "2": "api key", "3": _usage(10)}) is (
             TickOutcome.SWITCHED
         )
@@ -1836,6 +1837,7 @@ class TestLeavingForTheLoginUnderneath:
         )
         assert h.tick_with_usage(EXHAUSTED) is TickOutcome.SWITCHED
         assert h.switcher.key_entered_by() == "engine"
+        h.clock.advance(h.settings.cooldown_seconds)  # the minimum stay on the key
         return h, exp
 
     @staticmethod
