@@ -1246,6 +1246,54 @@ def key_helper_moved(number: str, fix_command: str) -> list[str]:
     )
 
 
+#: Said when the user names the key auto-switch entered.
+KEY_KEPT = (
+    "Auto-switch keeps it now, and leaves it only at its budget or when its credit "
+    "is spent or expires."
+)
+
+
+def key_settings_unreadable(path: str, error: str | None, key: str) -> list[str]:
+    """The settings cannot be parsed while qswap's record names a key: the
+    one note list, status, the dashboard, the menu bar, doctor, the guards
+    and a refused switch all show (decision B5)."""
+    why = f" ({error})" if error else ""
+    return wrap(
+        f"{path} cannot be read{why}; qswap last made {key} the active API key "
+        f"there, and its key line may still be in it. Fix the JSON in {path}, "
+        "then retry."
+    )
+
+
+def key_line_came_back(key: str, fix_command: str) -> list[str]:
+    """qswap took the key line out and an older copy of the settings, written
+    back by another program, put it in again."""
+    return wrap(
+        f"The key line for {key} came back after qswap took it out: another program "
+        f"wrote an older copy of the Claude Code settings, so sessions use {key} "
+        f"again. To leave it: {fix_command}"
+    )
+
+
+def key_line_lost(key: str, path: str, number: str | int) -> list[str]:
+    """qswap's record names a key whose line is no longer in the settings."""
+    return wrap(
+        f"qswap made {key} the active API key, but its key line is no longer in "
+        f"{path}, so Claude Code sessions do not use it. To use the key again: "
+        f"qswap switch {number}"
+    )
+
+
+def profiles_still_linked_line(count: int, key: str, fix_command: str) -> list[str]:
+    """Run profiles still sharing the user settings while the key line is in."""
+    noun = "profile still shares" if count == 1 else "profiles still share"
+    its = "its" if count == 1 else "their"
+    return wrap(
+        f"{count} qswap run {noun} the Claude Code settings, so {its} sessions use "
+        f"{key} too. Give {'it its' if count == 1 else 'them their'} own copy: {fix_command}"
+    )
+
+
 def stale_copies_line(count: int, fix_command: str) -> list[str]:
     """The run profiles left with a copy of the settings after the key line
     was removed (a crash between the two steps)."""

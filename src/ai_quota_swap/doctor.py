@@ -283,6 +283,16 @@ def _key_line_answers(command: str) -> str | None:
     return claude_settings.check_command(command)
 
 
+def _link_leads_to(path: Path) -> str | None:
+    """Where the link at ``path`` leads (resolved, a dangling one too), or
+    None when ``path`` is not a link."""
+    from ai_quota_swap.fsutil import is_link
+
+    if not is_link(path):
+        return None
+    return os.path.realpath(path)
+
+
 def _now() -> float:
     return time.time()
 
@@ -362,6 +372,8 @@ class Probes:
     claude_unreadable_sessions: Callable[[], list] = _claude_unreadable_sessions
     #: Whether qswap's key line answers: None, or why not.
     key_line_answers: Callable[[str], str | None] = _key_line_answers
+    #: Where a link leads (resolved), or None for a path that is not a link.
+    link_leads_to: Callable[[Path], str | None] = _link_leads_to
 
 
 def default_probes() -> Probes:
@@ -394,6 +406,7 @@ def default_probes() -> Probes:
         list_dir=_list_dir,
         claude_unreadable_sessions=_claude_unreadable_sessions,
         key_line_answers=_key_line_answers,
+        link_leads_to=_link_leads_to,
     )
 
 
@@ -683,12 +696,18 @@ def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
 
 def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
     """Claude Code's user settings and qswap's key helper line
-    (docs/design/api-key-sessions.md, part 2): qswap's own line for an
-    API-key account is the active key, reported as such; a line for an
-    account that does not exist (or is not an API-key account) fails with the
-    repair; another helper overrides the active account; run profiles left
-    with a settings copy after the line is gone fail with the repair."""
-    from ai_quota_swap import claude_settings
+    (docs/design/api-key-sessions.md, part 2), compared with the account
+    list, key_helper.json, the run profiles and ``activeAccountNumber`` by
+    the same function every switch and surface uses
+    (``key_activation.assess_key_state``, decision B5): qswap's own line for
+    an API-key account is the active key, reported as such; a line for an
+    account that does not exist (or is not an API-key account) fails with
+    the repair; another helper overrides the active account; a line that
+    came back, a record whose line is gone, profiles still linked under the
+    line or left with a copy after it, and a settings file that cannot be
+    read while qswap's record names a key are each reported."""
+    from ai_quota_swap import claude_settings, display
+    from ai_quota_swap.key_activation import KEY_STATE_FILENAME, assess_key_state
 
     checks: list[Check] = []
     settings_path, err = _try(p.claude_settings_path)
@@ -696,26 +715,54 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
         return checks
     where = _abbr(settings_path, f.home)
     raw, read_err = _try(p.read_bytes, settings_path)
-    registry = None
+    registry, reg_err = None, None
+    record = None
     if f.data_dir is not None:
-        registry, _ = _read_json(p, f.data_dir / "sequence.json")
+        registry, reg_err = _read_json(p, f.data_dir / "sequence.json")
+        record, _ = _read_json(p, f.data_dir / KEY_STATE_FILENAME)
     fix = _key_repair_command(p, f, registry)
-    state = None
     if read_err is None:
         try:
-            text = None if raw is None else raw.decode("utf-8").lstrip("\ufeff")
+            text = None if raw is None else raw.decode("utf-8")
         except UnicodeDecodeError:
             text = "\x00"
         state = claude_settings.state_of_text(text, Path(settings_path))
-    if state is None:
-        pass
-    elif state.kind == claude_settings.INVALID:
-        checks.append(Check(
-            "claude.settings", "claude", WARN,
-            f"{where} is not valid JSON ({state.error}); Claude Code cannot read "
-            "it and qswap will not change it",
-            fix=f"fix the JSON in {where}",
-        ))
+    else:
+        state = claude_settings.HelperState(
+            claude_settings.INVALID, Path(settings_path),
+            error=f"could not be read: {_reason(read_err)}",
+        )
+    accounts = None if reg_err is not None else _accounts(registry)
+    login_slot = fix.removeprefix("qswap switch ") if fix != "qswap switch N" else None
+    findings = assess_key_state(
+        state, accounts, record, active_number=(registry or {}).get("activeAccountNumber"),
+        login_slot=login_slot,
+        linked=tuple(_profiles_linked(p, f, settings_path)) if state.ours else (),
+        copies=tuple(range(_stale_profile_copies(p, f, state))),
+    )
+
+    def label(number: str) -> str:
+        row = _accounts(registry).get(number)
+        row = row if isinstance(row, dict) else {}
+        return _label(number, row, row.get("email", "") if isinstance(row.get("email"), str) else "")
+
+    if state.kind == claude_settings.INVALID:
+        if read_err is None:
+            checks.append(Check(
+                "claude.settings", "claude", WARN,
+                f"{where} is not valid JSON ({state.error}); Claude Code cannot read "
+                "it and qswap will not change it",
+                fix=f"fix the JSON in {where}",
+            ))
+        if findings.unreadable_record is not None:
+            sentence = " ".join(display.key_settings_unreadable(
+                where, state.error, label(findings.unreadable_record)
+            ))
+            checks.append(Check(
+                "claude.key_helper", "claude", FAIL,
+                sentence.removesuffix(f" Fix the JSON in {where}, then retry.").rstrip("."),
+                fix=f"fix the JSON in {where}",
+            ))
     elif state.kind == claude_settings.FOREIGN:
         checks.append(Check(
             "claude.api_key_helper", "claude", WARN,
@@ -724,15 +771,16 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             fix=f"remove apiKeyHelper from {where}",
         ))
     elif state.kind == claude_settings.OURS:
-        record = _accounts(registry).get(state.number)
-        if not isinstance(record, dict) or record.get("kind") != "api_key":
-            what = "does not exist" if not isinstance(record, dict) else (
+        row = _accounts(registry).get(state.number)
+        if findings.problem is not None:
+            what = "does not exist" if not isinstance(row, dict) else (
                 "is not an API-key account"
             )
             checks.append(Check(
                 "claude.key_helper", "claude", FAIL,
                 f"{where} makes #{state.number} the active API key, but #{state.number} "
-                f"{what}; every Claude Code session fails to get a key",
+                f"{what}; new Claude Code sessions fail to get a key, and running "
+                "ones keep the key they have until the settings change",
                 fix=fix,
             ))
         elif state.stale_command:
@@ -742,9 +790,42 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
                 "is no longer there; Claude Code sessions cannot get the key",
                 fix=f"qswap switch {state.number}",
             ))
-        else:
-            checks.append(_key_line_check(p, f, state, record, where))
-    stale = _stale_profile_copies(p, f, state)
+        elif findings.key is not None:
+            check = _key_line_check(p, f, state, row if isinstance(row, dict) else {}, where)
+            if findings.came_back and check.status == PASS:
+                check = Check(
+                    "claude.key_helper", "claude", WARN,
+                    f"{where} makes {label(state.number)} the active API key again: "
+                    "its key line came back after qswap took it out (another "
+                    "program wrote an older copy of the settings)",
+                    fix=fix,
+                )
+            checks.append(check)
+    if findings.lost is not None and isinstance((accounts or {}).get(findings.lost), dict):
+        checks.append(Check(
+            "claude.key_helper", "claude", WARN,
+            f"qswap made {label(findings.lost)} the active API key, but its key line "
+            f"is no longer in {where}; Claude Code sessions do not use it",
+            fix=f"qswap switch {findings.lost}",
+        ))
+    if findings.stale_active is not None:
+        checks.append(Check(
+            "claude.active_number", "claude", WARN,
+            f"the account list names {label(findings.stale_active)} as the active "
+            "account, but its key line is gone; the next switch sets it back",
+            fix=fix,
+        ))
+    if findings.linked:
+        n = len(findings.linked)
+        noun = "profile still shares" if n == 1 else "profiles still share"
+        its = "its" if n == 1 else "their"
+        checks.append(Check(
+            "claude.profile_settings", "claude", FAIL,
+            f"{n} qswap run {noun} Claude Code's settings while the key line for "
+            f"{label(findings.key)} is in them, so {its} sessions use the key too",
+            fix=f"qswap switch {findings.key}",
+        ))
+    stale = len(findings.copies)
     if stale:
         noun = "profile keeps" if stale == 1 else "profiles keep"
         checks.append(Check(
@@ -754,6 +835,25 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             fix=fix,
         ))
     return checks
+
+
+def _profiles_linked(p: Probes, f: _Facts, settings_path: Path) -> list[Path]:
+    """Run profiles whose ``settings.json`` is a link leading to the user
+    settings (F9): while the key line is in, their sessions follow it."""
+    if f.data_dir is None:
+        return []
+    target, err = _try(os.path.realpath, settings_path)
+    if err is not None:
+        return []
+    entries, _ = _try(p.list_dir, f.data_dir / "sessions", default=[])
+    out = []
+    for entry in entries or []:
+        if Path(entry).name.startswith("."):
+            continue
+        leads, _ = _try(p.link_leads_to, Path(entry) / "settings.json")
+        if leads is not None and os.path.normcase(leads) == os.path.normcase(target):
+            out.append(Path(entry))
+    return out
 
 
 def _key_line_check(p: Probes, f: _Facts, state, record: dict, where: str) -> Check:
@@ -829,10 +929,13 @@ def _key_repair_command(p: Probes, f: _Facts, registry: dict | None) -> str:
 def _stale_profile_copies(p: Probes, f: _Facts, state) -> int:
     """How many run profiles hold a settings copy (session.SETTINGS_COPY_MARKER)
     while the user settings carry no key line of qswap's."""
+    from ai_quota_swap import claude_settings
     from ai_quota_swap.session import SETTINGS_COPY_MARKER
 
     if f.data_dir is None or (state is not None and state.ours):
         return 0
+    if state is not None and state.kind == claude_settings.INVALID:
+        return 0  # cannot tell whether the line is in: nothing to report
     entries, err = _try(p.list_dir, f.data_dir / "sessions", default=[])
     count = 0
     for entry in entries or []:

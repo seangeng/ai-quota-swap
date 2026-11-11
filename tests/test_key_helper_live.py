@@ -1576,7 +1576,7 @@ class TestAccountChangesWhileOnAKey:
         s = _fleet()
         _activate(s)
         _settings(temp_home).write_text("{broken", encoding="utf-8")
-        with pytest.raises(SwitchError, match="cannot remove its key line"):
+        with pytest.raises(SwitchError, match="key line cannot be removed"):
             s.remove_account("5", assume_yes=True)
         assert "5" in s._get_sequence_data()["accounts"]
 

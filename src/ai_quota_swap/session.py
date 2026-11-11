@@ -1498,7 +1498,11 @@ class SessionManager:
             dest = session_dir / name
             if (
                 name == "settings.json"
-                and (name in managed or (not is_link(dest) and not dest.exists()))
+                and (
+                    name in managed
+                    or (not is_link(dest) and not dest.exists())
+                    or self._links_to(dest, src)
+                )
                 and self._settings_carry_key(src)
             ):
                 # qswap's apiKeyHelper line is in the user settings: a link
@@ -1683,6 +1687,28 @@ class SessionManager:
 
         return claude_settings.read_state(src).ours
 
+    @staticmethod
+    def _settings_unknown(src: Path) -> bool:
+        """Whether the user settings cannot be read or parsed, so qswap cannot
+        tell whether its line is in them: then no sharing is put back
+        (decision B5: nothing is repaired on unknown)."""
+        from ai_quota_swap import claude_settings
+
+        return claude_settings.read_state(src).kind == claude_settings.INVALID
+
+    @staticmethod
+    def _links_to(dest: Path, src: Path) -> bool:
+        """Whether ``dest`` is a link that leads to ``src`` (a dangling one
+        included), whoever made it and whatever the manifest says (F9)."""
+        if not is_link(dest):
+            return False
+        try:
+            return os.path.normcase(os.path.realpath(dest)) == os.path.normcase(
+                os.path.realpath(src)
+            )
+        except (OSError, ValueError):
+            return False
+
     def _write_settings_copy(self, src: Path, dest: Path, session_dir: Path) -> bool:
         """Put a copy of ``src`` without ``apiKeyHelper`` at ``dest`` (in
         place of the link, never through it), marked so the sharing comes
@@ -1736,7 +1762,12 @@ class SessionManager:
         return out
 
     def _shares_settings(self, session_dir: Path) -> bool:
-        return "settings.json" in self._read_manifest(session_dir / SHARE_MANIFEST)
+        """Whether the profile shares the user settings: its manifest says
+        so, or its ``settings.json`` is a link that leads there (a first
+        launch killed before it wrote the manifest leaves such a link)."""
+        if "settings.json" in self._read_manifest(session_dir / SHARE_MANIFEST):
+            return True
+        return self._links_to(session_dir / "settings.json", Path.home() / ".claude" / "settings.json")
 
     def isolate_settings(self) -> int:
         """Give every run profile that shares the user settings a copy of them
@@ -1769,7 +1800,9 @@ class SessionManager:
         the user settings no longer carry the key line (``force``: even if
         they do, for a line being removed right now). Returns how many."""
         src = Path.home() / ".claude" / "settings.json"
-        if not force and src.exists() and self._settings_carry_key(src):
+        if not force and src.exists() and (
+            self._settings_carry_key(src) or self._settings_unknown(src)
+        ):
             return 0
         done = 0
         for session_dir in self.profile_dirs():
@@ -1807,7 +1840,7 @@ class SessionManager:
         """Profiles holding a settings copy while the user settings carry no
         key line: what a crash between the two steps of leaving a key leaves."""
         src = Path.home() / ".claude" / "settings.json"
-        if src.exists() and self._settings_carry_key(src):
+        if src.exists() and (self._settings_carry_key(src) or self._settings_unknown(src)):
             return []
         return [d for d in self.profile_dirs() if (d / SETTINGS_COPY_MARKER).exists()]
 
