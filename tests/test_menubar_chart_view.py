@@ -1,19 +1,26 @@
 """The usage chart's AppKit view (``menubar_chart_view``), drawn off screen
 into a bitmap. macOS only, and only where AppKit is installed (the menubar
-extra brings it; ``uv run --with pyobjc-framework-Cocoa pytest`` adds it);
-skipped everywhere else. Nothing is shown: no window, no application
-object, no run loop, so a headless runner draws it too."""
+extra brings it: ``uv run --locked --extra menubar pytest``); skipped
+everywhere else, except where ``QSWAP_TEST_REQUIRE_APPKIT=1`` says AppKit
+must be there (CI's macOS step), where a broken import fails. Nothing is
+shown: no window, no application object, no run loop, so a headless runner
+draws it too."""
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
 
-if sys.platform != "darwin":
-    pytest.skip("AppKit is macOS only", allow_module_level=True)
-AppKit = pytest.importorskip("AppKit")
+if os.environ.get("QSWAP_TEST_REQUIRE_APPKIT") == "1":
+    import AppKit  # a broken install fails here rather than skipping
+else:
+    if sys.platform != "darwin":
+        pytest.skip("AppKit is macOS only", allow_module_level=True)
+    AppKit = pytest.importorskip("AppKit")
 
+from ai_quota_swap import menubar_chart  # noqa: E402
 from ai_quota_swap import menubar_chart_view as view_mod  # noqa: E402
 from tests.test_menubar_chart import A1, A2, LONG, SEVEN, _cost  # noqa: E402
 
@@ -41,32 +48,41 @@ def _alpha(rep, x: float, y: float) -> float:
 
 
 def _columns(view):
-    """Each column's left edge and the bar width, as the view lays them out."""
+    """Where the shared layout puts each day in this view."""
     left = view_mod.TITLE_INSET + view_mod.STATE_COLUMN
     inner = view.frame().size.width - left - view_mod.RIGHT_INSET
-    bar = min(view_mod.MAX_BAR_WIDTH, inner / 13)
-    gap = (inner - 7 * bar) / 6
-    return [left + i * (bar + gap) for i in range(7)], bar
+    return menubar_chart.layout_columns(view.chart, left=left, width=inner, base=BASE)
 
 
-BASE = view_mod.CAPTION_BAND + view_mod.BAR_TOP_GAP + view_mod.BAR_HEIGHT
+BASE = view_mod._frame().base
 
 
 def test_the_view_draws_off_screen_in_light_and_dark():
     chart = build_chart(_cost(SEVEN))
     view = view_mod.make_view(chart)
-    assert 90 <= view.frame().size.height <= 110
+    assert 90 <= view.frame().size.height <= menubar_chart.MAX_HEIGHT
     assert view.frame().size.width == pytest.approx(view_mod.min_width(chart))
     assert view.autoresizingMask() & AppKit.NSViewWidthSizable
+    view.setFrame_(((0, 0), (430.0, view.frame().size.height)))  # a menu's width
     images = []
     for dark in (False, True):
         rep = _bitmap(view, dark=dark)
         images.append(bytes(rep.bitmapData()))
-        xs, bar = _columns(view)
-        # The tallest day (Saturday) fills the height; every day has a bar.
-        assert _alpha(rep, xs[3] + bar / 2, BASE - view_mod.BAR_HEIGHT + 2) > 0.5
-        assert all(_alpha(rep, x + bar / 2, BASE - 1.5) > 0.5 for x in xs)
-        assert _alpha(rep, xs[0] - 4, BASE - 2) == 0  # nothing left of the first bar
+        cols = _columns(view)
+        # The tallest day (Saturday) fills the bar area; every day has a bar,
+        # drawn where the shared layout puts it, and nothing between bars.
+        assert _alpha(rep, cols[3].centre, BASE - menubar_chart.BAR_AREA + 1) > 0.5
+        assert _alpha(rep, cols[3].centre, BASE - menubar_chart.BAR_AREA - 1) == 0
+        for col in cols:
+            assert _alpha(rep, col.centre, BASE - 0.5) > 0.5
+            assert _alpha(rep, col.x + 1, BASE - 0.5) > 0.5
+            assert _alpha(rep, col.x + col.width - 1, BASE - 0.5) > 0.5
+            assert _alpha(rep, col.x - 1.5, BASE - 0.5) == 0
+            assert _alpha(rep, col.x + col.width + 1.5, BASE - 0.5) == 0
+        # The columns span the menu: wide bars, the last one ending near
+        # the right inset.
+        assert cols[0].width > 30
+        assert cols[-1].x + cols[-1].width > 430.0 - view_mod.RIGHT_INSET - 15
     assert images[0] != images[1]  # light and dark draw differently
     assert view_mod._failed is False
 
@@ -74,9 +90,19 @@ def test_the_view_draws_off_screen_in_light_and_dark():
 def test_an_empty_day_draws_a_one_point_stub():
     view = view_mod.make_view(build_chart(_cost({A1: (5, 0, 3, 4, 2, 6, 1)})))
     rep = _bitmap(view, dark=False)
-    xs, bar = _columns(view)
-    assert _alpha(rep, xs[1] + bar / 2, BASE - 0.5) > 0.2  # the stub on the baseline
-    assert _alpha(rep, xs[1] + bar / 2, BASE - 2.5) == 0  # and nothing above it
+    stub = _columns(view)[1]
+    assert _alpha(rep, stub.centre, BASE - 0.5) > 0.2  # the stub on the baseline
+    assert _alpha(rep, stub.centre, BASE - 2.5) == 0  # and nothing above it
+
+
+def test_a_gap_shows_only_between_two_tall_segments():
+    view = view_mod.make_view(build_chart(_cost({A1: (10,) * 7, A2: (10,) * 7})))
+    rep = _bitmap(view, dark=False)
+    col = _columns(view)[0]
+    low, high = col.segments
+    gap = high.box.y + high.box.h + 0.5  # the unpainted point between them
+    assert _alpha(rep, col.centre, gap) == 0
+    assert _alpha(rep, col.centre, gap - 1) > 0.5 and _alpha(rep, col.centre, gap + 1) > 0.5
 
 
 def test_the_legend_fits_the_view_whatever_its_width():
@@ -127,11 +153,26 @@ def test_the_drawn_legend_shows_every_entry_inside_the_view():
     inner = 460.0 - left - view_mod.RIGHT_INSET
     names = chart.fit_legend(lambda ns: view_mod._legend_width(chart, ns, legend_font) <= inner)
     assert names != [e.name for e in chart.legend]  # these names had to be cut
-    y = BASE + view_mod.LABEL_GAP + view_mod._line_height(_day) + view_mod.LEGEND_GAP
-    y += view_mod._line_height(legend_font) / 2
+    y = view_mod._frame().legend_top + view_mod._line_height(legend_font) / 2
     x = left
     for name, entry in zip(names, chart.legend):
-        assert _alpha(rep, x + view_mod.DOT / 2, y) > 0.5, name
-        x += view_mod.DOT + view_mod.DOT_GAP
-        x += view_mod._entry_text(name, entry.amount_text, legend_font).size().width + view_mod.ENTRY_GAP
-    assert x - view_mod.ENTRY_GAP <= 460.0 - view_mod.RIGHT_INSET
+        assert _alpha(rep, x + menubar_chart.DOT / 2, y) > 0.5, name
+        x += menubar_chart.DOT + menubar_chart.DOT_GAP
+        x += view_mod._entry_text(name, entry.amount_text, legend_font).size().width + menubar_chart.ENTRY_GAP
+    assert x - menubar_chart.ENTRY_GAP <= 460.0 - view_mod.RIGHT_INSET
+
+
+def test_a_failure_finding_the_check_marks_never_reaches_appkit(monkeypatch):
+    # The first thing drawRect_ does is ask the menu whether it shows check
+    # marks; an error there is handled like any drawing error.
+    monkeypatch.setattr(view_mod, "_failed", False)
+    view = view_mod.make_view(build_chart(_cost(SEVEN)))
+
+    def broken(_view):
+        raise RuntimeError("no menu today")
+
+    monkeypatch.setattr(view_mod, "_menu_has_check_marks", broken)
+    rep = _bitmap(view, dark=True)  # does not raise
+    assert view_mod._failed is True
+    left = view_mod.TITLE_INSET + view_mod.STATE_COLUMN
+    assert any(_alpha(rep, left + dx, menubar_chart.CAPTION_BAND / 2) > 0 for dx in range(0, 40))

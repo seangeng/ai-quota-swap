@@ -8,12 +8,15 @@ so light and dark follow the menu's appearance with no theme code. Its width
 follows the menu (the menu stretches a width-sizable view to its own width),
 its height is fixed.
 
-Geometry, in points. ``NSMenu.size`` on macOS 26 pads a row's title by 32
-in all, taken here as 16 on each side, and adds a 14 point check-mark column
-before the titles once any row has a check mark. So the caption and the
-chart start 16 points in, 30 once the menu shows check marks (as it does
-while an account is active), to line up with the titles above. Neither
-number is public API; they are measured, not promised.
+Where each part goes comes from ``menubar_chart`` (:func:`frame`,
+:func:`layout_columns`, :func:`legend_width`), which the demo harness's HTML
+drawing of the menu uses too. Only the insets are this view's own.
+``NSMenu.size`` on macOS 26 pads a row's title by 32 in all, taken here as
+16 on each side, and adds a 14 point check-mark column before the titles
+once any row has a check mark. So the caption and the chart start 16 points
+in, 30 once the menu shows check marks (as it does while an account is
+active), to line up with the titles above. Neither number is public API;
+they are measured, not promised.
 """
 
 from __future__ import annotations
@@ -22,29 +25,25 @@ import logging
 
 import AppKit
 
-from ai_quota_swap.menubar_chart import ACCOUNT_COLOURS, OTHER_COLOUR, UsageChart
+from ai_quota_swap.menubar_chart import (
+    ACCOUNT_COLOURS,
+    CAPTION_BAND,
+    CORNER,
+    DOT,
+    DOT_GAP,
+    ENTRY_GAP,
+    OTHER_COLOUR,
+    UsageChart,
+    frame,
+    layout_columns,
+    legend_width,
+)
 
 _logger = logging.getLogger("ai-quota-swap")
 
 TITLE_INSET = 16.0
 STATE_COLUMN = 14.0
 RIGHT_INSET = 16.0
-#: The caption sits in a band as tall as a menu row, as the text row did.
-CAPTION_BAND = 24.0
-BAR_TOP_GAP = 3.0
-BAR_HEIGHT = 32.0
-LABEL_GAP = 3.0
-LEGEND_GAP = 4.0
-BOTTOM = 5.0
-MAX_BAR_WIDTH = 24.0
-#: Stacked segments are told apart by a gap left unpainted, not a stroke.
-SEGMENT_GAP = 1.0
-CORNER = 3.0
-#: What a day with nothing draws on the baseline.
-STUB = 1.0
-DOT = 7.0
-DOT_GAP = 4.0
-ENTRY_GAP = 10.0
 DAY_FONT_SIZE = 10.0
 LEGEND_FONT_SIZE = 11.0
 
@@ -71,14 +70,15 @@ def _line_height(font) -> float:
     return float(_text("Mg", font, AppKit.NSColor.labelColor()).size().height)
 
 
+def _frame():
+    _caption, day, legend = _fonts()
+    return frame(_line_height(day), _line_height(legend))
+
+
 def height() -> float:
     """The view's height: the caption's row, the bars, the weekday letters
-    and the legend line."""
-    _caption, day, legend = _fonts()
-    return (
-        CAPTION_BAND + BAR_TOP_GAP + BAR_HEIGHT + LABEL_GAP + _line_height(day)
-        + LEGEND_GAP + _line_height(legend) + BOTTOM
-    )
+    and the legend line (:func:`menubar_chart.frame`)."""
+    return _frame().height
 
 
 def _colour(index: int):
@@ -99,11 +99,9 @@ def _entry_text(name: str, amount: str, font) -> AppKit.NSAttributedString:
 
 
 def _legend_width(chart: UsageChart, names, font) -> float:
-    widths = [
-        DOT + DOT_GAP + _entry_text(n, e.amount_text, font).size().width
-        for n, e in zip(names, chart.legend)
-    ]
-    return sum(widths) + ENTRY_GAP * max(0, len(widths) - 1)
+    return legend_width([
+        float(_entry_text(n, e.amount_text, font).size().width) for n, e in zip(names, chart.legend)
+    ])
 
 
 def _top_rounded(x: float, y: float, w: float, h: float, radius: float):
@@ -137,46 +135,29 @@ def _draw(view, chart: UsageChart, left: float) -> None:
     line = _line_height(caption_font)
     caption.drawInRect_(((left, (CAPTION_BAND - line) / 2), (inner, line)))
 
-    # The columns: oldest left, today right, the tallest day full height.
-    top = CAPTION_BAND + BAR_TOP_GAP
-    base = top + BAR_HEIGHT
-    n = len(chart.columns)
-    bar = min(MAX_BAR_WIDTH, inner / (2 * n - 1)) if n else 0.0
-    gap = (inner - n * bar) / (n - 1) if n > 1 else 0.0
-    peak = chart.peak
-    day_line = _line_height(day_font)
-    for i, column in enumerate(chart.columns):
-        x = left + i * (bar + gap)
-        total = column.total
-        height = BAR_HEIGHT * total / peak if peak > 0 else 0.0
-        if not column.segments:
+    # The columns: oldest left, today right, the tallest day full height,
+    # laid out by menubar_chart.layout_columns as the HTML drawing does.
+    bands = _frame()
+    for col in layout_columns(chart, left=left, width=inner, base=bands.base):
+        if col.stub is not None:
             AppKit.NSColor.tertiaryLabelColor().setFill()
-            AppKit.NSBezierPath.fillRect_(((x, base - STUB), (bar, STUB)))
-        elif height < STUB:
-            _colour(column.segments[0].colour).setFill()
-            AppKit.NSBezierPath.fillRect_(((x, base - STUB), (bar, STUB)))
-        else:
-            y = base
-            last = len(column.segments) - 1
-            for j, seg in enumerate(column.segments):
-                h = height * seg.amount / total
-                y -= h
-                _colour(seg.colour).setFill()
-                if j == last:
-                    _top_rounded(x, y, bar, h, CORNER).fill()
-                else:
-                    # The gap comes off the top of the lower segment, so a
-                    # segment smaller than the gap still shows.
-                    shown = h - SEGMENT_GAP if h > SEGMENT_GAP + 0.5 else h
-                    AppKit.NSBezierPath.fillRect_(((x, y + (h - shown)), (bar, shown)))
-        # The weekday letter, today's in the primary label colour.
-        colour = AppKit.NSColor.labelColor() if column.today else secondary
-        letter = _text(column.label, day_font, colour)
+            AppKit.NSBezierPath.fillRect_(((col.stub.x, col.stub.y), (col.stub.w, col.stub.h)))
+        for part in col.segments:
+            b = part.box
+            _colour(part.segment.colour).setFill()
+            if part.top:
+                _top_rounded(b.x, b.y, b.w, b.h, CORNER).fill()
+            else:
+                AppKit.NSBezierPath.fillRect_(((b.x, b.y), (b.w, b.h)))
+        # The weekday letter, centred under its bar, today's in the primary
+        # label colour.
+        colour = AppKit.NSColor.labelColor() if col.column.today else secondary
+        letter = _text(col.column.label, day_font, colour)
         lw = float(letter.size().width)
-        letter.drawAtPoint_((x + (bar - lw) / 2, base + LABEL_GAP))
+        letter.drawAtPoint_((col.centre - lw / 2, bands.letters_top))
 
     # The legend: one line, names cut until it fits this width.
-    y = base + LABEL_GAP + day_line + LEGEND_GAP
+    y = bands.legend_top
     legend_line = _line_height(legend_font)
     names = chart.fit_legend(lambda ns: _legend_width(chart, ns, legend_font) <= inner)
     x = left
@@ -219,11 +200,12 @@ class QswapUsageChartView(AppKit.NSView):
 
     def drawRect_(self, rect):
         global _failed
-        marks = _menu_has_check_marks(self)
-        if marks is None:
-            marks = self.check_marks
-        left = TITLE_INSET + (STATE_COLUMN if marks else 0.0)
+        left = TITLE_INSET + STATE_COLUMN
         try:
+            marks = _menu_has_check_marks(self)
+            if marks is None:
+                marks = self.check_marks
+            left = TITLE_INSET + (STATE_COLUMN if marks else 0.0)
             _draw(self, self.chart, left)
         except Exception:
             # Never cost the menu: say what the text row says, and make the

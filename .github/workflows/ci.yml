@@ -104,7 +104,12 @@ jobs:
 
       - name: Draw the menu bar's usage chart off screen (AppKit)
         # The suite above runs without the menubar extra, so the drawing
-        # test skips there. This step adds AppKit for itself only. The test
-        # draws into a bitmap: no window, no application, no run loop.
+        # test skips there. This step adds the extra at the versions in
+        # uv.lock (rumps and the AppKit bindings it brings), and
+        # QSWAP_TEST_REQUIRE_APPKIT turns the test's skip into a plain
+        # import, so a broken AppKit fails the step. The test draws into a
+        # bitmap: no window, no application, no run loop.
         timeout-minutes: 5
-        run: uv run --with pyobjc-framework-Cocoa pytest tests/test_menubar_chart_view.py -n0 -o faulthandler_timeout=120
+        env:
+          QSWAP_TEST_REQUIRE_APPKIT: "1"
+        run: uv run --locked --extra menubar pytest tests/test_menubar_chart_view.py -n0 -o faulthandler_timeout=120

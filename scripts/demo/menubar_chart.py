@@ -61,6 +61,8 @@ def _shape_accounts():
         "long1": claude(1, "maya.rodriguez-castellanos@example.com", "maya.rodriguez-castellanos@example.com"),
         "long2": claude(2, "northwind-labs-platform-team", "platform@northwind.example.com"),
         "long3": claude(3, "weekend-side-project-account", "weekend@example.com"),
+        "prefix1": claude(1, "northwind-platform-production", "platform@northwind.example.com"),
+        "prefix2": claude(2, "northwind-platform-staging", "staging@northwind.example.com"),
         "stranger": CostAccount(
             "claude", "jordan.lee.contractor@example.org|", None,
             "jordan.lee.contractor@example.org (not managed)",
@@ -101,8 +103,25 @@ SHAPES: dict[str, tuple[int, dict[str, tuple[float, ...]]]] = {
         "unattributed": (0.6, 0.3, 0.0, 0.8, 0.2, 0.0, 0.1),
     }),
     "single-day": (320, {
+        "personal": (0.0, 0.0, 14.30, 0.0, 0.0, 0.0, 0.0),
+        "work": (0.0, 0.0, 3.80, 0.0, 0.0, 0.0, 0.0),
+    }),
+    "today-only": (320, {
         "personal": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.85),
         "work": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.10),
+    }),
+    "shared-prefix": (340, {
+        "prefix1": (16.2, 12.8, 19.4, 4.1, 3.3, 15.0, 11.6),
+        "prefix2": (6.4, 9.9, 5.2, 0.0, 1.8, 7.7, 4.9),
+    }),
+    "codex-top-four": (460, {
+        "codex2": (12.4, 15.1, 9.8, 18.3, 16.0, 11.2, 8.7),
+        "personal": (9.2, 11.4, 4.0, 13.9, 12.6, 7.3, 6.1),
+        "codex1": (6.8, 7.5, 3.9, 9.4, 8.8, 5.1, 4.4),
+        "ci": (4.0, 5.2, 2.1, 6.3, 5.5, 3.9, 2.8),
+        "work": (1.9, 2.4, 0.0, 3.1, 2.2, 1.4, 1.0),
+        "night": (0.8, 0.0, 1.1, 1.5, 0.9, 0.6, 0.4),
+        "side": (0.0, 0.6, 0.4, 0.0, 0.9, 0.0, 0.3),
     }),
 }
 

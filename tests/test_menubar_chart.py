@@ -98,7 +98,9 @@ def test_the_legend_names_the_top_four_and_merges_the_rest_into_other():
     chart = build_chart(_cost(SEVEN))
     names = [e.name for e in chart.legend]
     # By seven-day amount: #1 $101.70, #2 $66.80, Codex #1 $26.60, #3 $24.30.
-    assert names == ["#1 personal", "#2 work", "#1 maya@example.com", "#3 night-shift", "other"]
+    # Codex's #2 is "work" too (in "other"), so Claude Code's is named with
+    # its provider.
+    assert names == ["#1 personal", "Claude #2 work", "#1 maya@example.com", "#3 night-shift", "other"]
     other = chart.legend[-1]
     assert other.colour == OTHER_COLOUR
     assert other.amount == pytest.approx(sum(sum(SEVEN[a]) for a in (A4, A5, X2)))
@@ -131,14 +133,16 @@ def test_an_account_too_small_to_see_joins_other_when_other_has_more():
 
 
 def test_colours_follow_provider_and_number_never_rank():
-    chart = build_chart(_cost(SEVEN))
+    chart = build_chart(_cost({A1: SEVEN[A1], A2: SEVEN[A2], A3: SEVEN[A3], X1: SEVEN[X1]}))
     colours = {s.key: s.colour for c in chart.columns for s in c.segments}
-    # Claude Code from blue in order, Codex from pink.
-    assert colours["claude#1"] == menubar_chart.ACCOUNT_COLOURS.index("blue")
-    assert colours["claude#2"] == menubar_chart.ACCOUNT_COLOURS.index("teal")
-    assert colours["claude#3"] == menubar_chart.ACCOUNT_COLOURS.index("indigo")
-    assert colours["codex#1"] == menubar_chart.ACCOUNT_COLOURS.index("pink")
-    assert "red" not in menubar_chart.ACCOUNT_COLOURS
+    # Claude Code from blue in order, Codex #1 at green.
+    names = menubar_chart.ACCOUNT_COLOURS
+    assert names == ("blue", "orange", "purple", "teal", "green", "brown", "indigo", "yellow")
+    assert colours["claude#1"] == names.index("blue")
+    assert colours["claude#2"] == names.index("orange")
+    assert colours["claude#3"] == names.index("purple")
+    assert colours["codex#1"] == names.index("green")
+    assert not {"red", "pink"} & set(names)
     # The same in every column.
     for column in chart.columns:
         for seg in column.segments:
@@ -147,6 +151,27 @@ def test_colours_follow_provider_and_number_never_rank():
     later = build_chart(_cost({A1: (1,) * 7, A2: (9,) * 7}))
     assert [e.key for e in later.legend] == ["claude#2", "claude#1"]
     assert {e.key: e.colour for e in later.legend} == {"claude#1": colours["claude#1"], "claude#2": colours["claude#2"]}
+
+
+def test_an_accounts_colour_does_not_depend_on_who_is_in_the_top_four():
+    # Claude #5 and Codex #1 both start at green; Claude #5 comes first, so
+    # Codex #1 moves to the next free colour. That must hold whether or not
+    # Claude #5 is one of the four the legend names: colours are given over
+    # every account of the week. (Given over the legend's accounts only,
+    # Codex #1 was brown the week #5 made the top four and green the next.)
+    week = {A1: (50,) * 7, A2: (40,) * 7, X1: (30,) * 7, A5: (20,) * 7, A3: (1,) * 7, A4: (1,) * 7}
+    with_five = build_chart(_cost(week))
+    assert "claude#5" in [e.key for e in with_five.legend]
+    week.update({A5: (1,) * 7, A3: (20,) * 7})
+    without_five = build_chart(_cost(week))
+    assert "claude#5" not in [e.key for e in without_five.legend]
+
+    def colour(chart, key):
+        return next(e.colour for e in chart.legend if e.key == key)
+
+    names = menubar_chart.ACCOUNT_COLOURS
+    assert colour(with_five, "codex#1") == colour(without_five, "codex#1") == names.index("brown")
+    assert colour(with_five, "claude#5") == names.index("green")
 
 
 def test_two_accounts_that_would_share_a_colour_are_told_apart():
@@ -192,6 +217,21 @@ def test_names_read_as_the_rows_read_and_the_provider_only_to_tell_two_apart():
     assert chart.legend[0].name == "#2 renamed"
 
 
+def test_a_name_another_account_shares_gets_its_provider_even_outside_the_legend():
+    # Codex #2 "work" leads the legend; Claude Code's #2 "work" is merged
+    # into "other", or has no usage this week but is in the menu. Either
+    # way a bare "#2 work" would read as either, so the legend says which.
+    week = {X2: (50,) * 7, A1: (40,) * 7, A3: (30,) * 7, X1: (20,) * 7, A2: (1,) * 7, A4: (1,) * 7}
+    chart = build_chart(_cost(week))
+    assert "claude#2" not in [e.key for e in chart.legend]
+    assert chart.legend[0].name == "Codex #2 work" and chart.legend[0].head == len("Codex #2")
+    del week[A2]
+    rows = {("claude", "2"): "#2 work", ("codex", "2"): "#2 work", ("claude", "1"): "#1 personal"}
+    chart = build_chart(_cost(week), names=rows)
+    assert chart.legend[0].name == "Codex #2 work"
+    assert chart.legend[1].name == "#1 personal"  # no other account reads so
+
+
 def test_nothing_to_draw_is_no_chart():
     assert build_chart(CostSummary(today=1.0, week=2.0)) is None  # days not read
     empty = tuple(CostDay(TODAY - _dt.timedelta(days=6 - i)) for i in range(7))
@@ -219,6 +259,94 @@ def test_whole_dollars():
     assert menubar_chart.whole_dollars(0.3) == "<$1"
     assert menubar_chart.whole_dollars(2.5) == "$3"
     assert menubar_chart.whole_dollars(1204.4) == "$1,204"
+
+
+# --- where it goes ---------------------------------------------------------------------------
+
+
+def _layout(week, width=384.0, left=30.0):
+    chart = build_chart(_cost(week))
+    bands = menubar_chart.frame(12.0, 13.0)
+    return chart, bands, menubar_chart.layout_columns(chart, left=left, width=width, base=bands.base)
+
+
+def test_columns_span_the_width_and_bars_are_centred_in_them():
+    # The owner's numbers: a bar is 64% of its seventh, at most 40 points.
+    for width in (300.0, 384.0, 520.0, 700.0):
+        _chart, _bands, cols = _layout(SEVEN, width=width)
+        pitch = width / 7
+        bar = min(40.0, 0.64 * pitch)
+        for i, col in enumerate(cols):
+            assert col.width == pytest.approx(bar, abs=menubar_chart.SNAP)
+            assert col.centre == pytest.approx(30.0 + (i + 0.5) * pitch, abs=menubar_chart.SNAP)
+            assert all(p.box.x == col.x and p.box.w == col.width for p in col.segments)
+    # A wide menu: the bars stop at 40 points, still one per seventh.
+    _chart, _bands, cols = _layout(SEVEN, width=700.0)
+    assert {c.width for c in cols} == {40.0}
+
+
+def test_the_tallest_day_fills_the_bar_area_and_every_segment_shows():
+    chart, bands, cols = _layout(SEVEN)
+    tallest = max(cols, key=lambda c: c.column.total)
+    assert tallest.segments[-1].box.y == bands.base - menubar_chart.BAR_AREA
+    assert tallest.segments[-1].top and not any(p.top for p in tallest.segments[:-1])
+    for col in cols:
+        assert col.stub is None
+        assert len(col.segments) == len(col.column.segments)
+        assert all(p.box.h >= menubar_chart.MIN_SEGMENT - menubar_chart.SEGMENT_GAP for p in col.segments)
+        assert col.segments[0].box.y + col.segments[0].box.h == bands.base  # on the baseline
+        assert all(p.box.y >= bands.bars_top for p in col.segments)
+
+
+def test_a_thin_segment_is_one_point_and_gaps_only_between_two_tall_ones():
+    # Monday: #1 at 40, #2 a sliver (it ranks second on its Wednesday), #3
+    # at 20; Tuesday all slivers.
+    week = {A1: (0, 0, 0, 0, 0, 40, 0.01), A2: (0, 0, 30, 0, 0, 0.01, 0.01), A3: (0, 0, 0, 0, 0, 20, 0.01)}
+    _chart, bands, cols = _layout(week)
+    mon, tue = cols[5], cols[6]
+    # Painted heights: the sliver is a point tall, and the two tall ones
+    # beside it keep their gap-free edge against it (no stripes).
+    full = [round(b.box.h, 2) for b in mon.segments]
+    assert full[1] == menubar_chart.MIN_SEGMENT
+    assert mon.segments[0].box.y + mon.segments[0].box.h == bands.base
+    assert mon.segments[1].box.y + mon.segments[1].box.h == mon.segments[0].box.y  # no gap below the sliver
+    assert mon.segments[2].box.y + mon.segments[2].box.h == mon.segments[1].box.y  # nor above it
+    assert mon.segments[2].box.y == bands.base - menubar_chart.BAR_AREA
+    # Three slivers stack as three points, no gaps, each one showing.
+    assert [b.box.h for b in tue.segments] == [1.0, 1.0, 1.0]
+    assert tue.segments[-1].box.y == bands.base - 3.0
+    # A sliver on top of the tallest day: a point tall, and the day still
+    # exactly the bar area's height.
+    _chart, bands, cols = _layout({A1: (50,) * 7, A2: (0.01,) * 7})
+    low, top = cols[0].segments
+    assert top.box.h == 1.0 and top.box.y == bands.base - menubar_chart.BAR_AREA
+    # Two tall neighbours: one point left unpainted between them.
+    _chart, _bands, cols = _layout({A1: (10,) * 7, A2: (10,) * 7})
+    low, high = cols[0].segments
+    assert high.box.y + high.box.h + menubar_chart.SEGMENT_GAP == low.box.y
+    assert low.box.h + high.box.h + menubar_chart.SEGMENT_GAP == menubar_chart.BAR_AREA
+
+
+def test_an_empty_day_is_a_stub_on_the_baseline():
+    _chart, bands, cols = _layout({A1: (5, 0, 3, 4, 2, 6, 1)})
+    stub = cols[1].stub
+    assert cols[1].segments == () and stub is not None
+    assert (stub.y, stub.h, stub.x, stub.w) == (bands.base - 1.0, 1.0, cols[1].x, cols[1].width)
+
+
+def test_the_view_is_never_taller_than_110_points():
+    # The AppKit view's line heights (10 and 11 point system font) and the
+    # HTML drawing's.
+    for day_line, legend_line in ((11.93, 13.13), (12.0, 13.0), (13.0, 14.0)):
+        assert menubar_chart.frame(day_line, legend_line).height <= menubar_chart.MAX_HEIGHT
+    bands = menubar_chart.frame(12.0, 13.0)
+    assert bands.base - bands.bars_top == menubar_chart.BAR_AREA == 44.0
+    assert menubar_chart.MAX_HEIGHT == 110.0
+
+
+def test_legend_width_is_dots_texts_and_gaps():
+    assert menubar_chart.legend_width([]) == 0
+    assert menubar_chart.legend_width([40.0, 25.0]) == 7 + 4 + 40 + 10 + 7 + 4 + 25
 
 
 # --- the legend's width ---------------------------------------------------------------------
@@ -263,6 +391,17 @@ def test_fit_names_cuts_the_longest_first_and_keeps_numbers():
     assert fit_names(names, heads, lambda ns: False) == ["#1", "#2", "other"]
     # A cut never ends in a dot before the ellipsis.
     assert fit_names(["jordan.lee@example.org"], [0], lambda ns: len(ns[0]) <= 8) == ["jordan…"]
+
+
+def test_fit_names_cuts_a_shared_number_to_itself_last():
+    # Claude Code's #1 and Codex's #1 both cut to "#1" would read the same:
+    # the other numbers go bare first, even nearer the front.
+    names = ["#1 personal", "Claude #2 work", "#1 maya@example.com", "#3 night-shift", "other"]
+    heads = [2, 9, 2, 2, 0]
+    out = fit_names(names, heads, lambda ns: sum(map(len, ns)) <= 30)
+    assert out == ["#1 per…", "Claude #2", "#1 may…", "#3", "other"]
+    # With no room even for that, they go bare too.
+    assert fit_names(names, heads, lambda ns: False) == ["#1", "Claude #2", "#1", "#3", "other"]
 
 
 # --- the cost row in the menu -----------------------------------------------------------------
@@ -322,7 +461,8 @@ def test_the_legend_names_come_from_the_rows_for_both_providers():
     old_x2 = CostAccount("codex", "maya@northwind.example.com|", 2, "#2 maya@northwind.example.com")
     cost = _cost({old_c1: (5,) * 7, old_x2: (2,) * 7})
     menu = menubar.build_menu(_inp(_claude(_C1, _C2), _codex(_X1, _X2), cost=cost))
-    assert [e.name for e in menu.section("cost").rows[0].chart.legend] == ["#1 personal", "#2 work"]
+    # Codex's #2 is "work", and so is Claude Code's #2 in the menu above.
+    assert [e.name for e in menu.section("cost").rows[0].chart.legend] == ["#1 personal", "Codex #2 work"]
 
 
 def test_settings_offer_show_usage_chart_beside_the_display_toggles():
@@ -683,6 +823,6 @@ def test_the_renderer_reads_a_scenario_inside_the_demo_sandbox():
     data = json.loads(proc.stdout)
     chart = data["chart"]
     assert chart["caption"].endswith("7 days $180.55 (estimated)")  # qswap usage's total
-    assert [e["name"] for e in chart["legend"]] == ["#1 personal", "#2 work", "#3 night-shift", "other"]
+    assert [e["name"] for e in chart["legend"]] == ["#1 personal", "Claude #2 work", "#3 night-shift", "other"]
     assert len(chart["columns"]) == 7 and chart["columns"][-1]["today"]
     assert any(r["checked"] for r in data["rows"])  # the rows that set the menu's width
