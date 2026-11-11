@@ -398,7 +398,11 @@ you switch back or restart it.
 Sessions started after the switch use the key.
 To switch anyway:
   qswap switch 5 --log-out-sessions
-"""
+""".replace(
+    # Messages spell the path with the platform's separator (the same length,
+    # so the wrapping is the same).
+    "~/.claude/settings.json", str(Path("~", ".claude", "settings.json")),
+)
 
 PIDS = (4101, 4102, 4103, 4104, 4105, 4106)
 

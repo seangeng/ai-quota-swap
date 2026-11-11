@@ -226,13 +226,20 @@ class TestKeyHelper:
         block_real_keychain.set_password(SECURITY_SERVICE, f"account-5-{EMAIL_5}", KEY_5)
         assert _helper(["5"]) == (0, KEY_5 + "\n", "")
 
-    def test_reads_what_the_switcher_saved(self, temp_home, monkeypatch, block_real_keychain):
-        for platform, name in ((Platform.MACOS, "macos"), (Platform.LINUX, "linux")):
-            monkeypatch.setattr(key_helper, "_platform", lambda name=name: name)
-            monkeypatch.setattr(Platform, "detect", classmethod(lambda cls, p=platform: p))
-            s = _fleet(platform)
-            assert key_helper.data_dir() == s.backup_dir
-            assert _helper(["5"]) == (0, KEY_5 + "\n", "")
+    @pytest.mark.parametrize("platform, name", [
+        (Platform.MACOS, "macos"), (Platform.LINUX, "linux"),
+    ])
+    def test_reads_what_the_switcher_saved(
+        self, temp_home, monkeypatch, block_real_keychain, platform, name
+    ):
+        """One platform per home: a second platform on the same home would
+        migrate the first one's data directory (on Windows, with its log
+        file still open)."""
+        monkeypatch.setattr(key_helper, "_platform", lambda: name)
+        monkeypatch.setattr(Platform, "detect", classmethod(lambda cls: platform))
+        s = _fleet(platform)
+        assert key_helper.data_dir() == s.backup_dir
+        assert _helper(["5"]) == (0, KEY_5 + "\n", "")
 
     def test_a_data_directory_from_xdg_is_named_in_the_line(
         self, temp_home, monkeypatch, tmp_path
