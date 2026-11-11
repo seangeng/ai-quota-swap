@@ -189,3 +189,25 @@ class TestAddTokenByLabelWhileTheSettingsCannotBeRead:
         code, out, err = run(s, "add-token", NEW_KEY, "--email", s.account_email("5"), "--yes")
         assert code == 0, err
         assert s._read_account_credentials("5", s.account_email("5")) == NEW_KEY
+
+
+# == DS11: from one key to another over a login qswap does not manage =========================
+
+
+class TestKeyToKeyOverAnUnmanagedLogin:
+    def test_the_login_is_named_before_the_way_back(self, temp_home, run):
+        """#5 ci is active over new@example.com, a login qswap does not
+        manage; qswap switch 6 ended with "add that login first" and named
+        no login."""
+        from tests.test_key_switch_round3 import _login
+
+        s = _fleet()
+        _login("new@example.com")
+        s.switch_to("5", json_output=True)
+        code, out, err = run(s, "switch", "6")
+        assert code == 0, err
+        text = " ".join(out.split())
+        assert "new@example.com stays logged in underneath." in text
+        assert text.endswith("To go back, add that login first: qswap add")
+        result = s.switch_to("5", json_output=True)
+        assert "new@example.com stays logged in underneath." in " ".join(result["followup"])

@@ -905,10 +905,13 @@ class KeyActivationMixin:
             # place: no subscription is logged in underneath.
             underneath = None
         unmanaged = None
-        if underneath is None and source is None:
+        if self.login_account_number() is None:
+            # No managed login underneath, from a subscription or from another
+            # key: the live login, if any, is one qswap does not manage, and
+            # is named before the way back (decision DS11).
             identity = self._get_current_account()
             if identity is not None and identity[0]:
-                unmanaged = identity[0]  # a login qswap does not manage
+                unmanaged = identity[0]
         with FileLock(self.lock_file):
             shared = self.isolate_run_profiles()
             if shared is None or shared:
