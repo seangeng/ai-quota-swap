@@ -130,6 +130,18 @@ class LedgerStore:
             self._open()
             self.rebuilt = True
 
+    @classmethod
+    def read_only(cls, path: Path, *, timeout: float = 1.0) -> "LedgerStore":
+        """The ledger as it is, for a reader that must never write or wait
+        long: opened in SQLite's read-only mode, so a running scan is never
+        blocked and a missing file is not created; no schema check, no
+        migration. Raises ``sqlite3.Error`` when it cannot be opened."""
+        self = cls.__new__(cls)
+        self.path = Path(path)
+        self.rebuilt = False
+        self.conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=timeout)
+        return self
+
     def _open(self) -> None:
         self.conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL")
