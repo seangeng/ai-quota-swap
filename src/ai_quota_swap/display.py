@@ -1427,23 +1427,29 @@ def key_sent_elsewhere(path: str, host: str, target: str) -> str:
 BROKEN_LINE_RUNNING = "running ones keep the key they have until the settings change"
 
 
-def key_helper_problem(number: str, why: str, fix_command: str) -> list[str]:
+def key_helper_problem(
+    number: str, why: str, fix_command: str, *, key: str | None = None,
+) -> list[str]:
     """The lines every surface shows for a helper line naming an account that
     does not exist or is not an API-key account (``why``: ``missing`` or
-    ``not-api-key``)."""
+    ``not-api-key``). ``key``: the account's name when it exists (``#7
+    work``, decision DS7); else its number."""
+    key = key or f"#{number}"
     what = "does not exist" if why == "missing" else "is not an API-key account"
     return wrap(
-        f"The Claude Code settings make #{number} the active API key, but #{number} "
+        f"The Claude Code settings make {key} the active API key, but {key} "
         f"{what}: new Claude Code sessions fail to get a key, and {BROKEN_LINE_RUNNING}. "
         f"Remove the line: {fix_command}"
     )
 
 
-def key_helper_moved(number: str, fix_command: str) -> list[str]:
+def key_helper_moved(number: str, fix_command: str, *, key: str | None = None) -> list[str]:
     """qswap's key line runs a qswap that is no longer there (a reinstall
-    moved it), so sessions on the key cannot get it."""
+    moved it), so sessions on the key cannot get it. ``key``: the account's
+    name (``#5 ci``, decision DS7); else its number."""
+    key = key or f"#{number}"
     return wrap(
-        f"The key line for #{number} in the Claude Code settings runs a qswap that "
+        f"The key line for {key} in the Claude Code settings runs a qswap that "
         f"is no longer there: new Claude Code sessions fail to get the key, and "
         f"{BROKEN_LINE_RUNNING}. Point it at this qswap: {fix_command}"
     )

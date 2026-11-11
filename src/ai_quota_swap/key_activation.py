@@ -1266,13 +1266,14 @@ class KeyActivationMixin:
                 # gone. The same line, pointing at this qswap.
                 claude_settings.install(f.key, data_dir=self._data_dir)
                 done.append(
-                    f"Updated the key line for #{f.key} to run qswap from its new place."
+                    f"Updated the key line for {self.label(f.key, long=False)} to run "
+                    "qswap from its new place."
                 )
             if f.problem is not None:
                 self._leave_key(tombstone=False)
                 done.append(
-                    f"Removed the key line for #{f.problem['number']} from Claude Code's "
-                    "settings."
+                    f"Removed the key line for {self.label(f.problem['number'], long=False)} "
+                    "from Claude Code's settings."
                 )
             elif f.lost is not None:
                 with FileLock(self.lock_file):
@@ -1282,8 +1283,9 @@ class KeyActivationMixin:
                     if self.key_findings().lost == f.lost:
                         self._write_key_state(self._left_record(self._key_state(), None))
                         done.append(
-                            f"Cleared the record of #{f.lost} as the active API key: its "
-                            "key line is no longer in Claude Code's settings."
+                            f"Cleared the record of {self.label(f.lost, long=False)} as "
+                            "the active API key: its key line is no longer in Claude "
+                            "Code's settings."
                         )
             if f.stale_active is not None:
                 with FileLock(self.lock_file):

@@ -678,3 +678,87 @@ class TestALostRecord:
         assert code == 0, err
         assert s.key_notes() == []
         assert not any("no longer in" in c.summary for c in _doctor_checks())
+
+
+# == DS7, points 3 and 4: one name per account ===================================
+
+
+class TestOneNamePerAccount:
+    """The repair lines, doctor's lines, the note for a line that runs a
+    qswap no longer there, and qswap budget and qswap credit name an
+    account as switcher.label does (#5 ci, #1 personal)."""
+
+    def test_the_moved_line_and_its_repair(self, temp_home, monkeypatch):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        monkeypatch.setattr(claude_settings, "command_missing", lambda command: True)
+        assert "The key line for #5 ci in the Claude Code settings runs a qswap" in _notes(s)
+        done = s.reconcile_key_helper()
+        assert "Updated the key line for #5 ci to run qswap from its new place." in done
+
+    def test_a_line_for_a_subscription_and_its_repair(self, temp_home):
+        s = _fleet()
+        _write_line(temp_home, 7)
+        notes = _notes(s)
+        assert "make #7 work the active API key, but #7 work is not an API-key account" in notes
+        done = s.reconcile_key_helper()
+        assert "Removed the key line for #7 work from Claude Code's settings." in done
+
+    def test_a_line_for_an_account_that_does_not_exist_keeps_its_number(self, temp_home):
+        s = _fleet()
+        _write_line(temp_home, 9)
+        assert "make #9 the active API key, but #9 does not exist" in _notes(s)
+        assert "Removed the key line for #9 from Claude Code's settings." in (
+            s.reconcile_key_helper()
+        )
+
+    def test_the_cleared_record(self, temp_home):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        claude_settings.remove(path=_settings(temp_home), remove_file_if_empty=True)
+        assert any(
+            line.startswith("Cleared the record of #5 ci as the active API key")
+            for line in s.reconcile_key_helper()
+        )
+
+    def test_doctors_lines(self, temp_home, monkeypatch):
+        from ai_quota_swap import doctor
+
+        s = _fleet()
+        _write_line(temp_home, 7)
+        check = {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
+        assert "makes #7 work the active API key, but #7 work is not an API-key" in (
+            " ".join(check.summary.split())
+        )
+        s.switch_to("5", json_output=True)
+        monkeypatch.setattr(doctor, "_key_line_answers", lambda command: "fails (exit 1)")
+        check = {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
+        assert "makes #5 ci the active API key, but its line fails" in check.summary
+
+        def broken(command):
+            raise OSError("no")
+
+        monkeypatch.setattr(doctor, "_key_line_answers", broken)
+        check = {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
+        assert "makes #5 ci the active API key; qswap could not check" in check.summary
+        monkeypatch.setattr(claude_settings, "command_missing", lambda command: True)
+        check = {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
+        assert "makes #5 ci the active API key with a qswap that is no longer there" in (
+            check.summary
+        )
+
+    def test_budget_and_credit_name_the_account_by_its_alias(self, temp_home, capsys, run):
+        """api_cli's own messages (_label). Setting a budget or a credit on a
+        subscription is refused by api_spend, the other track's file."""
+        s = _fleet()
+        code, out, err = run(s, "budget", "5", "20")
+        assert code == 0, err
+        assert "Set a monthly budget of $20 for #5 ci." in out
+        code, out, err = run(s, "budget", "5", "off")
+        assert "Removed the budget for #5 ci." in out
+        code, out, err = run(s, "budget", "1")
+        assert code == 1
+        assert "#1 personal is a subscription account" in " ".join(err.split())
+        code, out, err = run(s, "credit", "1")
+        assert code == 1
+        assert "#1 personal is a subscription account" in " ".join(err.split())

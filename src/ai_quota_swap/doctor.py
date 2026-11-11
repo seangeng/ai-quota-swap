@@ -832,13 +832,15 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
         ))
     elif state.kind == claude_settings.OURS:
         row = _accounts(registry).get(state.number)
+        # One name per account (decision DS7): its label where it exists.
+        named = label(state.number) if isinstance(row, dict) else f"#{state.number}"
         if findings.problem is not None:
             what = "does not exist" if not isinstance(row, dict) else (
                 "is not an API-key account"
             )
             checks.append(Check(
                 "claude.key_helper", "claude", FAIL,
-                f"{where} makes #{state.number} the active API key, but #{state.number} "
+                f"{where} makes {named} the active API key, but {named} "
                 f"{what}; new Claude Code sessions fail to get a key, and "
                 f"{display.BROKEN_LINE_RUNNING}",
                 fix=fix,
@@ -846,7 +848,7 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
         elif state.stale_command:
             checks.append(Check(
                 "claude.key_helper", "claude", FAIL,
-                f"{where} makes #{state.number} the active API key with a qswap that "
+                f"{where} makes {named} the active API key with a qswap that "
                 "is no longer there; new Claude Code sessions fail to get the key, "
                 f"and {display.BROKEN_LINE_RUNNING}",
                 fix=f"qswap switch {state.number}",
@@ -1071,11 +1073,13 @@ def _key_line_check(p: Probes, f: _Facts, state, record: dict, where: str) -> Ch
     line again for this install. A check that could not be made warns."""
     from ai_quota_swap import claude_settings
 
+    email = record.get("email") if isinstance(record.get("email"), str) else ""
+    named = _label(state.number, record, email)  # one name per account (DS7)
     why, err = _try(p.key_line_answers, state.command)
     if err is not None:
         return Check(
             "claude.key_helper", "claude", WARN,
-            f"{where} makes #{state.number} the active API key; qswap could not "
+            f"{where} makes {named} the active API key; qswap could not "
             f"check that its line answers ({_reason(err)})",
             fix=f"qswap key-helper {state.number} --check",
         )
@@ -1089,16 +1093,15 @@ def _key_line_check(p: Probes, f: _Facts, state, record: dict, where: str) -> Ch
             )
         # The helper names its own fix when it has one ("save one: qswap
         # add-token KEY --slot 5"); else the switch writes the line again.
-        named = re.search(r": (qswap [^;()]+)\)$", why)
+        step = re.search(r": (qswap [^;()]+)\)$", why)
         return Check(
             "claude.key_helper", "claude", FAIL,
-            f"{where} makes #{state.number} the active API key, but its line {why}{then}",
-            fix=named.group(1) if named else f"qswap switch {state.number}",
+            f"{where} makes {named} the active API key, but its line {why}{then}",
+            fix=step.group(1) if step else f"qswap switch {state.number}",
         )
-    email = record.get("email") if isinstance(record.get("email"), str) else ""
     return Check(
         "claude.key_helper", "claude", PASS,
-        f"active API key: {_label(state.number, record, email)}, through "
+        f"active API key: {named}, through "
         f"qswap's key line in {where}, which runs "
         f"{_line_program(state.command, f.home)}",
     )

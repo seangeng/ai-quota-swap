@@ -1107,7 +1107,9 @@ class TestWhoIsActive:
         assert s.current_account_number() == "1"
         assert s.helper_problem() == {"number": number, "why": why}
         notes = " ".join(s.key_helper_notes())
-        assert f"make #{number} the active API key" in notes
+        # An account that exists is named as everywhere else (DS7, round 3).
+        named = "#7 work" if number == "7" else f"#{number}"
+        assert f"make {named} the active API key" in notes
         assert "qswap switch 1" in notes
 
     def test_list_text(self, temp_home, capsys):

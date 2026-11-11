@@ -81,9 +81,21 @@ def _api_key_infos(switcher) -> dict[str, tuple]:
 
 
 def _label(num: str, email: str) -> str:
+    """The account as ``switcher.label`` names it (``#5 ci``, ``#1
+    personal``; decision DS7): its alias from the account list, else its
+    email."""
     from ai_quota_swap.labels import account_label
+    from ai_quota_swap.paths import get_backup_root
 
-    return account_label(num, email=email)
+    alias = None
+    try:
+        data = json.loads((get_backup_root() / "sequence.json").read_text(encoding="utf-8"))
+        row = (data.get("accounts") or {}).get(str(num))
+        alias = row.get("alias") if isinstance(row, dict) else None
+    except (OSError, ValueError, AttributeError):
+        pass
+    return account_label(num, alias=alias if isinstance(alias, str) and alias else None,
+                         email=email)
 
 
 # -- qswap api ------------------------------------------------------------------

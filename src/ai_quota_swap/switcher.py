@@ -6984,7 +6984,11 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if f.problem is not None:
             out.append(note(
                 "line-no-key", f.problem["number"],
-                display.key_helper_problem(f.problem["number"], f.problem["why"], fix), fix,
+                display.key_helper_problem(
+                    f.problem["number"], f.problem["why"], fix,
+                    key=self.label(f.problem["number"], long=False)
+                    if f.problem["why"] != "missing" else None,
+                ), fix,
             ))
         if f.key is not None:
             label = self.label(f.key, long=False)
@@ -6996,7 +7000,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 ))
             if f.state.stale_command:
                 out.append(note(
-                    "line-moved", f.key, display.key_helper_moved(f.key, f"qswap switch {f.key}"),
+                    "line-moved", f.key,
+                    display.key_helper_moved(f.key, f"qswap switch {f.key}", key=label),
                     f"qswap switch {f.key}",
                 ))
             if f.came_back:
