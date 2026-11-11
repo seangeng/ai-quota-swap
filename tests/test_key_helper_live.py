@@ -883,6 +883,92 @@ class TestSwitching:
         assert not _settings(temp_home).exists()
         assert h.switcher.current_account_number() == "1"
 
+    @staticmethod
+    def _state(s, home):
+        from ai_quota_swap.ledger.activations import ActivationLog
+
+        settings = _settings(home)
+        return {
+            "helper": s.helper_account(),
+            "current": s.current_account_number(),
+            "login": s.login_account_number(),
+            "settings": settings.read_text(encoding="utf-8") if settings.exists() else None,
+            "key_state": s.key_state_path.exists(),
+            "entered_by": s.key_entered_by(),
+            "active_number": s._get_sequence_data().get("activeAccountNumber"),
+            "last_activation": [
+                (a.number, a.how) for a in ActivationLog.load(s.backup_dir).activations
+            ][-1],
+        }
+
+    def test_a_failed_switch_away_from_a_key_moves_no_session(
+        self, temp_home, block_real_keychain, run
+    ):
+        s = _fleet()
+        _activate(s)
+        (s.configs_dir / f".claude-config-7-{SAM}.json").unlink()
+        before = self._state(s, temp_home)
+        code, out, err = run(s, "switch", "7")
+        assert code == 1
+        assert "has no stored config backup" in err
+        assert self._state(s, temp_home) == before
+
+    def test_a_failed_switch_keeps_the_run_profiles_copies(self, temp_home, block_real_keychain):
+        s = _fleet()
+        d = _profile(s)
+        _activate(s)
+        assert not (d / "settings.json").is_symlink()
+        (s.configs_dir / f".claude-config-7-{SAM}.json").unlink()
+        before = self._state(s, temp_home)
+        with pytest.raises(SwitchError, match="no stored config backup"):
+            s.switch_to("7", json_output=True)
+        assert not (d / "settings.json").is_symlink()
+        assert self._state(s, temp_home) == before
+
+    def test_a_failed_log_out_sessions_onto_another_key_moves_no_session(
+        self, temp_home, block_real_keychain
+    ):
+        s = _fleet()
+        _activate(s)
+        (s.configs_dir / f".claude-config-6-{EMAIL_6}.json").unlink()
+        before = self._state(s, temp_home)
+        with pytest.raises(SwitchError):
+            s.switch_to("6", json_output=True, log_out_sessions=True)
+        assert self._state(s, temp_home) == before
+
+    def test_a_failed_rotation_from_a_key_moves_no_session(
+        self, temp_home, block_real_keychain, monkeypatch
+    ):
+        s = _fleet()
+        _activate(s)
+        before = self._state(s, temp_home)
+
+        def boom(*a, **k):
+            raise SwitchError("Switch failed and was rolled back: disk full")
+
+        monkeypatch.setattr(s, "_perform_switch", boom)
+        with pytest.raises(SwitchError, match="disk full"):
+            s._leave_key_to("7", emit_output=False)
+        assert self._state(s, temp_home) == before
+
+    def test_when_the_line_cannot_be_put_back_the_error_says_so(
+        self, temp_home, block_real_keychain, monkeypatch
+    ):
+        s = _fleet()
+        _activate(s)
+        (s.configs_dir / f".claude-config-7-{SAM}.json").unlink()
+
+        def fail(*a, **k):
+            raise claude_settings.SettingsError("could not be written (EIO)", kind="write")
+
+        monkeypatch.setattr(claude_settings, "install", fail)
+        with pytest.raises(SwitchError) as caught:
+            s.switch_to("7", json_output=True)
+        text = " ".join(str(caught.value).split())
+        assert "no stored config backup" in text
+        assert "#5 ci was left" in text and "running sessions are on #1 personal" in text
+        assert text.endswith("To go back to the key: qswap switch 5")
+
     def test_key_to_key_replaces_the_line(self, temp_home, block_real_keychain, run):
         s = _fleet()
         _activate(s)

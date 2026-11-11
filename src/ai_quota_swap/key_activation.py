@@ -457,6 +457,34 @@ class KeyActivationMixin:
             self._logger.info("Removed the key helper line from Claude Code's settings")
         return removed
 
+    def _restore_key(self, number: str, state: dict, cause: BaseException) -> None:
+        """Put the helper line for ``number`` back after the switch that
+        followed its removal failed, so the failed switch moves no session.
+        ``state`` is key_helper.json as it stood before. Reads no Keychain
+        (a locked one may be the cause). Raises :class:`SwitchError` naming
+        both failures when the line cannot be put back."""
+        try:
+            with FileLock(self.lock_file):
+                shared = self.isolate_run_profiles()
+                if shared is None or shared:
+                    raise OSError(self._profiles_unisolated_reason(shared))
+                try:
+                    claude_settings.install(number)
+                except Exception:
+                    self.restore_run_profiles(force=True)
+                    raise
+                if state:
+                    self._write_key_state(state)
+            self._logger.info(f"Put the key line for account {number} back after: {cause}")
+        except Exception as e:
+            under = self.login_account_number()
+            where = self.label(under, long=False) if under else "the live login"
+            raise SwitchError(
+                f"{cause} {self.label(number, long=False)} was left, and its key line "
+                f"could not be put back ({e}): running sessions are on {where}. To go "
+                f"back to the key: qswap switch {number}"
+            ) from cause
+
     def leave_key_for_unmanaged_login(self) -> dict | None:
         """Leave the active key when the login underneath is one qswap does
         not manage: remove the line only, so running sessions return to that

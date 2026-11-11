@@ -7985,10 +7985,12 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 target_account, entered_by=entered_by, emit_output=not json_output
             )
             return self._switch_result_from_op(op, "direct", repairs) if json_output else None
+        left_key: tuple[str, dict] | None = None
         if helper is not None:
             if target_is_key:
                 # --log-out-sessions onto a key: the saved-key path, with the
                 # line out of the way first so sessions do not follow it.
+                left_key = (helper, self._key_state())
                 self._leave_key()
             else:
                 op = self._leave_key_to(target_account, force=force, emit_output=not json_output)
@@ -8036,12 +8038,19 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                         message=f"Already on Account-{target_account} ({email})",
                     )
 
-        op = self._perform_switch(
-            target_account,
-            emit_output=not json_output,
-            force_activate=force,
-            provenance=provenance,
-        )
+        try:
+            op = self._perform_switch(
+                target_account,
+                emit_output=not json_output,
+                force_activate=force,
+                provenance=provenance,
+            )
+        except Exception as e:
+            # The line came out for this switch: a switch that failed moves
+            # no session, so it goes back in.
+            if left_key is not None:
+                self._restore_key(*left_key, e)
+            raise
         result = self._switch_result_from_op(op, "direct", repairs) if json_output else None
         # A forced self-activation really rewrote the live credentials from the
         # stored backup — "already-active" would misdescribe that mutation.
@@ -8063,6 +8072,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         underneath unless it is the target (or ``force`` rewrites its login)."""
         key = self.helper_account()
         key_email = self.account_email(key) if key else ""
+        key_state = self._key_state()
         self._leave_key()
         underneath = self.login_account_number()
         from_ref = account_ref(int(key), key_email) if key else None
@@ -8087,13 +8097,19 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             op = self._op_result(from_ref, account_ref(int(target_account), email), [], followup)
             op["how"] = display.HOW_LOGIN
             return op
-        op = self._perform_switch(
-            target_account,
-            emit_output=emit_output,
-            force_activate=force,
-            shown_from=self.label(key, long=False) if key else None,
-            followup_override=display.key_leave_followup(target_label, login_switch=True),
-        )
+        try:
+            op = self._perform_switch(
+                target_account,
+                emit_output=emit_output,
+                force_activate=force,
+                shown_from=self.label(key, long=False) if key else None,
+                followup_override=display.key_leave_followup(target_label, login_switch=True),
+            )
+        except Exception as e:
+            # A switch that failed moves no session: the line goes back in.
+            if key:
+                self._restore_key(key, key_state, e)
+            raise
         if from_ref is not None:
             op["from"] = from_ref
         return op
