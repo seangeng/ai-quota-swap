@@ -38,7 +38,7 @@ import threading
 import time
 from collections import Counter, defaultdict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ai_quota_swap import admin_api
@@ -424,11 +424,14 @@ def figure_fresh(reading: object, now: float) -> bool:
 
 
 def machine_only(reading: object) -> bool:
-    """Whether the reading is for a key linked to an organization but its
-    figure is not Anthropic's: this machine's ledger (or none), shown but
-    never held against the key's limit."""
+    """Whether the reading is for a key linked to an organization, or one
+    whose link could not be decided (an organization's keys could not be
+    listed: ``link_unknown``), but its figure is not Anthropic's: this
+    machine's ledger (or none), shown but never held against the key's
+    limit."""
     return (
-        isinstance(reading, dict) and bool(reading.get("org"))
+        isinstance(reading, dict)
+        and (bool(reading.get("org")) or bool(reading.get("link_unknown")))
         and reading.get("source") != SOURCE_ADMIN
     )
 
@@ -569,6 +572,9 @@ class Link:
 class LinkResult:
     links: dict[str, Link]
     notes: dict[str, str]
+    #: Accounts whose link this pass could not decide: an organization's
+    #: listing failed or was never read, so the key may be one of its keys.
+    undecided: set[str] = field(default_factory=set)
 
 
 def resolve_links(
@@ -643,9 +649,16 @@ def resolve_links(
     )
     errors = [l.error for l in listings.values() if l.error is not None]
     listed_any = any(l.keys is not None for l in listings.values())
+    unlisted = any(l.keys is None for l in listings.values())
+    undecided: set[str] = set()
     for num in targets:
         found = matches[num]
         links.pop(num, None)
+        if not found and unlisted:
+            # An organization whose keys could not be listed may hold it:
+            # its link is not known, so this machine's figure is not enough
+            # to hold it to a limit (decision EM2).
+            undecided.add(num)
         if not found:
             if errors and not listed_any:
                 notes[num] = errors[0].note
@@ -662,7 +675,7 @@ def resolve_links(
                 notes[num] = "another managed account matches the same API key; not linked"
             else:
                 links[num] = Link(org_name, item["id"], item.get("hint") or "", item.get("name") or "")
-    return LinkResult(links, notes)
+    return LinkResult(links, notes, undecided)
 
 
 def persist_links(switcher, desired: dict[str, Link | None]) -> bool:
@@ -860,10 +873,11 @@ def readings(
     keys = {str(num): (info[5] or "").strip() for num, info in infos.items()}
     links: dict[str, Link] = {}
     notes: dict[str, str] = {}
+    undecided: set[str] = set()
     cache = AdminCache(root)
     if orgs:
         result = resolve_links(orgs, keys, records, now=now, network=network, cache=cache)
-        links, notes = result.links, result.notes
+        links, notes, undecided = result.links, result.notes, result.undecided
         persistent = {o.name for o in orgs if o.persistent}
         desired: dict[str, Link | None] = {}
         for num in keys:
@@ -962,6 +976,10 @@ def readings(
             # Linked, but Anthropic's figure is missing or past STALE_MAX_S:
             # this machine's figure is shown, never held to the limit (EM2).
             reading["org"] = link.org
+        elif link is None and num in undecided:
+            # Maybe linked: an organization's keys could not be listed. The
+            # same: shown, never held to the limit (EM2).
+            reading["link_unknown"] = True
         if credit is not None:
             reading["credit"] = credit_reading(
                 credit, credit_used, reading.get("source"), now,

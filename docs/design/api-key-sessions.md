@@ -340,7 +340,9 @@ What the code does where this part leaves room, or where it had to differ:
   that finds session files it cannot read, covers nothing: until one covers the period
   (`spendScan` in the state file: when, from when, whether it did) the ledger's figure is
   `spend-unknown`. For a key linked to an organization only Anthropic's figure counts: the
-  ledger's is shown (`this machine only`) but never fresh, and with each of those scans the
+  ledger's is shown (`this machine only`) but never fresh. So for a key whose link this pass
+  could not decide (an active organization's keys could not be listed: `link_unknown` on the
+  reading); a listing that answers without the key leaves the ledger's figure. With each of those scans the
   engine reads Anthropic's figure again, accepting an answer at most a minute old
   (`ADMIN_REFRESH_S`) whatever `admin_api.CACHE_TTL_S` says for the other readers; the way back needs 5 points of room in every window
   (`RETURN_ROOM_PCT`). The engine never enters a key while a subscription in the rotation

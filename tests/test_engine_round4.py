@@ -421,3 +421,83 @@ class TestActiveModeSpendsRatherThanSwitchingAway:
         usage["1"] = _rusage(h5=10, d7=98.0, reset_in=10 * 3600, grants=[_week()])
         outcome, _ = _tick_resets(h, usage)
         assert outcome is TickOutcome.SWITCHED
+
+
+# == EM2: a key whose link to an organization is not known ===================================
+
+
+from tests.admin_fakes import (  # noqa: E402
+    ADMIN_KEY,
+    FakeAnthropic,
+    error_response,
+    json_response,
+    key_item,
+    keys_page,
+)
+from tests.test_engine_round3 import ORG_NOW, _ledger_spend, _link  # noqa: E402
+
+
+@pytest.fixture
+def admin(monkeypatch):
+    """Anthropic's Admin API, faked: it lists ``listed`` (None: it answers
+    500 to every request), and the usage report always fails."""
+    from ai_quota_swap import admin_api
+
+    admin_api._memory.clear()
+    monkeypatch.delenv("ANTHROPIC_ADMIN_KEY", raising=False)
+    state = {"listed": None}
+
+    def listing(query):
+        if state["listed"] is None:
+            return error_response(500, "api_error")
+        return json_response(keys_page(state["listed"]))
+
+    fake = FakeAnthropic({
+        "/v1/organizations/api_keys": listing,
+        "/v1/organizations/usage_report/messages": lambda q: error_response(500, "api_error"),
+    })
+    monkeypatch.setattr(admin_api, "send", fake)
+    fake.state = state
+    return fake
+
+
+def _key2_reading(h, env: dict) -> dict:
+    infos = {str(i[0]): i for i in h.switcher._build_accounts_info() if str(i[0]) == "2"}
+    return api_spend.readings(h.switcher, infos, fetch=None, now=ORG_NOW, env=env)["2"]
+
+
+class TestALinkThatCannotBeDecided:
+    """The re-check's EM2 gap: with an organization active (ANTHROPIC_ADMIN_KEY,
+    or a registered one never listed) and the Admin API down, the key's link
+    is not known, and this machine's ledger figure was held to the limit."""
+
+    @pytest.mark.parametrize("how", ["env", "registered"])
+    def test_this_machines_figure_does_not_hold_it(self, temp_home, admin, how):
+        h = _fleet(temp_home)
+        api_spend.set_budget(h.switcher, "2", 20)
+        _ledger_spend(h, 4.0, scanned_at=ORG_NOW)
+        env = {"ANTHROPIC_ADMIN_KEY": ADMIN_KEY} if how == "env" else {}
+        if how == "registered":
+            _link(h)
+        reading = _key2_reading(h, env)
+        assert reading["source"] == api_spend.SOURCE_LEDGER
+        assert api_spend.machine_only(reading)
+        assert not api_spend.figure_fresh(reading, ORG_NOW)
+        assert api_spend.engine_limit_reason(reading, now=ORG_NOW, limited=True) == (
+            api_spend.SPEND_UNKNOWN
+        )
+        text = api_spend.spend_text(reading, now=ORG_NOW)
+        assert text.endswith("· this machine only · limit not enforced: no spend figure"), text
+        h.clock.now = ORG_NOW
+        assert _tick(h, EXHAUSTED, {"2": reading}) is TickOutcome.BLOCKED
+        assert h.switcher.current_account_number() == "1"
+
+    def test_a_listing_without_the_key_keeps_the_ledger_figure(self, temp_home, admin):
+        h = _fleet(temp_home)
+        api_spend.set_budget(h.switcher, "2", 20)
+        _ledger_spend(h, 4.0, scanned_at=ORG_NOW)
+        _link(h)
+        admin.state["listed"] = [key_item("apikey_O", "other", "sk-ant-api03-" + "zz" * 20)]
+        reading = _key2_reading(h, {})
+        assert not api_spend.machine_only(reading)
+        assert api_spend.figure_fresh(reading, ORG_NOW)
