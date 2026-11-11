@@ -37,6 +37,7 @@ brake (``key-left``), so that it checks something on every timeline.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +56,7 @@ from ai_quota_swap.autoswitch import (
     SwitchEvent,
     TickOutcome,
     kept_resets_now,
+    preview_reset_plan,
 )
 from ai_quota_swap.ledger import usage as ledger_usage
 from ai_quota_swap.ledger.store import DB_FILENAME, LAST_SCAN_META, LedgerStore
@@ -625,6 +627,112 @@ class TestT1TheNormalDay:
             _t1_rest_of_the_day(run, 11, 300)
         assert not run.entries_now()
         assert len(run.ticks) == 300
+
+
+# == T1 with resets.beforeSwitch ==============================================================
+
+
+def _t1_day(home: Path, monkeypatch, *, before_switch: bool, ticks: int = 300) -> dict:
+    """T1's day for ``ticks`` checks in a home of its own: the claims (by
+    tick), the moves, the checks held for the active account's own reset, and
+    what the planner with resets.beforeSwitch off would spend at each check's
+    reading (taken after the work and before the engine reads it)."""
+    home.mkdir()
+    (home / ".claude").mkdir()
+    env = {"HOME": str(home), "USERPROFILE": str(home)}
+    with patch("pathlib.Path.home", return_value=home), patch.dict(os.environ, env):
+        h, world = _t1_world(home, monkeypatch)
+        if before_switch:
+            set_setting(h.switcher.backup_dir, "resets.beforeSwitch", "true")
+        off = replace(h.switcher.reset_settings(), before_switch=False)
+        planned: dict[int, tuple[str, str] | None] = {}
+
+        def plan_with_it_off(w, t, active):
+            subs = {n: w.sub_entry(n) for n in w.subs}
+            plan = preview_reset_plan(h.switcher, h.settings, subs, now=w.now,
+                                      reset_settings=off)
+            planned[t] = None if plan is None else (plan.account, plan.grant_id)
+
+        world.hooks.append(plan_with_it_off)
+        with Run(h, world) as run:
+            for _ in range(ticks):
+                run.step()
+    return {
+        "claims": [(round((now - T0) / MINUTE), num, gid) for now, num, gid in world.claims],
+        "moves": [(m.t, m.frm, m.to) for m in run.moves],
+        "held": [t.t for t in run.ticks if t.held("reset-ahead")],
+        "planned": planned,
+        "keys": run.entries_now(),
+    }
+
+
+class TestT1WithResetsBeforeSwitch:
+    def test_it_stays_past_the_line_spends_the_reset_at_100_then_the_rotation(
+        self, temp_home, monkeypatch
+    ):
+        """T1's morning with resets.beforeSwitch on: #1 stays past its line
+        (98) while its 7d window climbs, auto mode spends its weekly reset
+        when 7d reaches resets.threshold (100), and the rotation then runs as
+        on any day: #1, #2, #3 and #4 each to its 5h line."""
+        h, world = _t1_world(temp_home, monkeypatch)
+        set_setting(h.switcher.backup_dir, "resets.beforeSwitch", "true")
+        seen: dict[int, tuple[str | None, float, list[str]]] = {}
+
+        def before_the_check(w, t, active):
+            seen[t] = (active, round(w.subs["1"].d7, 3), w.takers())
+
+        world.hooks.append(before_the_check)
+        with Run(h, world) as run:
+            for _ in range(19):
+                tick = run.step()
+                assert tick.active == "1" and not tick.switches, run.trace()
+                assert world.subs["1"].d7 < LINE
+            held = []
+            while not world.claims:
+                tick = run.step()
+                assert tick.t < 80, f"no reset by t{tick.t}\n{run.trace()}"
+                assert tick.active == "1" and not tick.switches, run.trace()
+                if not world.claims:
+                    assert [e.reason for e in tick.holds] == ["reset-ahead"], tick.holds
+                    held.append((tick.t, seen[tick.t][1]))
+            # Held from the first check at the line to the last under 100.
+            assert held[0] == (19, LINE) and held[-1] == (58, 99.95) and len(held) == 40
+            first = next(e for e in run.ticks[19].holds if e.reason == "reset-ahead")
+            assert first.human() == (
+                "No switch yet: auto mode spends #1 maya@example.com's own weekly reset "
+                "when 7d reaches 100%, rather than switching away (resets.beforeSwitch)"
+            )
+            # Spent at resets.threshold, while the others still had room.
+            assert world.claims == [(tick.now, "1", "g-maya")] and tick.t == 59
+            assert seen[tick.t] == ("1", 100.0, ["2", "3", "4"]), seen[tick.t]
+            assert world.subs["1"].d7 == 0.0 and not tick.switches
+            _t1_rest_of_the_day(run, tick.t + 1, 300)
+        assert not run.entries_now()
+        assert len(run.ticks) == 300
+
+    def test_off_and_on_over_the_same_300_checks(self, tmp_path, monkeypatch):
+        """The same day twice. With the setting on the engine spends no reset
+        the planner would keep with it off at that check's reading, and
+        makes no more switches."""
+        off = _t1_day(tmp_path / "off", monkeypatch, before_switch=False)
+        on = _t1_day(tmp_path / "on", monkeypatch, before_switch=True)
+
+        assert not off["held"] and on["held"] == list(range(19, 59))
+        # The same reset, spent at resets.threshold either way: with it off
+        # when the rotation comes back to #1 with nowhere to move, with it
+        # on before #1 ever leaves.
+        assert off["claims"] == [(248, "1", "g-maya")]
+        assert on["claims"] == [(59, "1", "g-maya")]
+        # Each one where the planner with the setting off spends it, at the
+        # reading of that check: the setting moves no reset earlier.
+        for day in (off, on):
+            for t, num, gid in day["claims"]:
+                assert day["planned"][t] == (num, gid), (t, num, gid, day["planned"][t])
+        # Fewer switches, and no API key either way.
+        assert on["moves"] == [(61, "1", "2"), (123, "2", "3"), (185, "3", "4"), (247, "4", "1")]
+        assert len(off["moves"]) == 8 and off["moves"][0] == (19, "1", "2")
+        assert len(on["moves"]) <= len(off["moves"])
+        assert not on["keys"] and not off["keys"]
 
 
 # == T2: all four out =========================================================================
