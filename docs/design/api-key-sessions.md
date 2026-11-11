@@ -185,7 +185,8 @@ return to it when the key is left.
   - Any key is left at once at its budget, with its credit spent or expired, or when its spend
     has not been measured for 20 minutes: for the subscription with the most room, else the
     account underneath. Never for another key, and never by a login switch over a login
-    qswap does not manage.
+    qswap does not manage. Nor on a later check: until a subscription has room again the
+    engine enters no other key (`key-left`).
 - **The fallback.** Where the helper cannot be installed (another helper is set, the file
   cannot be parsed or written, a variable in its `env` block outranks the line), activation
   is refused with the reason and the fix. `--log-out-sessions` then takes the part 1 path:
@@ -348,7 +349,11 @@ What the code does where this part leaves room, or where it had to differ:
   strategy, and the switch line says so (`taken over its switch line (5h 95%) before an API
   key`). While another subscription's usage is unreadable, key entry waits at most one
   cooldown from the first check that wanted the key (`keyWanted`;
-  `usage-unreadable-hold`, said once). A key judged at its budget or credit stays at it in the engine's
+  `usage-unreadable-hold`, said once). A key left at its limit (`keyLeft` in the state file:
+  account, reason, when) means no other key until a check reads a subscription in the
+  rotation with room (`key-left`, said once); the key left may come back once its own figure
+  allows it, as a fresh figure after `spend-unknown` does. Among keys that qualify the engine
+  takes the first in account order. A key judged at its budget or credit stays at it in the engine's
   state file, one latch per kind (`limitLatch[N]` holds `budget` and `credit` apart): the
   budget latch until the month rolls over or `qswap budget` sets it again, the credit latch
   until `qswap credit` records another; each command clears only its own, and the key stays

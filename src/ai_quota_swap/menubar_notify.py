@@ -37,7 +37,7 @@ ENGINE_ERROR_REPEAT_S = 3600.0
 _KEY_HOLDS = (
     "api-key-sessions", "key-helper-unavailable", "key-no-limit", "spend-unknown",
     "key-unusable", "stuck-on-key", "settings-unreadable", "limit-latched",
-    "usage-unreadable-hold",
+    "usage-unreadable-hold", "key-left",
 )
 
 

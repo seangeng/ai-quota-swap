@@ -528,6 +528,7 @@ def _key_view_words() -> dict[str, str]:
         "credit-expired": "API key, credit expired",
         "latched-budget": f"API key, {api_spend.LATCHED_WORDS['budget']}, not used",
         "latched-credit-spent": f"API key, {api_spend.LATCHED_WORDS['credit-spent']}, not used",
+        "key-left": "API key, not used until a subscription has room",
     }
 
 
@@ -540,6 +541,14 @@ _LIMIT_WORDS = {
 }
 #: Why the engine left a key it entered after API keys were turned off (EM11).
 KEYS_OFF_WORDS = "API keys are turned off (autoswitch.includeApiKeyAccounts)"
+#: How a key was left at its limit, as "auto-switch left #2 ci ..." says it.
+_LEFT_WORDS = {
+    "budget": "at its monthly budget",
+    "credit-spent": "with its credit spent",
+    "credit-expired": "with its credit expired",
+    "spend-unknown": "when its spend could not be measured",
+    "no-limit": "as it has no budget or credit",
+}
 
 
 def _relogin_views(views: Iterable) -> list:
@@ -823,6 +832,19 @@ def no_switch_sentence(event: object) -> str:
         return (
             f"Not switching to an API key: {who} has no budget or credit; set one "
             f"with: qswap budget {number} AMOUNT"
+        )
+    if reason == "key-left":
+        account = getattr(event, "account", None)
+        who = context_label(account, context) if account else "an API key"
+        why = _LEFT_WORDS.get(getattr(event, "limit_reason", None) or "", "at its limit")
+        other = getattr(event, "way_off", None)
+        step = (
+            f" To use {context_label(other, context)} now: qswap switch {other}"
+            if other else ""
+        )
+        return (
+            f"Not switching to another API key: auto-switch left {who} {why}, and "
+            f"enters no other key until a subscription has room.{step}"
         )
     if reason == "limit-latched":
         account = getattr(event, "account", None)

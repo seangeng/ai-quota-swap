@@ -736,6 +736,12 @@ LATCHED_REASONS = frozenset({"budget", "credit-spent"})
 #: Why the engine leaves a key it entered once ``autoswitch.includeApiKeyAccounts``
 #: is turned off: it would not enter the key now (decision EM11).
 KEYS_OFF = "keys-off"
+#: The state file's record of an API key the engine left at its limit:
+#: ``{"account", "reason", "at"}``. Until a check reads a subscription with
+#: room, the engine enters no other key (``key-left``), so one key's brake is
+#: never the way to another key through a full subscription (A10); the key it
+#: left may come back once its own figure allows it.
+KEY_LEFT = "keyLeft"
 #: A subscription's usage that could not be read this check (no reading, a
 #: token mid-renewal, a locked Keychain): it may have room, so it holds key
 #: entry for a while (decision EM9). Needing re-login is no such state.
@@ -1773,6 +1779,8 @@ class AutoSwitchEngine:
         self._wanted_key = False
         self._dry_key_wanted: dict | None = None
         self._key_wait_recorded = False
+        # The state file as this tick read it (the rows quote ``keyLeft``).
+        self._tick_state: dict = {}
 
     # -- state file ---------------------------------------------------------
 
@@ -2353,6 +2361,7 @@ class AutoSwitchEngine:
         settings = self.settings
         priority_mode = settings.strategy == "priority-consume-first"
         state = self._read_state()
+        self._tick_state = state
         self._key_wait_recorded = "keyWanted" in state
         if not self.dry_run:
             # Dry-run must not write anything, so recovered quarantines are
@@ -2429,6 +2438,7 @@ class AutoSwitchEngine:
         # budgets and credits), before the views that quote them.
         self._tick_records = self._read_account_records()
         self._latches = self._read_latches(state)
+        self._end_key_brake(state, usage, headroom, quarantined)
         self._context = replace(
             self._context or EventContext(),
             accounts=self._account_views(
@@ -2866,8 +2876,17 @@ class AutoSwitchEngine:
                 ))
                 held_for_sessions = True
             else:
-                ordered, entries = self._enterable_keys(state, entries, api_key_candidates)
+                # After one key's brake only that key may come back (A10).
+                left = self._key_left(state)
+                keys = [
+                    n for n in api_key_candidates if left is None or n == left[0]
+                ]
+                ordered, entries = self._enterable_keys(
+                    state, entries, keys, quiet=left is not None,
+                )
                 held_for_sessions = not ordered
+                if left is not None and not ordered:
+                    self._emit_key_left(left, api_key_candidates)
                 if ordered:
                     # A reset the user's settings keep stays banked, and is
                     # named with the command that spends it (decision EM4).
@@ -4037,6 +4056,9 @@ class AutoSwitchEngine:
             # nulls then runs the wrong legs. Record it directly so the
             # reader never has to guess.
             state["leftTrigger"] = trigger
+            left_key = self._key_left_record(result, trigger, cause)
+            if left_key is not None:
+                state[KEY_LEFT] = left_key
             atomic_write_json(self.state_path, state)
 
         self._emit(
@@ -4049,6 +4071,20 @@ class AutoSwitchEngine:
             )
         )
         return TickOutcome.SWITCHED
+
+    def _key_left_record(self, result: Mapping, trigger: str, cause: Mapping) -> dict | None:
+        """``keyLeft`` for a switch that left an API key at its limit (its
+        budget, its credit, no spend figure, no limit at all): until a
+        subscription has room the engine enters no other key, so a key's
+        brake is never the way to another key through a full subscription
+        (A10). API keys turned off need no record: no key is entered then."""
+        reason = cause.get("limit_reason")
+        source = (result.get("from") or {}).get("number")
+        if trigger != "at-limit" or not reason or reason == KEYS_OFF or source is None:
+            return None
+        if self.switcher.account_kind_for(str(source)) != "api_key":
+            return None
+        return {"account": str(source), "reason": str(reason), "at": self.clock()}
 
     # -- helpers --------------------------------------------------------------
 
@@ -4253,6 +4289,9 @@ class AutoSwitchEngine:
             latched = next(iter(self._holding_latches(num, reading)), None)
         if latched is not None:
             return f"latched-{latched}"
+        left = self._key_left(self._tick_state)
+        if left is not None and left[0] != str(num):
+            return "key-left"  # another key was left at its limit (A10)
         scans = (
             not self.dry_run and self._scans_ledger()
             and self._spend_source(num, {num: entry}) != api_spend.SOURCE_ADMIN
@@ -4596,6 +4635,66 @@ class AutoSwitchEngine:
         ))
         return True
 
+    # -- one key's brake is not the way to another key (A10) --------------------
+    #
+    # Leaving an API key at its limit for a subscription that is itself full
+    # (the account underneath), the next check would want a key again. The
+    # engine then enters no other key until a check reads a subscription in
+    # the rotation with room: the record (``keyLeft``) is cleared there. The
+    # key it left may come back once its own figure allows it (a fresh spend
+    # figure after spend-unknown); a budget or a credit reached stays latched.
+
+    def _key_left(self, state: dict) -> tuple[str, str | None] | None:
+        """``(account, reason)`` of the key last left at its limit while no
+        subscription has had room since (``keyLeft``), or None."""
+        left = state.get(KEY_LEFT)
+        if not isinstance(left, dict) or left.get("account") is None:
+            return None
+        reason = left.get("reason")
+        return str(left["account"]), (str(reason) if reason else None)
+
+    def _emit_key_left(
+        self, left: tuple[str, str | None], candidates: Sequence[str],
+    ) -> None:
+        """The hold after a key's brake (``key-left``), said once per episode
+        by the notifier, with another key the user may move to by hand."""
+        number, reason = left
+        self._emit(NoSwitchEvent(
+            reason="key-left",
+            detail=(
+                f"account {number} was left at its limit ({reason}); no other API key "
+                "until a subscription has room"
+            ),
+            account=number,
+            limit_reason=reason,
+            way_off=next((n for n in candidates if n != number), None),
+        ))
+
+    def _end_key_brake(
+        self, state: dict, usage: Mapping[str, object],
+        headroom: Mapping[str, float | None], quarantined: set[str],
+    ) -> None:
+        """A check that reads a subscription in the rotation with room ends
+        the hold after a key's brake (``keyLeft``). Never in a dry run."""
+        if self.dry_run or KEY_LEFT not in state:
+            return
+        roomy = any(
+            (room := headroom.get(n)) is not None and room > 0
+            for n in self.switcher.switchable_account_numbers()
+            if n not in quarantined and self.switcher.account_kind_for(n) != "api_key"
+        )
+        if not roomy:
+            return
+        state.pop(KEY_LEFT, None)
+
+        def drop(s: dict) -> None:
+            s.pop(KEY_LEFT, None)
+
+        try:
+            self._mutate_state(drop)
+        except Exception as e:
+            _logger.debug("Could not clear the record of a key left at its limit: %r", e)
+
     def _key_wanted_since(self, state: dict, now: float) -> float:
         """When the checks that want a key began: ``keyWanted`` in the state
         file (``{"since", "at"}``: the first and the last such check; a dry
@@ -4639,12 +4738,13 @@ class AutoSwitchEngine:
 
     def _enterable_keys(
         self, state: dict, entries: Mapping[str, object], candidates: Sequence[str],
+        *, quiet: bool = False,
     ) -> tuple[list[str], Mapping[str, object]]:
         """The API keys the engine may enter now, in rotation order, with the
         entries read again after a ledger scan. A key needs a budget or a
         credit and a fresh figure under it. When none qualifies the first
-        candidate's reason is said (once per episode, by the notifier) and
-        the list is empty."""
+        candidate's reason is said (once per episode, by the notifier; not
+        when ``quiet``, whose caller says why) and the list is empty."""
         entries = self._keep_spend_fresh(
             state, dict(entries), set(candidates), every=SPEND_SCAN_MIN_GAP_S
         )
@@ -4670,7 +4770,7 @@ class AutoSwitchEngine:
                 continue
             if first is None:
                 first = (num, why, brake)
-        if not ok and first is not None:
+        if not ok and first is not None and not quiet:
             num, why, brake = first
             detail = {
                 "key-no-limit": f"account {num} has no budget or credit",
