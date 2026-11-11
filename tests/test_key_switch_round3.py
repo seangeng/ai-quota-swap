@@ -358,3 +358,212 @@ class TestAnotherQswapsLineComesThroughEveryCommand:
         h.tick_with_usage(EXHAUSTED)
         assert _settings(temp_home).read_bytes() == raw
         assert h.switcher.helper_account() is None
+
+
+# == SS9 and DS16: a key that is active but outranked, or blocked, is said ========
+
+
+def _with_env(home: Path, **env: str) -> bytes:
+    """The settings with an env block added beside what is there."""
+    path = _settings(home)
+    obj = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    obj["env"] = dict(env)
+    raw = (json.dumps(obj, indent=2) + "\n").encode()
+    path.write_bytes(raw)
+    return raw
+
+
+def _state_files(s, home: Path) -> tuple:
+    def read(p: Path):
+        return p.read_bytes() if p.exists() else None
+
+    return (read(_settings(home)), read(s.key_state_path), read(s.sequence_file))
+
+
+@pytest.fixture
+def run(monkeypatch, capsys):
+    """``qswap ARGS`` through cli.main on ``switcher``: (exit, out, err)."""
+    from unittest.mock import patch
+
+    from ai_quota_swap import cli, display
+    from tests.test_key_helper_live import _main
+
+    monkeypatch.setattr("ai_quota_swap.update_check.check_for_update", lambda v: None)
+    monkeypatch.setattr("os.geteuid", lambda: 1000, raising=False)
+    for name in display.OVERRIDE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    def go(switcher, *argv: str) -> tuple[int, str, str]:
+        capsys.readouterr()
+        with patch.object(cli, "ClaudeAccountSwitcher", return_value=switcher), \
+             patch.object(switcher, "list_accounts"), \
+             patch.object(switcher, "target_readiness", return_value=(None, "")):
+            code = _main(list(argv))
+        out, err = capsys.readouterr()
+        return code, out, err
+
+    return go
+
+
+WHERE = str(Path("~") / ".claude" / "settings.json")
+
+
+class TestTheActiveKeyOutranked:
+    """SS9: qswap switch N to the key already active checks the env block in
+    the words of the first-time refusal, and writes nothing when it refuses."""
+
+    def test_a_variable_that_outranks_the_line_is_refused(self, temp_home, run):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        _with_env(temp_home, ANTHROPIC_API_KEY="secret-value")
+        before = _state_files(s, temp_home)
+        code, out, err = run(s, "switch", "5")
+        assert code == 1
+        text = " ".join((out + err).split())
+        assert "Already on" not in text
+        assert (
+            f"{WHERE} sets ANTHROPIC_API_KEY in its env block, which Claude Code obeys "
+            "before any key line, so sessions would not use #5 ci."
+        ) in text
+        assert (
+            f"Remove ANTHROPIC_API_KEY from the env block of {WHERE}, then: qswap switch 5"
+        ) in text
+        assert "secret-value" not in out + err
+        assert _state_files(s, temp_home) == before
+
+    def test_it_writes_nothing_even_where_it_would_repair(self, temp_home, monkeypatch):
+        """The key auto-switch entered (the user's switch would adopt it) and
+        a line that does not answer (the switch would write it again)."""
+        from ai_quota_swap.exceptions import KeyHelperUnavailableError
+
+        s = _fleet()
+        s.switch_to("5", json_output=True, entered_by="engine")
+        _with_env(temp_home, CLAUDE_CODE_USE_BEDROCK="1")
+        monkeypatch.setattr(claude_settings, "check_command", lambda c, **kw: "fails (exit 1)")
+        before = _state_files(s, temp_home)
+        with pytest.raises(KeyHelperUnavailableError) as caught:
+            s.switch_to("5", json_output=True)
+        assert caught.value.log_out_sessions is False
+        assert "CLAUDE_CODE_USE_BEDROCK" in str(caught.value)
+        assert _state_files(s, temp_home) == before
+        assert s.key_entered_by() == "engine"
+
+    def test_the_json_refusal_is_the_first_times(self, temp_home, run):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        _with_env(temp_home, ANTHROPIC_AUTH_TOKEN="t")
+        code, out, _err = run(s, "switch", "5", "--json")
+        assert code == 1
+        error = json.loads(out)["error"]
+        assert error["logOutSessions"] is False
+        assert error["keyHelper"] == f"{WHERE} sets ANTHROPIC_AUTH_TOKEN in its env block"
+
+    def test_another_host_goes_ahead_with_the_warning(self, temp_home, run):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        _with_env(temp_home, ANTHROPIC_BASE_URL="https://proxy.example.com/v1")
+        code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        text = " ".join((out + err).split())
+        assert "Already on" in text
+        assert (
+            f"{WHERE} sets ANTHROPIC_BASE_URL, so Claude Code sends the key of #5 ci "
+            "to proxy.example.com."
+        ) in text
+        result = s.switch_to("5", json_output=True)
+        assert result["reason"] == "already-active"
+        assert any("proxy.example.com" in w for w in result["warnings"])
+
+
+class TestWhatOutranksTheLineIsSaidEverywhere:
+    """DS16: list, status, the dashboard and the menu bar carry a note for a
+    variable in the env block that outranks the key line, and for another
+    program's apiKeyHelper, in the refusal's words and with its fix."""
+
+    def _surfaces(self, s) -> list[str]:
+        """The note as list, status, the dashboard and the menu bar say it."""
+        from ai_quota_swap import menubar_data
+
+        class Source:
+            def take(self, *, full, store_only):
+                return s.accounts_snapshot(fetch=set())
+
+        snap = s.accounts_snapshot(fetch=set())
+        menu = menubar_data.claude_state(
+            s, Source(), full=False, store_only=True, now=time.time(),
+        )
+        return [
+            " ".join(text.split()) for text in (
+                " ".join(s.key_helper_notes()),
+                " ".join(s.status_lines()),
+                " ".join(snap.key_notes),
+                " ".join(menu.key_notes),
+            )
+        ]
+
+    def test_a_variable_over_the_active_key(self, temp_home):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        _with_env(temp_home, ANTHROPIC_API_KEY="x", CLAUDE_CODE_USE_VERTEX="1")
+        names = "ANTHROPIC_API_KEY and CLAUDE_CODE_USE_VERTEX"
+        for text in self._surfaces(s):
+            assert (
+                f"{WHERE} sets {names} in its env block, which Claude Code obeys before "
+                "any key line, so sessions do not use #5 ci."
+            ) in text
+            assert f"Remove {names} from the env block of {WHERE}, then: qswap switch 5" in text
+        notes = [n for n in s.key_notes() if n["code"] == "env-outranks"]
+        assert notes and notes[0]["account"] == 5
+        assert notes[0]["fix"] == (
+            f"Remove {names} from the env block of {WHERE}, then: qswap switch 5"
+        )
+
+    def test_a_variable_with_no_key_active_blocks_every_key(self, temp_home):
+        s = _fleet()
+        _with_env(temp_home, ANTHROPIC_API_KEY="x")
+        for text in self._surfaces(s):
+            assert (
+                f"{WHERE} sets ANTHROPIC_API_KEY in its env block, which Claude Code "
+                "obeys before any key line, so qswap does not switch to an API key."
+            ) in text
+            assert f"Remove ANTHROPIC_API_KEY from the env block of {WHERE}" in text
+        notes = [n for n in s.key_notes() if n["code"] == "env-outranks"]
+        assert notes and notes[0]["account"] is None
+        assert notes[0]["fix"] == f"Remove ANTHROPIC_API_KEY from the env block of {WHERE}"
+
+    def test_with_no_api_key_account_there_is_no_key_note(self, temp_home):
+        s = _fleet()
+        s.remove_account("5", assume_yes=True)
+        s.remove_account("6", assume_yes=True)
+        _with_env(temp_home, ANTHROPIC_API_KEY="x")
+        assert "env-outranks" not in [n["code"] for n in s.key_notes()]
+
+    def test_another_programs_helper(self, temp_home):
+        s = _fleet()
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": "/opt/vault/print-key"}), encoding="utf-8"
+        )
+        for text in self._surfaces(s):
+            assert (
+                f"{WHERE} already sets another apiKeyHelper, and every Claude Code "
+                "session uses it now, before any login or saved key, so qswap cannot "
+                "add a key line beside it."
+            ) in text
+            assert f"Remove apiKeyHelper from {WHERE}" in text
+        notes = [n for n in s.key_notes() if n["code"] == "other-helper"]
+        assert notes and notes[0]["fix"] == f"Remove apiKeyHelper from {WHERE}"
+        assert "/opt/vault" not in _notes(s)
+
+    def test_doctor_keeps_its_checks(self, temp_home):
+        from ai_quota_swap import doctor
+
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        _with_env(temp_home, ANTHROPIC_API_KEY="x")
+        checks = {c.id: c for c in doctor.run_checks()}
+        assert checks["claude.settings_env"].status == "warn"
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": "/opt/vault/print-key"}), encoding="utf-8"
+        )
+        checks = {c.id: c for c in doctor.run_checks()}
+        assert checks["claude.api_key_helper"].status == "warn"

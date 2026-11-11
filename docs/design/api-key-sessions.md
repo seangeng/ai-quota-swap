@@ -289,8 +289,12 @@ What the code does where this part leaves room, or where it had to differ:
   run-profile copies, is `qswap switch N` to the account underneath. A line that runs a
   qswap no longer there (a reinstall moved it) is read as qswap's, reported, and pointed at
   the current qswap by `qswap switch N` to the key. `qswap switch N` to the key already
-  active runs the line's command with `--check` and repairs the line, the record and the run
-  profiles, instead of answering only `Already on`.
+  active first checks what outranks the line, as the first switch does (a variable in the
+  `env` block is refused in the same words, and nothing is written; `ANTHROPIC_BASE_URL`
+  warns), then runs the line's command with `--check` and repairs the line, the record and
+  the run profiles, instead of answering only `Already on`. List, status, the dashboard and
+  the menu bar carry a note for such a variable and for another `apiKeyHelper`, in the
+  refusal's words and with its fix.
 - **Order of the two steps.** Entering a key gives run profiles their copies first, then
   writes the record, then the line (a failure in between puts the profiles back); leaving
   removes the line and then restores the profiles. Either crash leaves copies with no line,

@@ -795,6 +795,40 @@ class KeyActivationMixin:
             from_key=from_key is not None, records=records,
         )
 
+    def _refuse_defeated_line(
+        self, number: str, state: claude_settings.HelperState | None = None,
+    ) -> dict[str, str]:
+        """Refuse a switch to the key ``number`` when its line cannot be
+        written or would not be obeyed (decision B6): another helper or
+        another qswap's line, a file qswap cannot use, a variable in the env
+        block that outranks the line. The first switch to a key and the
+        switch to the key already active (decision SS9) say the same. Writes
+        nothing. Returns the env block, read once."""
+        state = self.key_helper_state() if state is None else state
+        if not state.installable:
+            raise self._key_unavailable(
+                number, f"{state.shown_path()} {state.reason() or 'cannot be changed'}",
+                kind="unreadable" if state.unreadable else state.kind,
+            )
+        env = self._settings_env()
+        names = tuple(defeating_names(env))
+        if names:
+            raise self._key_unavailable(
+                number,
+                f"{state.shown_path()} sets {display.join_names(names)} in its env block",
+                kind="env", names=names,
+            )
+        return env
+
+    def _key_sent_elsewhere(self, number: str) -> list[str]:
+        """The one warning when the settings send the key of ``number`` to
+        another host (``ANTHROPIC_BASE_URL``), or ``[]``."""
+        host = other_host(self._settings_env())
+        if not host:
+            return []
+        path = claude_settings.shown_path(claude_settings.settings_path())
+        return [display.key_sent_elsewhere(path, host, self.label(number, long=False))]
+
     def _require_saved_key(self, number: str, email: str) -> None:
         self._heal_api_key_backup(number, email)
         stored, unreadable = self._read_account_credentials_ex(number, email)
@@ -838,19 +872,7 @@ class KeyActivationMixin:
         email = record.get("email", "")
         self._require_saved_key(number, email)
         state = self.key_helper_state()
-        if not state.installable:
-            raise self._key_unavailable(
-                number, f"{state.shown_path()} {state.reason() or 'cannot be changed'}",
-                kind="unreadable" if state.unreadable else state.kind,
-            )
-        env = self._settings_env()
-        names = tuple(defeating_names(env))
-        if names:
-            raise self._key_unavailable(
-                number,
-                f"{state.shown_path()} sets {display.join_names(names)} in its env block",
-                kind="env", names=names,
-            )
+        env = self._refuse_defeated_line(number, state)
         host = other_host(env)
         previous_key = self.helper_account()
         underneath = self.login_account_number()

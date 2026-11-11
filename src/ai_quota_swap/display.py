@@ -1313,17 +1313,55 @@ def key_helper_foreign_refusal(
         )
     else:
         head = (
-            f"not switched. {path} already sets another apiKeyHelper, and every "
-            "Claude Code session uses it now, before any login or saved key, so "
-            f"qswap cannot add the key line for {target} beside it."
+            f"not switched. {foreign_helper_clause(path)}, so qswap cannot add the "
+            f"key line for {target} beside it."
         )
     if other_dir:
         head += " " + other_qswap_sentence(other_dir)
     lines = wrap(prefix + head, WIDTH - 2)
     lines[0] = lines[0][len(prefix):]
     return "\n".join([
-        *lines, *wrap(f"Remove apiKeyHelper from {path}, then: qswap switch {number}"),
+        *lines, *wrap(f"{foreign_helper_fix(path)}, then: qswap switch {number}"),
     ])
+
+
+def foreign_helper_clause(path: str) -> str:
+    """What another ``apiKeyHelper`` in the settings does, in the words the
+    refusal and the note share (decision DS16)."""
+    return (
+        f"{path} already sets another apiKeyHelper, and every Claude Code session "
+        "uses it now, before any login or saved key"
+    )
+
+
+def foreign_helper_fix(path: str) -> str:
+    """The one way forward from another ``apiKeyHelper`` in the settings."""
+    return f"Remove apiKeyHelper from {path}"
+
+
+def foreign_helper_note(path: str) -> list[str]:
+    """Another program's ``apiKeyHelper`` (decision DS16): the note list,
+    status, the dashboard and the menu bar show, in the refusal's words."""
+    return wrap(
+        f"{foreign_helper_clause(path)}, so qswap cannot add a key line beside it. "
+        f"{foreign_helper_fix(path)}"
+    )
+
+
+def key_line_defeated_clause(path: str, names: Sequence[str]) -> str:
+    """What a variable in the settings' ``env`` block does to the key line,
+    in the words the refusal and the note share (decisions B6, DS16)."""
+    # The file sets them: the verb follows the file, however many there are.
+    return (
+        f"{path} sets {_and(names)} in its env block, which Claude Code obeys before "
+        "any key line"
+    )
+
+
+def key_line_defeated_fix(path: str, names: Sequence[str], number: str | int | None = None) -> str:
+    """Remove the variables; then the switch to ``number`` when one is named."""
+    then = f", then: qswap switch {number}" if number is not None else ""
+    return f"Remove {_and(names)} from the env block of {path}{then}"
 
 
 def key_line_defeated_refusal(
@@ -1332,22 +1370,27 @@ def key_line_defeated_refusal(
 ) -> str:
     """The settings' ``env`` block sets a variable Claude Code obeys before
     any key line (decision B6, F59): named, never its value."""
-    # The file sets them: the verb follows the file, however many there are.
     head = (
-        f"not switched. {path} sets {_and(names)} in its env block, which Claude "
-        f"Code obeys before any key line, so sessions would not use {target}."
+        f"not switched. {key_line_defeated_clause(path, names)}, so sessions would "
+        f"not use {target}."
     )
     lines = wrap(prefix + head, WIDTH - 2)
     lines[0] = lines[0][len(prefix):]
-    return "\n".join([
-        *lines,
-        *wrap(f"Remove {_and(names)} from the env block of {path}, then: qswap switch {number}"),
-    ])
+    return "\n".join([*lines, *wrap(key_line_defeated_fix(path, names, number))])
 
 
-def foreign_helper_fix(path: str) -> str:
-    """The one way forward from another ``apiKeyHelper`` in the settings."""
-    return f"Remove apiKeyHelper from {path}"
+def key_line_outranked_note(
+    path: str, names: Sequence[str], key: str | None, number: str | int | None,
+) -> list[str]:
+    """A variable in the env block outranks the key line (decision DS16):
+    over the active key ``key`` (its number ``number``), or, with none
+    active, over every key qswap would switch to. The refusal's words and
+    fix."""
+    what = f"so sessions do not use {key}" if key else "so qswap does not switch to an API key"
+    return wrap(
+        f"{key_line_defeated_clause(path, names)}, {what}. "
+        f"{key_line_defeated_fix(path, names, number if key else None)}"
+    )
 
 
 def other_qswap_note(path: str, other_dir: str) -> list[str]:

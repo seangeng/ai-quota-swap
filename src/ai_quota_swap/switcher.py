@@ -6966,6 +6966,21 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 "other-data-dir", None, display.other_qswap_note(path, other),
                 display.foreign_helper_fix(path),
             ))
+        elif f.state.kind == claude_settings.FOREIGN:
+            # Decision DS16: what blocks every key is said where the key
+            # would be, in the refusal's words.
+            out.append(note(
+                "other-helper", None, display.foreign_helper_note(path),
+                display.foreign_helper_fix(path),
+            ))
+        names = defeating_names(self._settings_env())
+        if names and (f.key is not None or self._api_key_numbers()):
+            label = self.label(f.key, long=False) if f.key is not None else None
+            out.append(note(
+                "env-outranks", f.key,
+                display.key_line_outranked_note(path, names, label, f.key),
+                display.key_line_defeated_fix(path, names, f.key),
+            ))
         if f.problem is not None:
             out.append(note(
                 "line-no-key", f.problem["number"],
@@ -8258,6 +8273,11 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         # with a settings copy, are repaired before anything else.
         if self._account_kind(target_account) != "api_key":
             self._refuse_unreadable_key_line()
+        elif not log_out_sessions and not force and self.helper_account() == target_account:
+            # Decision SS9: the key already active, with what outranks its
+            # line since, is refused in the words of the first-time refusal,
+            # before anything (a repair, the record) is written.
+            self._refuse_defeated_line(target_account)
         repairs = self.reconcile_key_helper()
         if repairs and not json_output:
             for text in repairs:
@@ -8293,17 +8313,20 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 # and written again (with the record and the run profiles)
                 # when it does not answer.
                 fixed = self.repair_active_key(target_account, entered_by=entered_by)
+                sent = self._key_sent_elsewhere(target_account)
                 if not json_output:
                     print(f"{accent('Already on')} {self._landed_label(target_account, email)}")
                     for text in [*fixed, *([kept] if kept else [])]:
                         for line in display.wrap(text):
                             print(dimmed(line))
+                    for text in sent:
+                        warning(text)
                     return None
                 message = f"Already on Account-{target_account} ({email})"
                 return self._switch_noop(
                     strategy="direct", reason="already-active", from_ref=ref, to_ref=ref,
                     message=f"{message}. {kept}" if kept else message,
-                    warnings=repairs + fixed,
+                    warnings=repairs + fixed + [t.removeprefix("Warning: ") for t in sent],
                 )
             op = self._enter_key(
                 target_account, entered_by=entered_by, emit_output=not json_output
