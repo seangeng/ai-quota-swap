@@ -236,6 +236,9 @@ class Notifier:
                 return None
             label = _ref_label(account, context)
             return Notification(_prefix(event.human(), label, provider, both))
+        if kind == "key-unwatched":
+            # An engine stopped while sessions are on a key it entered.
+            return Notification(_prefix(event.human(), "", provider, both))
         if kind == "config-warning":
             # Both engines read the same autoswitch.* settings and may warn
             # about one value: say it once.

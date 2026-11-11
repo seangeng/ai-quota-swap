@@ -970,3 +970,106 @@ class TestTheAutoLogFits:
                 if line.strip().startswith("qswap "):
                     continue
                 assert len(line) <= 80, line
+
+
+# == A16: saying so when nothing watches the limit =========================================
+
+
+class TestWhenTheEngineStops:
+    def test_the_notice_for_a_key_the_engine_entered(self, temp_home):
+        from ai_quota_swap.autoswitch import unwatched_key, unwatched_key_notice
+
+        h = _fleet(temp_home)
+        _enter(h)
+        text = unwatched_key_notice(h.switcher)
+        assert text == (
+            "Sessions stay on #2 ci, which auto-switch entered; nothing watches its "
+            "limit now. To go back: qswap switch 1"
+        )
+        assert unwatched_key(h.switcher) == {
+            "number": "2", "enteredBy": "engine", "engineRunning": False,
+            "underneath": "1", "back": "qswap switch 1",
+        }
+        assert h.switcher.key_entered_by() == "engine"  # kept for a restarted engine
+
+    def test_none_for_a_key_the_user_chose_or_no_key(self, temp_home):
+        from ai_quota_swap.autoswitch import unwatched_key_notice
+
+        h = _fleet(temp_home)
+        assert unwatched_key_notice(h.switcher) is None
+        h.switcher.switch_to("2", json_output=True)
+        assert unwatched_key_notice(h.switcher) is None
+
+    def test_none_while_another_engine_runs(self, temp_home):
+        from ai_quota_swap.autoswitch import unwatched_key_notice, write_heartbeat
+
+        h = _fleet(temp_home)
+        _enter(h)
+        import time
+
+        write_heartbeat(h.switcher.backup_dir, mode="loop", dry_run=False,
+                        last_tick_at=time.time(), next_tick_at=time.time() + 60,
+                        host="menu bar")
+        assert unwatched_key_notice(h.switcher, host="qswap auto") is None
+        assert unwatched_key_notice(h.switcher, host="menu bar") is not None
+
+    def test_ctrl_c_on_qswap_auto_says_it(self, temp_home, monkeypatch, capsys):
+        import sys
+
+        from ai_quota_swap import cli
+        from ai_quota_swap.autoswitch import AutoSwitchEngine
+        from tests.test_key_helper_live import _fleet as live_fleet
+
+        monkeypatch.setattr("ai_quota_swap.update_check.check_for_update", lambda v: None)
+        monkeypatch.setattr("os.geteuid", lambda: 1000, raising=False)
+        s = live_fleet()
+        s.switch_to("5", json_output=True, entered_by="engine")
+
+        def interrupted(self):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(AutoSwitchEngine, "run_loop", interrupted)
+        monkeypatch.setattr(sys, "argv", ["qswap", "auto"])
+        with pytest.raises(SystemExit) as stopped:
+            cli.main()
+        assert stopped.value.code == 130
+        out = " ".join(capsys.readouterr().out.split())
+        assert "Auto-switch stopped." in out
+        assert "Sessions stay on #5 ci, which auto-switch entered; nothing watches its " \
+               "limit now. To go back: qswap switch 1" in out
+        assert s.helper_account() == "5"  # nothing moved on the way out
+
+    def test_turning_it_off_in_the_menu_bar_notifies(self, temp_home):
+        from ai_quota_swap import menubar_engines
+        from ai_quota_swap.menubar_notify import Notifier
+
+        h = _fleet(temp_home)
+        _enter(h)
+        events = []
+
+        class Engine:
+            switcher = h.switcher
+            host_label = "menu bar"
+
+            def run_loop(self):
+                return 0
+
+            def stop(self):
+                pass
+
+        sup = menubar_engines.EngineSupervisor(
+            lambda provider, emit: Engine(), lambda p, e: events.append((p, e)),
+            thread_factory=lambda **kw: type("T", (), {"start": lambda s: None,
+                                                        "is_alive": lambda s: False,
+                                                        "join": lambda s, t=None: None})(),
+        )
+        sup.start("claude")
+        sup.restart("claude")  # a restart is no stop: nothing said
+        assert not [e for _p, e in events if getattr(e, "kind", "") == "key-unwatched"]
+        sup.apply({"claude": False})
+        said = [e for _p, e in events if getattr(e, "kind", "") == "key-unwatched"]
+        assert len(said) == 1
+        note = Notifier().event("claude", said[0], both=False, now=0.0)
+        assert note is not None and "nothing watches its limit now" in note.body
+        sup.start("claude")
+        assert sup.stop_all() == [said[0].human()]

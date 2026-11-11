@@ -677,7 +677,9 @@ def run_app(switcher, rumps, AppKit) -> int:
             self.refresh_async(full=True)  # explicit refresh: a store-governed pass
 
         def _do_quit(self, _a: Action):
-            self._supervisor.stop_all()
+            # Said now: the event queue is not read again after quitting.
+            for text in self._supervisor.stop_all():
+                self._notify(Notification(text))
             rumps.quit_application()
 
         # ---- handlers: engines and settings --------------------------------

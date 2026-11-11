@@ -784,6 +784,81 @@ def engine_running(beat: dict | None, now: float, *, grace_s: float = HEARTBEAT_
     return now <= next_at + grace_s
 
 
+# -- a key the engine entered, and who watches it -------------------------------
+#
+# docs/design/api-key-sessions.md, "As built": who entered the active key is
+# in key_helper.json. When the engine stops while sessions are on a key it
+# entered (Ctrl-C on qswap auto, auto-switch turned off, the menu bar quit),
+# it says so: sessions stay on the key, nothing watches its limit now, and
+# how to go back. It does not move them on the way out; ``enteredBy`` stays
+# ``engine``, so a restarted engine carries on managing the key. The surfaces
+# (status, list, the menu bar, the dashboard, doctor) use :func:`unwatched_key`.
+
+
+def unwatched_key(switcher, *, now: float | None = None, host: str | None = None) -> dict | None:
+    """The active API key the engine entered, or None: ``{"number",
+    "enteredBy", "engineRunning", "underneath", "back"}``. ``engineRunning``
+    is whether an engine other than ``host`` ticks (its heartbeat is live);
+    ``back`` the command that goes back (``qswap switch N`` to the account
+    underneath, else to the first subscription), or None. Never raises."""
+    try:
+        helper = getattr(switcher, "helper_account", None)
+        entered = getattr(switcher, "key_entered_by", None)
+        if not callable(helper) or not callable(entered):
+            return None
+        number = helper()
+        if number is None or entered() != "engine":
+            return None
+        under_of = getattr(switcher, "underneath_account_number", None)
+        under = under_of() if callable(under_of) else None
+        target = under
+        if target is None:
+            target = next(
+                (
+                    n for n in switcher.switchable_account_numbers()
+                    if switcher.account_kind_for(n) != "api_key"
+                ),
+                None,
+            )
+        now = time.time() if now is None else now
+        beat = read_heartbeat(Path(switcher.backup_dir))
+        running = engine_running(beat, now) and (
+            host is None or not isinstance(beat, dict) or beat.get("host") != host
+        )
+        return {
+            "number": str(number),
+            "enteredBy": "engine",
+            "engineRunning": bool(running),
+            "underneath": under,
+            "back": f"qswap switch {target}" if target is not None else None,
+        }
+    except Exception:
+        return None
+
+
+def unwatched_key_notice(
+    switcher, *, now: float | None = None, host: str | None = None,
+) -> str | None:
+    """What a stopping engine says while sessions are on a key it entered
+    and no other engine runs; None otherwise. ``host`` is the stopping
+    engine's own heartbeat label."""
+    key = unwatched_key(switcher, now=now, host=host)
+    if key is None or key["engineRunning"]:
+        return None
+    try:
+        who = switcher.label(key["number"], long=False)
+    except Exception:
+        who = f"#{key['number']}"
+    back = (
+        f"To go back: {key['back']}" if key["back"]
+        else "To leave it, log in to a subscription (claude, then /login), then run: qswap add"
+    )
+    return (
+        f"Sessions stay on {who}, which auto-switch entered; nothing watches its "
+        f"limit now. {back}"
+    )
+
+
 def set_aside_accounts(
     backup_dir: Path,
     *,
