@@ -118,7 +118,7 @@ CI runs the same command. The rule selection, and the rules left out until the c
 3. Anything that changes behaviour gets a design doc in `docs/design/`, or an update to an existing one, before or with the code. The existing ones show the format.
 4. JSON output is a contract that only grows. Add fields; never rename, remove or retype one. Document new fields in [docs/json-output.md](docs/json-output.md).
 5. Text output follows [docs/design/ux.md](docs/design/ux.md): one word per thing, 80 columns, the next command to run on every dead end.
-6. Update the user docs your change affects, and add a line to the Unreleased section of [CHANGELOG.md](CHANGELOG.md). A new setting also needs its meaning and an example value in `scripts/settings_doc.py`; run it to regenerate [docs/settings.md](docs/settings.md). `tests/test_docs.py` fails while the page is stale or a link in any Markdown file is broken, and `tests/test_docs_examples.py` while a page quotes an API-key message the code no longer prints.
+6. Update the user docs your change affects, and add a line under `## Unreleased` at the top of [CHANGELOG.md](CHANGELOG.md), starting that section if the last release left none. A new setting also needs its meaning and an example value in `scripts/settings_doc.py`; run it to regenerate [docs/settings.md](docs/settings.md). `tests/test_docs.py` fails while the page is stale or a link in any Markdown file is broken, and `tests/test_docs_examples.py` while a page quotes an API-key message the code no longer prints.
 
 ## Regenerate screenshots
 
@@ -134,4 +134,18 @@ Shots need a local Chrome (`CHROME_PATH` if it is not in `/Applications`), recor
 
 ## Releases (maintainer)
 
-A release is published to PyPI by `.github/workflows/publish.yml` through trusted publishing. Set the version in `pyproject.toml`, move the Unreleased notes in `CHANGELOG.md` under that version, merge, then publish a GitHub release whose tag is the version (`v0.1.0` for `0.1.0`). The workflow refuses a tag that does not match.
+A release is published to PyPI by `.github/workflows/publish.yml` through trusted publishing. 0.1.0 was the first. For each release:
+
+1. Set the version in `pyproject.toml`, and rename `## Unreleased` in `CHANGELOG.md` to that version, with nothing above it but the title.
+2. Build the package and install the wheel into a scratch environment. `qswap --version` should print the new version with no commit in brackets, since the wheel is not a git install:
+
+   ```bash
+   scratch=$(mktemp -d)
+   uv build --out-dir "$scratch/dist"
+   uv venv "$scratch/venv"
+   uv pip install --python "$scratch/venv/bin/python" "$scratch"/dist/*.whl
+   mkdir "$scratch/home"
+   HOME="$scratch/home" "$scratch/venv/bin/qswap" --version
+   ```
+
+3. Merge, then publish a GitHub release whose tag is the version (`v0.1.0` for `0.1.0`). The workflow refuses a tag that does not match.

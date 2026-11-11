@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: active, 2026-11-10. Name: `ai-quota-swap`, command `qswap`.
+Status: active, 2026-11-11. Name: `ai-quota-swap`, command `qswap`.
 
 This project started as a fork of [claude-swap](https://github.com/realiti4/claude-swap) and is
 becoming its own tool: one place to see how much quota every AI coding account has left, switch
@@ -9,7 +9,7 @@ were worth. Claude Code first, Codex second, API keys third.
 
 ## Where it stands
 
-Feature-complete for a first release, 0.1.0, which is prepared but not yet on PyPI. What works:
+0.1.0 is the first release, on PyPI as `ai-quota-swap`. What works:
 
 - Claude Code accounts, from claude-swap 1.1.0b1 and extended: switching by hand and
   automatically, parallel sessions (`run`, `map`), export and import, JSON output.
@@ -31,7 +31,7 @@ What remains, in rough order:
 - `where`: the best account per provider now, and when each exhausted one returns (M5).
 - Hooks: run a command on a switch, a limit reached, or a reset used (M5).
 - OpenAI organization usage for API keys (M4, later).
-- The first PyPI release (M7).
+- A scrub pass for personal data, and the GitHub description and topics (M7).
 
 ## Principles
 
@@ -196,7 +196,7 @@ Design: [docs/design/api-accounts.md](docs/design/api-accounts.md). Guide:
 - [x] `SECURITY.md` on how credentials are stored and which unofficial endpoints are used.
   `CONTRIBUTING.md`, `CHANGELOG.md`.
 - [x] CI on macOS, Linux, and Windows. A publish workflow for PyPI by trusted publishing.
-- [ ] The first release to PyPI.
+- [x] The first release to PyPI: 0.1.0.
 - [ ] A scrub pass: no personal emails, tokens, or account data in tests, fixtures, or history.
 - [ ] GitHub description and topics: `claude-code`, `codex`, `account-switcher`, `multi-account`,
   `rate-limit`, `usage-tracking`.

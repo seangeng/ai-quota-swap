@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.0
 
-The first release under the name ai-quota-swap, version 0.1.0. The project started as a fork of [claude-swap](https://github.com/realiti4/claude-swap) 1.1.0b1, and everything that version did still works: switching Claude Code accounts by hand or automatically, parallel sessions with `run`, the dashboard, the macOS menu bar, JSON output, export and import.
+The first release under the name ai-quota-swap, and the first on PyPI. The project started as a fork of [claude-swap](https://github.com/realiti4/claude-swap) 1.1.0b1, and everything that version did still works: switching Claude Code accounts by hand or automatically, parallel sessions with `run`, the dashboard, the macOS menu bar, JSON output, export and import.
 
-The package is `ai-quota-swap` and the command `qswap`. It keeps its own data directory, Keychain service, LaunchAgent and environment variables (`AI_QUOTA_SWAP_NO_BUNDLE`), so it installs beside claude-swap. Accounts move across with `cswap export` and `qswap import`.
+The package is `ai-quota-swap` and the command `qswap`. Install it with `uv tool install 'ai-quota-swap[menubar]'` on a Mac, or `uv tool install ai-quota-swap` on Linux and Windows. It keeps its own data directory, Keychain service, LaunchAgent and environment variables (`AI_QUOTA_SWAP_NO_BUNDLE`), so it installs beside claude-swap. Accounts move across with `cswap export` and `qswap import`.
 
 ### Command line
 
@@ -17,7 +17,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - Read-only commands never ask; a question is only asked on a terminal, and without one the command stops with a line naming `--yes` (now on `remove`, `purge`, `add --slot`, `add-token --slot` and `qswap codex remove`). Cancelling `purge` changes nothing, the menu bar included.
 - Usage errors exit 64 (not 2, which `auto --once` uses for "nothing to do"); every `--json` failure is the error envelope, and every payload carries `schemaVersion`. `priority --json` is new.
 - Messages fit 80 columns and name commands by verb, never by a legacy flag. `qswap budget` and `qswap api org` output are not yet wrapped or worded this way.
-- `qswap upgrade` names the build before and after, with the commit of a git install, so a new commit of the same version reads as an upgrade (`ai-quota-swap upgraded: 0.1.0 (ad03d17) -> 0.1.0 (fdeb279)`) and no change as `ai-quota-swap is still at 0.1.0 (fdeb279).`; `qswap --version` adds the commit too (`qswap 0.1.0 (fdeb279)`). A PyPI install reads as before.
+- `qswap upgrade` names the build before and after, with the commit of a git install, so a new commit of the same version reads as an upgrade (`ai-quota-swap upgraded: 0.1.0 (ad03d17) -> 0.1.0 (fdeb279)`) and no change as `ai-quota-swap is still at 0.1.0 (fdeb279).`; `qswap --version` adds the commit too (`qswap 0.1.0 (fdeb279)`). A PyPI install has no commit and shows the version alone.
 
 ### Dashboard
 
@@ -99,6 +99,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `providers.py` declares the contracts a provider's switcher implements, and every command builds its switcher through one factory. `ProviderError` is the base of every provider error.
 - Tests run with a temporary `CODEX_HOME`, a guard on the real Codex login, and a block on outbound connections. Launchd, which a fake home does not isolate, is guarded too: `launchctl` answers "not loaded" to a read, a call that would change a service fails the test, and an audit hook refuses to start `launchctl` at all. A child process a test starts finds a stand-in `launchctl` first on `PATH`, which answers the same way and fails the test on a refusal. The child gets none of the other guards: it has the real Keychain, the network and `/Applications`, doctor's `/bin/launchctl print` reads the real launchd, and a child given a `PATH` of its own finds the real `launchctl` (`CONTRIBUTING.md`).
 - CI runs the suite on Linux (Python 3.12 and 3.14), macOS and Windows, and lints with ruff.
+- Publishing a GitHub release builds the package and uploads it to PyPI through trusted publishing (`.github/workflows/publish.yml`), refusing a tag that does not match the version. The sdist carries the source, the tests and the Markdown docs, not the screenshots or recordings.
 - `scripts/demo/` makes screenshots, recordings and a tour of every dashboard screen from invented accounts, in a sandbox that blocks the Keychain, the network and process spawns.
 - The demo harness renders an active API key (`run.py fleet --menubar -- switch 5`; a `last-resort` scenario where auto-switch moves to the key), and `CONTRIBUTING.md` describes the manual end-to-end check of the live switch against a real Claude Code, in a throwaway home with a made-up key.
 - Design docs in `docs/design/`, plus `docs/architecture.md`, `CONTRIBUTING.md` and `SECURITY.md`.
