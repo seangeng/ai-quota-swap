@@ -213,9 +213,13 @@ def test_the_view_asks_for_its_width_without_the_check_mark_column():
 
 def test_a_menu_of_a_short_row_and_the_chart_is_as_wide_as_the_chart_needs():
     # Measured, never shown: NSMenu.size lays the menu out without opening
-    # it. With a checked row the menu is the view and the check-mark
-    # column; without, the view alone. Never 14 points more.
+    # it. Without a check mark the menu is the view's width. With one,
+    # NSMenu adds room for the check-mark column to the view by itself:
+    # 14 points on macOS 27, 7 on macOS 26 (CI's runner). Either way the
+    # menu is never wider than the view and the column, as it was when the
+    # view counted the column itself.
     chart = build_chart(_cost(SEVEN), both=True)
+    view_width = view_mod.min_width(chart)
     for checked in (False, True):
         menu = AppKit.NSMenu.alloc().init()
         row = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("#1 personal", None, "")
@@ -224,7 +228,11 @@ def test_a_menu_of_a_short_row_and_the_chart_is_as_wide_as_the_chart_needs():
         item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(chart.caption, None, "")
         item.setView_(view_mod.make_view(chart))
         menu.addItem_(item)
-        assert menu.size().width == pytest.approx(view_mod.menu_width(chart, check_marks=checked), abs=0.5)
+        added = float(menu.size().width) - view_width
+        if checked:
+            assert 0.5 < added <= view_mod.STATE_COLUMN + 0.5
+        else:
+            assert added == pytest.approx(0.0, abs=0.5)
 
 
 def test_every_bar_has_the_same_corners():
