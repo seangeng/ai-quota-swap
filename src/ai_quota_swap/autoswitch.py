@@ -1771,8 +1771,10 @@ class AutoSwitchEngine:
         # a dry run keeps its own in memory.
         self._latches: dict = {}
         self._dry_latches: dict = {}
-        # Whether this tick claimed a usage reset (free before paid).
+        # Whether this tick claimed a usage reset (free before paid), and the
+        # account whose planned reset it put off for want of a fresh reading.
         self._reset_claimed = False
+        self._reset_deferred: str | None = None
         # API keys whose ledger figure this tick's scan could not vouch for
         # (decision EM3): their spend counts as unknown.
         self._ledger_unsure: set[str] = set()
@@ -1902,6 +1904,9 @@ class AutoSwitchEngine:
         now = self.clock()
         if fresh is None or fresh.fetched_at is None or now - fresh.fetched_at > RESET_FRESH_READ_S:
             _logger.info("usage reset on account %s deferred: no fresh reading", target)
+            # A reset auto mode spends comes before a key (A7, EM4): the key
+            # waits for it, at most one cooldown (``reset-pending``).
+            self._reset_deferred = target
             return None
         usage = {**usage, target: fresh.decision_value()}
         plan = plan_on(entries, usage, claims if isinstance(claims, dict) else {}, now)
@@ -2393,6 +2398,7 @@ class AutoSwitchEngine:
         self._idle_hold_slow = False
         self._tick_cause = {}
         self._reset_claimed = False
+        self._reset_deferred = None
         self._ledger_unsure = set()
         self._context = EventContext(
             provider=self._provider_id(), names=self._alias_names()
@@ -2898,6 +2904,8 @@ class AutoSwitchEngine:
                     reason="reset-pending",
                     detail="a usage reset was claimed; its refill comes before an API key",
                 ))
+                held_for_sessions = True
+            elif self._reset_deferred_hold(settings, wanted_since):
                 held_for_sessions = True
             elif self._unreadable_hold(oauth_candidates, usage, headroom, settings, wanted_since):
                 held_for_sessions = True
@@ -4735,6 +4743,27 @@ class AutoSwitchEngine:
             self._mutate_state(drop)
         except Exception as e:
             _logger.debug("Could not clear the record of a key left at its limit: %r", e)
+
+    def _reset_deferred_hold(self, settings: AutoSwitchSettings, since: float) -> bool:
+        """Whether key entry waits for a usage reset the planner wanted this
+        check and put off because its account could not be read again
+        (``reset-pending``, with the account and the wait). At most one
+        cooldown from ``since``, the first check that wanted the key, as
+        the unreadable hold; afterwards the key goes ahead."""
+        target = self._reset_deferred
+        left = settings.cooldown_seconds - (self.clock() - since)
+        if target is None or left <= 0:
+            return False
+        self._emit(NoSwitchEvent(
+            reason="reset-pending",
+            detail=(
+                f"a usage reset on account {target} is planned and waits for a fresh "
+                "reading; it comes before an API key"
+            ),
+            account=str(target),
+            wait_s=left,
+        ))
+        return True
 
     def _key_wanted_since(self, state: dict, now: float) -> float:
         """When the checks that want a key began: ``keyWanted`` in the state

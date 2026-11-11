@@ -260,3 +260,85 @@ class TestTheUnreadableHoldEnds:
                 break
             h.clock.advance(60)
         assert entered_at is not None and entered_at <= 6, entered_at
+
+
+# == EM4: a reset auto mode would spend, deferred for want of a reading =====================
+
+
+from unittest.mock import patch  # noqa: E402
+
+from ai_quota_swap import resets  # noqa: E402
+from ai_quota_swap.settings import ResetSettings  # noqa: E402
+from tests.test_autoswitch import _entry_for  # noqa: E402
+from tests.test_engine_money import _key  # noqa: E402
+from tests.test_resets import _grant, _usage as _rusage  # noqa: E402
+
+
+def _week(**kw):
+    return _grant("g-week", clears=("seven_day",), **kw)
+
+
+def _tick_unread_claim(h, usage):
+    """A tick on stored readings 5 minutes old where the re-read before a
+    claim gives nothing (the usage endpoint does not answer for any account)."""
+    claims: list = []
+
+    def entries(fetch=None, scheduled=False):
+        return {n: (_key(_reading(h)) if v == "api key"
+                    else _entry_for(v, h.clock.now - 300))
+                for n, v in usage.items()}
+
+    with (
+        patch.object(h.switcher, "usage_entries_by_account", side_effect=entries),
+        patch.object(h.switcher, "refresh_usage", side_effect=lambda nums: {}),
+        patch.object(h.switcher, "claim_usage_reset",
+                     side_effect=lambda *a: claims.append(a)),
+    ):
+        return h.engine.tick(), claims
+
+
+class TestADeferredResetHoldsTheKey:
+    """The re-check's case: the planner wants #1's weekly reset (5 days to
+    go) and defers it because #1 could not be read again. The engine must
+    not enter the paid key in the same check: it holds, bounded by one
+    cooldown like the unreadable hold, and says why."""
+
+    USAGE = {"1": _rusage(d7=100, grants=[_week()]), "2": "api key", "3": _rusage(d7=100)}
+
+    def test_held_for_one_cooldown_then_the_key(self, temp_home):
+        h = _fleet(temp_home, cooldown_seconds=300)
+        for _ in range(5):  # 0, 60, ..., 240 s
+            outcome, claims = _tick_unread_claim(h, self.USAGE)
+            assert outcome is not TickOutcome.SWITCHED and claims == []
+            h.clock.advance(60)
+        assert h.switcher.current_account_number() == "1"
+        held = [e for e in h.events if isinstance(e, NoSwitchEvent)
+                and e.reason == "reset-pending"]
+        assert held and held[0].account == "1"
+        assert held[0].human() == (
+            "Not switching to an API key yet: auto mode would spend a usage reset on "
+            "#1 a@example.com, whose usage could not be read again this check; waiting "
+            "up to 5m for it"
+        )
+        outcome, _ = _tick_unread_claim(h, self.USAGE)  # 300 s: one cooldown
+        assert outcome is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+
+
+class TestKeptResetWhileAClaimSettles:
+    def test_the_note_says_auto_mode_waits_for_the_claim(self):
+        """#1 (active) at 100% with its last claim still settling; #3 holds
+        a weekly reset auto mode spends once the claim has settled. The note
+        must not say it would not make #3 an account to switch to."""
+        usage = {"1": _rusage(d7=100), "3": _rusage(d7=100, grants=[_week()])}
+        views = [
+            resets.AccountView(num="1", usage=usage["1"], threshold=90.0,
+                               can_claim=False, settling=True),
+            resets.AccountView(num="3", usage=usage["3"], threshold=90.0),
+        ]
+        (kept,) = resets.kept_resets(views, current="1", settings=ResetSettings(),
+                                     now=1_000_000.0)
+        assert kept.account == "3"
+        assert (kept.reason, kept.words) == (
+            "settling", "auto mode waits for the active account's last reset claim to settle"
+        )

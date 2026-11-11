@@ -1186,6 +1186,7 @@ KEPT_REASONS = {
     "auto-off": "auto mode is off",
     "daily-cap": "today's limit on automatic resets is reached",
     "active-only": "auto mode spends resets of the active account only",
+    "settling": "auto mode waits for the active account's last reset claim to settle",
 }
 
 
@@ -1193,7 +1194,8 @@ KEPT_REASONS = {
 class KeptReset:
     """One account's usable resets the planner keeps: ``reason`` a code
     (``auto-off``, ``daily-cap``, ``active-only``, ``kind``,
-    ``min-hours-left``, ``off-line``), ``words`` the reason in words,
+    ``min-hours-left``, ``off-line``, ``settling``: the active account's last
+    claim has not been followed by a reading), ``words`` the reason in words,
     ``counts`` the resets by kind (``(("weekly", 1),)``)."""
 
     account: str
@@ -1263,7 +1265,8 @@ def kept_resets(
     reset and only a model window is full; its window refills within
     ``min_hours_left``; after it another window would stay over the
     account's switch line (``last-resort`` lands only on an account the
-    engine would switch to)."""
+    engine would switch to); the active account's last claim has not been
+    followed by a reading (the planner waits for it)."""
     auto_on = getattr(settings, "enabled", True) and settings.auto in (
         "active", "on-limit", "last-resort",
     )
@@ -1273,6 +1276,7 @@ def kept_resets(
     ) is not None:
         return []
     relaxed = replace(settings, min_hours_left=0.0, weekly_for_model_limit=True)
+    settling = any(view.settling and view.num == current for view in views)
     out: list[KeptReset] = []
     for view in views:
         if not view.can_claim:
@@ -1282,7 +1286,7 @@ def kept_resets(
             continue
         reason, words = _kept_reason(
             view, helpful, current=current, settings=settings, auto_on=auto_on,
-            capped=capped, now=now,
+            capped=capped, now=now, settling=settling,
         )
         grants = list({id(c.grant): c.grant for c in helpful}.values())
         counts = tuple(counts_by_kind({"grants": grants}, now))
@@ -1299,6 +1303,7 @@ def _kept_reason(
     auto_on: bool,
     capped: bool,
     now: float,
+    settling: bool = False,
 ) -> tuple[str, str]:
     if not auto_on:
         return "auto-off", KEPT_REASONS["auto-off"]
@@ -1325,6 +1330,10 @@ def _kept_reason(
     for label, pct in cand.projected.items():
         if pct >= window_line(label, view.threshold, view.weekly_threshold):
             return "off-line", f"its {label} window would stay over its switch line"
+    if settling:
+        # The planner spends nothing while the active account's last claim
+        # has not been followed by a fresh reading.
+        return "settling", KEPT_REASONS["settling"]
     return "off-line", "it would not make the account one to switch to"
 
 

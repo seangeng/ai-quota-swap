@@ -781,6 +781,19 @@ def no_switch_sentence(event: object) -> str:
             "Code's settings; see why with: qswap doctor"
         )
     if reason == "reset-pending":
+        account = getattr(event, "account", None)
+        if account:
+            # A planned reset put off for want of a fresh reading (EM4).
+            wait = getattr(event, "wait_s", None)
+            upto = (
+                f"; waiting up to {duration_text(wait)} for it"
+                if isinstance(wait, (int, float)) and wait > 0 else ""
+            )
+            return (
+                "Not switching to an API key yet: auto mode would spend a usage reset "
+                f"on {context_label(account, context)}, whose usage could not be read "
+                f"again this check{upto}"
+            )
         return (
             "Not switching to an API key yet: a usage reset was claimed, and its "
             "refill comes first"

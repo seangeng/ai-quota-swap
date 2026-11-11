@@ -367,7 +367,11 @@ What the code does where this part leaves room, or where it had to differ:
   command that clears it) and the engine says once why it does not use the key
   (`limit-latched`). A reset the
   planner claimed whose refill no reading has shown yet holds key entry, for at most the
-  30 minutes a successful claim keeps the account out of planning. A key the engine cannot
+  30 minutes a successful claim keeps the account out of planning. A reset the planner wants
+  but puts off because its account could not be read again holds key entry too, for at most
+  one cooldown from the first check that wanted the key (`reset-pending`, naming the
+  account). A reset kept while the active account's last claim settles is named with that
+  reason (`settling`). A key the engine cannot
   use (its slot does not hold a key) is skipped and reported once, and leaving a key, a
   subscription whose switch fails and is rolled back is skipped for the next account
   (`switch-failed`), the account underneath last. A key the engine entered is left at once
