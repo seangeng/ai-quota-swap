@@ -841,12 +841,17 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
         elif findings.key is not None:
             f.key_line_active = label(findings.key)
             f.key_line_leave = fix
-            if findings.entered_by == "engine" and not _engine_watching(p, f):
-                # Decision B8 (F33): nothing leaves the key now.
+            watch = _engine_watching(p, f)
+            if findings.entered_by == "engine" and not watch:
+                # Decisions B8 (F33), DS3, DS4: nothing leaves the key now.
+                from ai_quota_swap.autoswitch import key_watch_words
+
                 checks.append(Check(
                     "claude.key_watch", "claude", WARN,
-                    f"auto-switch entered {label(findings.key)} and is not running, so "
-                    "nothing watches its limit and sessions stay on the key",
+                    key_watch_words(
+                        label(findings.key), watch, _now(p),
+                        also=" and sessions stay on the key",
+                    ),
                     fix=_key_way_back(p, registry, login_slot) or display.KEY_NO_WAY_BACK,
                 ))
             check = _key_line_check(p, f, state, row if isinstance(row, dict) else {}, where)
@@ -906,18 +911,21 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
     return checks
 
 
-def _engine_watching(p: Probes, f: _Facts) -> bool:
-    """Whether an auto-switch loop for Claude Code is running (its
-    heartbeat is current)."""
+def _now(p: Probes) -> float:
+    now, _ = _try(p.now, default=None)
+    return now if isinstance(now, (int, float)) else time.time()
+
+
+def _engine_watching(p: Probes, f: _Facts):
+    """Whether an auto-switch engine for Claude Code watches a key's limit
+    (``autoswitch.key_watch``: a loop that is not a dry run, or a ``--once``
+    tick in the last 15 minutes); truthy when one does."""
     from ai_quota_swap import autoswitch
 
     if f.data_dir is None:
-        return False
+        return autoswitch.KeyWatch()
     beat, _ = _try(p.heartbeat, f.data_dir)
-    now, _ = _try(p.now, default=None)
-    if not isinstance(now, (int, float)):
-        now = time.time()
-    return isinstance(beat, dict) and autoswitch.engine_running(beat, now)
+    return autoswitch.key_watch(beat, _now(p))
 
 
 def _defeating(raw: bytes | None) -> tuple[bool, list[str], str | None]:

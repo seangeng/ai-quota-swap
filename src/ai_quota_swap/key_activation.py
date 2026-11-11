@@ -507,14 +507,17 @@ class KeyActivationMixin:
             return {}
         return env_block(settings_object(raw))
 
-    def engine_watching(self) -> bool:
-        """Whether an auto-switch engine is running for this data directory
-        (its loop's heartbeat is current): one is watching the limit of a key
-        it entered (decision B8). Never raises."""
+    def engine_watching(self):
+        """Whether an auto-switch engine watches the limit of a key it
+        entered, for this data directory (decisions B8, DS3, DS4): an
+        ``autoswitch.KeyWatch``, truthy when a loop that is not a dry run
+        ticks or a ``--once`` tick ran in the last 15 minutes; it also says
+        whether only a dry run runs and when an engine last checked. Never
+        raises (falsy on failure)."""
         try:
-            from ai_quota_swap.autoswitch import engine_running, read_heartbeat
+            from ai_quota_swap.autoswitch import key_watch, read_heartbeat
 
-            return engine_running(read_heartbeat(Path(self.backup_dir)), time.time())
+            return key_watch(read_heartbeat(Path(self.backup_dir)), time.time())
         except Exception:
             return False
 

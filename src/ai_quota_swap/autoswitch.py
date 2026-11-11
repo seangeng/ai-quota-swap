@@ -801,13 +801,97 @@ def read_heartbeat(backup_dir: Path) -> dict | None:
 
 def engine_running(beat: dict | None, now: float, *, grace_s: float = HEARTBEAT_GRACE_S) -> bool:
     """Whether a heartbeat comes from a loop engine that is still ticking:
-    its announced next tick is not more than ``grace_s`` overdue."""
+    its announced next tick is not more than ``grace_s`` overdue. A dry-run
+    loop counts here (``qswap status`` says it switches nothing); whether an
+    engine watches a key's limit is :func:`key_watch`."""
     if not beat or beat.get("mode") != "loop":
         return False
     next_at = beat.get("nextTickAt")
     if not isinstance(next_at, (int, float)):
         return False
     return now <= next_at + grace_s
+
+
+#: How long a ``qswap auto --once`` tick counts as watching a key auto-switch
+#: entered: the documented cron runs one every few minutes (decision DS4).
+ONCE_WATCH_S = 15 * 60.0
+
+
+@dataclass(frozen=True)
+class KeyWatch:
+    """Whether an engine watches the limit of a key auto-switch entered, by
+    the last heartbeat (decisions DS3, DS4). Truthy when one does.
+
+    ``mode``: what watches, ``"loop"`` (a loop that ticks) or ``"once"`` (a
+    ``--once`` tick within :data:`ONCE_WATCH_S`); None when nothing does.
+    ``dry_run_only``: the only engine running is a dry run, which never
+    leaves a key. ``last_checked_at``: the last tick of an engine that was
+    not a dry run, when the heartbeat tells (epoch seconds)."""
+
+    watching: bool = False
+    mode: str | None = None
+    dry_run_only: bool = False
+    last_checked_at: float | None = None
+
+    def __bool__(self) -> bool:
+        return self.watching
+
+
+def key_watch(beat: object, now: float, *, host: str | None = None) -> KeyWatch:
+    """Whether the engine behind heartbeat ``beat`` watches a key's limit:
+    a loop that still ticks and is not a dry run, or a ``--once`` tick, not
+    a dry run, at most :data:`ONCE_WATCH_S` ago. ``host``: a stopping loop's
+    own label, so its own heartbeat does not count. Never raises."""
+    if not isinstance(beat, dict):
+        return KeyWatch()
+    last = beat.get("lastTickAt")
+    last = float(last) if isinstance(last, (int, float)) and not isinstance(last, bool) else None
+    dry = bool(beat.get("dryRun"))
+    checked = None if dry else last
+    if engine_running(beat, now) and (host is None or beat.get("host") != host):
+        if dry:
+            return KeyWatch(dry_run_only=True)
+        return KeyWatch(True, "loop", last_checked_at=last)
+    if (
+        beat.get("mode") == "once" and not dry and last is not None
+        and 0 <= now - last <= ONCE_WATCH_S
+    ):
+        return KeyWatch(True, "once", last_checked_at=last)
+    return KeyWatch(last_checked_at=checked)
+
+
+def key_watch_words(
+    key: str, watch: object, now: float | None = None, *, also: str = "",
+) -> str | None:
+    """What every surface says of a key auto-switch entered, by ``watch``
+    (:func:`key_watch`), lower case, no next step: None while a loop
+    watches; ``auto-switch entered #5 ci and last checked it 4m ago (qswap
+    auto --once)`` while a recent ``--once`` tick does; otherwise ``...
+    and is not running`` (or ``and only a dry run is running``) ``, so
+    nothing watches its limit``, then ``also`` (doctor's clause), then when
+    it last checked (``now``: the clock, read here when None). Same state,
+    same words (ux.md)."""
+    from ai_quota_swap.display import ago
+
+    now = time.time() if now is None else now
+    mode = getattr(watch, "mode", None)
+    last = getattr(watch, "last_checked_at", None)
+    if watch and mode == "loop":
+        return None
+    if watch and mode == "once":
+        return (
+            f"auto-switch entered {key} and last checked it "
+            f"{ago(max(0.0, now - last)) if last is not None else 'recently'} "
+            "(qswap auto --once)"
+        )
+    who = (
+        "only a dry run is running" if getattr(watch, "dry_run_only", False)
+        else "is not running"
+    )
+    text = f"auto-switch entered {key} and {who}, so nothing watches its limit{also}"
+    if last is not None:
+        text += f"; it last checked {ago(max(0.0, now - last))}"
+    return text
 
 
 # -- a key the engine entered, and who watches it -------------------------------
@@ -823,12 +907,16 @@ def engine_running(beat: dict | None, now: float, *, grace_s: float = HEARTBEAT_
 
 def unwatched_key(switcher, *, now: float | None = None, host: str | None = None) -> dict | None:
     """The active API key the engine entered, or None: ``{"number",
-    "enteredBy", "engineRunning", "underneath", "back"}``. ``engineRunning``
-    is whether an engine other than ``host`` ticks (its heartbeat is live);
-    ``back`` the command that goes back (the switcher's ``key_way_back``:
-    ``qswap switch N`` to the account underneath, ``qswap add`` over a login
-    qswap does not manage, else the switch to the first subscription), or
-    None. Never raises."""
+    "enteredBy", "engineRunning", "underneath", "back", "watchedBy",
+    "dryRunOnly", "lastCheckedAt"}``. ``engineRunning`` is whether an engine
+    other than the loop ``host`` watches its limit (:func:`key_watch`: a
+    ticking loop that is not a dry run, or a recent ``--once`` tick);
+    ``watchedBy`` is ``"loop"``, ``"once"`` or None; ``dryRunOnly`` whether
+    only a dry run runs; ``lastCheckedAt`` an engine's last real tick
+    (epoch seconds) or None. ``back`` the command that goes back (the
+    switcher's ``key_way_back``: ``qswap switch N`` to the account
+    underneath, ``qswap add`` over a login qswap does not manage, else the
+    switch to the first subscription), or None. Never raises."""
     try:
         helper = getattr(switcher, "helper_account", None)
         entered = getattr(switcher, "key_entered_by", None)
@@ -853,16 +941,16 @@ def unwatched_key(switcher, *, now: float | None = None, host: str | None = None
             )
             back = f"qswap switch {target}" if target is not None else None
         now = time.time() if now is None else now
-        beat = read_heartbeat(Path(switcher.backup_dir))
-        running = engine_running(beat, now) and (
-            host is None or not isinstance(beat, dict) or beat.get("host") != host
-        )
+        watch = key_watch(read_heartbeat(Path(switcher.backup_dir)), now, host=host)
         return {
             "number": str(number),
             "enteredBy": "engine",
-            "engineRunning": bool(running),
+            "engineRunning": bool(watch),
             "underneath": under,
             "back": back,
+            "watchedBy": watch.mode,
+            "dryRunOnly": watch.dry_run_only,
+            "lastCheckedAt": watch.last_checked_at,
         }
     except Exception:
         return None
@@ -872,7 +960,7 @@ def unwatched_key_notice(
     switcher, *, now: float | None = None, host: str | None = None,
 ) -> str | None:
     """What a stopping engine says while sessions are on a key it entered
-    and no other engine runs; None otherwise. ``host`` is the stopping
+    and no other engine watches it; None otherwise. ``host`` is the stopping
     engine's own heartbeat label."""
     key = unwatched_key(switcher, now=now, host=host)
     if key is None or key["engineRunning"]:
@@ -887,9 +975,10 @@ def unwatched_key_notice(
         f"To go back: {key['back']}" if key["back"]
         else f"To leave it, {display.KEY_NO_WAY_BACK}"
     )
+    only_dry = "only a dry run is running, so " if key.get("dryRunOnly") else ""
     return (
-        f"Sessions stay on {who}, which auto-switch entered; nothing watches its "
-        f"limit now. {back}"
+        f"Sessions stay on {who}, which auto-switch entered; {only_dry}nothing watches "
+        f"its limit now. {back}"
     )
 
 

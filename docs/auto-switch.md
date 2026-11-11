@@ -122,7 +122,7 @@ When qswap cannot add the key line (another `apiKeyHelper` is set, a credential 
 
 Each check, except a dry run, first runs the same repair `qswap switch` runs: a run profile still sharing the settings gets its copy, a record whose line is gone is cleared, and so on ([api-accounts.md](api-accounts.md#what-qswap-doctor-checks)). A line that names another data directory (`--data-dir`) belongs to another qswap and is left alone. Each repair is written to qswap's log file ([troubleshooting.md](troubleshooting.md#where-the-log-file-is)); one made by a check that switches is also in that switch's `warnings`.
 
-When the engine stops on a key it entered (Ctrl-C, the menu bar's toggle off or quit), it moves nothing and says: `Sessions stay on #5 ci, which auto-switch entered; nothing watches its limit now. To go back: qswap switch 1`. A restarted engine carries on with the key. Until then `qswap status`, `qswap list`, the menu bar and `qswap doctor` say that nothing watches its limit.
+When the engine stops on a key it entered (Ctrl-C, the menu bar's toggle off or quit), it moves nothing and says: `Sessions stay on #5 ci, which auto-switch entered; nothing watches its limit now. To go back: qswap switch 1`. A restarted engine carries on with the key. Until then `qswap status`, `qswap list`, the menu bar and `qswap doctor` say that nothing watches its limit. A dry run does not count as watching, since it never leaves a key: with only a dry run running (the dashboard starts its engines in dry run) they say `Auto-switch entered #5 ci and only a dry run is running, so nothing watches its limit. To go back: qswap switch 1`. A `qswap auto --once` tick counts for 15 minutes, for the cron setup below: the note then reads `Auto-switch entered #5 ci and last checked it 4m ago (qswap auto --once).` and doctor does not warn. After that it is the usual note, with when it last checked: `... so nothing watches its limit; it last checked 2h ago. To go back: qswap switch 1`.
 
 An API-key account made active the older way (`qswap switch 5 --log-out-sessions`) is not on the key line; there the engine counts its usage as unreadable with this setting on (`#5 ci is an API key · failover in 2 more checks`) and, after `autoswitch.unhealthyTicks` checks, moves to an account with room. Its budget and credit apply as above.
 
@@ -213,7 +213,7 @@ If your shell sets `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `XDG_DATA_HOME`, set the
 */5 * * * * /home/you/.local/bin/qswap auto --once --json >> ~/qswap-auto.log 2>&1
 ```
 
-cron's `PATH` usually does not include the directory qswap is installed in, so give the absolute path. Cooldown, set-aside accounts and the failover count are kept in a state file, so separate `--once` runs behave like one loop. Between runs nothing watches, so a five-minute schedule reacts later than the loop does. On macOS, cron has not been tested with saved logins in the login Keychain; use the menu bar.
+cron's `PATH` usually does not include the directory qswap is installed in, so give the absolute path. Cooldown, set-aside accounts and the failover count are kept in a state file, so separate `--once` runs behave like one loop. Between runs nothing watches, so a five-minute schedule reacts later than the loop does; a key auto-switch entered counts as watched while the last `--once` run is under 15 minutes old. On macOS, cron has not been tested with saved logins in the login Keychain; use the menu bar.
 
 ### Is it running?
 

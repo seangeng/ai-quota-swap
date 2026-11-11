@@ -6949,8 +6949,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             out.append(display.key_helper_problem(f.problem["number"], f.problem["why"], fix))
         if f.key is not None:
             label = self.label(f.key, long=False)
-            if f.entered_by == "engine" and not self.engine_watching():
-                out.append(display.key_unwatched(label, self.key_way_back()))
+            if f.entered_by == "engine":
+                watched = display.key_unwatched(label, self.key_way_back(), self.engine_watching())
+                if watched:
+                    out.append(watched)
             if f.state.stale_command:
                 out.append(display.key_helper_moved(f.key, f"qswap switch {f.key}"))
             if f.came_back:

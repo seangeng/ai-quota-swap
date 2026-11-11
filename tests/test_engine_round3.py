@@ -285,3 +285,125 @@ class TestKeysTurnedOff:
             "Staying on #2 though API keys are turned off: no login is under the key to "
             "go back to. Leave it with: qswap switch 3"
         )
+
+
+# == DS3 and DS4: what counts as an engine watching a key it entered ===========================
+
+
+def _beat(h, *, mode: str, dry_run: bool = False, ago: float = 0.0,
+          host: str = "qswap auto") -> None:
+    import time
+
+    from ai_quota_swap.autoswitch import write_heartbeat
+
+    at = time.time() - ago
+    write_heartbeat(h.switcher.backup_dir, mode=mode, dry_run=dry_run, last_tick_at=at,
+                    next_tick_at=at + 60 if mode == "loop" else None, started_at=at,
+                    host=host)
+
+
+def _key_notes(h) -> str:
+    return " ".join(" ".join(h.switcher.key_helper_notes()).split())
+
+
+def _doctor_watch(h):
+    from ai_quota_swap import doctor
+
+    return {c.id: c for c in doctor.run_checks()}.get("claude.key_watch")
+
+
+class TestWhatWatches:
+    @pytest.mark.parametrize("mode,dry,ago,watching,by,dry_only,checked", [
+        ("loop", False, 0, True, "loop", False, True),
+        ("loop", True, 0, False, None, True, False),
+        ("loop", False, 600, False, None, False, True),  # overdue: it stopped
+        ("once", False, 4 * 60, True, "once", False, True),
+        ("once", False, 15 * 60, True, "once", False, True),
+        ("once", False, 16 * 60, False, None, False, True),
+        ("once", True, 60, False, None, False, False),  # a dry --once checks nothing
+    ])
+    def test_the_rule(self, mode, dry, ago, watching, by, dry_only, checked):
+        from ai_quota_swap.autoswitch import key_watch
+
+        now = 1_800_000_000.0
+        beat = {"mode": mode, "dryRun": dry, "lastTickAt": now - ago,
+                "nextTickAt": now - ago + 60 if mode == "loop" else None, "host": "x"}
+        watch = key_watch(beat, now)
+        assert bool(watch) is watching
+        assert watch.mode == by
+        assert watch.dry_run_only is dry_only
+        assert (watch.last_checked_at == now - ago) if checked else watch.last_checked_at is None
+        assert not key_watch(None, now)
+
+    def test_a_dry_run_engine_does_not_watch(self, temp_home):
+        """The re-check's case: the dashboard's auto view starts every engine
+        in dry run; its heartbeat used to silence the one line that says the
+        budget is no longer enforced."""
+        h = _fleet(temp_home)
+        _enter(h)
+        _beat(h, mode="loop", dry_run=True, host="qswap dashboard")
+        assert (
+            "Auto-switch entered #2 ci and only a dry run is running, so nothing "
+            "watches its limit. To go back: qswap switch 1"
+        ) in _key_notes(h)
+        check = _doctor_watch(h)
+        assert check is not None and check.status == "warn"
+        assert check.summary == (
+            "auto-switch entered #2 ci and only a dry run is running, so nothing "
+            "watches its limit and sessions stay on the key"
+        )
+        from ai_quota_swap.autoswitch import unwatched_key, unwatched_key_notice
+
+        assert unwatched_key(h.switcher)["engineRunning"] is False
+        assert unwatched_key(h.switcher)["dryRunOnly"] is True
+        assert unwatched_key_notice(h.switcher, host="qswap auto") == (
+            "Sessions stay on #2 ci, which auto-switch entered; only a dry run is "
+            "running, so nothing watches its limit now. To go back: qswap switch 1"
+        )
+
+    def test_a_recent_once_tick_watches_and_says_when(self, temp_home):
+        """The documented cron setup: qswap auto --once every few minutes."""
+        h = _fleet(temp_home)
+        _enter(h)
+        _beat(h, mode="once", ago=4 * 60 + 5)
+        notes = _key_notes(h)
+        assert "Auto-switch entered #2 ci and last checked it 4m ago (qswap auto --once)." in notes
+        assert "nothing watches" not in notes
+        assert _doctor_watch(h) is None
+        from ai_quota_swap.autoswitch import unwatched_key, unwatched_key_notice
+
+        key = unwatched_key(h.switcher)
+        assert key["engineRunning"] is True and key["watchedBy"] == "once"
+        # A loop stopping beside the cron (same host label) leaves it watched.
+        assert unwatched_key_notice(h.switcher, host="qswap auto") is None
+
+    def test_an_old_once_tick_is_nothing_watching_and_says_when(self, temp_home):
+        h = _fleet(temp_home)
+        _enter(h)
+        _beat(h, mode="once", ago=20 * 60 + 5)
+        assert (
+            "Auto-switch entered #2 ci and is not running, so nothing watches its "
+            "limit; it last checked 20m ago. To go back: qswap switch 1"
+        ) in _key_notes(h)
+        check = _doctor_watch(h)
+        assert check is not None and check.status == "warn"
+        assert check.summary == (
+            "auto-switch entered #2 ci and is not running, so nothing watches its "
+            "limit and sessions stay on the key; it last checked 20m ago"
+        )
+        assert check.fix == "qswap switch 1"
+
+    def test_a_running_loop_still_says_nothing(self, temp_home):
+        h = _fleet(temp_home)
+        _enter(h)
+        _beat(h, mode="loop")
+        assert "Auto-switch entered" not in _key_notes(h)
+        assert _doctor_watch(h) is None
+
+    def test_the_notes_fit_80_columns(self, temp_home):
+        h = _fleet(temp_home)
+        _enter(h)
+        for mode, dry, ago in (("loop", True, 0), ("once", False, 4 * 60), ("once", False, 3 * 3600)):
+            _beat(h, mode=mode, dry_run=dry, ago=ago)
+            for line in h.switcher.key_helper_notes():
+                assert len(line) <= 80, line

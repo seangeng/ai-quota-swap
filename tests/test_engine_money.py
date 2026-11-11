@@ -1159,6 +1159,7 @@ class TestWhenTheEngineStops:
         assert unwatched_key(h.switcher) == {
             "number": "2", "enteredBy": "engine", "engineRunning": False,
             "underneath": "1", "back": "qswap switch 1",
+            "watchedBy": None, "dryRunOnly": False, "lastCheckedAt": None,
         }
         assert h.switcher.key_entered_by() == "engine"  # kept for a restarted engine
 

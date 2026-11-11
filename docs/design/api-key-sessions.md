@@ -327,7 +327,11 @@ What the code does where this part leaves room, or where it had to differ:
   a key the user entered is not touched. With no login under the key at its limit, the engine stays and
   notifies once. When it stops while sessions are on a key it entered, it says that nothing
   watches the key's limit and how to go back, and moves nothing; `enteredBy` stays
-  `engine`, so the next engine carries on.
+  `engine`, so the next engine carries on. An engine watches a key when its loop ticks and
+  is not a dry run, or when its last `--once` tick (not a dry run) is under 15 minutes old
+  (`autoswitch.key_watch`, read through `engine_watching()`); the surfaces say "only a dry
+  run is running" for a dry-run loop and "last checked 4m ago" for a recent `--once`, and
+  doctor warns only when nothing watches.
 - **The way back**, in status, list, the menu bar, the dashboard, doctor and the stopping
   engine: `qswap switch N` to the account underneath; `qswap add` over a login qswap does
   not manage; else `qswap switch N` to the first subscription; else log in to one and run
