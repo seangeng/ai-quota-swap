@@ -1171,10 +1171,31 @@ class TestPrintedInstallCommands:
 
     @patch("ai_quota_swap.update_check.subprocess.run")
     @patch("ai_quota_swap.update_check._detect_install_method", return_value=None)
-    def test_the_upgrade_fallback(self, mock_detect, mock_run, capsys):
-        from ai_quota_swap import update_check
+    def test_the_upgrade_fallback(self, mock_detect, mock_run, monkeypatch, capsys):
+        import shlex
 
+        # A space in the interpreter's path must not split it in two. Either
+        # quoting (POSIX, or cmd.exe's on Windows) reads back the same here.
+        python = "/opt/my tools/venv/bin/python"
+        monkeypatch.setattr("ai_quota_swap.update_check.sys.executable", python)
         assert run_self_upgrade() == 1
         lines = [line.strip() for line in capsys.readouterr().err.splitlines()]
         pip = next(line for line in lines if " -m pip " in line)
-        assert pip == f"{update_check.sys.executable} -m pip install --upgrade ai-quota-swap"
+        assert shlex.split(pip) == [python, "-m", "pip", "install", "--upgrade", "ai-quota-swap"]
+
+    @pytest.mark.parametrize(
+        ("platform", "path", "word"),
+        [
+            ("darwin", "/opt/my tools/venv/bin/python", "'/opt/my tools/venv/bin/python'"),
+            ("linux", "/usr/bin/python3", "/usr/bin/python3"),
+            ("win32", r"C:\Users\Maya Lee\venv\Scripts\python.exe",
+             r'"C:\Users\Maya Lee\venv\Scripts\python.exe"'),
+            ("win32", r"C:\Python312\python.exe", r"C:\Python312\python.exe"),
+        ],
+        ids=["posix-space", "posix-plain", "windows-space", "windows-plain"],
+    )
+    def test_the_interpreter_is_one_shell_word(self, monkeypatch, platform, path, word):
+        from ai_quota_swap import update_check
+
+        monkeypatch.setattr("ai_quota_swap.update_check.sys.platform", platform)
+        assert update_check._shell_word(path) == word

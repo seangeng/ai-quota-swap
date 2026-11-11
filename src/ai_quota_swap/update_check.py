@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -423,6 +424,15 @@ def _restart_menubar_if_rebuilt(before: dict, after: dict | None) -> None:
     print(f"Menu bar restarted onto {describe_identity(after)} (was pid {pid}).")
 
 
+def _shell_word(word: str) -> str:
+    """``word`` quoted so a shell reads it back as one argument: POSIX quoting,
+    or cmd.exe's double quotes on Windows. An interpreter path can hold a
+    space (``/opt/my tools/venv/bin/python``, a Windows profile folder)."""
+    if sys.platform == "win32":
+        return subprocess.list2cmdline([word])
+    return shlex.quote(word)
+
+
 def run_self_upgrade(current_version: str | None = None) -> int:
     """Run the appropriate upgrade command for the current install method.
 
@@ -457,7 +467,7 @@ def run_self_upgrade(current_version: str | None = None) -> int:
             "Upgrade it the way you installed it:\n"
             "  uv tool upgrade ai-quota-swap\n"
             "  pipx upgrade ai-quota-swap\n"
-            f"  {sys.executable} -m pip install --upgrade {INSTALL_SOURCE}\n"
+            f"  {_shell_word(sys.executable)} -m pip install --upgrade {INSTALL_SOURCE}\n"
             "  git pull                      # a source checkout"
         )
         return 1
