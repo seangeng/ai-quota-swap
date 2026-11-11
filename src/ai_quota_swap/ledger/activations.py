@@ -258,6 +258,33 @@ class ActivationLog:
         i = bisect.bisect_right(self._times, ts) - 1
         return self.activations[i].account if i >= 0 else ""
 
+    def _hows(self) -> list[str]:
+        """The ``how`` in force from each line: a line with none continues
+        the one before it when that is the same account."""
+        hows: list[str] = []
+        for i, a in enumerate(self.activations):
+            how = a.how
+            if not how and i > 0 and self.activations[i - 1].account == a.account:
+                how = hows[i - 1]
+            hows.append(how)
+        return hows
+
+    def helper_underneath(self, ts: float) -> str | None:
+        """The login under the API key active through qswap's key line at
+        ``ts``: the account in force before the run of helper lines that
+        ``ts`` falls in began (a switch from one key to another keeps the
+        same login under it). None when no key was active through the line
+        at ``ts``, or nothing was in force before it."""
+        i = bisect.bisect_right(self._times, ts) - 1
+        if i < 0:
+            return None
+        hows = self._hows()
+        if hows[i] != "helper":
+            return None
+        while i >= 0 and hows[i] == "helper":
+            i -= 1
+        return self.activations[i].account if i >= 0 else None
+
     def saved_key_periods(self) -> bool:
         """Whether any line activated an API key as a saved key."""
         return any(a.how == "saved-key" for a in self.activations)

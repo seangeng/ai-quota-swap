@@ -407,3 +407,71 @@ class TestWhatWatches:
             _beat(h, mode=mode, dry_run=dry, ago=ago)
             for line in h.switcher.key_helper_notes():
                 assert len(line) <= 80, line
+
+
+# == EM10: a session stamped with the login underneath a key stays on the key =================
+
+
+class TestTheLoginUnderneathIsNoRunProfile:
+    def _world(self):
+        from tests.test_ledger import Env, _registry
+
+        env = Env()
+        env.registry = _registry((1, "a@example.com", "uuid-a"), (2, "b@example.com", "uuid-b"))
+        env.registry["accounts"]["5"] = {"email": "key5@token.local", "organizationUuid": "",
+                                         "kind": "api_key"}
+        return env
+
+    def test_the_session_opened_as_the_subscription_ran_out(self):
+        """The re-check's case: a session's file starts with the owner line
+        of #1, the login under the key, then a prompt (nothing counted) just
+        before the engine enters key #5; its requests go out on the key. A
+        real run-profile session of #2 beside it keeps its stamp."""
+        from ai_quota_swap.ledger import spend as ledger_spend
+        from ai_quota_swap.ledger.activations import record_activation
+        from tests.ledger_fixtures import claude_line, owner_line, user_line, write_lines
+        from tests.test_ledger import T0
+
+        env = self._world()
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0, how="login")
+        record_activation(env.data, number=5, email="key5@token.local", org="", now=T0 + 600,
+                          how="helper")
+        write_lines(env.transcript("sess-edge.jsonl"), [
+            owner_line("sess-edge", "uuid-a"),
+            user_line(T0 + 590, session="sess-edge"),
+            claude_line(mid="e1", ts=T0 + 1200, session="sess-edge", inp=1_000_000, out=0,
+                        cr=0, w5=0),
+        ])
+        write_lines(env.transcript("sess-run.jsonl"), [
+            owner_line("sess-run", "uuid-b"),
+            claude_line(mid="r1", ts=T0 + 1300, session="sess-run", inp=1_000_000, out=0,
+                        cr=0, w5=0),
+        ])
+        env.scan()
+        spend = ledger_spend.account_spend(
+            env.data, "key5@token.local", "", month_start=T0 - 3600, day_start=T0,
+            registry=env.registry, since_start=T0,
+        )
+        assert spend.since == pytest.approx(4.0)
+        rows = {r.label: r.totals.requests for r in env.report("account").rows}
+        assert rows == {"#5 key5": 1, "#2 b@example.com": 1}
+
+    def test_a_key_to_key_switch_keeps_the_same_login_underneath(self):
+        from ai_quota_swap.ledger.activations import Activation, ActivationLog
+
+        t = 1_794_225_600.0
+        log = ActivationLog([
+            Activation(ts=t, account="a@example.com|", number=1, source="switch", how="login"),
+            Activation(ts=t + 600, account="key5@token.local|", number=5, source="switch",
+                       how="helper"),
+            Activation(ts=t + 900, account="key6@token.local|", number=6, source="switch",
+                       how="helper"),
+            Activation(ts=t + 950, account="key6@token.local|", number=6, source="observed"),
+            Activation(ts=t + 3600, account="b@example.com|", number=2, source="switch",
+                       how="login"),
+        ])
+        assert log.helper_underneath(t + 700) == "a@example.com|"
+        assert log.helper_underneath(t + 1000) == "a@example.com|"
+        assert log.helper_underneath(t + 300) is None  # a login, no key
+        assert log.helper_underneath(t + 4000) is None
+        assert log.helper_underneath(t - 10) is None

@@ -220,7 +220,11 @@ such a period is attributed to the key only for sessions whose first event is af
 activation, and the report says the split is approximate. A session's `session-owner` stamp
 marks a `qswap run` session only when it comes before the session's first event: a session
 started under the line is stamped late, with the login's account, and its key-period usage
-stays on the key.
+stays on the key. Nor does a stamp naming the login under the key mark one when the
+session's first counted event falls while the key is active through the line (a session
+opened as the subscription ran out, just before the engine entered the key): `qswap run`
+for that login is refused while the key is active, so its usage stays by time, on the key.
+A stamp naming another login still marks a `qswap run` session.
 
 ### As built
 
