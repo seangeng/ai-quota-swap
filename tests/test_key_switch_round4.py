@@ -76,3 +76,31 @@ class TestATombstoneCountsOnlyForItsDay:
         _write_line(temp_home, 5)
         f = s.key_findings()
         assert (f.came_back, f.entered_by) == (True, "engine")
+
+
+# == SS4: doctor's line for another qswap's key line ===========================================
+
+
+from tests.test_key_switch_round3 import RULES, _on, _other_line, _put  # noqa: E402
+
+
+class TestDoctorsLineForAnotherQswap:
+    """The summary held two apostrophes ("qswap's ... That qswap's"); the
+    printer took the text between them for one quoted word and cut it at 80
+    columns with an ellipsis."""
+
+    @pytest.mark.parametrize("rules", list(RULES))
+    def test_it_is_whole_at_80_columns(self, temp_home, monkeypatch, rules):
+        from ai_quota_swap import doctor
+
+        _on(monkeypatch, temp_home, rules)
+        other = temp_home / "other" / "ai-quota-swap"
+        _put(temp_home, _other_line(5, other))
+        checks = [c for c in doctor.run_checks() if "another qswap" in c.summary]
+        lines = doctor.render_text(checks, online=False, width=80)
+        text = " ".join(" ".join(lines).split())
+        assert "…" not in text, lines
+        assert "uses the key of that qswap instead of the active account" in text
+        for line in lines:
+            if not line.strip().startswith(("~", "/", "qswap ")) and ":\\" not in line:
+                assert len(line) <= 80, line

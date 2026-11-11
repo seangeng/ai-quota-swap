@@ -824,9 +824,11 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
         # (named on a line of its own): not this qswap's to check or repair.
         checks.append(Check(
             "claude.api_key_helper", "claude", WARN,
-            f"{where} holds the key line of another qswap; Claude Code uses that "
-            "qswap's key instead of the active account, and qswap cannot add its "
-            "own. That qswap's data directory:",
+            # At most one apostrophe: the printer takes the text between two
+            # for one quoted word, which it never wraps.
+            f"{where} holds the key line of another qswap; Claude Code uses the key "
+            "of that qswap instead of the active account, and this qswap cannot add "
+            "its own line. Its data directory:",
             fix=f"remove apiKeyHelper from {where}",
             path=_abbr(state.data_dir, f.home),
         ))
