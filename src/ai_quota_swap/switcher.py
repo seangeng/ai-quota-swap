@@ -5016,11 +5016,18 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             warning(f"Warning: {name} is the active account")
         runs = self.key_run_pids(account_num) if self._account_kind(account_num) == "api_key" else []
         if runs:
-            noun = "session" if len(runs) == 1 else "sessions"
+            # A session that holds a key keeps sending it when its helper
+            # stops giving one (Claude Code 2.1.322), so removing the
+            # account does not stop them spending on the key.
+            one = len(runs) == 1
+            noun, uses, keeps, them = (
+                ("session", "uses", "keeps", "it") if one
+                else ("sessions", "use", "keep", "them")
+            )
             warning(
                 f"Warning: {len(runs)} {noun} started with qswap run {account_num} "
-                f"(pid {', '.join(map(str, runs))}) use this key and fail with "
-                '"apiKeyHelper script is failing" once it is removed. Exit them first.'
+                f"(pid {', '.join(map(str, runs))}) {uses} this key and {keeps} using "
+                f"it after it is removed, until you exit {them}. Exit {them} first."
             )
 
         from ai_quota_swap import display

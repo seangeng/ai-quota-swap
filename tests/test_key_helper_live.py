@@ -2836,8 +2836,8 @@ class TestRemovingAKeyInUse:
         capsys.readouterr()
         s.remove_account("5", assume_yes=True)
         out = " ".join(capsys.readouterr().out.split())
-        assert "1 session started with qswap run 5 (pid 4242) use this key" in out
-        assert "apiKeyHelper script is failing" in out
+        assert "1 session started with qswap run 5 (pid 4242) uses this key" in out
+        assert "keeps using it after it is removed" in out
 
     def test_run_records_its_pid(self, temp_home, monkeypatch):
         from ai_quota_swap import clis

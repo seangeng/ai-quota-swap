@@ -1207,3 +1207,20 @@ class TestStatusNotesFit:
         assert "nothing watches its limit" in " ".join(" ".join(lines).split())
         for line in lines:
             assert len(line) <= 80, line
+
+
+class TestRemovingAKeyThatRunSessionsHold:
+    def test_the_warning_says_they_keep_the_key(self, temp_home, capsys, monkeypatch):
+        """F56 (7): a session that holds a key keeps sending it when its
+        helper stops giving one (Claude Code 2.1.322)."""
+        s = _fleet()
+        s.record_key_run("5", 4242)
+        monkeypatch.setattr("ai_quota_swap.process_detection.is_pid_alive", lambda pid: pid == 4242)
+        capsys.readouterr()
+        s.remove_account("5", assume_yes=True)
+        out = capsys.readouterr().out
+        text = " ".join(out.split())
+        assert "1 session started with qswap run 5 (pid 4242) uses this key" in text
+        assert "keeps using it after it is removed, until you exit it" in text
+        assert "apiKeyHelper script is failing" not in text
+        _fits(out)
