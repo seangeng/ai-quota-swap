@@ -1144,12 +1144,18 @@ UNDERNEATH = "underneath"
 BY_ENGINE = "by auto-switch"
 
 
-def key_unwatched(key: str, fix_command: str) -> list[str]:
+#: The way off a key when there is no subscription to go back to.
+KEY_NO_WAY_BACK = "log in to a subscription (claude, then /login), then run: qswap add"
+
+
+def key_unwatched(key: str, back: str | None) -> list[str]:
     """Auto-switch entered the active key and no engine is running: nothing
-    leaves the key at its budget or credit, or when a subscription has room."""
+    leaves the key at its budget or credit, or when a subscription has room.
+    ``back`` is the way back (``key_way_back``); None: no subscription."""
+    step = f"To go back: {back}" if back else f"To leave it, {KEY_NO_WAY_BACK}"
     return wrap(
         f"Auto-switch entered {key} and is not running, so nothing watches its "
-        f"limit. To go back: {fix_command}"
+        f"limit. {step}"
     )
 
 

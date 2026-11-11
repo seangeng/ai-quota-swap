@@ -444,8 +444,9 @@ class TestRowsSayTheLimitIsNotEnforced:
             "estimate as of the last qswap usage, 25m ago; auto-switch stays off "
             "this key until its spend is measured: qswap usage"
         )
+        # The menu row's room goes to the reason, which its limit must not cut.
         assert api_spend.menu_text(reading, now=now) == (
-            "$1.00 today · $14.00/$20 (70%) est. · limit not enforced"
+            "$14.00/$20 (70%) est. · limit not enforced"
         )
 
     def test_a_budget_with_no_figure(self):

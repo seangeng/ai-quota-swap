@@ -972,10 +972,14 @@ def account_row(
             # With a budget or a credit, the compact form: the figure (and
             # "over budget", "credit spent") must never be what the row
             # limit cuts.
-            parts.append(api_spend.menu_text(reading))
+            parts.append(api_spend.menu_text(reading, now=now))
         else:
             parts.append(display.api_key_summary(block))
-        attention = api_spend.limit_reason(reading) is not None
+        # A limit reached, or one not enforced (no fresh figure): the engine
+        # treats both as at the limit and leaves the key (decision A4).
+        attention = api_spend.limit_reason(reading) is not None or (
+            api_spend.limit_not_enforced(reading, now)
+        )
     elif state == "not-read":
         parts.append(display.NOT_READ_YET)
     elif state == "note":

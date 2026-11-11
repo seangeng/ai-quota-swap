@@ -802,8 +802,10 @@ def unwatched_key(switcher, *, now: float | None = None, host: str | None = None
     """The active API key the engine entered, or None: ``{"number",
     "enteredBy", "engineRunning", "underneath", "back"}``. ``engineRunning``
     is whether an engine other than ``host`` ticks (its heartbeat is live);
-    ``back`` the command that goes back (``qswap switch N`` to the account
-    underneath, else to the first subscription), or None. Never raises."""
+    ``back`` the command that goes back (the switcher's ``key_way_back``:
+    ``qswap switch N`` to the account underneath, ``qswap add`` over a login
+    qswap does not manage, else the switch to the first subscription), or
+    None. Never raises."""
     try:
         helper = getattr(switcher, "helper_account", None)
         entered = getattr(switcher, "key_entered_by", None)
@@ -814,15 +816,19 @@ def unwatched_key(switcher, *, now: float | None = None, host: str | None = None
             return None
         under_of = getattr(switcher, "underneath_account_number", None)
         under = under_of() if callable(under_of) else None
-        target = under
-        if target is None:
-            target = next(
+        way_back = getattr(switcher, "key_way_back", None)
+        if callable(way_back):
+            # The same way back status, list, the menu bar and doctor give.
+            back = way_back()
+        else:
+            target = under if under is not None else next(
                 (
                     n for n in switcher.switchable_account_numbers()
                     if switcher.account_kind_for(n) != "api_key"
                 ),
                 None,
             )
+            back = f"qswap switch {target}" if target is not None else None
         now = time.time() if now is None else now
         beat = read_heartbeat(Path(switcher.backup_dir))
         running = engine_running(beat, now) and (
@@ -833,7 +839,7 @@ def unwatched_key(switcher, *, now: float | None = None, host: str | None = None
             "enteredBy": "engine",
             "engineRunning": bool(running),
             "underneath": under,
-            "back": f"qswap switch {target}" if target is not None else None,
+            "back": back,
         }
     except Exception:
         return None
@@ -852,9 +858,11 @@ def unwatched_key_notice(
         who = switcher.label(key["number"], long=False)
     except Exception:
         who = f"#{key['number']}"
+    from ai_quota_swap import display
+
     back = (
         f"To go back: {key['back']}" if key["back"]
-        else "To leave it, log in to a subscription (claude, then /login), then run: qswap add"
+        else f"To leave it, {display.KEY_NO_WAY_BACK}"
     )
     return (
         f"Sessions stay on {who}, which auto-switch entered; nothing watches its "
@@ -1350,6 +1358,22 @@ def _over_budget(entry: object) -> bool:
     """At its monthly budget, or its credit spent or expired: whichever is
     reached first applies (docs/design/api-key-sessions.md, "Credit")."""
     return _limit_reason(entry) is not None
+
+
+def key_entry_hold(reading: object, *, now: float, record: object = None) -> str | None:
+    """Why the engine would not enter an API key now, from its reading (and
+    account record) alone: ``key-no-limit`` with neither a budget nor a
+    credit (decision A2), ``spend-unknown`` with no spend figure from the
+    last 20 minutes (A4); None when it may. The engine's own check
+    (``_enterable_keys``) adds a limit reached earlier and latched (A5); the
+    dashboard's "Next best" asks this."""
+    from ai_quota_swap import api_spend
+
+    if not api_spend.has_limit(reading, record):
+        return "key-no-limit"
+    if api_spend.engine_limit_reason(reading, now=now, limited=True) == api_spend.SPEND_UNKNOWN:
+        return "spend-unknown"
+    return None
 
 
 @dataclass(frozen=True)

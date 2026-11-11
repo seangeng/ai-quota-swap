@@ -839,7 +839,7 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
                     "claude.key_watch", "claude", WARN,
                     f"auto-switch entered {label(findings.key)} and is not running, so "
                     "nothing watches its limit and sessions stay on the key",
-                    fix=fix,
+                    fix=_key_way_back(p, registry, login_slot) or display.KEY_NO_WAY_BACK,
                 ))
             check = _key_line_check(p, f, state, row if isinstance(row, dict) else {}, where)
             if findings.came_back and check.status == PASS:
@@ -1081,6 +1081,34 @@ def _key_repair_command(p: Probes, f: _Facts, registry: dict | None) -> str:
             if slot is not None:
                 return f"qswap switch {slot}"
     return "qswap switch N"
+
+
+def _key_way_back(p: Probes, registry: dict | None, login_slot: str | None) -> str | None:
+    """The way off the active key, as ``key_way_back`` gives it to status
+    and the stopping engine: the switch to the login underneath; ``qswap
+    add`` over a login qswap does not manage; else the switch to the first
+    subscription. None when there is no subscription."""
+    accounts = _accounts(registry)
+
+    def kind(number: str) -> object:
+        row = accounts.get(str(number))
+        return row.get("kind") if isinstance(row, dict) else None
+
+    if login_slot is not None and kind(login_slot) != "api_key":
+        return f"qswap switch {login_slot}"
+    if login_slot is None:
+        config_path, err = _try(p.claude_config_path)
+        if err is None:
+            data, _ = _read_json(p, config_path)
+            oauth = (data or {}).get("oauthAccount")
+            if isinstance(oauth, dict) and oauth.get("emailAddress"):
+                return "qswap add"
+    sequence = (registry or {}).get("sequence") if isinstance(registry, dict) else None
+    for number in sequence if isinstance(sequence, list) else []:
+        row = accounts.get(str(number))
+        if isinstance(row, dict) and row.get("kind") != "api_key" and not row.get("disabled"):
+            return f"qswap switch {number}"
+    return None
 
 
 def _stale_profile_copies(p: Probes, f: _Facts, state) -> int:

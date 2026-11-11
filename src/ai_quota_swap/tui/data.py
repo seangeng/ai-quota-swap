@@ -442,6 +442,15 @@ def over_budget(acc: AccountSnapshot) -> bool:
     return api_spend.limit_reason(getattr(acc.usage, "api_spend", None)) is not None
 
 
+def key_needs_attention(acc: AccountSnapshot) -> bool:
+    """An API-key account the engine treats as at its limit: :func:`over_budget`,
+    or a budget or credit with no fresh spend figure (the row says "limit
+    not enforced", decision A4), as the menu bar marks it."""
+    from ai_quota_swap import api_spend
+
+    return over_budget(acc) or api_spend.limit_not_enforced(getattr(acc.usage, "api_spend", None))
+
+
 # ---------------------------------------------------------------------------
 # The ledger: the cost line and the usage screen
 # ---------------------------------------------------------------------------
@@ -541,6 +550,7 @@ __all__ = [
     "cost_line",
     "format_duration",
     "over_budget",
+    "key_needs_attention",
     "provider_lines",
     "run_action",
     "settings_root",

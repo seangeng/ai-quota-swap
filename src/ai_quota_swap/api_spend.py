@@ -1154,7 +1154,8 @@ def _menu_text(reading: dict, unenforced: bool) -> str:
         return _nothing_spent(limit) or API_KEY_NO_USAGE_SHORT
     if used is None:
         return "API key · no spend data"
-    today = reading.get("today")
+    # While the limit is not enforced the row's room goes to saying so.
+    today = None if unenforced else reading.get("today")
     text = f"{money(today)} today · " if today is not None else ""
     text += money(used)
     if limit is not None and pct is not None:

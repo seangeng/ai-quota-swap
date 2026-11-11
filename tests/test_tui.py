@@ -1977,7 +1977,9 @@ class TestAutoScreen:
             await settle(pilot)
             plain = _candidates(app)
             rows = plain.splitlines()
-            assert rows[-1].startswith("  #5 user5@example.com") and "last resort" in rows[-1]
+            # A key with neither a budget nor a credit is one auto-switch
+            # never enters (decision A2): it says so, last.
+            assert rows[-1] == "  #5 user5@example.com  API key · no budget or credit, not used"
             assert "user8@" not in plain  # at its budget
 
     async def test_candidates_rank_by_policy_headroom_under_a_weekly_line(self, tmp_path, fake_engine):

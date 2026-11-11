@@ -615,7 +615,7 @@ def panel_pieces(fleet: data.Fleet, width: int, palette: Palette, app) -> list[_
             block = blocks[(view.provider, acc.number)]
             row = row_text(
                 block, width, palette, column=column, extra=account_extra(acc),
-                over_budget=data.over_budget(acc),
+                over_budget=data.key_needs_attention(acc),
             )
             if acc.is_active:
                 pieces.extend(_card_pieces(

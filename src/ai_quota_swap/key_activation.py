@@ -490,6 +490,31 @@ class KeyActivationMixin:
         except Exception:
             return False
 
+    def key_way_back(self) -> str | None:
+        """The command that takes sessions off the active key, for the
+        surfaces that say nothing watches it (decisions B8, A16), the same in
+        each: the switch to the login underneath; with a login qswap does not
+        manage underneath, adding it (a switch to a subscription would
+        overwrite it, and ``qswap add`` then names the switch); with no login
+        at all, the switch to the first subscription, which logs it in. None
+        when there is no subscription either. Never raises."""
+        try:
+            login = self.login_account_number()
+            if login is not None and self._account_kind(login) != "api_key":
+                return f"qswap switch {login}"
+            if login is None and self.has_live_login():
+                return "qswap add"
+            first = next(
+                (
+                    n for n in self.switchable_account_numbers()
+                    if self.account_kind_for(n) != "api_key"
+                ),
+                None,
+            )
+            return f"qswap switch {first}" if first is not None else None
+        except Exception:
+            return None
+
     def key_helper_available(self) -> bool:
         """Whether qswap can install its helper line now and sessions would
         follow it: no other helper, a file it can parse, and no variable in
