@@ -231,11 +231,15 @@ What the code does where this part leaves room, or where it had to differ:
   package's location is resolved first, so this also works from inside the menu bar's app
   bundle. Of that script, the link first on `PATH` is used when it leads to the same file
   (`uv tool` and `pipx` keep `~/.local/bin/qswap` across a reinstall). A `qswap` first on
-  `PATH` that belongs to another install is never used. Only an install with no console
+  `PATH` that belongs to another install is never used, and neither is a record in the
+  interpreter's library directory that is not this package's (one with a package copy of
+  its own, or an editable install of another checkout). Only an install with no console
   script gets `<python> -P -m ai_quota_swap`: `-P` keeps the session's project directory off
   `sys.path`, where the bare `-m` form would import a project file named like a
   standard-library module. Older `-m` lines are still read as qswap's, and doctor fails
-  them. The menu bar's LaunchAgent uses the same resolver. On Linux the line always names
+  them. A bare word in the line holds only what qswap's own quoting leaves bare, so a line
+  the shell would run as two commands (`;`, `$(`, a backtick) is never read as qswap's,
+  shown as active, or run by doctor's `--check`. The menu bar's LaunchAgent uses the same resolver. On Linux the line always names
   the data directory (`--data-dir`), since the session that runs it may have another
   `XDG_DATA_HOME` than qswap, or none.
 - **Who entered the key** (the user or the engine) and whether qswap created the settings
@@ -308,8 +312,13 @@ What the code does where this part leaves room, or where it had to differ:
   (`RETURN_ROOM_PCT`). A key judged at its budget or credit stays at it in the engine's
   state file until the month rolls over or the budget or credit is set again, so a later
   reading that looks lower (an estimate in place of Anthropic's figure) does not make it a
-  candidate again. A key the engine cannot use (its slot does not hold a key) is skipped
-  and reported once. With no login under the key at its limit, the engine stays and
+  candidate again; the row says so (`budget reached earlier`, with the command that clears
+  it) and the engine says once why it does not use the key (`limit-latched`). A reset the
+  planner claimed whose refill no reading has shown yet holds key entry, for at most the
+  30 minutes a successful claim keeps the account out of planning. A key the engine cannot
+  use (its slot does not hold a key) is skipped and reported once, and leaving a key, a
+  subscription whose switch fails and is rolled back is skipped for the next account
+  (`switch-failed`), the account underneath last. With no login under the key at its limit, the engine stays and
   notifies once. When it stops while sessions are on a key it entered, it says that nothing
   watches the key's limit and how to go back, and moves nothing; `enteredBy` stays
   `engine`, so the next engine carries on.
