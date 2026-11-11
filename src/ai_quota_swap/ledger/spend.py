@@ -67,14 +67,23 @@ class _Sessions:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def sessions(self, provider: str) -> dict[str, tuple[str | None, float | None]]:
-        return {
-            row[0]: (row[1], row[2])
-            for row in self.conn.execute(
-                "SELECT session, owner, first_ts FROM sessions WHERE provider = ?",
+    def sessions(self, provider: str) -> dict[str, tuple[str | None, float | None, int | None]]:
+        try:
+            rows = self.conn.execute(
+                "SELECT session, owner, first_ts, owner_early FROM sessions WHERE provider = ?",
                 (provider,),
-            )
-        }
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # A ledger from before owner_early, read without migrating it
+            # (read-only): its owners read as early, as they always did.
+            rows = [
+                (*row, None)
+                for row in self.conn.execute(
+                    "SELECT session, owner, first_ts FROM sessions WHERE provider = ?",
+                    (provider,),
+                )
+            ]
+        return {row[0]: (row[1], row[2], row[3]) for row in rows}
 
 
 def account_spend(

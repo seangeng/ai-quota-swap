@@ -1202,3 +1202,136 @@ class TestHaikuLongPrompts:
         from ai_quota_swap.ledger import report
 
         assert report.model_label("claude-haiku-5-5/long") == "claude-haiku-5-5 (prompt over 100K)"
+
+
+# == A13: the ledger keeps a key's usage on the key ========================================
+
+
+class TestTheLedgerKeepsTheKeysUsage:
+    def _world(self):
+        from tests.test_ledger import Env, _registry
+
+        env = Env()
+        env.registry = _registry((1, "a@example.com", "uuid-a"), (2, "b@example.com", "uuid-b"))
+        env.registry["accounts"]["5"] = {"email": "key5@token.local", "organizationUuid": "",
+                                         "kind": "api_key"}
+        return env
+
+    def _key_spend(self, env, since):
+        from ai_quota_swap.ledger import spend as ledger_spend
+
+        return ledger_spend.account_spend(
+            env.data, "key5@token.local", "", month_start=since - 3600, day_start=since,
+            registry=env.registry, since_start=since,
+        )
+
+    def test_a_late_owner_line_does_not_take_the_keys_usage_away(self, env_free=None):
+        """The reviewer's case (F35): a session started while the key was
+        active gets Claude Code's owner stamp only after the line is
+        removed. Its key-period usage stays on the key."""
+        from ai_quota_swap.ledger.activations import record_activation
+        from tests.ledger_fixtures import claude_line, owner_line, user_line, write_lines
+        from tests.test_ledger import T0
+
+        env = self._world()
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0, how="login")
+        record_activation(env.data, number=5, email="key5@token.local", org="", now=T0 + 600,
+                          how="helper")
+        path = write_lines(env.transcript("sess-k.jsonl"), [
+            user_line(T0 + 700, session="sess-k"),
+            claude_line(mid="k1", ts=T0 + 1200, session="sess-k", inp=1_000_000, out=0,
+                        cr=0, w5=0),
+        ])
+        env.scan()
+        assert self._key_spend(env, T0).since == pytest.approx(4.0)
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0 + 3600,
+                          how="login")
+        write_lines(path, [owner_line("sess-k", "uuid-a")], append=True)
+        env.scan()
+        assert self._key_spend(env, T0).since == pytest.approx(4.0)
+        rows = {r.label: r.totals.requests for r in env.report("account").rows}
+        assert rows.get("#5 key5") == 1
+
+    def test_an_owner_line_first_is_still_a_run_profile_session(self):
+        from ai_quota_swap.ledger.activations import record_activation
+        from tests.ledger_fixtures import claude_line, owner_line, write_lines
+        from tests.test_ledger import T0
+
+        env = self._world()
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0)
+        write_lines(env.transcript("sess-run.jsonl"), [
+            owner_line("sess-run", "uuid-b"),
+            claude_line(mid="r1", ts=T0 + 10, session="sess-run"),
+        ])
+        env.scan()
+        rows = {r.label: r.totals.requests for r in env.report("account").rows}
+        assert rows == {"#2 b@example.com": 1}
+
+    def test_an_older_ledger_keeps_its_attribution(self):
+        """A ledger from before the column: its sessions with an owner stay
+        run-profile sessions, read-only or after the next scan opens it."""
+        import sqlite3
+
+        from ai_quota_swap.ledger.activations import ActivationLog, record_activation
+        from ai_quota_swap.ledger.report import Accounts, _profile_sessions
+        from ai_quota_swap.ledger.store import DB_FILENAME, LedgerStore
+        from tests.test_ledger import T0
+
+        env = self._world()
+        env.data.mkdir(parents=True, exist_ok=True)
+        db = env.data / DB_FILENAME
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT) WITHOUT ROWID;"
+            "INSERT INTO meta VALUES ('schema_version', '1');"
+            "CREATE TABLE sessions(provider TEXT NOT NULL, session TEXT NOT NULL, owner TEXT,"
+            " first_ts REAL, PRIMARY KEY(provider, session)) WITHOUT ROWID;"
+            f"INSERT INTO sessions VALUES ('claude', 'sess-run', 'uuid-b|', {T0 + 10});"
+        )
+        conn.close()
+        record_activation(env.data, number=1, email="a@example.com", org="", now=T0)
+        log = ActivationLog.load(env.data)
+        accounts = Accounts({"claude": env.registry}, {"claude": log})
+        from ai_quota_swap.ledger.spend import _Sessions
+
+        conn = sqlite3.connect(db)
+        assert _profile_sessions(_Sessions(conn), accounts, log) == {"sess-run": "b@example.com|"}
+        conn.close()
+        store = LedgerStore(db)  # the migration: a column, the old rows unchanged
+        try:
+            assert _profile_sessions(store, accounts, log) == {"sess-run": "b@example.com|"}
+        finally:
+            store.close()
+
+    def test_each_activation_line_starts_its_own_period(self):
+        """F38: a helper line, then a saved-key line for the same key. Usage
+        in the helper period stays on the key, for sessions started before it."""
+        from ai_quota_swap.ledger.activations import Activation, ActivationLog
+
+        t = 1_794_225_600.0
+        log = ActivationLog([
+            Activation(ts=t, account="a@example.com|", number=1, source="switch", how="login"),
+            Activation(ts=t + 600, account="key5@token.local|", number=5, source="switch",
+                       how="helper"),
+            Activation(ts=t + 5400, account="key5@token.local|", number=5, source="switch",
+                       how="saved-key"),
+        ])
+        helper_hour = int((t + 1200) // 3600)
+        assert log.saved_key_owner("key5@token.local|", helper_hour, t + 300) is None
+        # A whole hour of the saved-key period: a session from before the
+        # helper line was on the key through the helper, so it stays there too.
+        later = int((t + 3 * 3600) // 3600)
+        assert log.saved_key_owner("key5@token.local|", later, t + 300) is None
+
+    def test_a_saved_key_period_after_a_login_still_splits(self):
+        from ai_quota_swap.ledger.activations import Activation, ActivationLog
+
+        t = 1_794_225_600.0
+        log = ActivationLog([
+            Activation(ts=t, account="a@example.com|", number=1, source="switch", how="login"),
+            Activation(ts=t + 600, account="key5@token.local|", number=5, source="switch",
+                       how="saved-key"),
+        ])
+        hour = int((t + 2 * 3600) // 3600)
+        assert log.saved_key_owner("key5@token.local|", hour, t + 300) == "a@example.com|"
+        assert log.saved_key_owner("key5@token.local|", hour, t + 900) is None

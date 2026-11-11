@@ -237,13 +237,18 @@ def _profile_sessions(
 ) -> dict[str, str]:
     """``{session: account}`` for Claude sessions started on a login other than
     the default one: ``qswap run`` sessions whose history went to the shared
-    tree."""
+    tree. Only an owner line that came before the session's first event
+    marks one (``owner_early``): Claude Code stamps a session started under an
+    API key's helper line only once the line is gone, with the login's
+    account, and that session's key-period usage stays on the key."""
     out: dict[str, str] = {}
     if not len(log):
         return out
-    for session, (owner, first_ts) in store.sessions("claude").items():
+    for session, (owner, first_ts, *rest) in store.sessions("claude").items():
         if first_ts is None:
             continue
+        if rest and rest[0] == 0:
+            continue  # stamped late: attribution by time
         owner_key = accounts.owner_key(owner)
         if owner_key is None:
             continue
