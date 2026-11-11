@@ -932,15 +932,16 @@ def _defeating(raw: bytes | None) -> tuple[bool, list[str], str | None]:
 def _settings_env_check(raw: bytes | None, where: str, key: str | None) -> Check | None:
     """The user settings' env block (decision B6, F59): a variable Claude
     Code obeys before the key line, or a base URL the key is sent to."""
+    from ai_quota_swap.display import join_names
+
     _helper, names, host = _defeating(raw)
     if names:
-        verb = "sets" if len(names) == 1 else "set"
         return Check(
             "claude.settings_env", "claude", WARN,
-            f"{where} {verb} {' and '.join(names)} in its env block, which Claude "
+            f"{where} sets {join_names(names)} in its env block, which Claude "
             "Code obeys before qswap's key line; qswap will not switch to an API "
             "key while it is there",
-            fix=f"remove {' and '.join(names)} from the env block of {where}",
+            fix=f"remove {join_names(names)} from the env block of {where}",
         )
     if host is not None:
         sent = "the active key" if key is not None else "an API key qswap makes active"
@@ -959,6 +960,8 @@ def _other_settings_checks(p: Probes, f: _Facts) -> list[Check]:
     decides for the sessions that read it, whatever qswap's line says
     (decision B6, F15). Read: the machine's managed file, and the project and
     local settings of the directory doctor runs in."""
+    from ai_quota_swap.display import join_names
+
     checks: list[Check] = []
     user, _ = _try(p.claude_settings_path)
     try:
@@ -999,11 +1002,11 @@ def _other_settings_checks(p: Probes, f: _Facts) -> list[Check]:
         where = _abbr(path, f.home)
         fix = (
             "ask whoever manages this machine about the file above" if kind == "managed"
-            else f"remove {' and '.join(what)} from the file above"
+            else f"remove {join_names(what)} from the file above"
         )
         checks.append(Check(
             "claude.other_settings", "claude", WARN,
-            f"{layer[kind]} set {' and '.join(what)}; Claude Code reads them before "
+            f"{layer[kind]} set {join_names(what)}; Claude Code reads them before "
             "your user settings, so sessions that read them do not follow qswap's "
             "key line:",
             fix=fix, path=where,

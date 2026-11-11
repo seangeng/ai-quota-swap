@@ -8241,7 +8241,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 # sessions would stay on it, logged out of the login for nothing.
                 raise self._key_unavailable(
                     target_account,
-                    f"{state.shown_path()} sets {', '.join(names)} in its env block",
+                    f"{state.shown_path()} sets {display.join_names(names)} in its env block",
                     kind="env", names=names,
                 )
         if target_is_key and not log_out_sessions:

@@ -773,7 +773,7 @@ class KeyActivationMixin:
         if names:
             raise self._key_unavailable(
                 number,
-                f"{state.shown_path()} sets {', '.join(names)} in its env block",
+                f"{state.shown_path()} sets {display.join_names(names)} in its env block",
                 kind="env", names=names,
             )
         host = other_host(env)
@@ -1189,9 +1189,10 @@ class KeyActivationMixin:
                     still = self.isolate_run_profiles()
                 given = len(f.linked) - len(still or ()) if still is not None else 0
                 if given > 0:
-                    noun = "profile" if given == 1 else "profiles"
                     done.append(
-                        f"Gave {given} qswap run {noun} its own copy of the settings."
+                        f"Gave {given} qswap run profile its own copy of the settings."
+                        if given == 1 else
+                        f"Gave {given} qswap run profiles their own copies of the settings."
                     )
             stale = self.stale_profile_copies() if f.problem is not None else f.copies
             if stale:

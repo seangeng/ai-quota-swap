@@ -1270,9 +1270,14 @@ def key_helper_refusal(
     ])
 
 
-def _and(names: Sequence[str]) -> str:
+def join_names(names: Sequence[str]) -> str:
+    """``A``, ``A and B``, ``A, B and C``: the one way names are joined in a
+    sentence."""
     names = list(names)
     return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+_and = join_names
 
 
 def key_helper_foreign_refusal(
@@ -1308,9 +1313,9 @@ def key_line_defeated_refusal(
 ) -> str:
     """The settings' ``env`` block sets a variable Claude Code obeys before
     any key line (decision B6, F59): named, never its value."""
-    verb = "sets" if len(names) == 1 else "set"
+    # The file sets them: the verb follows the file, however many there are.
     head = (
-        f"not switched. {path} {verb} {_and(names)} in its env block, which Claude "
+        f"not switched. {path} sets {_and(names)} in its env block, which Claude "
         f"Code obeys before any key line, so sessions would not use {target}."
     )
     lines = wrap(prefix + head, WIDTH - 2)

@@ -646,6 +646,20 @@ class TestProfilesStillLinkedUnderTheLine:
         assert "apiKeyHelper" not in (d / "settings.json").read_text(encoding="utf-8")
         assert s.key_findings().linked == ()
 
+    def test_two_profiles_get_their_own_copies(self, temp_home, run):
+        """The re-check's slip: "Gave 2 qswap run profiles its own copy"."""
+        s = _fleet()
+        _profile(s, "7", SAM)
+        _profile(s, "1", MAYA)
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": f"{QSWAP} key-helper 5", "model": "opus"}),
+            encoding="utf-8",
+        )
+        assert len(s.key_findings().linked) == 2
+        assert s.reconcile_key_helper() == [
+            "Gave 2 qswap run profiles their own copies of the settings."
+        ]
+
     def test_a_link_the_manifest_does_not_list_still_counts(self, temp_home):
         """A first launch killed before its manifest was written."""
         from ai_quota_swap.session import SHARE_MANIFEST, SessionManager
@@ -863,6 +877,26 @@ class TestTheEnvBlock:
         assert payload["error"]["type"] == "KeyHelperUnavailableError"
         assert payload["error"]["logOutSessions"] is False
         assert SECRET not in out
+
+    @pytest.mark.parametrize("names, joined", [
+        (["ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK"],
+         "ANTHROPIC_API_KEY and CLAUDE_CODE_USE_BEDROCK"),
+        (["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_VERTEX"],
+         "ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY and CLAUDE_CODE_USE_VERTEX"),
+    ])
+    def test_several_variables_one_verb_one_joiner(self, temp_home, run, names, joined):
+        """The re-check's slips: "settings.json set A and B" (the verb
+        followed the variables, not the file), and three ways of joining
+        the names (refusal, doctor, JSON reason)."""
+        s = _fleet()
+        _settings_with(temp_home, {"env": {n: "1" for n in names}})
+        code, out, err = run(s, "switch", "5")
+        assert f"{WHERE} sets {joined} in its env block" in " ".join(err.split())
+        code, out, _err = run(s, "switch", "5", "--json")
+        assert f"sets {joined} in its env block" in json.loads(out)["error"]["keyHelper"]
+        check = _check("claude.settings_env")
+        assert f"{WHERE} sets {joined} in its env block" in check.summary
+        assert check.fix == f"remove {joined} from the env block of {WHERE}"
 
     @pytest.mark.parametrize("value", ["", "0", "false"])
     def test_a_provider_switch_turned_off_is_no_refusal(self, temp_home, value):
