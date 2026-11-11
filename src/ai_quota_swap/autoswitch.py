@@ -62,6 +62,7 @@ from ai_quota_swap.exceptions import (
 )
 from ai_quota_swap.json_output import (
     SCHEMA_VERSION,
+    USAGE_KEYCHAIN_UNAVAILABLE,
     USAGE_RELOGIN_REQUIRED,
     USAGE_TOKEN_EXPIRED,
 )
@@ -163,6 +164,12 @@ SPENT_HEADROOM_PCT = 3.0
 SPEND_SCAN_INTERVAL_S = 5 * 60.0
 # Before entering a key it scans again unless a scan ran this recently.
 SPEND_SCAN_MIN_GAP_S = 60.0
+# With each of those scans the engine reads a key's spend again, and for a key
+# linked to an organization it accepts Anthropic's answer only this fresh
+# (admin_api.CACHE_TTL_S applies to the other readers): so while such a key
+# is active or about to be entered its figure is read at least every
+# SPEND_SCAN_INTERVAL_S (decision EM2).
+ADMIN_REFRESH_S = SPEND_SCAN_MIN_GAP_S
 # The way back from a key the engine entered: a subscription is a target
 # only with at least this many points of room in every window it is judged
 # by (and under its own lines), and only once the engine's cooldown has run
@@ -217,6 +224,13 @@ def _all_above_margin_met(candidate_headroom: float, active_headroom: float) -> 
 # that escalation band; there it decides provisionally on the stored
 # snapshot and escalates at commit time, when a switch would actually fire
 # (the two-phase commit in _tick_inner).
+
+
+def _number(value: object) -> float | None:
+    """``value`` as a float when it is a real number (not a bool), else None."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
 
 
 def _now_iso() -> str:
@@ -414,22 +428,33 @@ class SwitchEvent(AutoSwitchEvent):
     # went back to the account underneath.
     limit_reason: str | None = _human_only()
     back_underneath: bool = _human_only(False)
-    # Entering a key with resets.auto off: which account holds a reset that
-    # was not spent, and the command that spends it ("#1 personal holds 1
-    # weekly reset: qswap reset 1").
-    reset_note: str | None = _human_only()
+    # Entering a key while subscriptions hold usable resets the planner kept
+    # (decision EM4): one line per account, with the reason and the command
+    # that spends it ("#1 personal holds 1 weekly reset auto mode keeps (its
+    # 7d window refills in 9h); to spend it instead: qswap reset 1"). The
+    # same in JSON: ``resets_kept`` (``resetsKept``), one entry per account.
+    reset_notes: tuple[str, ...] = _human_only(default=())
+    resets_kept: tuple[dict, ...] = ()
     # Where the figure behind ``limit_reason`` came from (``ledger``: an
     # estimate, said so).
     limit_source: str | None = _human_only()
+    # At the limit, a subscription taken instead of an API key (decision
+    # EM9), and its binding window, which may be over its own switch line.
+    before_key: bool = _human_only(False)
+    target_binding: BindingWindow | None = _human_only()
 
     def _fields(self) -> dict:
-        return {
+        fields = {
             "trigger": self.trigger,
             "from": self.from_ref,
             "to": self.to_ref,
             "warnings": self.warnings,
             "dryRun": self.dry_run,
         }
+        if self.resets_kept:
+            # Additive: usable resets auto mode keeps while it moves to a key.
+            fields["resetsKept"] = [dict(entry) for entry in self.resets_kept]
+        return fields
 
     def human(self) -> str:
         """``Switched #1 personal → #2 work · 5h reached 91%``."""
@@ -458,6 +483,8 @@ class NoSwitchEvent(AutoSwitchEvent):
     # can leave it for by hand.
     limit_reason: str | None = _human_only()
     way_off: str | None = _human_only()
+    # A dry run's hold, whose figure may be older than a real run's (EM6).
+    dry_run: bool = _human_only(False)
 
     def _fields(self) -> dict:
         return {"reason": self.reason, "detail": self.detail}
@@ -706,20 +733,44 @@ def _mutate_state_file(state_path: Path, mutator: Callable[[dict], None]) -> dic
 #: The limits the engine latches once reached (``limitLatch``); an expired
 #: credit is decided by its date and needs no latch.
 LATCHED_REASONS = frozenset({"budget", "credit-spent"})
+#: Why the engine leaves a key it entered once ``autoswitch.includeApiKeyAccounts``
+#: is turned off: it would not enter the key now (decision EM11).
+KEYS_OFF = "keys-off"
+#: A subscription's usage that could not be read this check (no reading, a
+#: token mid-renewal, a locked Keychain): it may have room, so it holds key
+#: entry for a while (decision EM9). Needing re-login is no such state.
+_UNREADABLE_NOW = (None, USAGE_TOKEN_EXPIRED, USAGE_KEYCHAIN_UNAVAILABLE)
 
 
-def clear_limit_latch(backup_dir: Path, number: str, *, state_path: Path | None = None) -> bool:
-    """Forget that the API-key account ``number`` reached its budget or
-    credit: ``qswap budget`` and ``qswap credit`` call this when either is set
-    again. Returns whether there was one. Never called with another lock held."""
+def clear_limit_latch(
+    backup_dir: Path, number: str, *, kind: str | None = None,
+    state_path: Path | None = None,
+) -> bool:
+    """Forget that the API-key account ``number`` reached its budget
+    (``kind`` ``budget``), its credit (``credit``), or either (None):
+    ``qswap budget`` clears the budget latch and ``qswap credit`` the credit
+    latch, each only its own (decision EM8). Returns whether there was one.
+    Never called with another lock held."""
+    from ai_quota_swap.api_spend import latch_entries
+
     path = state_path or (Path(backup_dir) / STATE_FILENAME)
     latches = _read_state_file(path).get("limitLatch")
     if not isinstance(latches, dict) or str(number) not in latches:
         return False
+    if kind is not None and kind not in latch_entries(latches.get(str(number))):
+        return False
 
     def drop(state: dict) -> None:
         stored = state.get("limitLatch")
-        if isinstance(stored, dict):
+        if not isinstance(stored, dict):
+            return
+        left = latch_entries(stored.get(str(number)))
+        if kind is None:
+            left = {}
+        left.pop(kind, None)
+        if left:
+            stored[str(number)] = left
+        else:
             stored.pop(str(number), None)
 
     _mutate_state_file(path, drop)
@@ -781,13 +832,97 @@ def read_heartbeat(backup_dir: Path) -> dict | None:
 
 def engine_running(beat: dict | None, now: float, *, grace_s: float = HEARTBEAT_GRACE_S) -> bool:
     """Whether a heartbeat comes from a loop engine that is still ticking:
-    its announced next tick is not more than ``grace_s`` overdue."""
+    its announced next tick is not more than ``grace_s`` overdue. A dry-run
+    loop counts here (``qswap status`` says it switches nothing); whether an
+    engine watches a key's limit is :func:`key_watch`."""
     if not beat or beat.get("mode") != "loop":
         return False
     next_at = beat.get("nextTickAt")
     if not isinstance(next_at, (int, float)):
         return False
     return now <= next_at + grace_s
+
+
+#: How long a ``qswap auto --once`` tick counts as watching a key auto-switch
+#: entered: the documented cron runs one every few minutes (decision DS4).
+ONCE_WATCH_S = 15 * 60.0
+
+
+@dataclass(frozen=True)
+class KeyWatch:
+    """Whether an engine watches the limit of a key auto-switch entered, by
+    the last heartbeat (decisions DS3, DS4). Truthy when one does.
+
+    ``mode``: what watches, ``"loop"`` (a loop that ticks) or ``"once"`` (a
+    ``--once`` tick within :data:`ONCE_WATCH_S`); None when nothing does.
+    ``dry_run_only``: the only engine running is a dry run, which never
+    leaves a key. ``last_checked_at``: the last tick of an engine that was
+    not a dry run, when the heartbeat tells (epoch seconds)."""
+
+    watching: bool = False
+    mode: str | None = None
+    dry_run_only: bool = False
+    last_checked_at: float | None = None
+
+    def __bool__(self) -> bool:
+        return self.watching
+
+
+def key_watch(beat: object, now: float, *, host: str | None = None) -> KeyWatch:
+    """Whether the engine behind heartbeat ``beat`` watches a key's limit:
+    a loop that still ticks and is not a dry run, or a ``--once`` tick, not
+    a dry run, at most :data:`ONCE_WATCH_S` ago. ``host``: a stopping loop's
+    own label, so its own heartbeat does not count. Never raises."""
+    if not isinstance(beat, dict):
+        return KeyWatch()
+    last = beat.get("lastTickAt")
+    last = float(last) if isinstance(last, (int, float)) and not isinstance(last, bool) else None
+    dry = bool(beat.get("dryRun"))
+    checked = None if dry else last
+    if engine_running(beat, now) and (host is None or beat.get("host") != host):
+        if dry:
+            return KeyWatch(dry_run_only=True)
+        return KeyWatch(True, "loop", last_checked_at=last)
+    if (
+        beat.get("mode") == "once" and not dry and last is not None
+        and 0 <= now - last <= ONCE_WATCH_S
+    ):
+        return KeyWatch(True, "once", last_checked_at=last)
+    return KeyWatch(last_checked_at=checked)
+
+
+def key_watch_words(
+    key: str, watch: object, now: float | None = None, *, also: str = "",
+) -> str | None:
+    """What every surface says of a key auto-switch entered, by ``watch``
+    (:func:`key_watch`), lower case, no next step: None while a loop
+    watches; ``auto-switch entered #5 ci and last checked it 4m ago (qswap
+    auto --once)`` while a recent ``--once`` tick does; otherwise ``...
+    and is not running`` (or ``and only a dry run is running``) ``, so
+    nothing watches its limit``, then ``also`` (doctor's clause), then when
+    it last checked (``now``: the clock, read here when None). Same state,
+    same words (ux.md)."""
+    from ai_quota_swap.display import ago
+
+    now = time.time() if now is None else now
+    mode = getattr(watch, "mode", None)
+    last = getattr(watch, "last_checked_at", None)
+    if watch and mode in ("loop", None):
+        return None  # a loop watches (a bare True says no more than that)
+    if watch and mode == "once":
+        return (
+            f"auto-switch entered {key} and last checked it "
+            f"{ago(max(0.0, now - last)) if last is not None else 'recently'} "
+            "(qswap auto --once)"
+        )
+    who = (
+        "only a dry run is running" if getattr(watch, "dry_run_only", False)
+        else "is not running"
+    )
+    text = f"auto-switch entered {key} and {who}, so nothing watches its limit{also}"
+    if last is not None:
+        text += f"; it last checked {ago(max(0.0, now - last))}"
+    return text
 
 
 # -- a key the engine entered, and who watches it -------------------------------
@@ -803,12 +938,16 @@ def engine_running(beat: dict | None, now: float, *, grace_s: float = HEARTBEAT_
 
 def unwatched_key(switcher, *, now: float | None = None, host: str | None = None) -> dict | None:
     """The active API key the engine entered, or None: ``{"number",
-    "enteredBy", "engineRunning", "underneath", "back"}``. ``engineRunning``
-    is whether an engine other than ``host`` ticks (its heartbeat is live);
-    ``back`` the command that goes back (the switcher's ``key_way_back``:
-    ``qswap switch N`` to the account underneath, ``qswap add`` over a login
-    qswap does not manage, else the switch to the first subscription), or
-    None. Never raises."""
+    "enteredBy", "engineRunning", "underneath", "back", "watchedBy",
+    "dryRunOnly", "lastCheckedAt"}``. ``engineRunning`` is whether an engine
+    other than the loop ``host`` watches its limit (:func:`key_watch`: a
+    ticking loop that is not a dry run, or a recent ``--once`` tick);
+    ``watchedBy`` is ``"loop"``, ``"once"`` or None; ``dryRunOnly`` whether
+    only a dry run runs; ``lastCheckedAt`` an engine's last real tick
+    (epoch seconds) or None. ``back`` the command that goes back (the
+    switcher's ``key_way_back``: ``qswap switch N`` to the account
+    underneath, ``qswap add`` over a login qswap does not manage, else the
+    switch to the first subscription), or None. Never raises."""
     try:
         helper = getattr(switcher, "helper_account", None)
         entered = getattr(switcher, "key_entered_by", None)
@@ -833,16 +972,16 @@ def unwatched_key(switcher, *, now: float | None = None, host: str | None = None
             )
             back = f"qswap switch {target}" if target is not None else None
         now = time.time() if now is None else now
-        beat = read_heartbeat(Path(switcher.backup_dir))
-        running = engine_running(beat, now) and (
-            host is None or not isinstance(beat, dict) or beat.get("host") != host
-        )
+        watch = key_watch(read_heartbeat(Path(switcher.backup_dir)), now, host=host)
         return {
             "number": str(number),
             "enteredBy": "engine",
-            "engineRunning": bool(running),
+            "engineRunning": bool(watch),
             "underneath": under,
             "back": back,
+            "watchedBy": watch.mode,
+            "dryRunOnly": watch.dry_run_only,
+            "lastCheckedAt": watch.last_checked_at,
         }
     except Exception:
         return None
@@ -852,7 +991,7 @@ def unwatched_key_notice(
     switcher, *, now: float | None = None, host: str | None = None,
 ) -> str | None:
     """What a stopping engine says while sessions are on a key it entered
-    and no other engine runs; None otherwise. ``host`` is the stopping
+    and no other engine watches it; None otherwise. ``host`` is the stopping
     engine's own heartbeat label."""
     key = unwatched_key(switcher, now=now, host=host)
     if key is None or key["engineRunning"]:
@@ -867,9 +1006,10 @@ def unwatched_key_notice(
         f"To go back: {key['back']}" if key["back"]
         else f"To leave it, {display.KEY_NO_WAY_BACK}"
     )
+    only_dry = "only a dry run is running, so " if key.get("dryRunOnly") else ""
     return (
-        f"Sessions stay on {who}, which auto-switch entered; nothing watches its "
-        f"limit now. {back}"
+        f"Sessions stay on {who}, which auto-switch entered; {only_dry}nothing watches "
+        f"its limit now. {back}"
     )
 
 
@@ -1050,6 +1190,81 @@ def preview_reset_plan(
         views, current=current, settings=rs,
         watched=parse_model_names(settings.model), now=now,
     )
+
+
+def _reset_views(
+    switcher, state: dict, entries: Mapping[str, object], usage: Mapping[str, object],
+    thresholds: Mapping[str, float], weekly_threshold: float | None,
+    quarantined: Collection[str], current: str | None, now: float,
+) -> tuple[list, str | None]:
+    """The views the reset planner plans on (``resets.views_from``): the
+    rotation's subscriptions, ``current`` first when it is not one of them,
+    and the accounts whose last claim is still settling. Returns ``(views,
+    current)``."""
+    from ai_quota_swap import resets
+
+    rotation = [
+        n for n in switcher.switchable_account_numbers()
+        if n not in quarantined and switcher.account_kind_for(n) != "api_key"
+    ]
+    accounts = rotation if current in rotation or current is None else [current, *rotation]
+    claims = state.get("resetClaims") if isinstance(state.get("resetClaims"), dict) else {}
+    settling = [
+        n for n in accounts
+        if not reset_claim_settled(claims.get(n), getattr(entries.get(n), "fetched_at", None), now)
+    ]
+    views = resets.views_from(
+        usage, claimable=rotation, thresholds=thresholds,
+        weekly_threshold=weekly_threshold, accounts=accounts, settling=settling,
+    )
+    return views, current
+
+
+def kept_resets_now(
+    switcher: ClaudeAccountSwitcher,
+    settings: AutoSwitchSettings,
+    entries: Mapping[str, object],
+    *,
+    now: float | None = None,
+) -> list:
+    """The usable resets auto mode keeps now (``resets.KeptReset``, one per
+    account), on ``entries`` (``usage_entries_by_account()``), as the engine
+    plans: on a key it entered, the account underneath stands for the active
+    one. For the surfaces (status, list, the dashboard, the menu bar's key
+    row) while a key the engine entered is active: each is a note
+    (``KeptReset.note(label)``) and a JSON entry (``to_json()``), decision
+    EM4. Read-only; [] when there is nothing to say. Never raises."""
+    from ai_quota_swap import resets
+
+    try:
+        now = time.time() if now is None else now
+        state = _read_state_file(Path(switcher.backup_dir) / STATE_FILENAME)
+        quarantine = state.get("quarantine")
+        quarantined = set(quarantine) if isinstance(quarantine, dict) else set()
+        current = switcher.current_account_number()
+        entered_by = getattr(switcher, "key_entered_by", None)
+        if current is not None and callable(entered_by) and entered_by() == "engine":
+            under = getattr(switcher, "underneath_account_number", None)
+            current = (under() if callable(under) else None) or current
+        policies = switcher.account_policies()
+        thresholds = ThresholdMap(
+            {n: p.threshold for n, p in policies.items() if p.threshold is not None},
+            settings.threshold,
+        )
+        usage = {
+            num: entry.decision_value() for num, entry in entries.items()  # type: ignore[union-attr]
+        }
+        views, current = _reset_views(
+            switcher, state, entries, usage, thresholds, settings.weekly_threshold,
+            quarantined, current, now,
+        )
+        return resets.kept_resets(
+            views, current=current, settings=switcher.reset_settings(),
+            watched=parse_model_names(settings.model), now=now,
+            claims_today=reset_claims_today(state, now), daily_cap=MAX_AUTO_RESETS_PER_DAY,
+        )
+    except Exception:
+        return []
 
 
 def _new_reset_request_id() -> str:
@@ -1549,6 +1764,15 @@ class AutoSwitchEngine:
         self._dry_latches: dict = {}
         # Whether this tick claimed a usage reset (free before paid).
         self._reset_claimed = False
+        # API keys whose ledger figure this tick's scan could not vouch for
+        # (decision EM3): their spend counts as unknown.
+        self._ledger_unsure: set[str] = set()
+        # Whether this tick wanted an API key (no subscription could take the
+        # sessions), and since when checks have (``keyWanted`` in the state
+        # file; a dry run keeps it here only): the unreadable hold of EM9.
+        self._wanted_key = False
+        self._dry_key_wanted: dict | None = None
+        self._key_wait_recorded = False
 
     # -- state file ---------------------------------------------------------
 
@@ -1739,38 +1963,49 @@ class AutoSwitchEngine:
             for fetched in (getattr(entries.get(str(num)), "fetched_at", None),)
         )
 
-    def _unspent_reset_note(self, usage: Mapping[str, object], quarantined: set[str]) -> str | None:
-        """With ``resets.auto`` off, the first rotation account holding a reset
-        usable now, as the words a switch onto a key adds; None otherwise."""
+    def _kept_resets(
+        self,
+        state: dict,
+        entries: Mapping[str, object],
+        usage: Mapping[str, object],
+        thresholds: "ThresholdMap",
+        quarantined: set[str],
+        current: str,
+    ) -> list:
+        """The usable resets the planner keeps this tick
+        (``resets.kept_resets``), on the views it plans on. Never raises."""
         from ai_quota_swap import resets
 
         try:
             rs = self.switcher.reset_settings()
-        except Exception:
-            return None
-        if rs.enabled and rs.auto != "off":
-            return None
-        now = self.clock()
-        for num in self.switcher.switchable_account_numbers():
-            if num in quarantined or self.switcher.account_kind_for(num) == "api_key":
-                continue
-            value = usage.get(num)
-            status = value.get("resets") if isinstance(value, dict) else None
-            usable = [
-                g for g in resets.unused_grants(status, now)
-                if resets.grant_unusable_reason(g, now) is None
-            ]
-            if not usable:
-                continue
-            counts = resets.counts_by_kind({"grants": usable}, now)
-            held = " and ".join(
-                f"{n} {label} reset{'' if n == 1 else 's'}" for label, n in counts
+            now = self.clock()
+            views, planning = _reset_views(
+                self.switcher, state, entries, usage, thresholds,
+                self.settings.weekly_threshold, quarantined,
+                self._reset_planning_account(current, [
+                    n for n in self.switcher.switchable_account_numbers()
+                    if n not in quarantined and self.switcher.account_kind_for(n) != "api_key"
+                ]),
+                now,
             )
-            from ai_quota_swap.autolog import number_label
+            return resets.kept_resets(
+                views, current=planning, settings=rs, watched=self._models, now=now,
+                claims_today=reset_claims_today(state, now),
+                daily_cap=MAX_AUTO_RESETS_PER_DAY,
+            )
+        except Exception as e:  # words only; never cost the tick
+            _logger.debug("could not tell which usage resets are kept: %r", e)
+            return []
 
-            who = number_label(num, self.switcher.account_email(num) or "", self._context)
-            return f"{who} holds {held}: qswap reset {num}"
-        return None
+    def _label_of(self, num: str) -> str:
+        """``#1 personal`` or ``#1 a@example.com``, for event text."""
+        from ai_quota_swap.autolog import number_label
+
+        try:
+            email = self.switcher.account_email(num) or ""
+        except Exception:
+            email = ""
+        return number_label(num, email, self._context)
 
     # -- quarantine -----------------------------------------------------------
 
@@ -1952,8 +2187,11 @@ class AutoSwitchEngine:
     def tick(self) -> TickOutcome:
         """Evaluate once: poll usage, maybe switch. Never raises."""
         try:
+            self._wanted_key = False
             outcome = self._tick_inner()
             self._persist_health_counters(self._health_account)
+            if not self._wanted_key:
+                self._end_key_wait()
             return outcome
         except ProviderError as e:
             self._emit(ErrorEvent(message=str(e), transient=True))
@@ -2108,12 +2346,14 @@ class AutoSwitchEngine:
         self._idle_hold_slow = False
         self._tick_cause = {}
         self._reset_claimed = False
+        self._ledger_unsure = set()
         self._context = EventContext(
             provider=self._provider_id(), names=self._alias_names()
         )
         settings = self.settings
         priority_mode = settings.strategy == "priority-consume-first"
         state = self._read_state()
+        self._key_wait_recorded = "keyWanted" in state
         if not self.dry_run:
             # Dry-run must not write anything, so recovered quarantines are
             # only released (state mutation) on real ticks.
@@ -2188,8 +2428,7 @@ class AutoSwitchEngine:
         # The account records and the latches this tick reads (API-key
         # budgets and credits), before the views that quote them.
         self._tick_records = self._read_account_records()
-        latches = state.get("limitLatch")
-        self._latches = {**(latches if isinstance(latches, dict) else {}), **self._dry_latches}
+        self._latches = self._read_latches(state)
         self._context = replace(
             self._context or EventContext(),
             accounts=self._account_views(
@@ -2568,11 +2807,23 @@ class AutoSwitchEngine:
             usage.get(current), headroom.get(current), settings, thresholds[current]
         )
         held_for_sessions = False
-        if (
+        key_branch = bool(
             not ordered and api_key_candidates
             and trigger == "at-limit"
             and not priority_active_ready
-        ):
+        )
+        takers = self._session_takers(oauth_candidates, headroom) if key_branch else []
+        if takers:
+            # No key while a subscription could take the sessions (decision
+            # EM9): readable, with RETURN_ROOM_PCT points of room in every
+            # watched window. It is the target instead, over its own switch
+            # line too and in any strategy, said so on the switch line.
+            ordered = takers
+            self._tick_cause["before_key"] = True
+            self._tick_cause["target_bindings"] = {
+                n: self._binding(usage.get(n), settings, thresholds[n]) for n in takers
+            }
+        elif key_branch:
             # Last resort when we must move: metered API-key accounts
             # (unmeasurable headroom). Only at the limit: the active
             # subscription has no room left. Never on the proactive trigger
@@ -2586,6 +2837,8 @@ class AutoSwitchEngine:
             # run on the shared login: a running session cannot move to a
             # saved key and would stop with "Not logged in"
             # (docs/design/api-key-sessions.md).
+            self._wanted_key = True
+            wanted_since = self._key_wanted_since(state, self.clock())
             helper = self._key_helper_ready()
             if self._reset_claimed or self._reset_in_flight(state, entries):
                 # Free before paid: a reset claimed this tick, or one whose
@@ -2594,6 +2847,8 @@ class AutoSwitchEngine:
                     reason="reset-pending",
                     detail="a usage reset was claimed; its refill comes before an API key",
                 ))
+                held_for_sessions = True
+            elif self._unreadable_hold(oauth_candidates, usage, headroom, settings, wanted_since):
                 held_for_sessions = True
             elif helper is False:
                 self._emit(NoSwitchEvent(
@@ -2614,9 +2869,13 @@ class AutoSwitchEngine:
                 ordered, entries = self._enterable_keys(state, entries, api_key_candidates)
                 held_for_sessions = not ordered
                 if ordered:
-                    self._tick_cause["reset_note"] = self._unspent_reset_note(
-                        usage, quarantined
+                    # A reset the user's settings keep stays banked, and is
+                    # named with the command that spends it (decision EM4).
+                    kept = self._kept_resets(state, entries, usage, thresholds, quarantined, current)
+                    self._tick_cause["reset_notes"] = tuple(
+                        k.note(self._label_of(k.account)) for k in kept
                     )
+                    self._tick_cause["resets_kept"] = tuple(k.to_json() for k in kept)
 
         if held_for_sessions:
             # The way out was a key the engine cannot move to now. When every
@@ -2757,7 +3016,19 @@ class AutoSwitchEngine:
                     return TickOutcome.NO_ACTION
             if self.dry_run:
                 # Dry-run stops at the decision: no token refresh, no
-                # quarantine writes — freshening is a mutation.
+                # quarantine writes — freshening is a mutation. A key slot is
+                # checked read-only, as a real switch would refuse it (A12,
+                # decision EM6).
+                problem = (
+                    self._dry_key_problem(num)
+                    if self.switcher.account_kind_for(num) == "api_key" else None
+                )
+                if problem is not None:
+                    self._emit(NoSwitchEvent(
+                        reason="key-unusable", detail=problem, account=str(num),
+                    ))
+                    skipped_keys = True
+                    continue
                 return self._perform(num, email, trigger, left_snapshot)
             status = self._freshen_target(num, email)
             if status == "identity-conflict":
@@ -3863,8 +4134,11 @@ class AutoSwitchEngine:
             "priority_up": priority_up,
             "limit_reason": cause.get("limit_reason"),
             "back_underneath": bool(cause.get("back_underneath")),
-            "reset_note": cause.get("reset_note"),
+            "reset_notes": tuple(cause.get("reset_notes") or ()),
+            "resets_kept": tuple(cause.get("resets_kept") or ()),
             "limit_source": cause.get("limit_source"),
+            "before_key": bool(cause.get("before_key")),
+            "target_binding": (cause.get("target_bindings") or {}).get(number),
         }
 
     def _account_views(
@@ -3974,18 +4248,15 @@ class AutoSwitchEngine:
         reason = api_spend.limit_reason(reading, latched=False)
         if reason is not None:
             return reason
-        stored = self._latches.get(num)
         latched = api_spend.latch_of(reading)
-        if latched is None and isinstance(stored, dict) and stored.get("reason") in LATCHED_REASONS:
-            if not isinstance(reading, dict) or self._latch_identity(
-                num, stored["reason"], reading
-            ) == stored:
-                latched = stored["reason"]
+        if latched is None:
+            latched = next(iter(self._holding_latches(num, reading)), None)
         if latched is not None:
             return f"latched-{latched}"
         scans = (
             not self.dry_run and self._scans_ledger()
             and self._spend_source(num, {num: entry}) != api_spend.SOURCE_ADMIN
+            and not api_spend.machine_only(reading)  # a scan never makes it fresh
         )
         if not scans and api_spend.engine_limit_reason(
             reading, now=self.clock(), limited=True
@@ -4161,23 +4432,31 @@ class AutoSwitchEngine:
 
         reading = getattr(entries.get(num), "api_spend", None)
         reason = api_spend.limit_reason(reading, latched=False)
-        if reason in LATCHED_REASONS:
-            self._remember_latch(num, reason, reading)
-        elif reason is None:
+        for reached in api_spend.reached_latches(reading):
+            self._remember_latch(num, reached, reading)
+        if reason is None:
             reason = self._latched_reason(num, reading)
         if reason is not None:
             return reason
-        return api_spend.engine_limit_reason(
-            reading, now=self.clock(), limited=self._key_limited(num, entries)
-        )
+        limited = self._key_limited(num, entries)
+        if (
+            limited and num in self._ledger_unsure
+            and self._spend_source(num, entries) != api_spend.SOURCE_ADMIN
+        ):
+            # This tick's scan could not cover the period the limit is
+            # measured over: the ledger's figure may miss usage (EM3).
+            return api_spend.SPEND_UNKNOWN
+        return api_spend.engine_limit_reason(reading, now=self.clock(), limited=limited)
 
     # A limit that was reached stays reached: a later reading under it whose
     # source got worse (the Admin API's figure replaced by the ledger's lower
     # estimate, a rescan that attributes less) does not let the key back in.
-    # ``limitLatch`` in the state file: account number -> what was reached
-    # (the budget's month and amount, or the credit's identity). It lapses
-    # when the month rolls over, when the budget changes or the credit is
-    # recorded again, and ``qswap budget`` / ``qswap credit`` clear it.
+    # ``limitLatch`` in the state file: account number -> one latch per kind
+    # (``budget``: the month and amount; ``credit``: the credit's identity),
+    # decision EM8. The budget latch lapses when the month rolls over or the
+    # budget changes, the credit latch when another credit is recorded;
+    # ``qswap budget`` clears the budget latch and ``qswap credit`` the
+    # credit latch. The key stays out while either holds.
 
     def _latch_identity(self, num: str, reason: str, reading: object) -> dict | None:
         from ai_quota_swap import api_spend
@@ -4186,6 +4465,31 @@ class AutoSwitchEngine:
             reason, reading, self._account_record(num), self.clock()
         )
 
+    def _read_latches(self, state: dict) -> dict:
+        """``{account: {kind: latch}}`` from the state file (either shape),
+        with a dry run's own on top."""
+        from ai_quota_swap.api_spend import latch_entries
+
+        stored = state.get("limitLatch")
+        out = {
+            str(num): latch_entries(entry)
+            for num, entry in (stored.items() if isinstance(stored, dict) else ())
+        }
+        for num, kinds in self._dry_latches.items():
+            out[num] = {**out.get(num, {}), **kinds}
+        return {num: kinds for num, kinds in out.items() if kinds}
+
+    def _holding_latches(self, num: str, reading: object) -> list[str]:
+        """The latched limits of ``num`` that still apply to ``reading``
+        (credit first), with no side effects. With no reading to judge them
+        by, every latch stands."""
+        kinds = self._latches.get(num) or {}
+        return [
+            latch["reason"] for latch in kinds.values()
+            if not isinstance(reading, dict)
+            or self._latch_identity(num, latch["reason"], reading) == latch
+        ]
+
     def _note_reached_limits(self, entries: Mapping[str, object]) -> None:
         """Latch every API key this tick's readings show at its budget or
         credit, candidates included (the census drops those unasked)."""
@@ -4193,24 +4497,28 @@ class AutoSwitchEngine:
 
         for num, entry in entries.items():
             reading = getattr(entry, "api_spend", None)
-            reason = api_spend.limit_reason(reading, latched=False)
-            if reason in LATCHED_REASONS:
+            for reason in api_spend.reached_latches(reading):
                 self._remember_latch(str(num), reason, reading)
 
     def _remember_latch(self, num: str, reason: str, reading: object) -> None:
+        from ai_quota_swap.api_spend import LATCH_KINDS, latch_entries
+
+        kind = LATCH_KINDS.get(reason)
         ident = self._latch_identity(num, reason, reading)
-        if ident is None or self._latches.get(num) == ident:
+        if kind is None or ident is None or (self._latches.get(num) or {}).get(kind) == ident:
             return
-        self._latches[num] = ident
+        self._latches.setdefault(num, {})[kind] = ident
         if self.dry_run:
-            self._dry_latches[num] = ident
+            self._dry_latches.setdefault(num, {})[kind] = ident
             return
 
         def store(state: dict) -> None:
             latches = state.get("limitLatch")
             if not isinstance(latches, dict):
                 latches = state["limitLatch"] = {}
-            latches[num] = ident
+            kinds = latch_entries(latches.get(num))
+            kinds[kind] = ident
+            latches[num] = kinds
 
         try:
             self._mutate_state(store)
@@ -4218,22 +4526,116 @@ class AutoSwitchEngine:
             _logger.warning("Could not record that account %s reached its limit: %r", num, e)
 
     def _latched_reason(self, num: str, reading: object) -> str | None:
-        stored = self._latches.get(num)
-        if not isinstance(stored, dict) or stored.get("reason") not in LATCHED_REASONS:
-            return None
-        if not isinstance(reading, dict):
-            return stored["reason"]  # nothing new to judge it by: it stands
-        if self._latch_identity(num, stored["reason"], reading) == stored:
-            return stored["reason"]
-        # Another month, another budget, another credit: it no longer applies.
-        self._latches.pop(num, None)
-        self._dry_latches.pop(num, None)
-        if not self.dry_run:
-            try:
-                clear_limit_latch(Path(self.switcher.backup_dir), num, state_path=self.state_path)
-            except Exception as e:
-                _logger.debug("Could not clear a lapsed limit latch: %r", e)
-        return None
+        """The first latched limit of ``num`` that still applies (credit
+        first); a latch that no longer applies (another month, another
+        budget, another credit) is dropped, that kind only."""
+        kinds = self._latches.get(num) or {}
+        holding = self._holding_latches(num, reading)
+        for kind, latch in list(kinds.items()):
+            if latch["reason"] in holding:
+                continue
+            kinds.pop(kind, None)
+            (self._dry_latches.get(num) or {}).pop(kind, None)
+            if not self.dry_run:
+                try:
+                    clear_limit_latch(
+                        Path(self.switcher.backup_dir), num, kind=kind,
+                        state_path=self.state_path,
+                    )
+                except Exception as e:
+                    _logger.debug("Could not clear a lapsed limit latch: %r", e)
+        return holding[0] if holding else None
+
+    # -- no key while a subscription could take the sessions (decision EM9) ----
+    #
+    # The engine never enters an API key while a subscription in the rotation
+    # passes the return rule's room test: readable, at least RETURN_ROOM_PCT
+    # points of room in every watched window, not needing re-login (set
+    # aside) and not disabled (out of the rotation). That subscription is the
+    # target instead, over its own switch line too. While another
+    # subscription's usage cannot be read this check, key entry waits at most
+    # one cooldown from the first check that wanted the key, then goes ahead.
+
+    def _session_takers(
+        self, candidates: Sequence[str], headroom: Mapping[str, float | None],
+    ) -> list[str]:
+        """The subscriptions among ``candidates`` that could take the
+        sessions instead of a key, the most room first (rotation order breaks
+        ties)."""
+        room = {
+            n: h for n in candidates
+            if (h := headroom.get(n)) is not None and h >= RETURN_ROOM_PCT
+        }
+        return sorted(room, key=lambda n: -room[n])
+
+    def _unreadable_hold(
+        self, candidates: Sequence[str], usage: Mapping[str, object],
+        headroom: Mapping[str, float | None], settings: AutoSwitchSettings,
+        since: float,
+    ) -> bool:
+        """Whether key entry waits for a subscription whose usage cannot be
+        read this check (``usage-unreadable-hold``, said once per episode by
+        the notifier). At most one cooldown from ``since``, the first check
+        that wanted the key; afterwards the key goes ahead."""
+        unreadable = [
+            n for n in candidates
+            if headroom.get(n) is None and usage.get(n) in _UNREADABLE_NOW
+        ]
+        now = self.clock()
+        left = settings.cooldown_seconds - (now - since)
+        if not unreadable or left <= 0:
+            return False
+        self._emit(NoSwitchEvent(
+            reason="usage-unreadable-hold",
+            detail=(
+                f"account {unreadable[0]}'s usage could not be read this check; an API "
+                "key waits for it"
+            ),
+            account=unreadable[0],
+            wait_s=left,
+        ))
+        return True
+
+    def _key_wanted_since(self, state: dict, now: float) -> float:
+        """When the checks that want a key began: ``keyWanted`` in the state
+        file (``{"since", "at"}``: the first and the last such check; a dry
+        run keeps it in memory), carried on while the last one is no older
+        than :data:`ONCE_WATCH_S` (a gap that long is another episode)."""
+        stored = self._dry_key_wanted if self.dry_run else state.get("keyWanted")
+        since = _number(stored.get("since")) if isinstance(stored, dict) else None
+        last = _number(stored.get("at")) if isinstance(stored, dict) else None
+        if since is None or last is None or not (0 <= now - last <= ONCE_WATCH_S):
+            since = now
+        record = {"since": since, "at": now}
+        if self.dry_run:
+            self._dry_key_wanted = record
+            return since
+        state["keyWanted"] = record
+        self._key_wait_recorded = True
+
+        def store(s: dict) -> None:
+            s["keyWanted"] = record
+
+        try:
+            self._mutate_state(store)
+        except Exception as e:
+            _logger.debug("Could not record that an API key is wanted: %r", e)
+        return since
+
+    def _end_key_wait(self) -> None:
+        """A check that did not want a key ends the episode."""
+        self._dry_key_wanted = None
+        if self.dry_run or not self._key_wait_recorded:
+            return
+        self._key_wait_recorded = False
+
+        def drop(s: dict) -> None:
+            s.pop("keyWanted", None)
+
+        try:
+            self._mutate_state(drop)
+        except Exception as e:
+            _logger.debug("Could not clear that an API key was wanted: %r", e)
 
     def _enterable_keys(
         self, state: dict, entries: Mapping[str, object], candidates: Sequence[str],
@@ -4277,8 +4679,43 @@ class AutoSwitchEngine:
             self._emit(NoSwitchEvent(
                 reason=why, detail=detail, account=num,
                 limit_reason=brake if why == "limit-latched" else None,
+                dry_run=self.dry_run,
             ))
         return ok, entries
+
+    def _dry_key_problem(self, num: str) -> str | None:
+        """Why the slot ``num`` cannot give a key, in the words a real switch
+        refuses it with, or None (decision EM6: a dry run asks, reading
+        only). A slot whose key is in its previous copy is usable: a real
+        switch puts it back first. Never raises."""
+        reader = getattr(self.switcher, "_read_account_credentials_ex", None)
+        if not callable(reader):
+            return None
+        try:
+            from ai_quota_swap.key_helper import is_key
+
+            email = self.switcher.account_email(num) or ""
+            stored, unreadable = reader(num, email)
+            if is_key(stored):
+                return None
+            if stored:
+                previous = self.switcher._store._read_previous_backup(num, email)
+                if is_key(previous):
+                    return None
+            who = self.switcher.label(num, long=False)
+            if stored:
+                return (
+                    f"{who}'s saved credential is not an API key. Save the key again "
+                    f"with: qswap add-token KEY --slot {num}"
+                )
+            if unreadable:
+                return (
+                    f"{who}'s saved key is in the macOS Keychain but it is unreadable "
+                    "right now (locked or no GUI session). Unlock it and retry."
+                )
+            return f"{who} has no saved key. Save one with: qswap add-token KEY --slot {num}"
+        except Exception:
+            return None
 
     @staticmethod
     def _spend_source(num: str, entries: Mapping[str, object]) -> str | None:
@@ -4289,6 +4726,19 @@ class AutoSwitchEngine:
         """Only Claude Code's API keys are counted from the local ledger."""
         return self._provider_id() == "claude" and hasattr(self.switcher, "backup_dir")
 
+    def _scan_start(self, nums: Collection[str], now: float) -> float:
+        """Where the ledger scan for the keys ``nums`` starts: the earlier of
+        the start of the UTC month (as a budget is measured) and the start
+        of a credit recorded before it (decision EM3)."""
+        from ai_quota_swap import admin_api, api_spend
+
+        start = admin_api.utc_month_bounds(now)[0].timestamp()
+        for num in nums:
+            credit = api_spend.credit_from_record(self._account_record(num))
+            if credit is not None and credit["since"] < start:
+                start = float(credit["since"])
+        return start
+
     def _keep_spend_fresh(
         self,
         state: dict,
@@ -4297,39 +4747,69 @@ class AutoSwitchEngine:
         *,
         every: float,
     ) -> dict:
-        """Scan the ledger (at most once per ``every`` seconds across engines
-        and processes: ``spendScanAt`` in the state file), then read the API
-        keys ``nums`` again. Returns ``entries`` with theirs replaced. Never
-        raises; a dry run never scans (the scan writes the ledger)."""
+        """Scan the ledger over the whole period the limits of the API keys
+        ``nums`` are measured over (:meth:`_scan_start`), at most once per
+        ``every`` seconds across engines and processes, then read those keys
+        again. Returns ``entries`` with theirs replaced. ``spendScan`` in the
+        state file says when the last scan ran, from when, and whether it
+        covered that period; a scan that raised, or that found session files
+        it could not read (they may hold usage of the period), covers
+        nothing, and until a scan does the keys' ledger figures count as no
+        figure (``spend-unknown``, decision EM3). The scan is incremental, so
+        the wide window costs once. Never raises; a dry run never scans (the
+        scan writes the ledger)."""
         if self.dry_run or not nums or not self._scans_ledger():
             return entries
         now = self.clock()
-        last = state.get("spendScanAt")
-        if (
-            isinstance(last, (int, float)) and not isinstance(last, bool)
-            and 0 <= now - last < every
+        start = self._scan_start(nums, now)
+        last = state.get("spendScan")
+        if isinstance(last, dict) and _number(last.get("at")) is not None and (
+            0 <= now - last["at"] < every
+            and _number(last.get("from")) is not None and last["from"] <= start
         ):
+            if not last.get("ok"):
+                self._ledger_unsure.update(nums)
             return entries
         from ai_quota_swap.ledger import usage as ledger_usage
 
+        ok = False
         try:
-            ledger_usage.scan_recent(
+            stats = ledger_usage.scan_recent(
                 Path(self.switcher.backup_dir),
                 registry=self.switcher._get_sequence_data(),
+                start=start,
             )
-        except Exception as e:  # the figure stays as old as it was
+            unreadable = getattr(stats, "missing", 0)
+            ok = not (isinstance(unreadable, int) and unreadable > 0)
+            if not ok:
+                _logger.warning(
+                    "The usage ledger scan could not read %s session files; API-key "
+                    "spend counts as unknown", unreadable,
+                )
+        except Exception as e:  # no figure until a scan covers the period
             _logger.warning("Could not scan the usage ledger for API-key spend: %r", e)
-        state["spendScanAt"] = now
+        if not ok:
+            self._ledger_unsure.update(nums)
+        record = {"at": now, "from": start, "ok": ok}
+        state["spendScan"] = record
 
         def remember(s: dict) -> None:
-            s["spendScanAt"] = now
+            s["spendScan"] = record
+            s.pop("spendScanAt", None)  # the round-2 record, which knew no period
 
         try:
             self._mutate_state(remember)
         except Exception as e:
             _logger.debug("Could not record the ledger scan: %r", e)
+        from ai_quota_swap import api_spend
+
         try:
-            fresh = self.switcher.usage_entries_by_account(fetch=set(nums))
+            # A key linked to an organization is held to Anthropic's figure
+            # only (EM2): ask for it again here, whatever the cache time of
+            # the other readers, so a healthy Admin API never ages into
+            # spend-unknown.
+            with api_spend.admin_max_age(ADMIN_REFRESH_S):
+                fresh = self.switcher.usage_entries_by_account(fetch=set(nums))
         except Exception as e:
             _logger.debug("Could not re-read API-key spend after a scan: %r", e)
             return entries
@@ -4447,6 +4927,10 @@ class AutoSwitchEngine:
         reason = self._key_brake(current, entries)
         if reason is None and key_mode == "engine" and not self._key_limited(current, entries):
             reason = api_spend.NO_LIMIT
+        if reason is None and key_mode == "engine" and not settings.include_api_key_accounts:
+            # API keys turned off since the engine entered this one: it would
+            # not enter it now, so it does not keep sessions on it (EM11).
+            reason = KEYS_OFF
         if reason is None and key_mode == "user":
             self._emit(NoSwitchEvent(
                 reason="active-api-key",

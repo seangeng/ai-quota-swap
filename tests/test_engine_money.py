@@ -457,8 +457,8 @@ class TestRowsSayTheLimitIsNotEnforced:
             "limit not enforced: no spend figure"
         )
         assert api_spend.detail_text(reading, now) == (
-            "estimate as of the last qswap usage, 25m ago; auto-switch stays off "
-            "this key until its spend is measured: qswap usage"
+            "estimate as of the last qswap usage, 25m ago; auto-switch measures the "
+            "spend before it moves to this key; measure it now with: qswap usage"
         )
         # The menu row's room goes to the reason, which its limit must not cut.
         assert api_spend.menu_text(reading, now=now) == (
@@ -471,7 +471,8 @@ class TestRowsSayTheLimitIsNotEnforced:
             "API key · budget $500 a month · limit not enforced: no spend figure"
         )
         assert api_spend.detail_text(reading, NOW) == (
-            "auto-switch stays off this key until its spend is measured: qswap usage"
+            "auto-switch measures the spend before it moves to this key; measure it now "
+            "with: qswap usage"
         )
         assert api_spend.menu_text(reading, now=NOW) == "budget $500 · limit not enforced"
 
@@ -520,7 +521,7 @@ class TestTheLatch:
             assert _tick(h, EXHAUSTED, {"2": _lower(h)}) is TickOutcome.BLOCKED
             h.clock.advance(60)
         assert h.switcher.current_account_number() == "1"
-        assert h.state()["limitLatch"]["2"]["reason"] == "budget"
+        assert h.state()["limitLatch"]["2"]["budget"]["reason"] == "budget"
 
     def test_an_active_key_is_left_and_stays_left(self, temp_home):
         h = _fleet(temp_home)
@@ -760,7 +761,8 @@ class TestFreeBeforePaid:
         assert h.switcher.current_account_number() == "2"
         assert _switches(h)[-1].human() == (
             "Switched #1 a@example.com → #2 ci · 7d limit reached; #1 a@example.com "
-            "holds 1 weekly reset: qswap reset 1"
+            "holds 1 weekly reset auto mode keeps (auto mode is off); to spend it "
+            "instead: qswap reset 1"
         )
 
 
@@ -1159,6 +1161,7 @@ class TestWhenTheEngineStops:
         assert unwatched_key(h.switcher) == {
             "number": "2", "enteredBy": "engine", "engineRunning": False,
             "underneath": "1", "back": "qswap switch 1",
+            "watchedBy": None, "dryRunOnly": False, "lastCheckedAt": None,
         }
         assert h.switcher.key_entered_by() == "engine"  # kept for a restarted engine
 

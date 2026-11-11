@@ -240,7 +240,15 @@ def _profile_sessions(
     tree. Only an owner line that came before the session's first event
     marks one (``owner_early``): Claude Code stamps a session started under an
     API key's helper line only once the line is gone, with the login's
-    account, and that session's key-period usage stays on the key."""
+    account, and that session's key-period usage stays on the key.
+
+    Nor is a session whose first counted event falls while a key is active
+    through the line and whose stamp names the login underneath that key
+    (decision EM10): a session opened as the subscription ran out, just
+    before the engine entered the key. ``qswap run`` for that login is
+    refused while the key is active, so such a stamp is no run profile's,
+    and attribution stays by time. A stamp naming any other login still
+    wins."""
     out: dict[str, str] = {}
     if not len(log):
         return out
@@ -254,6 +262,8 @@ def _profile_sessions(
             continue
         start = log.account_at(first_ts)
         if start != UNATTRIBUTED and start != owner_key:
+            if log.helper_underneath(first_ts) == owner_key:
+                continue  # the login under the key: attribution by time
             out[session] = owner_key
     return out
 

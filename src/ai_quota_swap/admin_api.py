@@ -821,13 +821,15 @@ def month_usage_params(
 
 def month_usage_by_key(
     org: _Org, key_ids: list[str], *, now: float, network: bool, cache: AdminCache,
-    start: float | None = None,
+    start: float | None = None, ttl: float | None = None,
 ) -> ReportResult:
     """This UTC month's usage-report buckets for ``key_ids`` (from ``start``'s
-    day when that is earlier). Never raises."""
+    day when that is earlier). ``ttl`` replaces :data:`CACHE_TTL_S` for this
+    read (the auto-switch engine asks for a fresher answer). Never raises."""
     return cached_report(
         org, USAGE_REPORT_PATH, month_usage_params(key_ids, now, start),
         now=now, network=network, cache=cache,
+        ttl=CACHE_TTL_S if ttl is None else ttl,
     )
 
 

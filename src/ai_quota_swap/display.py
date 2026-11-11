@@ -1148,15 +1148,24 @@ BY_ENGINE = "by auto-switch"
 KEY_NO_WAY_BACK = "log in to a subscription (claude, then /login), then run: qswap add"
 
 
-def key_unwatched(key: str, back: str | None) -> list[str]:
-    """Auto-switch entered the active key and no engine is running: nothing
+def key_unwatched(key: str, back: str | None, watch: object = None) -> list[str]:
+    """Auto-switch entered the active key: when no engine watches it, nothing
     leaves the key at its budget or credit, or when a subscription has room.
-    ``back`` is the way back (``key_way_back``); None: no subscription."""
+    ``back`` is the way back (``key_way_back``); None: no subscription.
+    ``watch`` is ``engine_watching()`` (``autoswitch.KeyWatch``): no line
+    while a loop watches, when it last checked while a recent ``--once``
+    tick does, and otherwise that only a dry run runs or when an engine last
+    checked (decisions DS3, DS4). Without it: nothing is running."""
+    from ai_quota_swap.autoswitch import key_watch_words
+
+    words = key_watch_words(key, watch)
+    if words is None:
+        return []
+    words = words[0].upper() + words[1:]
+    if watch:
+        return wrap(f"{words}.")
     step = f"To go back: {back}" if back else f"To leave it, {KEY_NO_WAY_BACK}"
-    return wrap(
-        f"Auto-switch entered {key} and is not running, so nothing watches its "
-        f"limit. {step}"
-    )
+    return wrap(f"{words}. {step}")
 
 
 def over_fact(underneath: str) -> str:

@@ -173,7 +173,11 @@ return to it when the key is left.
   - It enters a key only when the active subscription is at its limit and no other
     subscription can take over: never at a switch line, never because usage is unreadable.
   - Only a key with a monthly budget or a credit, and only with a spend figure no older than
-    20 minutes. A usage reset that could be spent comes first.
+    20 minutes. A usage reset the planner spends comes first, and so does one whose answer
+    or refill is still out. A reset the user's settings keep (`resets.minHoursLeft`, the
+    daily cap, the `active` mode, the kind rule, `resets.auto off`) stays banked: the
+    engine does not override them to stay off a key, and names each such reset on the
+    switch with `qswap reset N` (`resets.kept_resets`, decision EM4).
   - A key it entered is left for a subscription under its own lines with at least 5 points of
     room in every window, once the cooldown has passed since the key was entered.
   - Any key is left at once at its budget, with its credit spent or expired, or when its spend
@@ -221,7 +225,11 @@ such a period is attributed to the key only for sessions whose first event is af
 activation, and the report says the split is approximate. A session's `session-owner` stamp
 marks a `qswap run` session only when it comes before the session's first event: a session
 started under the line is stamped late, with the login's account, and its key-period usage
-stays on the key.
+stays on the key. Nor does a stamp naming the login under the key mark one when the
+session's first counted event falls while the key is active through the line (a session
+opened as the subscription ran out, just before the engine entered the key): `qswap run`
+for that login is refused while the key is active, so its usage stays by time, on the key.
+A stamp naming another login still marks a `qswap run` session.
 
 ### As built
 
@@ -324,20 +332,47 @@ What the code does where this part leaves room, or where it had to differ:
 - **The engine.** The thresholds are named constants in `autoswitch.py`: a spend figure is
   fresh for 20 minutes (`api_spend.SPEND_FRESH_S`); while a key with a budget or credit is
   active the engine scans the ledger every 5 minutes (`SPEND_SCAN_INTERVAL_S`), and before it
-  enters a key; the way back needs 5 points of room in every window
-  (`RETURN_ROOM_PCT`). A key judged at its budget or credit stays at it in the engine's
-  state file until the month rolls over or the budget or credit is set again, so a later
-  reading that looks lower (an estimate in place of Anthropic's figure) does not make it a
-  candidate again; the row says so (`budget reached earlier`, with the command that clears
-  it) and the engine says once why it does not use the key (`limit-latched`). A reset the
+  enters a key, from the earlier of the start of the UTC month and the start of the key's
+  credit (`scan_recent(start=...)`; others keep the 7-day default). A scan that raises, or
+  that finds session files it cannot read, covers nothing: until one covers the period
+  (`spendScan` in the state file: when, from when, whether it did) the ledger's figure is
+  `spend-unknown`. For a key linked to an organization only Anthropic's figure counts: the
+  ledger's is shown (`this machine only`) but never fresh, and with each of those scans the
+  engine reads Anthropic's figure again, accepting an answer at most a minute old
+  (`ADMIN_REFRESH_S`) whatever `admin_api.CACHE_TTL_S` says for the other readers; the way back needs 5 points of room in every window
+  (`RETURN_ROOM_PCT`). The engine never enters a key while a subscription in the rotation
+  has that much room in every watched window and is readable, not set aside and not
+  disabled: that subscription is the target instead, over its own switch line and in any
+  strategy, and the switch line says so (`taken over its switch line (5h 95%) before an API
+  key`). While another subscription's usage is unreadable, key entry waits at most one
+  cooldown from the first check that wanted the key (`keyWanted`;
+  `usage-unreadable-hold`, said once). A key judged at its budget or credit stays at it in the engine's
+  state file, one latch per kind (`limitLatch[N]` holds `budget` and `credit` apart): the
+  budget latch until the month rolls over or `qswap budget` sets it again, the credit latch
+  until `qswap credit` records another; each command clears only its own, and the key stays
+  out while either holds. A state file from before keeps its one latch as the kind its reason
+  names. So a later reading that looks lower (an estimate in place of Anthropic's figure)
+  does not make it a candidate again; the row says so (`budget reached earlier`, with the
+  command that clears it) and the engine says once why it does not use the key
+  (`limit-latched`). A reset the
   planner claimed whose refill no reading has shown yet holds key entry, for at most the
   30 minutes a successful claim keeps the account out of planning. A key the engine cannot
   use (its slot does not hold a key) is skipped and reported once, and leaving a key, a
   subscription whose switch fails and is rolled back is skipped for the next account
-  (`switch-failed`), the account underneath last. With no login under the key at its limit, the engine stays and
+  (`switch-failed`), the account underneath last. A key the engine entered is left at once
+  when `autoswitch.includeApiKeyAccounts` is turned off (as when its budget is removed);
+  a key the user entered is not touched. With no login under the key at its limit, the engine stays and
   notifies once. When it stops while sessions are on a key it entered, it says that nothing
   watches the key's limit and how to go back, and moves nothing; `enteredBy` stays
-  `engine`, so the next engine carries on.
+  `engine`, so the next engine carries on. An engine watches a key when its loop ticks and
+  is not a dry run, or when its last `--once` tick (not a dry run) is under 15 minutes old
+  (`autoswitch.key_watch`, read through `engine_watching()`); the surfaces say "only a dry
+  run is running" for a dry-run loop and "last checked 4m ago" for a recent `--once`, and
+  doctor warns only when nothing watches.
+- **The dry run** writes nothing, the ledger included: it judges the stored figure and
+  says that a real run measures the spend first and that its own figure may be older,
+  and it checks read-only that a key's slot can give a key (A12). The rows say auto-switch
+  measures the spend before it moves to the key, never that it stays off it.
 - **The way back**, in status, list, the menu bar, the dashboard, doctor and the stopping
   engine: `qswap switch N` to the account underneath; `qswap add` over a login qswap does
   not manage; else `qswap switch N` to the first subscription; else log in to one and run

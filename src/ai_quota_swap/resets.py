@@ -62,7 +62,7 @@ import re
 import urllib.error
 import urllib.request
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -1167,6 +1167,165 @@ def plan_reset(
     if chosen is not None:
         return plan(*chosen, "expiring")
     return None
+
+
+# -- resets the user's settings keep (decision EM4) ------------------------------
+#
+# A reset is scarce, and worth most with a long window ahead, so
+# ``resets.minHoursLeft``, the daily cap on automatic resets, the ``active``
+# mode and the kind rule say when one is worth spending; auto-switch does not
+# override them to stay off a metered API key. A reset the planner spends, or
+# one whose answer or refill is still out, comes before a key (A7). What
+# changes is that a kept one is never silent: :func:`kept_resets` names each
+# account holding a usable reset the planner keeps, and why, for the switch
+# onto a key and for every surface while such a key is active.
+
+#: Why a reset is kept, by code (the JSON ``reason``). The kind and the time
+#: rules are worded per reset (:func:`kept_resets`).
+KEPT_REASONS = {
+    "auto-off": "auto mode is off",
+    "daily-cap": "today's limit on automatic resets is reached",
+    "active-only": "auto mode spends resets of the active account only",
+}
+
+
+@dataclass(frozen=True)
+class KeptReset:
+    """One account's usable resets the planner keeps: ``reason`` a code
+    (``auto-off``, ``daily-cap``, ``active-only``, ``kind``,
+    ``min-hours-left``, ``off-line``), ``words`` the reason in words,
+    ``counts`` the resets by kind (``(("weekly", 1),)``)."""
+
+    account: str
+    reason: str
+    words: str
+    counts: tuple[tuple[str, int], ...]
+
+    def held(self) -> str:
+        """``1 weekly reset``, ``2 weekly resets``, ``1 Fable reset and 1 weekly
+        reset`` (a five-hour count spelled out, as ux.md asks)."""
+        parts = [f"{n} {label} reset{'' if n == 1 else 's'}" for label, n in self.counts]
+        return _and(parts)
+
+    @property
+    def command(self) -> str:
+        """The one command that spends it."""
+        return f"qswap reset {self.account}"
+
+    def note(self, label: str) -> str:
+        """``#2 work holds 1 weekly reset auto mode keeps (its 7d window
+        refills in 9h); to spend it instead: qswap reset 2``."""
+        return (
+            f"{label} holds {self.held()} auto mode keeps ({self.words}); to spend it "
+            f"instead: {self.command}"
+        )
+
+    def to_json(self) -> dict:
+        return {
+            "account": int(self.account) if self.account.isdigit() else self.account,
+            "reason": self.reason,
+            "resets": [{"kind": label, "count": n} for label, n in self.counts],
+            "fix": self.command,
+        }
+
+
+def _hours_words(hours: float) -> str:
+    """``9h``, ``9h 24m``, ``40m`` (the countdown grammar, no ``0m``)."""
+    from ai_quota_swap.display import age_text
+
+    text = age_text(max(0.0, hours) * 3600.0) or "now"
+    return text[:-3] if text.endswith(" 0m") else text
+
+
+def kept_resets(
+    views: Sequence[AccountView],
+    *,
+    current: str | None,
+    settings,
+    watched: tuple[str, ...] = (),
+    now: float,
+    claims_today: int = 0,
+    daily_cap: int | None = None,
+) -> list[KeptReset]:
+    """The usable resets the planner keeps, one :class:`KeptReset` per
+    account, in ``views`` order. Pure; the same inputs as :func:`plan_reset`
+    (``current`` the account the planner treats as active), plus the
+    automatic claims of the last 24 hours and the daily cap.
+
+    A reset counts when spending it would give its account room: under
+    ``settings`` with ``min_hours_left`` and the kind rule set aside, it is a
+    candidate (a window it is for at the trigger line, and no window left at
+    it afterwards). An account that cannot claim (set aside, a claim still
+    settling) is left out. When the planner would spend a reset now there is
+    nothing kept (it comes before a key). The reason, first that applies:
+    auto mode is off; today's limit on automatic resets is reached; auto
+    mode spends resets of the active account only; it is a weekly (or full)
+    reset and only a model window is full; its window refills within
+    ``min_hours_left``; after it another window would stay over the
+    account's switch line (``last-resort`` lands only on an account the
+    engine would switch to)."""
+    auto_on = getattr(settings, "enabled", True) and settings.auto in (
+        "active", "on-limit", "last-resort",
+    )
+    capped = daily_cap is not None and claims_today >= daily_cap
+    if auto_on and not capped and plan_reset(
+        views, current=current, settings=settings, watched=watched, now=now,
+    ) is not None:
+        return []
+    relaxed = replace(settings, min_hours_left=0.0, weekly_for_model_limit=True)
+    out: list[KeptReset] = []
+    for view in views:
+        if not view.can_claim:
+            continue
+        helpful = _evaluate(view, relaxed, now)
+        if not helpful:
+            continue
+        reason, words = _kept_reason(
+            view, helpful, current=current, settings=settings, auto_on=auto_on,
+            capped=capped, now=now,
+        )
+        grants = list({id(c.grant): c.grant for c in helpful}.values())
+        counts = tuple(counts_by_kind({"grants": grants}, now))
+        out.append(KeptReset(view.num, reason, words, counts))
+    return out
+
+
+def _kept_reason(
+    view: AccountView,
+    helpful: list[_Candidate],
+    *,
+    current: str | None,
+    settings,
+    auto_on: bool,
+    capped: bool,
+    now: float,
+) -> tuple[str, str]:
+    if not auto_on:
+        return "auto-off", KEPT_REASONS["auto-off"]
+    if capped:
+        return "daily-cap", KEPT_REASONS["daily-cap"]
+    if settings.auto == "active" and view.num != current:
+        return "active-only", KEPT_REASONS["active-only"]
+    plural = sum(c.grant.get("resets_left", 1) for c in helpful) > 1
+    if not _evaluate(view, settings, now):
+        if _evaluate(view, replace(settings, weekly_for_model_limit=True), now) or not _evaluate(
+            view, replace(settings, min_hours_left=0.0), now
+        ):
+            noun = scope_noun(helpful[0].scope, grant_kind(helpful[0].grant))
+            what = f"they are {noun}s" if plural else f"it is a {noun}"
+            return "kind", f"{what} and only a model window is full"
+        timed = _evaluate(view, replace(settings, min_hours_left=0.0), now)[0]
+        return "min-hours-left", (
+            f"its {timed.window} window refills in {_hours_words(timed.hours_left or 0.0)}"
+        )
+    # Kept by the landing rule: after it, a window stays over the switch line.
+    from ai_quota_swap.lines import window_line
+
+    cand = helpful[0]
+    for label, pct in cand.projected.items():
+        if pct >= window_line(label, view.threshold, view.weekly_threshold):
+            return "off-line", f"its {label} window would stay over its switch line"
+    return "off-line", "it would not make the account one to switch to"
 
 
 def kept_by_scope(real: ResetPlan | None, widened: ResetPlan | None) -> ResetPlan | None:

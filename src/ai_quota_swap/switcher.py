@@ -6996,12 +6996,18 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             ))
         if f.key is not None:
             label = self.label(f.key, long=False)
-            if f.entered_by == "engine" and not self.engine_watching():
+            if f.entered_by == "engine":
+                # Decisions DS3, DS4: a loop that ticks says nothing; a recent
+                # --once tick says when it last checked; a dry run, or nothing,
+                # says that nothing watches the limit, with the way back.
                 back = self.key_way_back()
-                out.append(note(
-                    "unwatched", f.key, display.key_unwatched(label, back),
-                    back or display.KEY_NO_WAY_BACK,
-                ))
+                watch = self.engine_watching()
+                watched = display.key_unwatched(label, back, watch)
+                if watched:
+                    out.append(note(
+                        "watched-once" if watch else "unwatched", f.key, watched,
+                        None if watch else (back or display.KEY_NO_WAY_BACK),
+                    ))
             if f.state.stale_command:
                 out.append(note(
                     "line-moved", f.key,

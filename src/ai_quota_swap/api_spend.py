@@ -34,8 +34,10 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import threading
 import time
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -242,11 +244,45 @@ def limit_reason(reading: object, *, latched: bool = True) -> str | None:
 
 #: The limits a latch holds.
 LATCH_REASONS = frozenset({"budget", "credit-spent"})
+#: The kind of limit each latched reason belongs to. ``limitLatch[N]`` holds
+#: one latch per kind (decision EM8): ``qswap budget`` clears only the budget
+#: latch, ``qswap credit`` only the credit latch, and the key stays out while
+#: either holds.
+LATCH_KINDS = {"credit-spent": "credit", "budget": "budget"}
 #: On a row whose latch holds while its figure reads under the limit.
 LATCHED_WORDS = {
     "budget": "budget reached earlier",
     "credit-spent": "credit counted as spent",
 }
+
+
+def latch_entries(stored: object) -> dict[str, dict]:
+    """``{kind: latch}`` from one account's ``limitLatch`` entry, in either
+    shape: ``{"credit": {...}, "budget": {...}}``, or the one latch
+    ``{"reason": ...}`` an older engine wrote, read as the kind its reason
+    names. Credit first, as :func:`limit_reason` orders them. Never raises."""
+    if not isinstance(stored, dict):
+        return {}
+    reason = stored.get("reason")
+    if isinstance(reason, str):
+        kind = LATCH_KINDS.get(reason)
+        return {kind: dict(stored)} if kind is not None else {}
+    out: dict[str, dict] = {}
+    for reason, kind in LATCH_KINDS.items():
+        latch = stored.get(kind)
+        if isinstance(latch, dict) and latch.get("reason") == reason:
+            out[kind] = dict(latch)
+    return out
+
+
+def latched_reasons(stored: object, reading: object, record: object, now: float) -> list[str]:
+    """The latched limits of one account (``limitLatch[N]``) that still apply
+    to ``reading``: the same month and budget, the same credit. Credit first."""
+    return [
+        latch["reason"]
+        for latch in latch_entries(stored).values()
+        if latch_identity(latch["reason"], reading, record, now) == latch
+    ]
 
 
 def latch_identity(reason: str, reading: object, record: object, now: float) -> dict | None:
@@ -280,6 +316,21 @@ def latch_identity(reason: str, reading: object, record: object, now: float) -> 
             return None
         return {"reason": reason, "credit": f"{int(since)}|{float(amount)}"}
     return None
+
+
+def reached_latches(reading: object) -> list[str]:
+    """Every latched kind of limit the reading's own figures reach:
+    ``credit-spent`` and ``budget`` (both, when both are). An expired credit
+    is decided by its date and needs no latch."""
+    if not isinstance(reading, dict):
+        return []
+    out = []
+    credit = reading.get("credit")
+    if isinstance(credit, dict) and credit.get("spent") and not credit.get("expired"):
+        out.append("credit-spent")
+    if over_budget(reading):
+        out.append("budget")
+    return out
 
 
 def latch_of(reading: object) -> str | None:
@@ -362,9 +413,24 @@ def figure_age(reading: object, now: float) -> float | None:
 
 
 def figure_fresh(reading: object, now: float) -> bool:
-    """Whether the reading has a spend figure no older than :data:`SPEND_FRESH_S`."""
+    """Whether the reading has a spend figure no older than :data:`SPEND_FRESH_S`.
+    For a key linked to an organization only Anthropic's figure counts
+    (decision EM2): this machine's ledger misses the other machines on the
+    key, so its figure is never fresh for one (:func:`machine_only`)."""
+    if machine_only(reading):
+        return False
     age = figure_age(reading, now)
     return age is not None and age <= SPEND_FRESH_S
+
+
+def machine_only(reading: object) -> bool:
+    """Whether the reading is for a key linked to an organization but its
+    figure is not Anthropic's: this machine's ledger (or none), shown but
+    never held against the key's limit."""
+    return (
+        isinstance(reading, dict) and bool(reading.get("org"))
+        and reading.get("source") != SOURCE_ADMIN
+    )
 
 
 def engine_limit_reason(reading: object, *, now: float, limited: bool) -> str | None:
@@ -436,17 +502,18 @@ def set_credit(
         record["credit"] = value
     data["lastUpdated"] = get_timestamp()
     switcher._write_json(switcher.sequence_file, data)
-    _clear_latch(switcher, num)
+    _clear_latch(switcher, num, "credit")
     return num, email, credit_from_record(record), True
 
 
-def _clear_latch(switcher, number: str) -> None:
-    """A budget or credit set again: auto-switch forgets that the old one
-    was reached (autoswitch.clear_limit_latch). Best-effort."""
+def _clear_latch(switcher, number: str, kind: str) -> None:
+    """A budget (``kind`` ``budget``) or a credit (``credit``) set again:
+    auto-switch forgets that the old one was reached, and only that one
+    (autoswitch.clear_limit_latch). Best-effort."""
     try:
         from ai_quota_swap.autoswitch import clear_limit_latch
 
-        clear_limit_latch(Path(switcher.backup_dir), number)
+        clear_limit_latch(Path(switcher.backup_dir), number, kind=kind)
     except Exception:
         pass
 
@@ -741,6 +808,24 @@ def _price_admin(
     return p.month, p.today, p.unpriced, p.since
 
 
+_fresher = threading.local()
+
+
+@contextmanager
+def admin_max_age(seconds: float):
+    """Within this block, this thread's :func:`readings` that may use the
+    network ask Anthropic again for any answer older than ``seconds``,
+    whatever :data:`admin_api.CACHE_TTL_S` says for the other readers: the
+    auto-switch engine reads a linked key's figure itself this way, before it
+    enters the key and every 5 minutes while it is on one (decision EM2)."""
+    previous = getattr(_fresher, "seconds", None)
+    _fresher.seconds = float(seconds)
+    try:
+        yield
+    finally:
+        _fresher.seconds = previous
+
+
 def readings(
     switcher,
     infos: dict[str, tuple],
@@ -800,10 +885,12 @@ def readings(
             credits[n]["since"] for n in nums
             if credits.get(n) is not None and credits[n]["since"] < month.timestamp()
         ]
+        fresher = getattr(_fresher, "seconds", None)
         res = admin_api.month_usage_by_key(
             org_by_name[org_name], [links[n].key_id for n in nums],
             now=now, network=network, cache=cache,
             start=min(starts) if starts else None,
+            ttl=None if fresher is None else min(admin_api.CACHE_TTL_S, fresher),
         )
         parsed = None
         if res.buckets is not None:
@@ -871,6 +958,10 @@ def readings(
             if budget is None and credit is None and not orgs and not note:
                 continue
             reading = _blank(None, None, None, 0, None)
+        if link is not None and reading.get("source") != SOURCE_ADMIN:
+            # Linked, but Anthropic's figure is missing or past STALE_MAX_S:
+            # this machine's figure is shown, never held to the limit (EM2).
+            reading["org"] = link.org
         if credit is not None:
             reading["credit"] = credit_reading(
                 credit, credit_used, reading.get("source"), now,
@@ -885,12 +976,9 @@ def readings(
         reading["month"] = month.strftime("%Y-%m")
         if note:
             reading["note"] = note
-        stored = latches.get(num)
-        if (
-            isinstance(stored, dict) and stored.get("reason") in LATCH_REASONS
-            and latch_identity(stored["reason"], reading, record, now) == stored
-        ):
-            reading["latched"] = {"reason": stored["reason"], "account": num}
+        held = latched_reasons(latches.get(num), reading, record, now)
+        if held:
+            reading["latched"] = {"reason": held[0], "account": num}
         out[num] = reading
     return out
 
@@ -1045,7 +1133,7 @@ def spend_text(reading: dict, now: float | None = None) -> str:
             tag = f"{pct:.0f}%" + (", over budget" if pct >= 100 else "")
             parts.append(f"{money(used)} of {budget_money(limit)} this month ({tag})")
         if reading.get("source") == SOURCE_LEDGER and credit.get("left") is not None:
-            parts.append("estimate")
+            parts.append(_estimate_word(reading))
         return " · ".join(parts + tail)
 
     spend = reading.get("spend") or {}
@@ -1083,12 +1171,28 @@ def spend_text(reading: dict, now: float | None = None) -> str:
         month += f" of {budget_money(limit)} ({tag})"
     parts.append(month)
     if reading.get("source") == SOURCE_LEDGER:
-        parts.append("estimate")
+        parts.append(_estimate_word(reading))
     return " · ".join(parts + tail)
 
 
-#: The detail line's next step while the limit is not enforced.
-UNENFORCED_NEXT = "auto-switch stays off this key until its spend is measured: qswap usage"
+def _estimate_word(reading: dict) -> str:
+    """How a row marks this machine's figure: ``estimate``, or ``this
+    machine only`` for a key linked to an organization (:func:`machine_only`)."""
+    return "this machine only" if machine_only(reading) else "estimate"
+
+
+#: The detail line's next step while the limit is not enforced. Auto-switch
+#: scans before it moves to a key, so this says it measures, never that it
+#: stays off (decision EM6).
+UNENFORCED_NEXT = (
+    "auto-switch measures the spend before it moves to this key; measure it now "
+    "with: qswap usage"
+)
+#: The same for a key linked to an organization, held to Anthropic's figure only.
+ORG_UNENFORCED_NEXT = (
+    "auto-switch reads Anthropic's figure before it moves to this key; read it now "
+    "with: qswap budget"
+)
 
 
 def credit_counted_from(credit: dict, source: str | None) -> str:
@@ -1126,14 +1230,18 @@ def detail_text(
     if limit_not_enforced(reading, now) and not spend_unknown(reading):
         age = figure_age(reading, now) if _has_figure(reading) else None
         as_of = reading.get("as_of")
-        if reading.get("source") == SOURCE_LEDGER and isinstance(as_of, (int, float)) and (
-            base is None or not base.startswith(("estimate as of", "as of"))
+        org = machine_only(reading)  # why: Anthropic's figure, not the ledger's age
+        if (
+            not org and reading.get("source") == SOURCE_LEDGER
+            and isinstance(as_of, (int, float))
+            and (base is None or not base.startswith(("estimate as of", "as of")))
         ):
             what = "as of" if nothing_recorded(reading) else "estimate as of"
             base = f"{what} the last qswap usage, {_age(now - as_of)}"
-        elif age is None and reading.get("source") != SOURCE_ADMIN:
+        elif not org and age is None and reading.get("source") != SOURCE_ADMIN:
             base = None  # the row says there is no figure; the next step follows
-        base = f"{base}; {UNENFORCED_NEXT}" if base else UNENFORCED_NEXT
+        step = ORG_UNENFORCED_NEXT if org else UNENFORCED_NEXT
+        base = f"{base}; {step}" if base else step
     credit = reading.get("credit")
     if not with_credit or not isinstance(credit, dict) or credit.get("expired"):
         return base
@@ -1184,7 +1292,8 @@ def _detail_text(reading: dict, now: float) -> str | None:
         old = isinstance(as_of, (int, float)) and now - as_of > LEDGER_STALE_S
         if note:
             # "no usage recorded on this machine" already says where from.
-            return note if empty else f"{note}; estimate from this machine's transcripts"
+            only = " only" if machine_only(reading) else ""
+            return note if empty else f"{note}; estimate from this machine's transcripts{only}"
         if old:
             what = "as of" if empty else "estimate as of"
             return f"{what} the last qswap usage, {_age(now - as_of)}"
@@ -1313,7 +1422,7 @@ def set_budget(switcher, identifier: str, amount: object | None) -> tuple[str, s
     current = budget_from_record(record)
     if normalized == current and (normalized is not None or "budget" not in record):
         if normalized is not None:
-            _clear_latch(switcher, num)  # set again: the old one is forgotten
+            _clear_latch(switcher, num, "budget")  # set again: the old one is forgotten
         return num, email, normalized, False
     if normalized is None:
         record.pop("budget", None)
@@ -1321,5 +1430,5 @@ def set_budget(switcher, identifier: str, amount: object | None) -> tuple[str, s
         record["budget"] = normalized
     data["lastUpdated"] = get_timestamp()
     switcher._write_json(switcher.sequence_file, data)
-    _clear_latch(switcher, num)
+    _clear_latch(switcher, num, "budget")
     return num, email, normalized, True
