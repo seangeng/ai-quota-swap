@@ -1569,6 +1569,18 @@ def _say_unwatched_key(switcher, as_json: bool) -> None:
                   file=sys.stderr if as_json else sys.stdout)
 
 
+def _config_set_note(root, spec, value) -> str | None:
+    """One line after ``qswap config set`` when the value it saved does
+    nothing as the other settings stand, with the command that changes that."""
+    from ai_quota_swap.settings import RESET_BEFORE_SWITCH_MODES, load_reset_settings
+
+    if spec.dotted == "resets.beforeSwitch" and value is True:
+        auto = load_reset_settings(root).auto
+        if auto not in RESET_BEFORE_SWITCH_MODES:
+            return f"No effect while resets.auto is {auto}: qswap config set resets.auto active"
+    return None
+
+
 def _config_command(argv: list[str]) -> None:
     """Handle `qswap config [list|get KEY|set KEY VALUE|unset KEY|path]`.
 
@@ -1710,6 +1722,9 @@ settings (README, Configuration, describes each):
         elif action == "set":
             value = set_setting(root, args.key, args.value)
             print(f"{args.key} = {format_setting_value(value)}")
+            note = _config_set_note(root, setting_spec(args.key), value)
+            if note:
+                print(muted(note), file=sys.stderr)
         elif action == "unset":
             if unset_setting(root, args.key):
                 default = setting_spec(args.key).default

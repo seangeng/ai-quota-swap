@@ -124,6 +124,8 @@ class UsageSettings:
 
 
 RESET_AUTO_MODES = ("off", "active", "last-resort", "on-limit")
+#: The ``resets.auto`` modes under which ``resets.beforeSwitch`` holds a switch.
+RESET_BEFORE_SWITCH_MODES = ("active", "on-limit")
 
 
 @dataclass(frozen=True)
@@ -155,6 +157,14 @@ class ResetSettings:
     window) is the reason, never when only a per-model limit such as Fable's
     is reached. True lets them spend it on a per-model limit too.
     ``qswap reset N`` is never restricted by this.
+
+    ``before_switch``: under ``active`` and ``on-limit``, while the active
+    account is over its switch line on a window one of its own resets clears,
+    and auto mode would spend that reset once the window reaches
+    ``threshold`` (every guard applies), auto-switch stays and the reset is
+    spent there, rather than moving at the line and keeping the reset. Off
+    (the default), auto-switch moves at its line. It never changes what the
+    planner spends. Under ``off`` and ``last-resort`` it does nothing.
     """
 
     enabled: bool = True
@@ -164,6 +174,7 @@ class ResetSettings:
     expiry_days: float = 7.0
     expiry_threshold: float = 50.0
     weekly_for_model_limit: bool = False
+    before_switch: bool = False
 
 
 @dataclass(frozen=True)
@@ -314,6 +325,13 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "resets", "weeklyForModelLimit", "weekly_for_model_limit", "bool",
             help="Let auto spend a weekly or full reset when only a per-model limit (e.g. Fable) is reached",
+        ),
+        SettingSpec(
+            "resets", "beforeSwitch", "before_switch", "bool",
+            help=(
+                "Stay past the switch line to spend the active account's own reset "
+                "at resets.threshold (auto active or on-limit)"
+            ),
         ),
         SettingSpec(
             "codex", "restartDaemon", "restart_daemon", "bool",

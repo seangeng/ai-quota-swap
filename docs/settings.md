@@ -91,6 +91,7 @@ Flags override settings for one run. `qswap auto --threshold 80` switches at 80%
 | `resets.expiryDays` | `7` | Days of runway per unused reset before it expires. Inside that runway, auto mode spends it early rather than lose it. `0` turns this off. A number from 0 to 60. | `qswap config set resets.expiryDays 0` |
 | `resets.expiryThreshold` | `50` | Inside that runway, spend the reset once the window it is for reaches this percent. A number from 0 to 100. | `qswap config set resets.expiryThreshold 70` |
 | `resets.weeklyForModelLimit` | `false` | Let auto mode spend a weekly or full reset when only a per-model limit, such as Fable's, is reached. `qswap reset N` is never held back by it. `true` or `false`. | `qswap config set resets.weeklyForModelLimit true` |
+| `resets.beforeSwitch` | `false` | Under `resets.auto` `active` or `on-limit`, stay on the active account past its switch line while it holds a reset of its own that auto mode spends at `resets.threshold`, and spend it there instead of moving at the line. With `resets.threshold` 100 the account is at its limit until the next check spends the reset. No effect under `off` and `last-resort`; see [resets.md](resets.md#when-auto-mode-spends-one). `true` or `false`. | `qswap config set resets.beforeSwitch true` |
 
 ### Codex
 
