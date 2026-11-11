@@ -903,3 +903,39 @@ class TestAddTokenWhileTheSettingsCannotBeRead:
         assert code == 0, err
         assert "pick up the new key within 5 minutes" in " ".join(out.split())
         assert s._read_account_credentials("5", s.account_email("5")) == NEW_KEY
+
+
+# == ux.md: every new note and doctor line fits 80 columns =========================
+
+
+@pytest.mark.parametrize("state", [
+    "other-data-dir", "other-helper", "env-over-key", "env-no-key", "lost", "lost-no-login",
+    "moved", "not-api-key",
+])
+def test_the_new_notes_fit_80_columns(temp_home, monkeypatch, state):
+    from ai_quota_swap import doctor
+    from tests.test_key_helper_live import _fits
+
+    s = _fleet()
+    if state == "other-data-dir":
+        _put(temp_home, _other_line(5, temp_home / "other" / "ai-quota-swap"))
+    elif state == "other-helper":
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": "/opt/vault/print-key"}), encoding="utf-8"
+        )
+    elif state == "env-over-key":
+        s.switch_to("5", json_output=True)
+        _with_env(temp_home, ANTHROPIC_API_KEY="x", CLAUDE_CODE_USE_FOUNDRY="1")
+    elif state == "env-no-key":
+        _with_env(temp_home, ANTHROPIC_AUTH_TOKEN="x")
+    elif state.startswith("lost"):
+        _removed_by_hand(temp_home, login=state == "lost")
+    elif state == "moved":
+        s.switch_to("5", json_output=True)
+        monkeypatch.setattr(claude_settings, "command_missing", lambda command: True)
+    else:
+        _write_line(temp_home, 7)
+    assert s.key_notes(), state
+    _fits("\n".join(s.key_helper_notes()))
+    _fits("\n".join(s.status_lines()))
+    _fits("\n".join(doctor.render_text(doctor.run_checks(), online=False)))
