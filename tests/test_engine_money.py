@@ -1487,6 +1487,8 @@ class TestAmounts:
     @pytest.mark.parametrize("text", [
         ",187.03", "1187,03", "1.187,03", "1,18", "11,87", "0.004", "1187.035", "0", "0.00",
         "-5", "+1187", "1e3", "1_187", "１１８７", "", "$", "abc", "nan", "inf", "1,187.",
+        # Decimal commas, not thousands: never a thousand times what was typed.
+        "0,187", "0,500", "$0,187", "01,187", "00,187.03",
     ])
     def test_refused(self, text):
         with pytest.raises(api_spend.AmountError):

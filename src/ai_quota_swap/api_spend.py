@@ -70,9 +70,10 @@ class AmountError(ValueError):
 
 
 #: What an amount may look like: ``1187``, ``1187.03``, ``$1,187.03``,
-#: ``1,187``. Commas only between groups of three digits, at most two
+#: ``1,187``. Commas only between groups of three digits, the first group
+#: starting with 1 to 9 (``0,187`` is a decimal comma, not $187), at most two
 #: decimals, ASCII digits only.
-_AMOUNT_RE = re.compile(r"\$?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]{1,2})?")
+_AMOUNT_RE = re.compile(r"\$?(?:[1-9][0-9]{0,2}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]{1,2})?")
 
 
 def normalize_budget(value: object) -> float:
