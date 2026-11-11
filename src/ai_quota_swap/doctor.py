@@ -283,6 +283,23 @@ def _key_line_answers(command: str) -> str | None:
     return claude_settings.check_command(command)
 
 
+#: The machine-wide managed settings file, which outranks every other layer
+#: (Claude Code's documented precedence), by platform.
+MANAGED_SETTINGS = {
+    Platform.MACOS: Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+    Platform.LINUX: Path("/etc/claude-code/managed-settings.json"),
+    Platform.WINDOWS: Path("C:/Program Files/ClaudeCode/managed-settings.json"),
+}
+
+
+def _managed_settings_path() -> Path | None:
+    return MANAGED_SETTINGS.get(Platform.detect())
+
+
+def _cwd() -> Path:
+    return Path.cwd()
+
+
 def _link_leads_to(path: Path) -> str | None:
     """Where the link at ``path`` leads (resolved, a dangling one too), or
     None when ``path`` is not a link."""
@@ -374,6 +391,10 @@ class Probes:
     key_line_answers: Callable[[str], str | None] = _key_line_answers
     #: Where a link leads (resolved), or None for a path that is not a link.
     link_leads_to: Callable[[Path], str | None] = _link_leads_to
+    #: The directory doctor runs in (its project and local settings).
+    cwd: Callable[[], Path] = _cwd
+    #: The machine-wide managed settings file, or None on this platform.
+    managed_settings_path: Callable[[], Path | None] = _managed_settings_path
 
 
 def default_probes() -> Probes:
@@ -407,6 +428,8 @@ def default_probes() -> Probes:
         claude_unreadable_sessions=_claude_unreadable_sessions,
         key_line_answers=_key_line_answers,
         link_leads_to=_link_leads_to,
+        cwd=_cwd,
+        managed_settings_path=_managed_settings_path,
     )
 
 
@@ -597,6 +620,10 @@ class _Facts:
     menubar_configured: bool = False
     menubar_login: bool = False  # the plist sits in ~/Library/LaunchAgents
     menubar_plist: Path | None = None
+    #: The key active through qswap's line, and the switch that leaves it
+    #: (set by the key-line checks).
+    key_line_active: str | None = None
+    key_line_leave: str = "qswap switch N"
 
 
 def _claude_checks(p: Probes, f: _Facts) -> list[Check]:
@@ -673,9 +700,15 @@ def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
 
     checks: list[Check] = []
     checks.extend(_key_helper_checks(p, f))
+    checks.extend(_other_settings_checks(p, f))
 
     environ, _ = _try(p.environ, default={})
     names = display.exported_overrides(environ or {})
+    following = []
+    if f.key_line_active is not None and display.OAUTH_TOKEN_VAR in names:
+        # The key line comes before this variable (decision B6, F62).
+        names = [n for n in names if n != display.OAUTH_TOKEN_VAR]
+        following = [display.OAUTH_TOKEN_VAR]
     if names:
         verb = "is" if len(names) == 1 else "are"
         checks.append(Check(
@@ -683,6 +716,13 @@ def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
             f"{' and '.join(names)} {verb} set in this shell; Claude Code started "
             "from it uses that instead of the active account",
             fix=f"unset {' '.join(names)}",
+        ))
+    elif following:
+        checks.append(Check(
+            "claude.env", "claude", WARN,
+            f"{display.OAUTH_TOKEN_VAR} is set in this shell, but the key line comes "
+            f"before it: Claude Code started from it uses {f.key_line_active} too",
+            fix=f"to keep those sessions off the key, leave it: {f.key_line_leave}",
         ))
 
     stale = _api_key_session_check(p, f)
@@ -791,6 +831,8 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
                 fix=f"qswap switch {state.number}",
             ))
         elif findings.key is not None:
+            f.key_line_active = label(findings.key)
+            f.key_line_leave = fix
             check = _key_line_check(p, f, state, row if isinstance(row, dict) else {}, where)
             if findings.came_back and check.status == PASS:
                 check = Check(
@@ -801,6 +843,9 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
                     fix=fix,
                 )
             checks.append(check)
+    env_check = _settings_env_check(raw if read_err is None else None, where, findings.key)
+    if env_check is not None:
+        checks.append(env_check)
     if findings.lost is not None and isinstance((accounts or {}).get(findings.lost), dict):
         checks.append(Check(
             "claude.key_helper", "claude", WARN,
@@ -832,6 +877,96 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             "claude.profile_settings", "claude", FAIL,
             f"{stale} qswap run {noun} a copy of Claude Code's settings from while a "
             "key was active, so changes to the settings do not reach them",
+            fix=fix,
+        ))
+    return checks
+
+
+def _defeating(raw: bytes | None) -> tuple[bool, list[str], str | None]:
+    """What a settings file sets that outranks or redirects qswap's line:
+    ``(apiKeyHelper set, env variables by name, the other host)``."""
+    from ai_quota_swap import key_activation
+
+    try:
+        text = raw.decode("utf-8") if raw else None
+    except UnicodeDecodeError:
+        text = None
+    obj = key_activation.settings_object(text)
+    env = key_activation.env_block(obj)
+    return (
+        "apiKeyHelper" in obj, key_activation.defeating_names(env),
+        key_activation.other_host(env),
+    )
+
+
+def _settings_env_check(raw: bytes | None, where: str, key: str | None) -> Check | None:
+    """The user settings' env block (decision B6, F59): a variable Claude
+    Code obeys before the key line, or a base URL the key is sent to."""
+    _helper, names, host = _defeating(raw)
+    if names:
+        verb = "sets" if len(names) == 1 else "set"
+        return Check(
+            "claude.settings_env", "claude", WARN,
+            f"{where} {verb} {' and '.join(names)} in its env block, which Claude "
+            "Code obeys before qswap's key line; qswap will not switch to an API "
+            "key while it is there",
+            fix=f"remove {' and '.join(names)} from the env block of {where}",
+        )
+    if host is not None:
+        sent = "the active key" if key is not None else "an API key qswap makes active"
+        return Check(
+            "claude.settings_env", "claude", WARN,
+            f"{where} sets ANTHROPIC_BASE_URL, so Claude Code sends {sent} to {host}",
+            fix=f"remove ANTHROPIC_BASE_URL from the env block of {where} if that is not meant",
+        )
+    return None
+
+
+def _other_settings_checks(p: Probes, f: _Facts) -> list[Check]:
+    """The layers that outrank the user settings (Claude Code's documented
+    precedence: managed, then project local, then shared project): one that
+    sets apiKeyHelper, a variable that outranks the line, or a base URL
+    decides for the sessions that read it, whatever qswap's line says
+    (decision B6, F15). Read: the machine's managed file, and the project and
+    local settings of the directory doctor runs in."""
+    checks: list[Check] = []
+    user, _ = _try(p.claude_settings_path)
+    try:
+        user_real = os.path.realpath(user) if user is not None else None
+    except (OSError, ValueError):
+        user_real = None
+    places: list[tuple[str, Path]] = []
+    managed, _ = _try(p.managed_settings_path)
+    if managed is not None:
+        places.append(("managed", Path(managed)))
+    cwd, err = _try(p.cwd)
+    if err is None and cwd is not None:
+        places.append(("project", Path(cwd) / ".claude" / "settings.json"))
+        places.append(("local", Path(cwd) / ".claude" / "settings.local.json"))
+    for kind, path in places:
+        try:
+            if user_real is not None and os.path.realpath(path) == user_real:
+                continue  # doctor runs in the home directory: that is the user file
+        except (OSError, ValueError):
+            pass
+        raw, read_err = _try(p.read_bytes, path)
+        if read_err is not None or not raw:
+            continue
+        helper, names, host = _defeating(raw)
+        what = (["apiKeyHelper"] if helper else []) + names + (
+            ["ANTHROPIC_BASE_URL"] if host else []
+        )
+        if not what:
+            continue
+        where = _abbr(path, f.home)
+        fix = (
+            f"ask whoever manages this machine about {where}" if kind == "managed"
+            else f"remove {' and '.join(what)} from {where}"
+        )
+        checks.append(Check(
+            "claude.other_settings", "claude", WARN,
+            f"{where} sets {' and '.join(what)}; Claude Code reads it before your "
+            "user settings, so sessions that read it do not follow qswap's key line",
             fix=fix,
         ))
     return checks

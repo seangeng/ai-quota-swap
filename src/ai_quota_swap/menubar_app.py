@@ -585,7 +585,11 @@ def run_app(switcher, rumps, AppKit) -> int:
                 except SessionsRunningError as e:
                     # An API-key account with sessions running: the command
                     # line refuses without --log-out-sessions; here it asks.
-                    return ("ask", api_key_switch_question(e), notes)
+                    # A refusal with no saved-key way is an alert instead.
+                    question = api_key_switch_question(e)
+                    if question is None:
+                        raise
+                    return ("ask", question, notes)
                 return ("done", result, notes)
 
             def done(outcome):

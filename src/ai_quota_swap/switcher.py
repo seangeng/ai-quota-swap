@@ -8151,6 +8151,15 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 print(dimmed(line))
         target_is_key = self._account_kind(target_account) == "api_key"
         helper = self.helper_account()
+        if target_is_key and log_out_sessions:
+            state = self.key_helper_state()
+            if state.kind == claude_settings.FOREIGN:
+                # Another helper outranks a saved key too (decision B6): the
+                # saved-key way would log every session out for nothing.
+                raise self._key_unavailable(
+                    target_account, f"{state.shown_path()} already sets another apiKeyHelper",
+                    kind=claude_settings.FOREIGN, log_out_sessions=True,
+                )
         if target_is_key and not log_out_sessions:
             if helper == target_account and not force:
                 email = data["accounts"][target_account].get("email", "")

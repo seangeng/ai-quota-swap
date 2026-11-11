@@ -59,6 +59,70 @@ ENTERED_BY = ("user", "engine")
 # name of whoever had entered it.
 
 
+# -- what defeats the line (decision B6) ---------------------------------------------
+#
+# Claude Code obeys these, set in a settings file's ``env`` block, before any
+# key line: a credential of its own, or another provider altogether. Named in
+# a message, never their values.
+DEFEATING_ENV = (
+    "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+)
+_PROVIDER_SWITCHES = DEFEATING_ENV[2:]
+_SWITCHED_OFF = {"", "0", "false", "no", "off"}
+BASE_URL_VAR = "ANTHROPIC_BASE_URL"
+_ANTHROPIC_HOSTS = {"api.anthropic.com"}
+
+
+def settings_object(text: str | None) -> dict:
+    """A settings file's object (read past a byte order mark), or ``{}``."""
+    if not text:
+        return {}
+    try:
+        obj = json.loads(text.removeprefix("\ufeff"))
+    except ValueError:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def env_block(obj: dict) -> dict[str, str]:
+    """The ``env`` block of a settings object, its values as strings."""
+    env = obj.get("env") if isinstance(obj, dict) else None
+    if not isinstance(env, dict):
+        return {}
+    return {str(k): "" if v is None else str(v) for k, v in env.items()}
+
+
+def defeating_names(env: dict[str, str]) -> list[str]:
+    """The variables in ``env`` that Claude Code obeys before a key line."""
+    out = []
+    for name in DEFEATING_ENV:
+        value = (env.get(name) or "").strip()
+        if not value:
+            continue
+        if name in _PROVIDER_SWITCHES and value.lower() in _SWITCHED_OFF:
+            continue
+        out.append(name)
+    return out
+
+
+def other_host(env: dict[str, str]) -> str | None:
+    """The host ``ANTHROPIC_BASE_URL`` sends the key to, when it is not
+    Anthropic's API (only the host: a URL can carry a password)."""
+    from urllib.parse import urlsplit
+
+    value = (env.get(BASE_URL_VAR) or "").strip()
+    if not value:
+        return None
+    try:
+        host = urlsplit(value if "//" in value else f"//{value}").hostname
+    except ValueError:
+        host = None
+    if not host:
+        return "a host qswap cannot read from it"
+    return None if host.lower() in _ANTHROPIC_HOSTS else host
+
+
 def _tombstones(record: dict) -> dict:
     left = record.get("left")
     return dict(left) if isinstance(left, dict) else {}
@@ -406,11 +470,24 @@ class KeyActivationMixin:
                 raise SwitchError(self._profiles_unisolated_reason(still).capitalize() + ".")
         return done
 
-    def key_helper_available(self) -> bool:
-        """Whether qswap can install its helper line now (no other helper,
-        and a file it can parse)."""
+    def _settings_env(self) -> dict[str, str]:
+        """The ``env`` block of the user settings (``{}`` when there is none
+        or the file cannot be read)."""
         try:
-            return self.key_helper_state().installable
+            raw = claude_settings.settings_path().read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return {}
+        return env_block(settings_object(raw))
+
+    def key_helper_available(self) -> bool:
+        """Whether qswap can install its helper line now and sessions would
+        follow it: no other helper, a file it can parse, and no variable in
+        the file's ``env`` block that Claude Code obeys before the line. The
+        engine reads this before it enters a key (key-helper-unavailable)."""
+        try:
+            return self.key_helper_state().installable and not defeating_names(
+                self._settings_env()
+            )
         except Exception:
             return False
 
@@ -532,7 +609,33 @@ class KeyActivationMixin:
 
     # -- entering and leaving a key -----------------------------------------------
 
-    def _key_unavailable(self, number: str, reason: str) -> KeyHelperUnavailableError:
+    def _key_unavailable(
+        self, number: str, reason: str, *, kind: str | None = None,
+        names: tuple[str, ...] = (), log_out_sessions: bool = False,
+    ) -> KeyHelperUnavailableError:
+        """The refusal of a switch to the key ``number`` (decision B6):
+        ``kind`` is what stopped it. Another helper (``foreign``) and a
+        variable in the env block (``env``) are refused with the one way
+        forward, removing it; anything else offers ``--log-out-sessions``
+        after the fix that keeps everyone logged in."""
+        path = claude_settings.shown_path(claude_settings.settings_path())
+        label = self.label(number, long=False)
+        if kind in (claude_settings.FOREIGN, "env"):
+            text = (
+                display.key_helper_foreign_refusal(
+                    label, number, path, log_out_sessions=log_out_sessions,
+                )
+                if kind == claude_settings.FOREIGN
+                else display.key_line_defeated_refusal(label, number, path, names)
+            )
+            return KeyHelperUnavailableError(
+                text, number=number, reason=reason, log_out_sessions=False,
+            )
+        fix = None
+        if kind == claude_settings.INVALID:
+            fix = f"Fix the JSON in {path}"
+        elif kind == "write":
+            fix = f"Make {path} writable"
         sessions, unreadable = self.shared_login_scan()
         current = self.login_account_number()
         from_key = (
@@ -543,9 +646,9 @@ class KeyActivationMixin:
         records = self.shared_login_unreadable() if unreadable else []
         return KeyHelperUnavailableError(
             display.key_helper_refusal(
-                self.label(number, long=False), number, reason,
+                label, number, reason,
                 display.blocking_sessions(len(sessions), unreadable), from_key=from_key,
-                records=records,
+                records=records, fix=fix,
             ),
             number=number, reason=reason, sessions=len(sessions), unreadable=unreadable,
             from_key=from_key is not None, records=records,
@@ -596,8 +699,18 @@ class KeyActivationMixin:
         state = self.key_helper_state()
         if not state.installable:
             raise self._key_unavailable(
-                number, f"{state.shown_path()} {state.reason() or 'cannot be changed'}"
+                number, f"{state.shown_path()} {state.reason() or 'cannot be changed'}",
+                kind=state.kind,
             )
+        env = self._settings_env()
+        names = tuple(defeating_names(env))
+        if names:
+            raise self._key_unavailable(
+                number,
+                f"{state.shown_path()} sets {', '.join(names)} in its env block",
+                kind="env", names=names,
+            )
+        host = other_host(env)
         previous_key = self.helper_account()
         underneath = self.login_account_number()
         source = previous_key or underneath
@@ -636,7 +749,8 @@ class KeyActivationMixin:
                 if previous_key is None:
                     self.restore_run_profiles(force=True)
                 raise self._key_unavailable(
-                    number, f"{claude_settings.shown_path(e.path or state.path)} {e.reason}"
+                    number, f"{claude_settings.shown_path(e.path or state.path)} {e.reason}",
+                    kind=e.kind,
                 ) from e
             if created_now and not key_state["createdSettings"]:
                 key_state["createdSettings"] = True
@@ -663,12 +777,23 @@ class KeyActivationMixin:
             underneath=self.label(underneath, long=False) if underneath else None,
             from_key=self.label(previous_key, long=False) if previous_key else None,
         )
+        sent = (
+            [display.key_sent_elsewhere(state.shown_path(), host, self.label(number, long=False))]
+            if host else []
+        )
         if emit_output:
             where = f"{self.label(source, long=False)} → " if source else "to "
             print(f"{accent('Switched')} {where}{self._landed_label(number, email)}")
             for line in followup:
                 print(line)
-        op = self._op_result(from_ref, account_ref(int(number), email), [], followup)
+            from ai_quota_swap.printer import warning
+
+            for line in sent:
+                warning(line)
+        op = self._op_result(
+            from_ref, account_ref(int(number), email),
+            [line.removeprefix("Warning: ") for line in sent], followup,
+        )
         op["how"] = display.HOW_HELPER
         return op
 

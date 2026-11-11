@@ -724,6 +724,19 @@ def _no_key_line_runs(monkeypatch):
     monkeypatch.setattr(claude_settings, "_run_check", lambda command, *, cwd, timeout: (0, ""))
 
 
+@pytest.fixture(autouse=True)
+def _no_machine_settings(monkeypatch, tmp_path):
+    """Determinism: doctor reads Claude Code's machine-wide managed settings
+    and the project settings of the directory it runs in. Here neither is
+    this machine's: the managed file is a path that does not exist, and the
+    directory is an empty one. Tests of those checks pass their own probes."""
+    from ai_quota_swap import doctor
+
+    empty = tmp_path / "doctor-cwd"
+    monkeypatch.setattr(doctor, "_managed_settings_path", lambda: tmp_path / "no-managed.json")
+    monkeypatch.setattr(doctor, "_cwd", lambda: empty)
+
+
 #: Where every test finds the CLIs unless it says otherwise (see _fixed_clis).
 FAKE_CLI_DIR = "/usr/local/bin"
 

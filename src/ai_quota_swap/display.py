@@ -1178,6 +1178,7 @@ def key_still_active(key: str, number: str | int) -> list[str]:
 def key_helper_refusal(
     target: str, number: str | int, reason: str, sessions: int = 0, *,
     from_key: str | None = None, prefix: str = "Error: ", records: Sequence[str] = (),
+    fix: str | None = None,
 ) -> str:
     """Why a switch to the API-key account ``target`` was refused when qswap
     cannot add its key helper (``reason``: the settings file's path and what
@@ -1219,9 +1220,71 @@ def key_helper_refusal(
         *lines,
         _STARTED_AFTER,
         *unreadable_records_lines(records, WIDTH - 2),
+        # The fix that keeps everyone logged in comes before the override
+        # (F47): "Fix the JSON in ~/.claude/settings.json, then: ...".
+        *(wrap(f"{fix}, then: qswap switch {number}") if fix else []),
         "To switch anyway:",
         f"  qswap switch {number} {LOG_OUT_SESSIONS_FLAG}",
     ])
+
+
+def _and(names: Sequence[str]) -> str:
+    names = list(names)
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def key_helper_foreign_refusal(
+    target: str, number: str | int, path: str, *, log_out_sessions: bool = False,
+    prefix: str = "Error: ",
+) -> str:
+    """Another ``apiKeyHelper`` is in the settings (decision B6, F47): every
+    session uses it now, and it outranks a saved key too, so the one way
+    forward is to remove it. ``log_out_sessions``: the refusal of
+    ``--log-out-sessions`` itself."""
+    if log_out_sessions:
+        head = (
+            f"not switched. {path} sets another apiKeyHelper, which outranks a saved "
+            "key: with --log-out-sessions every session would be logged out and "
+            "still use that helper."
+        )
+    else:
+        head = (
+            f"not switched. {path} already sets another apiKeyHelper, and every "
+            "Claude Code session uses it now, before any login or saved key, so "
+            f"qswap cannot add the key line for {target} beside it."
+        )
+    lines = wrap(prefix + head, WIDTH - 2)
+    lines[0] = lines[0][len(prefix):]
+    return "\n".join([
+        *lines, *wrap(f"Remove apiKeyHelper from {path}, then: qswap switch {number}"),
+    ])
+
+
+def key_line_defeated_refusal(
+    target: str, number: str | int, path: str, names: Sequence[str], *,
+    prefix: str = "Error: ",
+) -> str:
+    """The settings' ``env`` block sets a variable Claude Code obeys before
+    any key line (decision B6, F59): named, never its value."""
+    verb = "sets" if len(names) == 1 else "set"
+    head = (
+        f"not switched. {path} {verb} {_and(names)} in its env block, which Claude "
+        f"Code obeys before any key line, so sessions would not use {target}."
+    )
+    lines = wrap(prefix + head, WIDTH - 2)
+    lines[0] = lines[0][len(prefix):]
+    return "\n".join([
+        *lines,
+        *wrap(f"Remove {_and(names)} from the env block of {path}, then: qswap switch {number}"),
+    ])
+
+
+def key_sent_elsewhere(path: str, host: str, target: str) -> str:
+    """The one warning when the settings send the key to another host."""
+    return (
+        f"Warning: {path} sets ANTHROPIC_BASE_URL, so Claude Code sends the key of "
+        f"{target} to {host}."
+    )
 
 
 def key_helper_problem(number: str, why: str, fix_command: str) -> list[str]:
@@ -1320,3 +1383,25 @@ def override_warning(names: Sequence[str]) -> str:
     else:
         subject = f"{', '.join(names[:-1])} and {names[-1]} are set"
     return f"Warning: {subject}; claude started here ignores the switch."
+
+
+#: Claude Code ranks the key line above this variable (its documented
+#: precedence; decision B6, F62): a session started with it follows the key.
+OAUTH_TOKEN_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+def override_warnings(names: Sequence[str], *, key_line: bool = False) -> list[str]:
+    """What ``qswap switch`` warns about the exported variables: with
+    ``key_line`` (a switch onto a key through the line) the OAuth token
+    variable does not override the switch, its sessions use the key too."""
+    names = list(names)
+    out: list[str] = []
+    ignoring = [n for n in names if not (key_line and n == OAUTH_TOKEN_VAR)]
+    if ignoring:
+        out.append(override_warning(ignoring))
+    if key_line and OAUTH_TOKEN_VAR in names:
+        out.append(
+            f"Warning: {OAUTH_TOKEN_VAR} is set, but the key line comes before it, so "
+            "claude started here uses the key too."
+        )
+    return out

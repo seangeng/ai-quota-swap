@@ -1671,13 +1671,19 @@ def api_key_switch_question(error: BaseException | None) -> tuple[str, str, str]
     where ``button`` (:data:`API_KEY_SWITCH_BUTTON`, or "Switch anyway" when
     the active account is a key too and no one is logged out) goes ahead and
     Cancel is the default. The message drops the "To switch anyway" lines the button
-    stands for. Anything else is not a question (None)."""
+    stands for. Anything else is not a question (None), and neither is a
+    refusal with no saved-key way (``error.log_out_sessions`` False)."""
     if not isinstance(error, SessionsRunningError):
         return None
     from_key = bool(getattr(error, "from_key", False))
     if isinstance(error, KeyHelperUnavailableError):
-        # The key helper could not be added (another apiKeyHelper, a file
-        # that cannot be parsed): the saved-key way is what the button does.
+        if not getattr(error, "log_out_sessions", True):
+            # Another apiKeyHelper, or a credential in the settings' env
+            # block, defeats a saved key too: nothing to ask, the refusal
+            # (an alert) names the one way forward (decision B6).
+            return None
+        # The key helper could not be added (a file that cannot be parsed
+        # or written): the saved-key way is what the button does.
         return (
             KEY_HELPER_QUESTION_TITLE,
             display.api_key_question(str(error)),

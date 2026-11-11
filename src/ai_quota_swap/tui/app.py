@@ -390,6 +390,9 @@ class QswapApp(App):
             if (
                 not result.ok and not log_out_sessions and result.error
                 and result.error_type in ("SessionsRunningError", "KeyHelperUnavailableError")
+                # No saved-key way to offer (another apiKeyHelper, a
+                # credential in the settings' env block): the refusal shows.
+                and (result.error_fields or {}).get("logOutSessions") is not False
             ):
                 # Through the key helper a switch to a key asks nothing; this
                 # is the saved-key way, offered when the helper cannot be

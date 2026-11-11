@@ -684,3 +684,214 @@ class TestSwitchToTheActiveKeyRepairs:
         with pytest.raises(SwitchError, match="has no saved key.*qswap add-token KEY --slot 5"):
             s.switch_to("5", json_output=True)
         assert _line(temp_home) == f"{QSWAP} key-helper 5"
+
+
+# == B6: what defeats the line is checked when it is written ==========================
+
+
+SECRET = "do-not-print-this-value"
+
+
+def _settings_with(home: Path, obj: dict) -> bytes:
+    _settings(home).write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
+    return _settings(home).read_bytes()
+
+
+class TestTheEnvBlock:
+    @pytest.mark.parametrize("name", [
+        "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+    ])
+    def test_a_variable_that_outranks_the_line_refuses_the_switch(
+        self, temp_home, run, name
+    ):
+        s = _fleet()
+        value = SECRET if not name.startswith("CLAUDE_CODE_USE") else "1"
+        before = _settings_with(temp_home, {"env": {name: value}, "model": "opus"})
+        code, out, err = run(s, "switch", "5")
+        assert code == 1
+        text = " ".join(err.split())
+        assert name in text and SECRET not in text
+        assert f"Remove {name} from the env block of ~/.claude/settings.json, then: qswap switch 5" in text
+        assert "--log-out-sessions" not in text
+        _fits(err)
+        assert _settings(temp_home).read_bytes() == before
+        assert s.current_account_number() == "1"
+        code, out, _err = run(s, "switch", "5", "--json")
+        payload = json.loads(out)
+        assert payload["error"]["type"] == "KeyHelperUnavailableError"
+        assert payload["error"]["logOutSessions"] is False
+        assert SECRET not in out
+
+    @pytest.mark.parametrize("value", ["", "0", "false"])
+    def test_a_provider_switch_turned_off_is_no_refusal(self, temp_home, value):
+        s = _fleet()
+        _settings_with(temp_home, {"env": {"CLAUDE_CODE_USE_BEDROCK": value}})
+        assert s.switch_to("5", json_output=True)["switched"] is True
+
+    def test_the_engine_treats_it_as_the_helper_unavailable(self, temp_home):
+        from ai_quota_swap.autoswitch import NoSwitchEvent, TickOutcome
+        from tests.test_key_helper_live import EXHAUSTED, _harness
+
+        h = _harness(temp_home)
+        _settings_with(temp_home, {"env": {"ANTHROPIC_AUTH_TOKEN": SECRET}})
+        assert h.switcher.key_helper_available() is False
+        assert h.tick_with_usage(EXHAUSTED) is TickOutcome.BLOCKED
+        held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
+        assert held.reason == "key-helper-unavailable"
+        assert h.switcher.current_account_number() == "1"
+
+    def test_a_base_url_goes_ahead_and_names_the_host(self, temp_home, run):
+        s = _fleet()
+        _settings_with(temp_home, {"env": {
+            "ANTHROPIC_BASE_URL": f"https://user:{SECRET}@gateway.example.com/v1",
+        }})
+        code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        text = " ".join((out + err).split())
+        assert "ANTHROPIC_BASE_URL" in text and "gateway.example.com" in text
+        assert SECRET not in text
+        assert s.current_account_number() == "5"
+        s.switch_to("1", json_output=True)
+        payload = s.switch_to("5", json_output=True)
+        assert any("gateway.example.com" in w for w in payload["warnings"])
+
+    def test_the_anthropic_api_is_not_warned_about(self, temp_home):
+        s = _fleet()
+        _settings_with(temp_home, {"env": {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}})
+        assert s.switch_to("5", json_output=True)["warnings"] == []
+
+
+class TestAnotherHelper:
+    """F47: another apiKeyHelper is what sessions use now; the one way
+    forward is to remove it, and --log-out-sessions is not offered."""
+
+    def test_the_refusal_says_sessions_use_it_and_names_one_way(
+        self, temp_home, run, alive
+    ):
+        from tests.test_key_helper_live import _write_sessions
+
+        s = _fleet()
+        _write_sessions(temp_home, [4101, 4102])
+        alive.update({4101, 4102})
+        before = _settings_with(temp_home, {"apiKeyHelper": "/opt/vault/print-key"})
+        code, out, err = run(s, "switch", "5")
+        assert code == 1
+        text = " ".join(err.split())
+        assert "already sets another apiKeyHelper" in text
+        assert "every Claude Code session uses it now" in text
+        assert "Not logged in" not in text
+        assert "--log-out-sessions" not in text
+        assert err.rstrip().endswith(
+            "Remove apiKeyHelper from ~/.claude/settings.json, then: qswap switch 5"
+        )
+        _fits(err)
+        assert _settings(temp_home).read_bytes() == before
+
+    def test_log_out_sessions_is_refused_while_it_is_set(
+        self, temp_home, block_real_keychain, run
+    ):
+        from tests.test_key_helper_live import _claude_state
+
+        s = _fleet()
+        _settings_with(temp_home, {"apiKeyHelper": "/opt/vault/print-key"})
+        before = _claude_state(block_real_keychain)
+        code, out, err = run(s, "switch", "5", "--log-out-sessions")
+        assert code == 1
+        text = " ".join(err.split())
+        assert "outranks a saved key" in text
+        assert "Remove apiKeyHelper from ~/.claude/settings.json, then: qswap switch 5" in text
+        assert _claude_state(block_real_keychain) == before
+        assert s.current_account_number() == "1"
+
+    def test_the_menu_bar_does_not_ask_about_the_saved_key(self, temp_home):
+        from ai_quota_swap import menubar
+        from ai_quota_swap.exceptions import KeyHelperUnavailableError
+
+        s = _fleet()
+        _settings_with(temp_home, {"apiKeyHelper": "/opt/vault/print-key"})
+        with pytest.raises(KeyHelperUnavailableError) as caught:
+            _activate(s)
+        assert menubar.api_key_switch_question(caught.value) is None
+        _settings(temp_home).write_text("{not json", encoding="utf-8")
+        with pytest.raises(KeyHelperUnavailableError) as caught:
+            _activate(s)
+        assert menubar.api_key_switch_question(caught.value) is not None
+
+    def test_an_unparseable_file_names_the_fix_before_the_override(self, temp_home, run):
+        s = _fleet()
+        _settings(temp_home).write_text("{not json", encoding="utf-8")
+        code, out, err = run(s, "switch", "5")
+        assert code == 1
+        text = " ".join(err.split())
+        fix = text.index("Fix the JSON in ~/.claude/settings.json, then: qswap switch 5")
+        assert fix < text.index("qswap switch 5 --log-out-sessions")
+        _fits(err)
+
+
+class TestTheOAuthTokenVariable:
+    """F62: the key line outranks CLAUDE_CODE_OAUTH_TOKEN."""
+
+    def test_the_switch_onto_a_key_says_such_sessions_follow_it(
+        self, temp_home, run, monkeypatch
+    ):
+        s = _fleet()
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", SECRET)
+        with patch.object(display, "OVERRIDE_ENV_VARS", display.OVERRIDE_ENV_VARS):
+            from ai_quota_swap import cli
+
+            capture = []
+            monkeypatch.setattr(cli, "warning", lambda msg, **k: capture.append(msg))
+            code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        text = " ".join(" ".join(capture).split())
+        assert "ignores the switch" not in text
+        assert "CLAUDE_CODE_OAUTH_TOKEN" in text and "uses the key too" in text
+
+    def test_doctor_says_such_sessions_follow_the_key(self, temp_home, monkeypatch):
+        s = _fleet()
+        _activate(s)
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", SECRET)
+        check = _check("claude.env")
+        assert check is not None and "uses #5 ci" in check.summary
+        assert "instead of the active account" not in check.summary
+
+
+class TestDoctorReadsTheOtherLayers:
+    def _probes(self, tmp_path, managed: Path):
+        from dataclasses import replace as with_probe
+
+        from ai_quota_swap import doctor
+
+        return with_probe(
+            doctor.default_probes(), cwd=lambda: tmp_path / "project",
+            managed_settings_path=lambda: managed,
+        )
+
+    @pytest.mark.parametrize("where", ["managed", "project", "local"])
+    def test_a_helper_or_variable_there_is_warned_about(self, temp_home, tmp_path, where):
+        from ai_quota_swap import doctor
+
+        _fleet()
+        project = tmp_path / "project" / ".claude"
+        project.mkdir(parents=True)
+        managed = tmp_path / "managed-settings.json"
+        target = {
+            "managed": managed, "project": project / "settings.json",
+            "local": project / "settings.local.json",
+        }[where]
+        target.write_text(json.dumps({"apiKeyHelper": "/opt/x", "env": {
+            "ANTHROPIC_AUTH_TOKEN": SECRET}}), encoding="utf-8")
+        checks = doctor.run_checks(self._probes(tmp_path, managed))
+        found = [c for c in checks if c.id == "claude.other_settings"]
+        assert len(found) == 1 and found[0].status == "warn"
+        assert "apiKeyHelper" in found[0].summary
+        assert "ANTHROPIC_AUTH_TOKEN" in found[0].summary
+        assert SECRET not in json.dumps(doctor.to_json(checks, online=False))
+
+    def test_the_user_settings_env_block_is_reported(self, temp_home):
+        _fleet()
+        _settings_with(temp_home, {"env": {"ANTHROPIC_API_KEY": SECRET}})
+        check = _check("claude.settings_env")
+        assert check is not None and check.status == "warn"
+        assert "ANTHROPIC_API_KEY" in check.summary and SECRET not in check.summary

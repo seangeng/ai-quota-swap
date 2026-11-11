@@ -1440,8 +1440,10 @@ class TestSwitching:
         s.switch_to("1", json_output=True)
         assert _settings(temp_home).read_text(encoding="utf-8") == original
 
+    # Another apiKeyHelper is refused with no saved-key way (decision B6):
+    # tests/test_key_switch_round2.py, TestAnotherHelper.
     @pytest.mark.parametrize("text, reason", [
-        ('{"apiKeyHelper": "/opt/vault/print-key"}', "already sets another apiKeyHelper"),
+        ("[]", "is not valid JSON (not a JSON object)"),
         ("{not json", "is not valid JSON"),
     ])
     def test_refused_when_the_line_cannot_be_installed(
@@ -1472,8 +1474,7 @@ class TestSwitching:
         self, temp_home, block_real_keychain, alive
     ):
         s = _fleet()
-        _settings(temp_home).write_text('{"apiKeyHelper": "/opt/vault/print-key"}',
-                                        encoding="utf-8")
+        _settings(temp_home).write_text("{not json", encoding="utf-8")
         _write_sessions(temp_home, [4101])
         alive.add(4101)
         s.switch_to("5", json_output=True, log_out_sessions=True)
@@ -2499,14 +2500,16 @@ class TestSurfaces:
         alive.add(4101)
         assert _activate(s)["switched"] is True  # no question at all
         s.switch_to("1", json_output=True)
-        _settings(temp_home).write_text('{"apiKeyHelper": "/opt/x"}', encoding="utf-8")
+        # (Another apiKeyHelper asks nothing either, decision B6: the saved
+        # key would not be used; TestAnotherHelper in test_key_switch_round2.)
+        _settings(temp_home).write_text("{not json", encoding="utf-8")
         with pytest.raises(KeyHelperUnavailableError) as caught:
             _activate(s)
         assert isinstance(caught.value, SessionsRunningError)
         title, message, button = menubar.api_key_switch_question(caught.value)
         assert title == "Use the saved key instead?"
         assert button == "Switch and log out sessions"
-        assert "already sets another apiKeyHelper" in message
+        assert "is not valid JSON" in message
         assert "--log-out-sessions" not in message
 
     def test_the_menu_bar_notices_a_change_of_the_settings_file(self, temp_home):
