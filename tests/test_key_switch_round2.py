@@ -582,6 +582,23 @@ class TestARecordWithNoLine:
         )
         assert s.key_entered_by() == "engine"
 
+    def test_with_no_login_underneath_doctor_names_no_placeholder(self, temp_home):
+        """End-to-end run R6: the line deleted by hand on a machine with no
+        claude.ai login. The activeAccountNumber warning said 'fix: qswap
+        switch N', right after the record's warning named qswap switch 5."""
+        from ai_quota_swap import doctor
+
+        s = _fleet()
+        _activate(s)
+        claude_settings.remove(path=_settings(temp_home), remove_file_if_empty=True)
+        get_global_config_path().write_text("{}", encoding="utf-8")
+        checks = doctor.run_checks()
+        active = [c for c in checks if c.id == "claude.active_number"]
+        assert active and active[0].fix == "qswap switch 5"
+        assert all(c.fix != "qswap switch N" for c in checks if c.fix), [
+            (c.id, c.fix) for c in checks
+        ]
+
 
 class TestTheActiveNumberFollowsTheLine:
     """F25: every path that removes the line sets activeAccountNumber back."""

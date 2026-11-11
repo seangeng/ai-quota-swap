@@ -870,11 +870,19 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             fix=f"qswap switch {findings.lost}",
         ))
     if findings.stale_active is not None:
+        active_fix = fix
+        if fix == "qswap switch N":
+            # No login underneath to name: the command the record's warning
+            # names for the same leftover, else the way off a key.
+            active_fix = (
+                f"qswap switch {findings.lost}" if findings.lost is not None
+                else _key_way_back(p, registry, None) or display.KEY_NO_WAY_BACK
+            )
         checks.append(Check(
             "claude.active_number", "claude", WARN,
             f"the account list names {label(findings.stale_active)} as the active "
             "account, but its key line is gone; the next switch sets it back",
-            fix=fix,
+            fix=active_fix,
         ))
     if findings.linked:
         n = len(findings.linked)
