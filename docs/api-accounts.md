@@ -200,7 +200,7 @@ Because only the sessions started after a saved-key switch use the key, `qswap u
 - `~/.claude/settings.json` that cannot be parsed while qswap's record names a key fails, with the fix.
 - Another `apiKeyHelper`, a variable in the settings' `env` block that comes before the line (or `ANTHROPIC_BASE_URL`, which sends the key elsewhere), `apiKeyHelper` or those variables in the managed settings or the current project's settings, and `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` exported in your shell, warn. `qswap switch` warns about the shell variables too; with a key active, `CLAUDE_CODE_OAUTH_TOKEN` follows the key.
 
-`qswap list`, `qswap status`, the dashboard and the menu bar say the same about each of these states, with the same command.
+`qswap list`, `qswap status`, the dashboard and the menu bar say the same, with the same command, about a line for an account that cannot give a key, a line that runs a qswap no longer there, run profiles left with a copy or still sharing the settings, a line that came back, a key whose line is gone, a key auto-switch entered that nothing watches, and settings that cannot be read while a key is recorded. Only doctor reports another `apiKeyHelper`, a variable in the `env` block or another layer, and a line whose command fails its check while its program is there; a switch to a key that one of the first two would defeat is refused with the same words.
 
 ## See what it spent
 
