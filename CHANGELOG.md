@@ -58,6 +58,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - The price table is copied from the vendors' published pages; `pricing.json` overrides it.
 - An activation log records which account was active when, so usage is attributed to accounts.
 - A report reads only the session files its date range needs.
+- A report walks the activation log once, not once for every hour of usage, when the log holds a saved-key line; with a few thousand lines that took a week's report from over half a second to a few tens of milliseconds.
 
 ### Usage resets
 
