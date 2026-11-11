@@ -567,3 +567,114 @@ class TestWhatOutranksTheLineIsSaidEverywhere:
         )
         checks = {c.id: c for c in doctor.run_checks()}
         assert checks["claude.api_key_helper"].status == "warn"
+
+
+# == E1: one line for a lost record, and its fix is the way off the key ============
+
+
+def _removed_by_hand(temp_home, *, login: bool = True, entered_by: str = "user"):
+    """#5 ci active over #1 personal, then its line deleted by hand, as
+    docs/api-accounts.md 'Removing the line by hand' says. ``login`` False:
+    no claude.ai login is left on the machine (end-to-end run R6)."""
+    from ai_quota_swap.paths import get_global_config_path
+
+    s = _fleet()
+    s.switch_to("5", json_output=True, entered_by=entered_by)
+    claude_settings.remove(path=_settings(temp_home), remove_file_if_empty=True)
+    if not login:
+        get_global_config_path().write_text("{}", encoding="utf-8")
+    f = s.key_findings()
+    assert f.lost == "5" and f.stale_active == "5"
+    return s
+
+
+def _doctor_checks():
+    from ai_quota_swap import doctor
+
+    return doctor.run_checks()
+
+
+class TestALostRecord:
+    def test_list_and_status_name_the_way_off_first(self, temp_home):
+        s = _removed_by_hand(temp_home)
+        for text in (_notes(s), " ".join(" ".join(s.status_lines()).split())):
+            assert "#5 ci" in text and "no longer in" in text
+            off = text.index("To leave it: qswap switch 1")
+            again = text.index("To use the key again: qswap switch 5")
+            assert off < again
+        lost = [n for n in s.key_notes() if n["code"] == "line-lost"]
+        assert lost == [{
+            "code": "line-lost", "account": 5, "text": lost[0]["text"],
+            "fix": "qswap switch 1",
+        }]
+
+    def test_with_no_login_the_first_step_is_the_way_off_a_key(self, temp_home):
+        s = _removed_by_hand(temp_home, login=False)
+        s.set_account_disabled("1", True)
+        text = _notes(s)
+        assert text.index("To leave it: qswap switch 7") < text.index(
+            "To use the key again: qswap switch 5"
+        )
+        assert [n["fix"] for n in s.key_notes() if n["code"] == "line-lost"] == [
+            "qswap switch 7"
+        ]
+
+    def test_with_no_subscription_it_says_how_to_log_in_to_one(self, temp_home):
+        s = _removed_by_hand(temp_home, login=False)
+        s.remove_account("1", assume_yes=True)
+        s.remove_account("7", assume_yes=True)
+        text = _notes(s)
+        assert "To leave it, log in to a subscription (claude, then /login), then run: " \
+            "qswap add" in text
+        assert text.index("qswap add") < text.index("To use the key again: qswap switch 5")
+
+    def test_doctor_prints_one_warning_for_the_record_and_the_active_number(self, temp_home):
+        s = _removed_by_hand(temp_home)
+        checks = _doctor_checks()
+        about = [c for c in checks if "#5 ci" in c.summary and c.status != "pass"]
+        assert len(about) == 1, [(c.id, c.summary) for c in about]
+        check = about[0]
+        assert check.status == "warn"
+        assert "no longer in" in check.summary and "active account" in check.summary
+        assert check.fix == "qswap switch 1"
+        assert check.hint == "to use the key again: qswap switch 5"
+        assert not any(c.id == "claude.active_number" for c in checks)
+        del s
+
+    def test_doctors_text_gives_the_way_off_first(self, temp_home, capsys):
+        from ai_quota_swap import doctor
+
+        _removed_by_hand(temp_home)
+        capsys.readouterr()
+        try:
+            doctor.doctor_command([])
+        except SystemExit:
+            pass
+        out = capsys.readouterr().out
+        assert out.index("fix: qswap switch 1") < out.index(
+            "to use the key again: qswap switch 5"
+        )
+
+    @pytest.mark.parametrize("login", [True, False])
+    def test_no_surface_names_re_entering_the_key_as_the_fix(self, temp_home, login):
+        s = _removed_by_hand(temp_home, login=login)
+        assert all(c.fix != "qswap switch 5" for c in _doctor_checks() if c.fix)
+        assert all(n["fix"] != "qswap switch 5" for n in s.key_notes())
+        for text in (_notes(s), " ".join(" ".join(s.status_lines()).split())):
+            assert "qswap switch 5" not in text.replace(
+                "To use the key again: qswap switch 5", ""
+            )
+
+    def test_with_no_login_doctor_names_no_placeholder(self, temp_home):
+        _removed_by_hand(temp_home, login=False)
+        checks = _doctor_checks()
+        assert all(c.fix != "qswap switch N" for c in checks if c.fix)
+        lost = [c for c in checks if "no longer in" in c.summary]
+        assert [c.fix for c in lost] == ["qswap switch 1"]
+
+    def test_the_fix_clears_the_record(self, temp_home, run):
+        s = _removed_by_hand(temp_home, entered_by="engine")
+        code, _out, err = run(s, "switch", "1")
+        assert code == 0, err
+        assert s.key_notes() == []
+        assert not any("no longer in" in c.summary for c in _doctor_checks())

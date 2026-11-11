@@ -875,22 +875,31 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
     env_check = _settings_env_check(raw if read_err is None else None, where, findings.key)
     if env_check is not None:
         checks.append(env_check)
+    lost_said = False
     if findings.lost is not None and isinstance((accounts or {}).get(findings.lost), dict):
+        # Decision E1: one warning for the record and activeAccountNumber
+        # together. Its fix is the way off the key (the switch to the
+        # account underneath, which clears both); using the key again is
+        # offered second, and labelled as that.
+        lost_said = True
+        also = (
+            ", and the account list names it as the active account"
+            if findings.stale_active == findings.lost else ""
+        )
         checks.append(Check(
             "claude.key_helper", "claude", WARN,
-            f"qswap made {label(findings.lost)} the active API key, but its key line "
-            f"is no longer in {where}; Claude Code sessions do not use it",
-            fix=f"qswap switch {findings.lost}",
+            f"qswap made {label(findings.lost)} the active API key{also}, but its key "
+            f"line is no longer in {where}; Claude Code sessions do not use it",
+            fix=_key_way_back(p, registry, login_slot) or display.KEY_NO_WAY_BACK,
+            hint=f"to use the key again: qswap switch {findings.lost}",
         ))
-    if findings.stale_active is not None:
+    if findings.stale_active is not None and not (
+        lost_said and findings.stale_active == findings.lost
+    ):
         active_fix = fix
         if fix == "qswap switch N":
-            # No login underneath to name: the command the record's warning
-            # names for the same leftover, else the way off a key.
-            active_fix = (
-                f"qswap switch {findings.lost}" if findings.lost is not None
-                else _key_way_back(p, registry, None) or display.KEY_NO_WAY_BACK
-            )
+            # No login underneath to name: the way off a key.
+            active_fix = _key_way_back(p, registry, None) or display.KEY_NO_WAY_BACK
         checks.append(Check(
             "claude.active_number", "claude", WARN,
             f"the account list names {label(findings.stale_active)} as the active "

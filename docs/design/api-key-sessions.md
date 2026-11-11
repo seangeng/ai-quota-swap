@@ -340,7 +340,10 @@ What the code does where this part leaves room, or where it had to differ:
 - **The way back**, in status, list, the menu bar, the dashboard, doctor and the stopping
   engine: `qswap switch N` to the account underneath; `qswap add` over a login qswap does
   not manage; else `qswap switch N` to the first subscription; else log in to one and run
-  `qswap add`.
+  `qswap add`. It is also the fix for a record whose line is gone (the line deleted by
+  hand): the switch clears the record and `activeAccountNumber`, which doctor reports as
+  one warning; `qswap switch 5`, to use the key again, is offered second and labelled so.
+  No surface names re-entering the key as that fix.
 - **Credit and Anthropic's figures.** The usage report has daily buckets, so the day a credit
   is recorded counts in full against it; the ledger counts from the hour. The row and `qswap
   credit` say which (`credit counted from 14:00 UTC Nov 10`). A credit recorded before this

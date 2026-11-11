@@ -1487,12 +1487,17 @@ def key_line_came_back(key: str, fix_command: str) -> list[str]:
     )
 
 
-def key_line_lost(key: str, path: str, number: str | int) -> list[str]:
-    """qswap's record names a key whose line is no longer in the settings."""
+def key_line_lost(key: str, path: str, number: str | int, back: str | None) -> list[str]:
+    """qswap's record names a key whose line is no longer in the settings
+    (removed by hand, say). The way off the key comes first (decision E1):
+    ``back``, the switch to the account underneath (``key_way_back``), which
+    clears the record; None: no subscription to go to. Using the key again
+    comes second, and says so."""
+    step = f"To leave it: {back}." if back else f"To leave it, {KEY_NO_WAY_BACK}."
     return wrap(
         f"qswap made {key} the active API key, but its key line is no longer in "
-        f"{path}, so Claude Code sessions do not use it. To use the key again: "
-        f"qswap switch {number}"
+        f"{path}, so Claude Code sessions do not use it. {step} To use the key "
+        f"again: qswap switch {number}"
     )
 
 

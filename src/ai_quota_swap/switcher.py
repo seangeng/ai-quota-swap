@@ -7010,10 +7010,13 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     f"qswap switch {f.key}",
                 ))
         if f.lost is not None and f.lost in ((self._get_sequence_data() or {}).get("accounts") or {}):
+            # Decision E1: the fix is the way off the key, which clears the
+            # record; using the key again is named second.
+            back = self.key_way_back()
             out.append(note(
                 "line-lost", f.lost,
-                display.key_line_lost(self.label(f.lost, long=False), path, f.lost),
-                f"qswap switch {f.lost}",
+                display.key_line_lost(self.label(f.lost, long=False), path, f.lost, back),
+                back or display.KEY_NO_WAY_BACK,
             ))
         if f.copies:
             out.append(note(

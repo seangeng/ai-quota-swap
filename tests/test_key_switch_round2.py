@@ -593,8 +593,11 @@ class TestARecordWithNoLine:
         claude_settings.remove(path=_settings(temp_home), remove_file_if_empty=True)
         get_global_config_path().write_text("{}", encoding="utf-8")
         checks = doctor.run_checks()
-        active = [c for c in checks if c.id == "claude.active_number"]
-        assert active and active[0].fix == "qswap switch 5"
+        # Decision E1 (round 3): one warning for the record and the active
+        # number together, whose fix is the way off the key.
+        assert not [c for c in checks if c.id == "claude.active_number"]
+        lost = [c for c in checks if "no longer in" in c.summary]
+        assert [c.fix for c in lost] == ["qswap switch 1"]
         assert all(c.fix != "qswap switch N" for c in checks if c.fix), [
             (c.id, c.fix) for c in checks
         ]
