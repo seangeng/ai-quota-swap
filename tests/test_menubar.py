@@ -497,6 +497,23 @@ def test_row_api_key_over_budget_is_never_cut_where_it_matters():
     assert len(text) <= menubar.ROW_LIMIT
 
 
+def test_row_api_key_at_its_budget_with_a_credit_never_cuts_the_credit():
+    """The re-check's case: the budget reached and a credit with cents. The
+    row read "... · $1,187.03 of $1…", at a glance a credit of one dollar.
+    The credit gives way whole (the tooltip keeps it)."""
+    reading = _api_reading(used=25.22, limit=20.0, today=2.06)
+    reading["credit"] = {"amount": 1187.03, "used": 0.0, "left": 1187.03, "spent": False,
+                         "expired": False, "since": "2026-11-01T00:00:00Z", "expires": None,
+                         "source": "ledger", "unpriced_tokens": 0}
+    acc = _acct(number="5", email="ci@example.com", alias="ci", kind="api_key",
+                active=True, entry=Reading(sentinel=USAGE_API_KEY, api_spend=reading))
+    row = _row(acc)
+    assert len(row.text) <= menubar.ROW_LIMIT
+    assert "$25.22/$20 (126%, over budget) est." in row.text
+    assert row.text.endswith(("credit left", "over budget) est.")), row.text
+    assert "$1,187.03 of $1,187.03 credit left" in row.tooltip
+
+
 def test_row_placeholder_name_is_never_an_address_or_cut_mid_word():
     # The maintainer's first-day menu: three unused keys added without an email.
     for n in ("5", "6", "7"):

@@ -973,9 +973,12 @@ def account_row(
             # gives way first (the #1 row says "underneath"), then today's
             # figure, then "by auto-switch" (with no engine running, the note
             # row says it in full); the tooltip keeps them all.
+            # Last, a credit that follows a budget reached gives way whole,
+            # never cut mid-figure.
             full = api_spend.menu_text(reading, now=now)
             short = api_spend.menu_text(reading, now=now, today=False)
-            tries = ([over, by, full], [by, full], [by, short], [short])
+            bare = api_spend.menu_text(reading, now=now, today=False, credit=False)
+            tries = ([over, by, full], [by, full], [by, short], [short], [bare])
         else:
             summary = display.api_key_summary(block)
             tries = ([over, by, summary], [by, summary], [summary])

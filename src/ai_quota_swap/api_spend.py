@@ -1221,21 +1221,27 @@ def short_text(reading: dict) -> str:
 LIMIT_NOT_ENFORCED_SHORT = "limit not enforced"
 
 
-def menu_text(reading: dict, now: float | None = None, *, today: bool = True) -> str:
+def menu_text(
+    reading: dict, now: float | None = None, *, today: bool = True, credit: bool = True,
+) -> str:
     """For a menu bar row, within its note width: ``$4.12 today ·
     $212.40/$500 (42%)``; ``(104%, over budget)`` past the budget, as
     :func:`spend_text` says it. Nothing recorded with a budget: ``$0 of $500
     this month``. A budget or credit with no fresh figure ends in ``limit
     not enforced``. ``today`` False leaves today's figure out, for a row
-    with no room for it."""
+    with no room for it; ``credit`` False leaves out the credit that follows a
+    monthly budget reached (the reason), so a row short of room never cuts
+    the credit's figure."""
     unenforced = limit_not_enforced(reading, now) and not spend_unknown(reading)
-    text = _menu_text(reading, unenforced, today=today)
+    text = _menu_text(reading, unenforced, today=today, with_credit=credit)
     if only := _only_latched(reading):
         return f"{text} · {LATCHED_WORDS[only]}"
     return f"{text} · {LIMIT_NOT_ENFORCED_SHORT}" if unenforced else text
 
 
-def _menu_text(reading: dict, unenforced: bool, *, today: bool = True) -> str:
+def _menu_text(
+    reading: dict, unenforced: bool, *, today: bool = True, with_credit: bool = True,
+) -> str:
     from ai_quota_swap.display import API_KEY_NO_USAGE_SHORT
 
     credit = reading.get("credit")
@@ -1251,6 +1257,8 @@ def _menu_text(reading: dict, unenforced: bool, *, today: bool = True) -> str:
             # At its monthly budget with credit left: the budget is why.
             budget = {k: v for k, v in reading.items() if k != "credit"}
             budget["today"] = None  # the row's room goes to the reason
+            if not with_credit:
+                return _menu_text(budget, False)
             return f"{_menu_text(budget, False)} · {credit_text(credit)}"
         return text
     spend = reading.get("spend") or {}
