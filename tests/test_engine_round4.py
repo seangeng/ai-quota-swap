@@ -689,3 +689,49 @@ class TestADryRunBesideARealEngine:
         self._beat(h, mode="loop", dry_run=True, at=now, host="dashboard")
         beat = read_heartbeat(h.switcher.backup_dir, now=now)
         assert (beat["host"], beat["dryRun"]) == ("menu bar", False)
+
+
+# == ux.md: the lines this round adds fit 80 columns ============================================
+
+
+def _log_lines(h) -> list[str]:
+    from ai_quota_swap import autolog
+
+    lines: list[str] = []
+    log = autolog.AutoLog(lines.append, clock=lambda: "12:00:00", width=80)
+    for event in h.events:
+        log(event)
+    log.flush()
+    return [line for text in lines for line in text.splitlines()]
+
+
+def _fit(lines: list[str]) -> None:
+    """Every line within 80 columns, except one that is a path or a command
+    alone (ux.md: those are never broken)."""
+    assert lines
+    for line in lines:
+        bare = line.strip()
+        if bare.startswith(("qswap ", "~", "/")) or ":\\" in bare:
+            continue
+        assert len(line) <= 80, line
+
+
+class TestTheNewLinesFit:
+    def test_a_key_left_at_its_limit(self, temp_home):
+        h = _fleet(temp_home, keys=(2, 4))
+        _tick(h, ALL_OUT)
+        h.clock.advance(60)
+        _tick(h, ALL_OUT, {"2": _reading(h, used=600.0)})
+        h.clock.advance(60)
+        _tick(h, ALL_OUT, {"2": _reading(h, used=600.0), "4": _reading(h, used=1.0)})
+        assert "enters no other key" in " ".join(" ".join(_log_lines(h)).split())
+        _fit(_log_lines(h))
+
+    def test_a_deferred_reset_and_a_scan_that_cannot_read_files(self, temp_home, monkeypatch):
+        h = _fleet(temp_home, cooldown_seconds=300)
+        _tick_unread_claim(h, TestADeferredResetHoldsTheKey.USAGE)
+        _fit(_log_lines(h))
+        _failing_scan(monkeypatch, temp_home, "unreadable")
+        h2 = _fleet(temp_home)
+        _tick(h2, EXHAUSTED, {"2": _reading(h2, age=0)})
+        _fit(_log_lines(h2))
