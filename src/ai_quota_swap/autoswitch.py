@@ -706,6 +706,9 @@ def _mutate_state_file(state_path: Path, mutator: Callable[[dict], None]) -> dic
 #: The limits the engine latches once reached (``limitLatch``); an expired
 #: credit is decided by its date and needs no latch.
 LATCHED_REASONS = frozenset({"budget", "credit-spent"})
+#: Why the engine leaves a key it entered once ``autoswitch.includeApiKeyAccounts``
+#: is turned off: it would not enter the key now (decision EM11).
+KEYS_OFF = "keys-off"
 
 
 def clear_limit_latch(
@@ -4493,6 +4496,10 @@ class AutoSwitchEngine:
         reason = self._key_brake(current, entries)
         if reason is None and key_mode == "engine" and not self._key_limited(current, entries):
             reason = api_spend.NO_LIMIT
+        if reason is None and key_mode == "engine" and not settings.include_api_key_accounts:
+            # API keys turned off since the engine entered this one: it would
+            # not enter it now, so it does not keep sessions on it (EM11).
+            reason = KEYS_OFF
         if reason is None and key_mode == "user":
             self._emit(NoSwitchEvent(
                 reason="active-api-key",

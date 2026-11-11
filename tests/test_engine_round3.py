@@ -219,3 +219,69 @@ def _iso(ts: float) -> str:
 
 # Re-exported for the classes below.
 __all__ = ["NoSwitchEvent", "SwitchEvent", "_notes", "_usage", "_enter", "_switches"]
+
+
+# == EM11: includeApiKeyAccounts turned off on a key the engine entered =======================
+
+
+def _keys_off(h) -> None:
+    from dataclasses import replace
+
+    h.settings = replace(h.settings, include_api_key_accounts=False)
+    h.engine.settings = h.settings
+
+
+class TestKeysTurnedOff:
+    def test_the_engine_leaves_its_key_for_the_account_underneath(self, temp_home):
+        """The re-check's case: entered at the limit, then the setting is
+        turned off while both subscriptions stay at 100%. It used to stay
+        on the key for as long as no subscription had room."""
+        h = _fleet(temp_home, cooldown_seconds=3600)
+        _enter(h)
+        _keys_off(h)
+        h.clock.advance(60)  # inside the cooldown: leaving now ignores it
+        assert _tick(h, EXHAUSTED) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        assert h.switcher.helper_account() is None
+        assert _settings_line(temp_home) is None
+        last = _switches(h)[-1]
+        assert last.limit_reason == "keys-off"
+        assert last.human() == (
+            "Switched #2 ci → #1 a@example.com · API keys are turned off "
+            "(autoswitch.includeApiKeyAccounts); no subscription has room, so back "
+            "to the account underneath"
+        )
+        # Said once: the next checks stay on #1 and say nothing more of it.
+        for _ in range(3):
+            h.clock.advance(60)
+            assert _tick(h, EXHAUSTED) is not TickOutcome.SWITCHED
+        assert len([s for s in _switches(h) if s.limit_reason == "keys-off"]) == 1
+
+    def test_with_room_on_a_subscription_it_goes_there_at_once(self, temp_home):
+        h = _fleet(temp_home, cooldown_seconds=3600)
+        _enter(h)
+        _keys_off(h)
+        h.clock.advance(60)
+        assert _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(40)}) is (
+            TickOutcome.SWITCHED
+        )
+        assert h.switcher.current_account_number() == "3"
+        assert _settings_line(temp_home) is None
+
+    def test_a_key_the_user_entered_is_not_touched(self, temp_home):
+        h = _fleet(temp_home)
+        h.switcher.switch_to("2", json_output=True)
+        _keys_off(h)
+        for _ in range(3):
+            assert _tick(h, EXHAUSTED) is TickOutcome.NO_ACTION
+            h.clock.advance(60)
+        assert h.switcher.current_account_number() == "2"
+        assert _settings_line(temp_home) is not None
+
+    def test_with_no_login_underneath_it_says_why_it_stays(self):
+        event = NoSwitchEvent(reason="stuck-on-key", account="2", limit_reason="keys-off",
+                              way_off="3")
+        assert event.human() == (
+            "Staying on #2 though API keys are turned off: no login is under the key to "
+            "go back to. Leave it with: qswap switch 3"
+        )

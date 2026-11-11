@@ -452,6 +452,7 @@ def switch_reason(event: object) -> str:
                 "credit-expired": "credit expired",
                 api_spend.SPEND_UNKNOWN: api_spend.SPEND_UNKNOWN_WORDS,
                 api_spend.NO_LIMIT: api_spend.NO_LIMIT_WORDS,
+                "keys-off": KEYS_OFF_WORDS,
             }.get(reason, "monthly budget reached")
             if reason in ("", "budget", "credit-spent") and (
                 getattr(event, "limit_source", None) == api_spend.SOURCE_LEDGER
@@ -513,6 +514,8 @@ _LIMIT_WORDS = {
     "spend-unknown": "its limit (its spend could not be measured)",
     "no-limit": "its limit (it has no budget or credit)",
 }
+#: Why the engine left a key it entered after API keys were turned off (EM11).
+KEYS_OFF_WORDS = "API keys are turned off (autoswitch.includeApiKeyAccounts)"
 
 
 def _relogin_views(views: Iterable) -> list:
@@ -767,6 +770,11 @@ def no_switch_sentence(event: object) -> str:
             f"Leave it with: qswap switch {way_off}" if way_off
             else "Log in to Claude Code (claude, then /login), then run: qswap add"
         )
+        if getattr(event, "limit_reason", None) == "keys-off":
+            return (
+                f"Staying on {who} though API keys are turned off: no login is under "
+                f"the key to go back to. {step}"
+            )
         return f"Staying on {who} past {limit}: no login is under the key to go back to. {step}"
     if reason == "key-no-limit":
         account = getattr(event, "account", None)

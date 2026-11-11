@@ -322,7 +322,9 @@ What the code does where this part leaves room, or where it had to differ:
   30 minutes a successful claim keeps the account out of planning. A key the engine cannot
   use (its slot does not hold a key) is skipped and reported once, and leaving a key, a
   subscription whose switch fails and is rolled back is skipped for the next account
-  (`switch-failed`), the account underneath last. With no login under the key at its limit, the engine stays and
+  (`switch-failed`), the account underneath last. A key the engine entered is left at once
+  when `autoswitch.includeApiKeyAccounts` is turned off (as when its budget is removed);
+  a key the user entered is not touched. With no login under the key at its limit, the engine stays and
   notifies once. When it stops while sessions are on a key it entered, it says that nothing
   watches the key's limit and how to go back, and moves nothing; `enteredBy` stays
   `engine`, so the next engine carries on.
