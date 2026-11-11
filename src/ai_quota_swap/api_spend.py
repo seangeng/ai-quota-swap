@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -63,29 +64,42 @@ _KEY_PREFIX = "sk-ant-"
 # -- budgets --------------------------------------------------------------------
 
 
+class AmountError(ValueError):
+    """An amount or a date the command line cannot take: a usage error
+    (exit 64, docs/design/ux.md). The message is for the user."""
+
+
+#: What an amount may look like: ``1187``, ``1187.03``, ``$1,187.03``,
+#: ``1,187``. Commas only between groups of three digits, at most two
+#: decimals, ASCII digits only.
+_AMOUNT_RE = re.compile(r"\$?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]{1,2})?")
+
+
 def normalize_budget(value: object) -> float:
-    """A budget in dollars from ``500``, ``"49.50"``, ``"$1,200"``. Raises ValueError."""
-    message = (
-        f"a budget is an amount in US dollars above 0 and at most "
-        f"${BUDGET_MAX:,.0f}, for example 500 or 49.50"
-    )
+    """A budget in dollars from ``500``, ``"49.50"``, ``"$1,200"``. Text is
+    read strictly (:data:`_AMOUNT_RE`); a stored number is rounded to cents
+    before the range check. Raises :class:`AmountError`."""
+    shown = repr(value.strip()) if isinstance(value, str) else repr(value)
+    example = "give US dollars such as 500 or 1,187.03"
     if isinstance(value, bool):
-        raise ValueError(message)
+        raise AmountError(f"{shown} is not an amount; {example}")
     if isinstance(value, str):
-        text = value.strip().replace(",", "")
-        if text.startswith("$"):
-            text = text[1:]
-        try:
-            amount = float(text)
-        except ValueError:
-            raise ValueError(message) from None
+        text = value.strip()
+        if not _AMOUNT_RE.fullmatch(text):
+            raise AmountError(f"{shown} is not an amount; {example}")
+        amount = float(text.lstrip("$").replace(",", ""))
     elif isinstance(value, (int, float)):
         amount = float(value)
     else:
-        raise ValueError(message)
-    if not math.isfinite(amount) or amount <= 0 or amount > BUDGET_MAX:
-        raise ValueError(message)
-    return round(amount, 2)
+        raise AmountError(f"{shown} is not an amount; {example}")
+    if not math.isfinite(amount):
+        raise AmountError(f"{shown} is not an amount; {example}")
+    amount = round(amount, 2)
+    if amount <= 0:
+        raise AmountError(f"{shown} is not above $0; {example}")
+    if amount > BUDGET_MAX:
+        raise AmountError(f"{shown} is over the most qswap takes, ${BUDGET_MAX:,.0f}")
+    return amount
 
 
 def budget_from_record(record: dict | None) -> float | None:
@@ -112,23 +126,24 @@ def budget_from_record(record: dict | None) -> float | None:
 
 def normalize_credit(value: object) -> float:
     """A credit in dollars from ``1187``, ``"1,187.50"``, ``"$1187"``. Raises ValueError."""
-    try:
-        return normalize_budget(value)
-    except ValueError:
-        raise ValueError(
-            f"a credit is an amount in US dollars above 0 and at most "
-            f"${BUDGET_MAX:,.0f}, for example 1187 or 49.50"
-        ) from None
+    return normalize_budget(value)
+
+
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 def parse_expiry(value: str) -> str:
-    """``YYYY-MM-DD`` (the last UTC day the credit can be used). Raises ValueError."""
+    """``YYYY-MM-DD`` (the last UTC day the credit can be used). Raises
+    :class:`AmountError`."""
     from datetime import date
 
+    text = str(value).strip()
     try:
-        return date.fromisoformat(str(value).strip()).isoformat()
+        if not _DATE_RE.fullmatch(text):
+            raise ValueError(text)
+        return date.fromisoformat(text).isoformat()
     except ValueError:
-        raise ValueError(
+        raise AmountError(
             f"--expires takes a date as YYYY-MM-DD, for example 2026-12-31 (got {value!r})"
         ) from None
 
@@ -320,8 +335,14 @@ def set_credit(
         }
         if expires:
             value["expires"] = parse_expiry(expires)
+            if credit_expired(value["expires"], now):
+                # The date is the last UTC day the credit can be used.
+                raise AmountError(
+                    f"--expires {value['expires']} is past (UTC); give the credit's "
+                    "last usable day"
+                )
     elif expires:
-        raise CreditError("--expires goes with an amount: qswap credit N AMOUNT --expires DATE")
+        raise AmountError("--expires goes with an amount: qswap credit N AMOUNT --expires DATE")
     num, email, data, record = switcher._resolve_for_policy_write(identifier)
     if record.get("kind") != "api_key":
         raise CreditError(
@@ -866,10 +887,17 @@ def _nothing_spent(limit: float | None) -> str:
     return f"$0 of {budget_money(limit)} this month" if limit is not None else ""
 
 
-def credit_money(value: float) -> str:
-    """Whole dollars for a credit, rounded down so the count never shows
-    more than is left: ``$1,150``."""
-    return f"${math.floor(max(value, 0.0) + 1e-9):,}"
+def credit_money(value: float, *, cents: bool = False) -> str:
+    """What is left of a credit, rounded down so the count never shows more
+    than is left: ``$1,150``, or ``$1,150.03`` with ``cents`` (the amount
+    has cents: both sides at one precision). Something left under the
+    smallest unit shown reads ``under $1`` (``under $0.01``), never ``$0``."""
+    value = max(value, 0.0)
+    if cents:
+        shown = math.floor(value * 100 + 1e-6) / 100
+        return "under $0.01" if value > 0 and shown == 0 else f"${shown:,.2f}"
+    whole = math.floor(value + 1e-9)
+    return "under $1" if value > 0 and whole == 0 else f"${whole:,}"
 
 
 def _day_words(iso: str) -> str:
@@ -891,15 +919,16 @@ def credit_text(credit: dict) -> str:
     spent ($0 of $1,187 left)``; ``$1,187 credit`` when nothing is counted
     yet (the row adds :data:`LIMIT_NOT_ENFORCED`)."""
     amount = budget_money(credit["amount"])
+    cents = not float(credit["amount"]).is_integer()
     if credit.get("expired"):
         return f"credit expired {_day_words(credit['expires'])}"
     if credit.get("spent"):
-        return f"credit spent ($0 of {amount} left)"
+        return f"credit spent ({'$0.00' if cents else '$0'} of {amount} left)"
     left = credit.get("left")
     if left is None:
         return f"{amount} credit"
     plus = "+" if credit.get("unpriced_tokens") else ""
-    return f"{credit_money(left)}{plus} of {amount} credit left"
+    return f"{credit_money(left, cents=cents)}{plus} of {amount} credit left"
 
 
 def _has_figure(reading: dict) -> bool:
@@ -974,7 +1003,26 @@ def spend_text(reading: dict, now: float | None = None) -> str:
 UNENFORCED_NEXT = "auto-switch stays off this key until its spend is measured: qswap usage"
 
 
-def detail_text(reading: dict, now: float | None = None) -> str | None:
+def credit_counted_from(credit: dict, source: str | None) -> str:
+    """From when spend counts against a credit: the start of its UTC day for
+    Anthropic's figures (daily buckets), the start of its hour for the
+    ledger's (hourly): ``the start of Nov 10 UTC``, ``14:00 UTC Nov 10``."""
+    from ai_quota_swap.ledger.activations import parse_ts
+    from datetime import datetime, timezone
+
+    since = parse_ts(credit.get("since"))
+    if since is None:
+        return ""
+    at = datetime.fromtimestamp(since, tz=timezone.utc)
+    day = _day_words(at.date().isoformat())
+    if source == SOURCE_ADMIN:
+        return f"the start of {day} UTC"
+    return f"{at.hour:02d}:00 UTC {day}"
+
+
+def detail_text(
+    reading: dict, now: float | None = None, *, with_credit: bool = True,
+) -> str | None:
     """A second line when there is more to say: why the figure is not
     Anthropic's, how old it is, or how to get one; for a credit, since when it
     counts and when it expires. While the limit is not enforced it says how
@@ -996,10 +1044,10 @@ def detail_text(reading: dict, now: float | None = None) -> str | None:
             base = None  # the row says there is no figure; the next step follows
         base = f"{base}; {UNENFORCED_NEXT}" if base else UNENFORCED_NEXT
     credit = reading.get("credit")
-    if not isinstance(credit, dict) or credit.get("expired"):
+    if not with_credit or not isinstance(credit, dict) or credit.get("expired"):
         return base
-    since = str(credit.get("since") or "")[:10]
-    words = f"credit counted from {_day_words(since)}" if since else ""
+    since = credit_counted_from(credit, reading.get("source") or credit.get("source"))
+    words = f"credit counted from {since}" if since else ""
     if credit.get("expires"):
         words += f", expires {_day_words(credit['expires'])}"
     if not words:
@@ -1081,7 +1129,19 @@ def _menu_text(reading: dict, unenforced: bool) -> str:
 
     credit = reading.get("credit")
     if isinstance(credit, dict):
-        return credit_text(credit)
+        text = credit_text(credit)
+        if (
+            reading.get("source") == SOURCE_LEDGER
+            and credit.get("left") is not None
+            and not credit.get("expired")
+        ):
+            text += " est."
+        if limit_reason(reading) == "budget":
+            # At its monthly budget with credit left: the budget is why.
+            budget = {k: v for k, v in reading.items() if k != "credit"}
+            budget["today"] = None  # the row's room goes to the reason
+            return f"{_menu_text(budget, False)} · {credit_text(credit)}"
+        return text
     spend = reading.get("spend") or {}
     used, limit, pct = spend.get("used"), spend.get("limit"), spend.get("pct")
     if unenforced and used is None and limit is not None:

@@ -858,8 +858,8 @@ class TestOffTheKeyAtItsLimit:
         assert h.switcher.current_account_number() == "1"
         assert _settings_line(temp_home) is None
         assert _switches(h)[-1].human() == (
-            "Switched #2 ci → #1 a@example.com · monthly budget reached; no subscription "
-            "has room, so back to the account underneath"
+            "Switched #2 ci → #1 a@example.com · monthly budget reached (estimate); no "
+            "subscription has room, so back to the account underneath"
         )
 
     def test_with_no_login_at_all_it_stays_and_says_so_once(self, temp_home):
@@ -1361,3 +1361,150 @@ class TestImportKeepsTheBrakes:
         assert after["budget"] == 500.0
         assert after["credit"] == before["credit"]
         assert api_spend.credit_from_record(after)["amount"] == 1187.0
+
+
+# == A15: amounts and dates ==================================================================
+
+
+class TestAmounts:
+    @pytest.mark.parametrize("text, value", [
+        ("1187", 1187.0), ("1187.03", 1187.03), ("$1,187.03", 1187.03), ("1,187", 1187.0),
+        ("$1,200.50", 1200.5), ("0.01", 0.01), ("12,345,678", None),
+    ])
+    def test_accepted(self, text, value):
+        if value is None:
+            with pytest.raises(ValueError):
+                api_spend.normalize_credit(text)  # over the range
+            return
+        assert api_spend.normalize_credit(text) == value
+        assert api_spend.normalize_budget(text) == value
+
+    @pytest.mark.parametrize("text", [
+        ",187.03", "1187,03", "1.187,03", "1,18", "11,87", "0.004", "1187.035", "0", "0.00",
+        "-5", "+1187", "1e3", "1_187", "１１８７", "", "$", "abc", "nan", "inf", "1,187.",
+    ])
+    def test_refused(self, text):
+        with pytest.raises(api_spend.AmountError):
+            api_spend.normalize_credit(text)
+
+    def test_a_stored_value_is_rounded_before_the_range_check(self):
+        assert api_spend.normalize_budget(49.999) == 50.0
+        with pytest.raises(ValueError):
+            api_spend.normalize_budget(0.004)
+
+
+def _cmd(argv, capsys):
+    from tests.api_helpers import run_main
+
+    capsys.readouterr()
+    try:
+        run_main(argv)
+        code = 0
+    except SystemExit as e:
+        code = e.code
+    out, err = capsys.readouterr()
+    return code, out, err
+
+
+class TestTheCreditCommand:
+    @pytest.fixture
+    def fleet(self, temp_home, monkeypatch):
+        from ai_quota_swap.models import Platform
+        from tests.api_helpers import pin_platform
+        from tests.test_key_helper_live import _fleet as live_fleet
+
+        pin_platform(monkeypatch, Platform.LINUX)
+        return live_fleet(Platform.LINUX)
+
+    @pytest.mark.parametrize("argv", [
+        ["credit", "5", ",187.03"], ["credit", "5", "0.004"], ["credit", "5", "0"],
+        ["budget", "5", "1187,03"], ["credit", "5", "--expires", "2026-12-31"],
+    ])
+    def test_a_bad_amount_or_a_missing_one_is_a_usage_error(self, fleet, capsys, argv):
+        code, _out, err = _cmd(argv, capsys)
+        assert code == 64
+        assert len(err.strip().splitlines()) == 1
+
+    def test_an_expiry_date_that_has_passed_is_refused(self, fleet, capsys):
+        code, _out, err = _cmd(["credit", "5", "100", "--expires", "2020-01-01"], capsys)
+        assert code == 64
+        assert err.strip() == (
+            "Error: --expires 2020-01-01 is past (UTC); give the credit's last usable day"
+        )
+        assert "credit" not in fleet._get_sequence_data()["accounts"]["5"]
+
+    def test_the_confirmation_says_from_when_spend_counts(self, fleet, capsys):
+        code, out, _err = _cmd(["credit", "5", "1187", "--expires", "2099-12-31"], capsys)
+        assert code == 0
+        lines = out.splitlines()
+        assert lines[0] == "Recorded $1,187 of credit for #5 ci, usable until 2099-12-31 UTC."
+        assert lines[1].startswith("  Spend counts against it from ") and "UTC" in lines[1]
+        for line in lines:
+            assert len(line) <= 80, line
+
+    def test_nothing_recorded_fits_80_columns(self, fleet, capsys):
+        code, out, _err = _cmd(["credit"], capsys)
+        assert code == 0
+        for line in out.splitlines():
+            assert len(line) <= 80 or line.strip().startswith("qswap "), line
+        assert "qswap credit N AMOUNT" in out
+
+
+class TestCreditWords:
+    def _credit(self, amount, left, *, source="ledger", **kw):
+        return {"amount": amount, "used": amount - left, "left": left, "spent": left <= 0,
+                "expired": False, "since": "2026-11-10T14:40:00Z", "expires": None,
+                "source": source, **kw}
+
+    def test_both_sides_at_one_precision(self):
+        assert api_spend.credit_text(self._credit(1187.03, 1150.03)) == (
+            "$1,150.03 of $1,187.03 credit left"
+        )
+        assert api_spend.credit_text(self._credit(1187.0, 1150.6)) == (
+            "$1,150 of $1,187 credit left"
+        )
+
+    def test_under_a_dollar_is_not_zero(self):
+        assert api_spend.credit_text(self._credit(1187.0, 0.5)) == (
+            "under $1 of $1,187 credit left"
+        )
+
+    def test_the_detail_line_says_from_when_it_counts(self):
+        ledger = {"spend": {"used": 1.0, "limit": None}, "source": "ledger", "as_of": NOW,
+                  "credit": self._credit(100.0, 99.0)}
+        assert "credit counted from 14:00 UTC Nov 10" in api_spend.detail_text(ledger, NOW)
+        admin = {"spend": {"used": 1.0, "limit": None}, "source": "admin-api", "as_of": NOW,
+                 "credit": self._credit(100.0, 99.0, source="admin-api")}
+        assert "credit counted from the start of Nov 10 UTC" in api_spend.detail_text(admin, NOW)
+
+    def test_the_menu_row_says_estimate_and_names_the_budget(self):
+        credit = self._credit(1187.03, 1150.03)
+        reading = {"spend": {"used": 37.0, "limit": 30.0, "pct": 123.33}, "today": 1.0,
+                   "source": "ledger", "as_of": NOW, "credit": credit, "unpriced_tokens": 0}
+        assert api_spend.limit_reason(reading) == "budget"
+        assert api_spend.menu_text(reading, now=NOW) == (
+            "$37.00/$30 (123%, over budget) est. · $1,150.03 of $1,187.03 credit left"
+        )
+        fine = {**reading, "spend": {"used": 10.0, "limit": 30.0, "pct": 33.3}}
+        assert api_spend.menu_text(fine, now=NOW) == "$1,150.03 of $1,187.03 credit left est."
+
+    def test_the_engine_says_an_estimate_is_one(self):
+        from ai_quota_swap.autolog import switch_reason
+
+        event = SwitchEvent(trigger="at-limit", from_ref=None, to_ref=None,
+                            over_budget=True, limit_reason="credit-spent",
+                            limit_source="ledger")
+        assert switch_reason(event) == "credit spent (estimate)"
+
+
+class TestStatusJsonCarriesTheCredit:
+    def test_the_active_key_has_its_credit_as_list_rows_do(self, temp_home):
+        from tests.test_key_helper_live import _fleet as live_fleet
+
+        s = live_fleet()
+        api_spend.set_credit(s, "5", 1187, expires="2099-12-31", now=NOW)
+        s.switch_to("5", json_output=True)
+        active = s.status(json_output=True)["active"]
+        assert active["credit"] == {
+            "amount": 1187.0, "since": "2026-11-06T21:20:00Z", "expires": "2099-12-31",
+        }

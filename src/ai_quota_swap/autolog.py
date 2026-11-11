@@ -440,12 +440,17 @@ def switch_reason(event: object) -> str:
         if getattr(event, "over_budget", False):
             from ai_quota_swap import api_spend
 
+            reason = getattr(event, "limit_reason", None) or ""
             words = {
                 "credit-spent": "credit spent",
                 "credit-expired": "credit expired",
                 api_spend.SPEND_UNKNOWN: api_spend.SPEND_UNKNOWN_WORDS,
                 api_spend.NO_LIMIT: api_spend.NO_LIMIT_WORDS,
-            }.get(getattr(event, "limit_reason", None) or "", "monthly budget reached")
+            }.get(reason, "monthly budget reached")
+            if reason in ("", "budget", "credit-spent") and (
+                getattr(event, "limit_source", None) == api_spend.SOURCE_LEDGER
+            ):
+                words += " (estimate)"  # this machine's count, not Anthropic's
             return words + back
         note = getattr(event, "reset_note", None)
         tail = f"; {note}" if note else ""

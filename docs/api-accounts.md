@@ -126,6 +126,8 @@ The menu bar and the dashboard ask nothing when the line can be added. When it c
 
 Leaving a saved key is safe: qswap never rewrites an API-key account's saved key when it leaves it, and the account you switch to gets its own login together with the MCP sign-ins of the moment. Sessions started on the key move back to the subscription within about 30 seconds, and sessions that stopped with "Not logged in" pick the login up again and continue their conversation. From one saved key to another, a session started on the first keeps it until you restart it, and the switch lists every such session under the key it keeps, by process id and directory. Saving a changed key the same way for the account already active (after an import) lists the sessions that keep the previous key too.
 
+Because only the sessions started after a saved-key switch use the key, `qswap usage` splits that period's usage by each session's first event: a session that began before the switch stays with the account that was active then. The split is approximate (a session started on the key and still running after you switch away is all the key's), and the report says so under its table (`Approximate: ...`; `attributionApproximate` in `--json`).
+
 ### What qswap doctor checks
 
 - qswap's own line for an API-key account is reported as the active key, not as a warning.

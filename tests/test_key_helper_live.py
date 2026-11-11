@@ -1750,8 +1750,8 @@ class TestEngine:
         switches = [e for e in h.events if isinstance(e, SwitchEvent)]
         assert len(switches) == 1
         assert switches[-1].human() == (
-            "Switched #2 ci → #1 a@example.com · monthly budget reached; no subscription "
-            "has room, so back to the account underneath"
+            "Switched #2 ci → #1 a@example.com · monthly budget reached (estimate); no "
+            "subscription has room, so back to the account underneath"
         )
 
     def test_at_its_budget_it_leaves_for_an_unmanaged_login_underneath(self, temp_home):
@@ -1776,8 +1776,8 @@ class TestEngine:
         )
         switch = [e for e in h.events if isinstance(e, SwitchEvent)][-1]
         assert switch.human() == (
-            "Switched #2 ci → x@example.com · monthly budget reached; no subscription "
-            "has room, so back to the account underneath"
+            "Switched #2 ci → x@example.com · monthly budget reached (estimate); no "
+            "subscription has room, so back to the account underneath"
         )
 
     def test_at_its_budget_with_no_login_underneath_it_stays(self, temp_home):
@@ -2022,7 +2022,7 @@ class TestCredit:
         run_main(["credit", "5", "1187", "--expires", "2026-12-31"])
         out = capsys.readouterr().out
         assert out.splitlines()[0] == (
-            "Recorded $1,187 of credit for #5 ci as of now, usable until 2026-12-31."
+            "Recorded $1,187 of credit for #5 ci, usable until 2026-12-31 UTC."
         )
         _fits(out)
         run_main(["credit", "--json"])

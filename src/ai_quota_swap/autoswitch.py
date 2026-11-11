@@ -415,6 +415,9 @@ class SwitchEvent(AutoSwitchEvent):
     # was not spent, and the command that spends it ("#1 personal holds 1
     # weekly reset: qswap reset 1").
     reset_note: str | None = _human_only()
+    # Where the figure behind ``limit_reason`` came from (``ledger``: an
+    # estimate, said so).
+    limit_source: str | None = _human_only()
 
     def _fields(self) -> dict:
         return {
@@ -2309,6 +2312,7 @@ class AutoSwitchEngine:
             "over_budget": active_over_budget,
             "policies": policies,
             "limit_reason": active_limit,
+            "limit_source": self._spend_source(current, entries),
         }
 
         if trigger in ("proactive", "consume-first", "priority") and self._in_cooldown(state):
@@ -3784,6 +3788,7 @@ class AutoSwitchEngine:
             "limit_reason": cause.get("limit_reason"),
             "back_underneath": bool(cause.get("back_underneath")),
             "reset_note": cause.get("reset_note"),
+            "limit_source": cause.get("limit_source"),
         }
 
     def _account_views(
@@ -4178,6 +4183,11 @@ class AutoSwitchEngine:
             ))
         return ok, entries
 
+    @staticmethod
+    def _spend_source(num: str, entries: Mapping[str, object]) -> str | None:
+        reading = getattr(entries.get(num), "api_spend", None)
+        return reading.get("source") if isinstance(reading, dict) else None
+
     def _scans_ledger(self) -> bool:
         """Only Claude Code's API keys are counted from the local ledger."""
         return self._provider_id() == "claude" and hasattr(self.switcher, "backup_dir")
@@ -4295,6 +4305,11 @@ class AutoSwitchEngine:
                 ),
             ))
             return TickOutcome.NO_ACTION
+        source = self._spend_source(current, entries)
+        self._tick_cause = {
+            "binding": None, "over_budget": reason is not None, "policies": policies,
+            "limit_reason": reason, "back_underneath": False, "limit_source": source,
+        }
         if self._unmanaged_login_underneath():
             # A live login qswap does not manage is under the key (a /login
             # not yet added): a login switch would overwrite it. At the
@@ -4355,6 +4370,7 @@ class AutoSwitchEngine:
                 "policies": policies,
                 "limit_reason": reason,
                 "back_underneath": back,
+                "limit_source": source,
             }
 
         self._tick_cause = cause(False)
@@ -4434,6 +4450,7 @@ class AutoSwitchEngine:
         cause = {
             "binding": None, "over_budget": True, "priority_up": None,
             "limit_reason": reason, "back_underneath": True,
+            "limit_source": self._tick_cause.get("limit_source"),
         }
         if self.dry_run:
             # Nothing is changed in a dry run, and this path has no

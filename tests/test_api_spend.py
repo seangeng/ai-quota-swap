@@ -779,8 +779,8 @@ class TestBudgetCommand:
         before = s.sequence_file.read_bytes()
         with pytest.raises(SystemExit) as exc:
             run_main(["budget", "3", amount])
-        assert exc.value.code == 1
-        assert "a budget is an amount in US dollars" in capsys.readouterr().err
+        assert exc.value.code == 64  # a usage error (A15)
+        assert "give US dollars such as 500" in capsys.readouterr().err
         assert s.sequence_file.read_bytes() == before
 
     def test_refused_on_a_subscription_account(self, env, capsys):
