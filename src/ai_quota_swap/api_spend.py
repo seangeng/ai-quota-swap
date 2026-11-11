@@ -1254,20 +1254,33 @@ def detail_text(
     return f"{base} · {words}" if base else words
 
 
-def _latched_words(reading: dict) -> str | None:
-    """Why the row says :data:`LATCHED_WORDS`, and the command that clears it."""
+def latched_fix(reading: object) -> str | None:
+    """The command that clears the latch a row names (:func:`_latched_words`):
+    ``qswap budget 5 AMOUNT`` or ``qswap credit 5 AMOUNT``; None when the row
+    names none (no latch, or the figure itself is at the limit). For the
+    ``limit-latched`` entry of ``keyNotes`` (decision DS13)."""
+    if not isinstance(reading, dict):
+        return None
     only = _only_latched(reading)
     if only is None:
         return None
     number = (reading.get("latched") or {}).get("account") or "N"
-    if only == "budget":
+    return f"qswap {'budget' if only == 'budget' else 'credit'} {number} AMOUNT"
+
+
+def _latched_words(reading: dict) -> str | None:
+    """Why the row says :data:`LATCHED_WORDS`, and the command that clears it."""
+    fix = latched_fix(reading)
+    if fix is None:
+        return None
+    if _only_latched(reading) == "budget":
         return (
             "an earlier figure reached the budget; auto-switch counts it as reached "
-            f"until the month ends or it is set again: qswap budget {number} AMOUNT"
+            f"until the month ends or it is set again: {fix}"
         )
     return (
         "an earlier figure spent the credit; auto-switch counts it as spent until "
-        f"it is recorded again: qswap credit {number} AMOUNT"
+        f"it is recorded again: {fix}"
     )
 
 

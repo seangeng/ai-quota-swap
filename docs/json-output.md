@@ -197,6 +197,51 @@ Codex rows differ: `organizationUuid` is the ChatGPT account or workspace id, `o
 
 Under an API key active through the key line, `activeAccountNumber` is the key and `underneathAccountNumber` the subscription logged in under it (`null` when the login underneath is not managed). When the key line names an account that does not exist or is not an API-key account, `list` and `status` add `keyHelperProblem`: `{number, why, fix}` with `why` `missing` or `not-api-key` and `fix` the command that removes the line. `status`'s `active` adds `how` (`helper`) and `enteredBy`, and the payload `underneath` (`{number, email}`) under a key.
 
+`list` and `status` add `keyNotes` when the text view prints a note about the key line, about a key auto-switch entered, or about an account's row: one `{code, account, fix}` per note, in the text's order. `account` is the number of the account the note is about, or `null`. `fix` is the command or step the note names first (`qswap switch 1`, `Remove apiKeyHelper from ~/.claude/settings.json`), or `null` for a note that needs none. `status` prints only the active account's row, so its `limit-latched` entry is the active key's only.
+
+| `code` | The note |
+|---|---|
+| `settings-unreadable` | `~/.claude/settings.json` cannot be read while qswap's record names a key |
+| `line-no-key` | the key line names an account that does not exist or is not an API-key account |
+| `line-moved` | the key line runs a qswap that is no longer there |
+| `line-came-back` | a key line qswap took out in the last 24 hours came back |
+| `line-lost` | a key qswap made active has no line in the file any more; `fix` is the way off the key |
+| `unwatched` | auto-switch entered the active key and nothing watches its limit: no engine runs, only a dry run does, or the last `qswap auto --once` was more than 15 minutes ago |
+| `watched-once` | auto-switch entered the active key and a `qswap auto --once` checked it in the last 15 minutes; `fix` is `null` |
+| `profiles-linked` | run profiles still share the settings while the line is in |
+| `profiles-stale` | run profiles kept a copy of the settings after the line went |
+| `env-outranks` | a variable in the settings' `env` block comes before the key line |
+| `other-helper` | another program's `apiKeyHelper` is set |
+| `other-data-dir` | the key line belongs to a qswap with another data directory |
+| `reset-kept` | auto-switch entered the active key while this account holds a usable reset auto mode keeps; `fix` spends it (`qswap reset 1`) |
+| `limit-latched` | the account's row says auto-switch still counts its budget or credit as reached; `fix` sets it again (`qswap budget 2 AMOUNT`) |
+
+Auto-switch entered #2, no engine runs now, and #1 holds a weekly reset auto mode keeps:
+
+```
+$ qswap list --json
+{
+  "schemaVersion": 1,
+  "activeAccountNumber": 2,
+  "accounts": [
+...
+  ],
+  "underneathAccountNumber": 1,
+  "keyNotes": [
+    {
+      "code": "unwatched",
+      "account": 2,
+      "fix": "qswap switch 1"
+    },
+    {
+      "code": "reset-kept",
+      "account": 1,
+      "fix": "qswap reset 1"
+    }
+  ]
+}
+```
+
 `qswap list --json` adds, only when there is something to say, `duplicateAccountWarnings` and `lockstepUsageWarnings` (sentences about two accounts that look like one), `unclaimedCredentials` (ids for `qswap unclaimed`), and `providers.codex`, `{activeAccountNumber, accounts}`, once a Codex account is managed. When the Codex accounts cannot be read, `providers.codex` is `{"activeAccountNumber": null, "accounts": [], "error": {type, message}}` and the Claude Code part is unaffected. Account numbers are per provider. `qswap import-usage` reads only the top-level `accounts`. With nothing managed, `accounts` is `[]` and `activeAccountNumber` is `null`.
 
 `status`'s `active` is `null` when nobody is logged in, and `{email, managed: false}` for a login qswap does not manage (Codex may add `problem`). `totalManagedAccounts` counts Claude Code accounts. `providers.codex` (`{active, totalManagedAccounts}`, or `{active: null, error}`) appears when a Codex account is managed or Codex is logged in. `autoSwitch` says whether an engine is running, from its heartbeat: `running`, `providers`, `dryRun`, and `lastTickAt` in epoch seconds or `null`.

@@ -47,13 +47,17 @@ KEY_STATE_FILENAME = "key_helper.json"
 #: the settings cannot be read while a key is recorded; a line naming an
 #: account that cannot give a key; one running a qswap no longer there; a line
 #: that came back; a record whose line is gone; an engine-entered key nothing
-#: watches; run profiles still linked under the line, or left with a copy; a
-#: variable in the env block that outranks the line; another program's
-#: apiKeyHelper; another qswap's line (another data directory).
+#: watches, or one a recent ``--once`` tick watches (DS4); run profiles still
+#: linked under the line, or left with a copy; a variable in the env block
+#: that outranks the line; another program's apiKeyHelper; another qswap's
+#: line (another data directory); a usable reset auto mode keeps while the key
+#: it entered is active (EM4). ``limit-latched`` is the row's note of an
+#: API-key account whose budget or credit auto-switch still counts as reached
+#: (``switcher.key_notes_json``).
 KEY_NOTE_CODES = (
     "settings-unreadable", "line-no-key", "line-moved", "line-came-back", "line-lost",
-    "unwatched", "profiles-linked", "profiles-stale", "env-outranks", "other-helper",
-    "other-data-dir",
+    "unwatched", "watched-once", "profiles-linked", "profiles-stale", "env-outranks",
+    "other-helper", "other-data-dir", "reset-kept", "limit-latched",
 )
 #: ``qswap run N`` sessions on a key: one JSON line per launch (pid, number).
 KEY_RUNS_FILENAME = "key_runs.jsonl"

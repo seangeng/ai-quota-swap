@@ -2301,7 +2301,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             accounts=tuple(accounts),
             taken_at=self._usage_store.clock(),
             underneath_number=under if key is not None else None,
-            key_notes=tuple(self.key_helper_notes()),
+            key_notes=tuple(self.key_helper_notes(entries=entries)),
             key_entered_by=self.key_entered_by() if key is not None else None,
         )
 
@@ -6671,6 +6671,13 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         problem = self.helper_problem()
         if problem is not None:
             payload["keyHelperProblem"] = {**problem, "fix": self.helper_fix_command()}
+        # Decision DS13: one entry per note the text view prints, its rows'
+        # included.
+        notes = self.key_notes_json(
+            entries=entries, rows=tuple(str(info[0]) for info in accounts_info),
+        )
+        if notes:
+            payload["keyNotes"] = notes
         # Additive fields (absent when clean) — never printed warnings; the
         # JSON contract keeps stdout a single machine-readable object.
         dup_warnings = self._duplicate_account_warnings(accounts_info)
@@ -6727,7 +6734,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         settings = load_settings(self.backup_dir)
         view = self.active_view()
         print(bolded(display.provider_heading("claude", both=False)))
-        for line in self.key_helper_notes():
+        for line in self.key_helper_notes(entries=entries):
             warning(line)
         for i, info in enumerate(accounts_info):
             block = self._account_block(
@@ -6924,26 +6931,92 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             under = None
         return key, under
 
-    def key_helper_notes(self, width: int | None = None) -> list[str]:
+    def key_helper_notes(
+        self, width: int | None = None, *, entries: dict[str, UsageEntry] | None = None,
+    ) -> list[str]:
         """The lines every surface (list, status, the snapshot behind the
         dashboard and the menu bar) shows when the key line, key_helper.json
         and the run profiles do not agree (decision B5,
-        :meth:`key_findings`); ``[]`` when all is well. Each note is wrapped
-        to ``width`` (80 columns by default; status indents its notes)."""
+        :meth:`key_findings`), and while a key auto-switch entered is active,
+        what watches it and the resets auto mode keeps (EM4); ``[]`` when all
+        is well. Each note is wrapped to ``width`` (80 columns by default;
+        status indents its notes). ``entries``: :meth:`key_notes`."""
         from ai_quota_swap import display
 
         return [
-            line for note in self.key_notes()
+            line for note in self.key_notes(entries=entries)
             for line in display.wrap(note["text"], width or display.WIDTH)
         ]
 
-    def key_notes(self) -> list[dict]:
+    def key_notes(self, *, entries: dict[str, UsageEntry] | None = None) -> list[dict]:
         """The notes of :meth:`key_helper_notes`, one dict each, in the order
         the text views print them: ``code`` (stable, for JSON; see
         :data:`key_activation.KEY_NOTE_CODES`), ``account`` (the number of the account it
         is about, or None), ``text`` (the whole note, unwrapped) and ``fix``
-        (its command or step, the one the note names first). Reads only;
-        ``[]`` when all is well."""
+        (its command or step, the one the note names first; None for a note
+        that needs none). ``entries``: the usage the caller already holds
+        (``usage_entries_by_account``), read from the store without fetching
+        when None, for the resets auto mode keeps. Reads only; ``[]`` when
+        all is well."""
+        return self._key_line_notes() + self._kept_reset_notes(entries)
+
+    def _kept_reset_notes(self, entries: dict[str, UsageEntry] | None) -> list[dict]:
+        """Decision EM4: while a key auto-switch entered is active, one note
+        per account holding a usable reset auto mode keeps, and the command
+        that spends it (``autoswitch.kept_resets_now``), for as long as it is
+        true. Never raises."""
+        try:
+            if self.helper_account() is None or self.key_entered_by() != "engine":
+                return []
+            from ai_quota_swap import autoswitch
+            from ai_quota_swap.settings import load_engine_settings
+
+            if entries is None:
+                entries = self.usage_entries_by_account(fetch=set())
+            kept = autoswitch.kept_resets_now(
+                self, load_engine_settings(Path(self.backup_dir), "claude"), entries,
+                now=self._usage_store.clock(),
+            )
+            return [
+                {
+                    "code": "reset-kept",
+                    "account": int(k.account) if k.account.isdigit() else None,
+                    "text": k.note(self.label(k.account, long=False)), "fix": k.command,
+                }
+                for k in kept
+            ]
+        except Exception as e:
+            from ai_quota_swap.admin_api import redact
+
+            self._logger.debug("kept resets: %s: %s", type(e).__name__, redact(e))
+            return []
+
+    def key_notes_json(
+        self, *, entries: dict[str, UsageEntry] | None = None, rows: tuple[str, ...] = (),
+    ) -> list[dict]:
+        """``keyNotes`` of ``list --json`` and ``status --json`` (decision
+        DS13): ``{code, account, fix}`` for each note the text view prints,
+        in its order: :meth:`key_notes`, then ``limit-latched`` for each
+        account in ``rows`` (the rows the view prints) whose row says
+        auto-switch still counts its budget or credit as reached."""
+        from ai_quota_swap import api_spend
+
+        if entries is None:
+            entries = self.usage_entries_by_account(fetch=set())
+        out = [
+            {"code": n["code"], "account": n["account"], "fix": n["fix"]}
+            for n in self.key_notes(entries=entries)
+        ]
+        for num in rows:
+            entry = entries.get(str(num))
+            fix = api_spend.latched_fix(getattr(entry, "api_spend", None))
+            if fix is not None:
+                out.append({"code": "limit-latched", "account": int(num), "fix": fix})
+        return out
+
+    def _key_line_notes(self) -> list[dict]:
+        """The notes about the key line, the record and the run profiles, and
+        what watches a key auto-switch entered (:meth:`key_notes`)."""
         from ai_quota_swap import display
 
         def note(code: str, account: object, lines: list[str], fix: str | None) -> dict:
@@ -7087,6 +7160,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 }
         except Exception:
             pass
+        try:
+            # Decision DS13: the notes status prints (only with an account
+            # managed), and the latch on the row of the active key, the one
+            # row it prints that can carry one.
+            if self.managed_count():
+                key = self.active_view()[0]
+                notes = self.key_notes_json(rows=(key,) if key is not None else ())
+                if notes:
+                    extra["keyNotes"] = notes
+        except Exception as e:
+            self._logger.debug("key notes: %s", type(e).__name__)
         payload.update(extra)
         return payload
 
