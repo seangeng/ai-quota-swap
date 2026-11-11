@@ -7066,12 +7066,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 "other-helper", None, display.foreign_helper_note(path),
                 display.foreign_helper_fix(path),
             ))
-        names = defeating_names(self._settings_env())
+        env = self._settings_env()
+        names = defeating_names(env)
         if names and (f.key is not None or self._api_key_numbers()):
+            from ai_quota_swap.key_activation import other_host
+
             label = self.label(f.key, long=False) if f.key is not None else None
             out.append(note(
                 "env-outranks", f.key,
-                display.key_line_outranked_note(path, names, label, f.key),
+                display.key_line_outranked_note(
+                    path, names, label, f.key, host=other_host(env),
+                ),
                 display.key_line_defeated_fix(path, names, f.key),
             ))
         if f.problem is not None:

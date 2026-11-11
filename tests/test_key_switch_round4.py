@@ -239,3 +239,55 @@ class TestALostRecordOverAnUnmanagedLogin:
         assert s.current_account_number() == s._find_account_slot(
             s._get_sequence_data(), "new@example.com", ""
         )
+
+
+# == SS9: a credential in the env block beside an active key line ==============================
+
+
+class TestACredentialBesideTheActiveKey:
+    """The end-to-end run on Claude Code 2.1.322: with the line in and
+    ANTHROPIC_AUTH_TOKEN added to the env block, sessions still run the
+    helper and send #5's key with every request (x-api-key) beside the
+    token (the bearer); with ANTHROPIC_BASE_URL too, to that host. The note
+    said "so sessions do not use #5 ci", and doctor named no host."""
+
+    def _over_the_key(self, temp_home, **env):
+        from tests.test_key_switch_round3 import _with_env
+
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        _with_env(temp_home, **env)
+        return s
+
+    def test_the_note_says_the_key_is_still_sent(self, temp_home):
+        from tests.test_key_switch_round3 import WHERE, _notes
+
+        s = self._over_the_key(temp_home, ANTHROPIC_AUTH_TOKEN="made-up")
+        text = _notes(s)
+        assert (
+            f"{WHERE} sets ANTHROPIC_AUTH_TOKEN in its env block, which Claude Code obeys "
+            "before any key line, yet sessions still send the key of #5 ci with every "
+            "request, beside the credential that variable sets, so either may be billed. "
+            f"Remove ANTHROPIC_AUTH_TOKEN from the env block of {WHERE}, then: qswap switch 5"
+        ) in text
+        assert "do not use #5 ci" not in text
+        assert "made-up" not in text
+
+    def test_with_a_base_url_it_names_the_host(self, temp_home):
+        from ai_quota_swap import doctor
+        from tests.test_key_switch_round3 import _notes
+
+        s = self._over_the_key(temp_home, ANTHROPIC_AUTH_TOKEN="made-up",
+                               ANTHROPIC_BASE_URL="https://gateway.example.com/v1")
+        assert "with every request to gateway.example.com, beside" in _notes(s)
+        env = {c.id: c for c in doctor.run_checks()}["claude.settings_env"]
+        text = " ".join(env.summary.split())
+        assert "the key of #5 ci with every request to gateway.example.com" in text
+        assert "qswap will not switch" not in text
+        assert env.fix.endswith("then: qswap switch 5")
+
+    def test_another_provider_still_means_the_key_is_not_used(self, temp_home):
+        from tests.test_key_switch_round3 import _notes
+
+        s = self._over_the_key(temp_home, CLAUDE_CODE_USE_BEDROCK="1")
+        assert "so sessions do not use #5 ci" in _notes(s)

@@ -1395,14 +1395,44 @@ def key_line_defeated_refusal(
     return "\n".join([*lines, *wrap(key_line_defeated_fix(path, names, number))])
 
 
+#: The env variables that switch Claude Code to another provider: with one
+#: set, no key of Anthropic's is sent.
+_PROVIDER_VARS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+
+
+def key_line_outranked_consequence(
+    names: Sequence[str], key: str | None, host: str | None = None,
+) -> str:
+    """What a variable in the env block does while the key line of ``key``
+    is in. A credential (``ANTHROPIC_AUTH_TOKEN``, ``ANTHROPIC_API_KEY``)
+    takes the place of one header, and sessions still send the key from the
+    line in the other: measured on Claude Code 2.1.322 (x-api-key the key,
+    the bearer the token), and to ``host`` when ``ANTHROPIC_BASE_URL`` sends
+    it there. Which one Anthropic bills was not tested. Another provider
+    sends no key of Anthropic's. With no key active, no switch to one."""
+    if not key:
+        return "so qswap does not switch to an API key"
+    if any(name in _PROVIDER_VARS for name in names):
+        return f"so sessions do not use {key}"
+    what = "the credential that variable sets" if len(names) == 1 else (
+        "the credentials those variables set"
+    )
+    to = f" to {host}" if host else ""
+    return (
+        f"yet sessions still send the key of {key} with every request{to}, beside "
+        f"{what}, so either may be billed"
+    )
+
+
 def key_line_outranked_note(
     path: str, names: Sequence[str], key: str | None, number: str | int | None,
+    *, host: str | None = None,
 ) -> list[str]:
     """A variable in the env block outranks the key line (decision DS16):
     over the active key ``key`` (its number ``number``), or, with none
     active, over every key qswap would switch to. The refusal's words and
-    fix."""
-    what = f"so sessions do not use {key}" if key else "so qswap does not switch to an API key"
+    fix; what it does to the active key (:func:`key_line_outranked_consequence`)."""
+    what = key_line_outranked_consequence(names, key, host)
     return wrap(
         f"{key_line_defeated_clause(path, names)}, {what}. "
         f"{key_line_defeated_fix(path, names, number if key else None)}"

@@ -114,7 +114,11 @@ Each fact names where it comes from: the end-to-end run on 2.1.322 above, the 2.
   `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` outrank the helper, in the environment or in
   a settings file's `env` block; the helper outranks `CLAUDE_CODE_OAUTH_TOKEN` and the
   claude.ai login. The helper's output is sent as both `X-Api-Key` and `Authorization:
-  Bearer`, to `ANTHROPIC_BASE_URL` when that is set.
+  Bearer`, to `ANTHROPIC_BASE_URL` when that is set. Outranked by `ANTHROPIC_AUTH_TOKEN`,
+  the helper still runs: the token is the bearer and the helper's key still goes as
+  `X-Api-Key` with every request (end-to-end run; `ANTHROPIC_API_KEY` takes `X-Api-Key`
+  and leaves the bearer to the helper, 2.1.322 binary). Which one Anthropic bills was not
+  tested, so the note over an active key says either may be billed, and names the host.
 - Claude Code does not load claude.ai connectors (the MCP servers that come with the claude.ai
   login) while a helper is set, and Remote Control does not support API keys (Anthropic's
   documentation). What a running session does with either when the line appears or goes was

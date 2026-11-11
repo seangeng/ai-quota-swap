@@ -203,11 +203,14 @@ Because only the sessions started after a saved-key switch use the key, `qswap u
 `qswap list`, `qswap status`, the dashboard and the menu bar say the same, with the same command, about a line for an account that cannot give a key, a line that runs a qswap no longer there, run profiles left with a copy or still sharing the settings, a line that came back, a key whose line is gone, a key auto-switch entered that nothing watches (or when a `qswap auto --once` last checked it), settings that cannot be read while a key is recorded, and another qswap's line. While a key auto-switch entered is active, they also name each account that holds a reset auto mode keeps, with the command that spends it. `--json` gives each note as one entry of `keyNotes` ([json-output.md](json-output.md#list-and-status)). They also say, in the words of the refusal and with its fix, when another `apiKeyHelper` is set, and when a variable in the settings' `env` block outranks the line (over the active key, or, with API-key accounts and none active, over every key qswap would switch to):
 
 ```text
-~/.claude/settings.json sets ANTHROPIC_API_KEY in its env block, which Claude
-Code obeys before any key line, so sessions do not use #5 ci. Remove
-ANTHROPIC_API_KEY from the env block of ~/.claude/settings.json, then:
-qswap switch 5
+~/.claude/settings.json sets ANTHROPIC_AUTH_TOKEN in its env block, which Claude
+Code obeys before any key line, yet sessions still send the key of #5 ci with
+every request to gateway.example.com, beside the credential that variable sets,
+so either may be billed. Remove ANTHROPIC_AUTH_TOKEN from the env block of
+~/.claude/settings.json, then: qswap switch 5
 ```
+
+Claude Code 2.1.322 still runs the line while `ANTHROPIC_AUTH_TOKEN` is set beside it: every request carries the key from the line as `x-api-key` and the token as the bearer, sent to `ANTHROPIC_BASE_URL` when that is set too (measured end to end; `ANTHROPIC_API_KEY` takes the other header, read in the binary). Which of the two Anthropic bills was not tested, so the note says either may be. With a cloud provider variable (`CLAUDE_CODE_USE_BEDROCK` and the like) no key of Anthropic's is sent, and the note says sessions do not use the key. Doctor says the same, the host included.
 
 `qswap switch 5` to the key already active refuses in the same words, and changes nothing, while such a variable is set. Only doctor reports the other layers and a line whose command fails its check while its program is there.
 

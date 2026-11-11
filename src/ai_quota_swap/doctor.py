@@ -881,7 +881,10 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
                     fix=fix,
                 )
             checks.append(check)
-    env_check = _settings_env_check(raw if read_err is None else None, where, findings.key)
+    env_check = _settings_env_check(
+        raw if read_err is None else None, where, findings.key,
+        label(findings.key) if findings.key is not None else None,
+    )
     if env_check is not None:
         checks.append(env_check)
     lost_said = False
@@ -971,12 +974,25 @@ def _defeating(raw: bytes | None) -> tuple[bool, list[str], str | None]:
     )
 
 
-def _settings_env_check(raw: bytes | None, where: str, key: str | None) -> Check | None:
+def _settings_env_check(
+    raw: bytes | None, where: str, key: str | None, named: str | None = None,
+) -> Check | None:
     """The user settings' env block (decision B6, F59): a variable Claude
-    Code obeys before the key line, or a base URL the key is sent to."""
-    from ai_quota_swap.display import join_names
+    Code obeys before the key line, or a base URL the key is sent to. Over
+    the active key ``key`` (``named`` its label) it says what list and status
+    say: what the variable does to that key, the host included (SS9)."""
+    from ai_quota_swap.display import join_names, key_line_outranked_consequence
 
     _helper, names, host = _defeating(raw)
+    if names and key is not None:
+        return Check(
+            "claude.settings_env", "claude", WARN,
+            f"{where} sets {join_names(names)} in its env block, which Claude "
+            "Code obeys before any key line, "
+            + key_line_outranked_consequence(names, named or f"#{key}", host),
+            fix=f"remove {join_names(names)} from the env block of {where}, then: "
+            f"qswap switch {key}",
+        )
     if names:
         return Check(
             "claude.settings_env", "claude", WARN,
