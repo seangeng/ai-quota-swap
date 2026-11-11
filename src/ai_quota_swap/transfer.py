@@ -47,6 +47,17 @@ def _eprint(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _enote(msg: str, command: str | None = None) -> None:
+    """A note on stderr wrapped to 80 columns; ``command``, to be copied,
+    on a line of its own after it (docs/design/ux.md)."""
+    from ai_quota_swap.display import wrap
+
+    for line in wrap(msg):
+        _eprint(line)
+    if command:
+        _eprint(f"  {command}")
+
+
 def _holds_no_login(creds: object) -> bool:
     """A credential object with no Claude login in any shape qswap knows: no
     ``claudeAiOauth`` and no top-level tokens (the oldest shape). Such as the
@@ -792,11 +803,11 @@ def import_accounts(
         name = switcher.label(helper_slot, long=False)
         same = (helper_before or "").strip() == (written_creds.get(helper_slot) or "").strip()
         if same:
-            _eprint(f"{name} is already the active account; nothing needs doing.")
+            _enote(f"{name} is already the active account; nothing needs doing.")
         else:
             from ai_quota_swap.display import KEY_REFRESH
 
-            _eprint(f"The saved key for {name} was replaced. {KEY_REFRESH}")
+            _enote(f"The saved key for {name} was replaced. {KEY_REFRESH}")
     identity = switcher._get_current_account()
     if identity is not None and final is not None:
         live_slot = switcher._find_account_slot(final, identity[0], identity[1])
@@ -806,35 +817,37 @@ def import_accounts(
             if record.get("kind") == "api_key":
                 same = (live_creds or "").strip() == (written_creds.get(live_slot) or "").strip()
                 if same:
-                    _eprint(f"{name} is already the active account; nothing needs doing.")
+                    _enote(f"{name} is already the active account; nothing needs doing.")
                 else:
                     # Part 2: the switch writes the key line, which running
                     # sessions follow, and its helper prints the new key.
-                    _eprint(
+                    _enote(
                         f"The saved key for {name} was replaced; Claude Code sessions still "
                         "use the previous one. Move them onto the new key, through the key "
-                        f"line, with: qswap switch {live_slot} --force"
+                        "line, with:",
+                        f"qswap switch {live_slot} --force",
                     )
             elif live_dead:
                 if helper_slot is not None:
                     # The login underneath the active key, not the active
                     # account; loading it leaves the key too.
                     key_name = switcher.label(helper_slot, long=False)
-                    _eprint(
+                    _enote(
                         f"{name} is logged in underneath {key_name}, and its login was not "
                         "working. Load the imported copy, which replaces that login and "
-                        f"leaves the key, with: qswap switch {live_slot} --force"
+                        "leaves the key, with:",
+                        f"qswap switch {live_slot} --force",
                     )
                 else:
-                    _eprint(
+                    _enote(
                         f"{name} is the active account and its login was not working. "
-                        "Load the imported copy, which replaces the live login, with: "
-                        f"qswap switch {live_slot} --force"
+                        "Load the imported copy, which replaces the live login, with:",
+                        f"qswap switch {live_slot} --force",
                     )
             elif helper_slot is None:
                 # Under an active key the login is underneath it, not active,
                 # and nothing needs doing about it either: no line for it.
-                _eprint(f"{name} is already the active account; nothing needs doing.")
+                _enote(f"{name} is already the active account; nothing needs doing.")
 
 
 def _live_login_state(switcher) -> tuple[str | None, bool]:

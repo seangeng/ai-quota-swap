@@ -1350,6 +1350,77 @@ class TestStatusNotesFit:
             assert len(line) <= 80, line
 
 
+class TestPrintedFormsFit:
+    """The re-check's five lines past 80 columns, printed where they are
+    printed (through cli.main): the 80-column tests built their strings in
+    display.py and did not see these print sites."""
+
+    def test_a_cleared_record(self, temp_home, run):
+        s = _fleet()
+        _activate(s)
+        _settings(temp_home).write_text("{}", encoding="utf-8")  # the line deleted by hand
+        code, out, err = run(s, "switch", "1")
+        assert code == 0, err
+        assert "Cleared the record of #5" in " ".join(out.split())
+        _fits(out)
+
+    def test_the_notice_about_an_unmanaged_login_underneath(self, temp_home, run, monkeypatch):
+        s = _fleet()
+        _activate(s)
+        get_global_config_path().write_text(json.dumps({"oauthAccount": {
+            "emailAddress": "maya.long-name-for-tests@example.com", "accountUuid": "",
+            "organizationUuid": None,
+        }}), encoding="utf-8")
+        monkeypatch.setattr(s, "add_account", lambda *a, **k: None)
+        code, out, err = run(s, "switch")
+        assert "was not managed" in " ".join(out.split())
+        _fits(out)
+
+    @pytest.mark.parametrize("older_way", [False, True])
+    def test_the_import_notes_for_a_replaced_active_key(
+        self, temp_home, run, older_way, capsys
+    ):
+        s = _fleet()
+        if older_way:
+            s.switch_to("5", json_output=True, log_out_sessions=True)
+        else:
+            _activate(s)
+        out_file = temp_home / "k.qswap"
+        code, _out, err = run(s, "export", str(out_file), "--account", "5")
+        assert code == 0, err
+        env = json.loads(out_file.read_text())
+        blob = json.dumps(env["accounts"][0]["credentials"]).replace(KEY_5, KEY_6)
+        env["accounts"][0]["credentials"] = json.loads(blob)
+        out_file.write_text(json.dumps(env))
+        code, out, err = run(s, "import", str(out_file), "--force")
+        assert code == 0, err
+        assert "was replaced" in " ".join(err.split())
+        _fits(err)
+        if older_way:
+            assert any(line.strip() == "qswap switch 5 --force" for line in err.splitlines())
+
+    def test_the_credit_list(self, temp_home, run):
+        from ai_quota_swap import api_spend
+
+        s = _fleet()
+        s.set_alias("5", "build-server-ci")
+        api_spend.set_credit(s, "5", "1187.03")
+        api_spend.set_budget(s, "5", 20)
+        reading = {
+            "spend": {"used": 25.22, "limit": 20.0, "pct": 126.1, "currency": "USD"},
+            "today": 2.06, "source": "ledger", "month": "2026-11", "as_of": time.time(),
+            "unpriced_tokens": 0,
+            "credit": {"amount": 1187.03, "used": 25.22, "left": 1161.81, "spent": False,
+                       "expired": False, "since": "2026-11-01T00:00:00Z", "expires": None,
+                       "source": "ledger", "unpriced_tokens": 0},
+        }
+        with patch("ai_quota_swap.api_spend.readings", return_value={"5": reading}):
+            code, out, err = run(s, "credit")
+        assert code == 0, err
+        assert "build-server-ci" in out
+        _fits(out)
+
+
 class TestRemovingAKeyThatRunSessionsHold:
     def test_the_warning_says_they_keep_the_key(self, temp_home, capsys, monkeypatch):
         """F56 (7): a session that holds a key keeps sending it when its

@@ -617,11 +617,11 @@ def _credit_list(switcher, account: str | None, *, as_json: bool) -> None:
         who = account_label(None, alias=info[6] or None, email=info[1], long=True)
         reading = readings.get(num) or {}
         line = _credit_line(reading)
-        text = f"  {num}: {who}  {line}"
-        if api_spend.limit_reason(reading) is not None:
-            warning(text)
-        else:
-            print(text)
+        # 80 columns: the row wraps under itself (a long alias, a credit with
+        # cents, a reason after it).
+        paint = warning if api_spend.limit_reason(reading) is not None else print
+        for part in wrap(f"  {num}: {who}  {line}", subsequent="     "):
+            paint(part)
         detail = api_spend.detail_text(reading) if reading else None
         if detail:
             for part in wrap(detail, indent="     "):

@@ -7367,8 +7367,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         # subscription, else the account underneath too.
         repairs = self.reconcile_key_helper()
         if repairs and not json_output:
-            for line in repairs:
-                print(dimmed(line))
+            for text in repairs:
+                for line in display.wrap(text):
+                    print(dimmed(line))
         warnings.extend(repairs if json_output else [])
         key = self.helper_account()
         if key is not None:
@@ -7854,10 +7855,12 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                         "is not managed. Add it with: qswap add"
                     ),
                 )
-            print(
-                f"{accent('Notice:')} The login underneath {label}, {identity[0]}, "
-                "was not managed."
+            notice = display.wrap(
+                f"Notice: The login underneath {label}, {identity[0]}, was not managed."
             )
+            print(accent("Notice:") + notice[0].removeprefix("Notice:"))
+            for line in notice[1:]:
+                print(line)
             self.add_account()
             return None
 
@@ -8218,8 +8221,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             self._refuse_unreadable_key_line()
         repairs = self.reconcile_key_helper()
         if repairs and not json_output:
-            for line in repairs:
-                print(dimmed(line))
+            for text in repairs:
+                for line in display.wrap(text):
+                    print(dimmed(line))
         target_is_key = self._account_kind(target_account) == "api_key"
         helper = self.helper_account()
         if target_is_key and log_out_sessions:
