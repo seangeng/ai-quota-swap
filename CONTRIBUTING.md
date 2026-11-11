@@ -148,4 +148,4 @@ A release is published to PyPI by `.github/workflows/publish.yml` through truste
    HOME="$scratch/home" "$scratch/venv/bin/qswap" --version
    ```
 
-3. Merge, then publish a GitHub release whose tag is the version (`v0.1.0` for `0.1.0`). The workflow refuses a tag that does not match.
+3. Merge, then publish a GitHub release whose tag is the version (`v0.1.0` for `0.1.0`). The workflow refuses a tag that does not match the version, and a tree whose `CHANGELOG.md` has no section for it.
