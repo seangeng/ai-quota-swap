@@ -1364,14 +1364,23 @@ KEY_KEPT = (
 )
 
 
+def settings_fix(path: str, error: str | None) -> str:
+    """The step for a settings file qswap cannot use: ``Make PATH readable``
+    when reading it failed (its permissions, say), else ``Fix the JSON in
+    PATH`` (it was read and does not parse)."""
+    if (error or "").startswith("could not be read"):
+        return f"Make {path} readable"
+    return f"Fix the JSON in {path}"
+
+
 def key_settings_unreadable(path: str, error: str | None, key: str) -> list[str]:
-    """The settings cannot be parsed while qswap's record names a key: the
-    one note list, status, the dashboard, the menu bar, doctor, the guards
-    and a refused switch all show (decision B5)."""
+    """The settings cannot be read or parsed while qswap's record names a
+    key: the one note list, status, the dashboard, the menu bar, doctor, the
+    guards and a refused switch all show (decision B5)."""
     why = f" ({error})" if error else ""
     return wrap(
         f"{path} cannot be read{why}; qswap last made {key} the active API key "
-        f"there, and its key line may still be in it. Fix the JSON in {path}, "
+        f"there, and its key line may still be in it. {settings_fix(path, error)}, "
         "then retry."
     )
 

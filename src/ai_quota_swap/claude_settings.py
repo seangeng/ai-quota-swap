@@ -74,8 +74,9 @@ NO_FILE, NONE, OURS, FOREIGN, INVALID = "no-file", "none", "ours", "foreign", "i
 class SettingsError(Exception):
     """qswap did not change the settings file. ``reason`` is what follows the
     file's path in a message ("is not valid JSON (...)"); ``kind`` is the state
-    that stopped it (``invalid``, ``foreign``, ``write``, ``changing``, or
-    ``command``: the line would not read back as qswap's)."""
+    that stopped it (``invalid``, ``unreadable``: reading it failed,
+    ``foreign``, ``write``, ``changing``, or ``command``: the line would not
+    read back as qswap's)."""
 
     def __init__(self, reason: str, *, kind: str, path: Path | None = None):
         super().__init__(reason)
@@ -116,8 +117,16 @@ class HelperState:
         if self.kind == FOREIGN:
             return "already sets another apiKeyHelper"
         if self.kind == INVALID:
+            if self.unreadable:
+                return self.error  # "could not be read: PermissionError"
             return f"is not valid JSON ({self.error or 'parse error'})"
         return None
+
+    @property
+    def unreadable(self) -> bool:
+        """The file is there but reading it failed (its permissions, say),
+        rather than read and not parsed."""
+        return self.kind == INVALID and (self.error or "").startswith("could not be read")
 
     def shown_path(self) -> str:
         """The path as messages show it (``~/.claude/settings.json``)."""
@@ -791,7 +800,7 @@ def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
         try:
             raw = _read(path)
         except (OSError, UnicodeDecodeError) as e:
-            raise SettingsError(f"could not be read ({type(e).__name__})", kind=INVALID,
+            raise SettingsError(f"could not be read: {type(e).__name__}", kind="unreadable",
                                 path=path) from e
         bom, before = _split_bom(raw)
         state = state_of_text(before, path)

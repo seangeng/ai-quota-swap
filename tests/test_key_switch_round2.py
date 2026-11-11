@@ -723,6 +723,34 @@ class TestUnparseableSettingsWithARecord:
         assert f"Fix the JSON in {WHERE}" in text
         assert "Already on" not in out
 
+    def test_a_file_that_cannot_be_read_is_not_told_to_fix_its_json(
+        self, temp_home, run, monkeypatch
+    ):
+        """The re-check's case: the settings file with mode 000 (read
+        refused, not unparseable). Every surface named fixing the JSON."""
+        s = _fleet()
+        _activate(s)
+        path = _settings(temp_home)
+        real = Path.read_bytes
+
+        def refused(self, *a, **k):
+            if self == path:
+                raise PermissionError(13, "Permission denied")
+            return real(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_bytes", refused)
+        notes = _notes(s)
+        assert "qswap last made #5 ci the active API key" in notes
+        assert f"Make {WHERE} readable, then retry." in notes
+        assert "Fix the JSON" not in notes
+        code, out, err = run(s, "switch", "1")
+        assert code == 1
+        text = " ".join(err.split())
+        assert f"Make {WHERE} readable, then retry." in text and "Fix the JSON" not in text
+        check = _check("claude.key_helper")
+        assert check.status == "fail" and check.fix == f"make {WHERE} readable"
+        assert "not valid JSON" not in " ".join(c.summary for c in [check])
+
 
 # == B2: qswap switch N to the active key checks and repairs its line ================
 

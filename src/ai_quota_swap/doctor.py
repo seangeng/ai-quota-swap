@@ -798,10 +798,11 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             sentence = " ".join(display.key_settings_unreadable(
                 where, state.error, label(findings.unreadable_record)
             ))
+            step = display.settings_fix(where, state.error)
             checks.append(Check(
                 "claude.key_helper", "claude", FAIL,
-                sentence.removesuffix(f" Fix the JSON in {where}, then retry.").rstrip("."),
-                fix=f"fix the JSON in {where}",
+                sentence.removesuffix(f" {step}, then retry.").rstrip("."),
+                fix=step[:1].lower() + step[1:],
             ))
     elif state.kind == claude_settings.FOREIGN:
         checks.append(Check(

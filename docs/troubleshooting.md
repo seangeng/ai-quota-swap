@@ -189,7 +189,7 @@ Error: ~/.claude/settings.json cannot be read (line 1: Illegal trailing comma
   retry.
 ```
 
-`qswap status`, `qswap list`, the dashboard and the menu bar show it too, `qswap doctor` fails with it, and auto-switch stops switching (`settings-unreadable` in JSON).
+`qswap status`, `qswap list`, the dashboard and the menu bar show it too, `qswap doctor` fails with it, and auto-switch stops switching (`settings-unreadable` in JSON). When the file is there but cannot be read at all (its permissions, say), the sentence says `could not be read: PermissionError` in the brackets and ends `Make ~/.claude/settings.json readable, then retry.`
 
 ## "apiKeyHelper script is failing"
 

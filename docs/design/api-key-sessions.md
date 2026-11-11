@@ -267,7 +267,8 @@ What the code does where this part leaves room, or where it had to differ:
 - **Settings that cannot be read while a key is recorded.** Every surface says the same
   sentence: `~/.claude/settings.json cannot be read (...); qswap last made #5 ci the active
   API key there, and its key line may still be in it. Fix the JSON in
-  ~/.claude/settings.json, then retry.` Commands that would change accounts stop with it;
+  ~/.claude/settings.json, then retry.` (`Make ~/.claude/settings.json readable` when reading
+  the file failed rather than parsing it). Commands that would change accounts stop with it;
   the engine reports `settings-unreadable` once per episode, and `auto --once` exits 3.
 - **The repair command** for a line naming an account that cannot give a key, and for stale
   run-profile copies, is `qswap switch N` to the account underneath. A line that runs a

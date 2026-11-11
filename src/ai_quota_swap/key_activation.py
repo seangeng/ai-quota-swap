@@ -698,6 +698,8 @@ class KeyActivationMixin:
         fix = None
         if kind == claude_settings.INVALID:
             fix = f"Fix the JSON in {path}"
+        elif kind == "unreadable":
+            fix = f"Make {path} readable"
         elif kind == "write":
             fix = f"Make {path} writable"
         sessions, unreadable = self.shared_login_scan()
@@ -764,7 +766,7 @@ class KeyActivationMixin:
         if not state.installable:
             raise self._key_unavailable(
                 number, f"{state.shown_path()} {state.reason() or 'cannot be changed'}",
-                kind=state.kind,
+                kind="unreadable" if state.unreadable else state.kind,
             )
         env = self._settings_env()
         names = tuple(defeating_names(env))
