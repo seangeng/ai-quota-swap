@@ -1444,8 +1444,8 @@ def _auto_command(argv: list[str]) -> None:
         default=None,
         # Codex manages ChatGPT logins only; accepted there, not advertised.
         help=argparse.SUPPRESS if codex else (
-            "allow switching onto API-key accounts as a last resort (they bill "
-            "per token); never while Claude Code sessions are running"
+            "allow switching onto API-key accounts as a last resort, when no "
+            "subscription can take over (they bill per token)"
         ),
     )
     parser.add_argument(
@@ -1631,7 +1631,7 @@ def _config_command(argv: list[str]) -> None:
   qswap config set autoswitch.threshold 85
   qswap config unset autoswitch.threshold   # back to the default
 
-settings (README, Configuration, describes each):
+settings (docs/settings.md describes each):
 {key_lines}
 """,
     )
