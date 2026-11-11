@@ -3614,7 +3614,13 @@ class AutoSwitchEngine:
         email: str,
         trigger: str,
         left: tuple[float | None, float],
+        *,
+        skip_failed: bool = False,
     ) -> TickOutcome:
+        """Switch to ``number`` and record it. ``skip_failed`` (leaving a
+        key): a switch to a subscription that fails, rolled back, answers
+        ``_SKIPPED`` with a ``switch-failed`` hold instead of raising, so
+        the caller tries the next account (decision A9)."""
         cause = self._switch_cause(number)
         if self.dry_run:
             current = self.switcher.current_account_number()
@@ -3678,15 +3684,27 @@ class AutoSwitchEngine:
                 # and the next tick asks again. Claude Code never raises it.
                 self._emit(NoSwitchEvent(reason="switch-deferred", detail=str(e)))
                 return TickOutcome.NO_ACTION
-            except SwitchError as e:
-                if self.switcher.account_kind_for(number) != "api_key":
+            except ProviderError as e:
+                if self.switcher.account_kind_for(number) == "api_key" and isinstance(
+                    e, SwitchError
+                ):
+                    # A slot that cannot give a key (its saved credential is
+                    # not a key, or none is saved): nothing changed. Like any
+                    # unavailable candidate, the next one is tried; said
+                    # once per episode.
+                    self._emit(NoSwitchEvent(
+                        reason="key-unusable", detail=str(e), account=str(number),
+                    ))
+                    return _SKIPPED
+                if not skip_failed:
                     raise
-                # A slot that cannot give a key (its saved credential is not
-                # a key, or none is saved): nothing changed. Like any
-                # unavailable candidate, the next one is tried; said once
-                # per episode.
+                # Leaving a key: the switch to this subscription failed and
+                # was rolled back (the line is back in). The next account is
+                # tried, the account underneath last, so the engine never
+                # stays on a key past its limit over one broken backup.
+                _logger.warning("Switch to account %s failed: %s", number, e)
                 self._emit(NoSwitchEvent(
-                    reason="key-unusable", detail=str(e), account=str(number),
+                    reason="switch-failed", detail=str(e), account=str(number),
                 ))
                 return _SKIPPED
             if not result or not result.get("switched"):
@@ -4474,7 +4492,12 @@ class AutoSwitchEngine:
                 continue
             if status in ("transient", "skip-live-session") or status in _SYSTEMIC_STATUSES:
                 continue
-            return self._perform(num, email, trigger, left)
+            # A switch that fails (a damaged config backup, say) is rolled
+            # back with the line in: try the next account (decision A9).
+            outcome = self._perform(num, email, trigger, left, skip_failed=True)
+            if outcome is _SKIPPED:
+                continue
+            return outcome
         if reason is None:
             self._emit(NoSwitchEvent(reason="no-viable-target"))
             return TickOutcome.BLOCKED

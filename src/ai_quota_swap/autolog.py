@@ -728,6 +728,12 @@ def no_switch_sentence(event: object) -> str:
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "an API-key account"
         return f"Not switching to {who}: {detail}" if detail else f"Not switching to {who}"
+    if reason == "switch-failed":
+        account = getattr(event, "account", None)
+        who = number_label(account, "", context) if account else "a subscription"
+        why = (detail or "the switch failed").rstrip(".")
+        step = display.relogin_step(provider)
+        return f"Could not switch to {who}, so the next account was tried ({why}). To repair it, {step}"
     if reason == "settings-unreadable":
         # The sentence every surface shows for this state (decision B5).
         return detail or "No switch: Claude Code's settings cannot be read; fix the file"

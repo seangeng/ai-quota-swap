@@ -863,6 +863,58 @@ class TestOffTheKeyAtItsLimit:
             "subscription has room, so back to the account underneath"
         )
 
+    @staticmethod
+    def _failing_switch_to(h, monkeypatch, failing: str) -> None:
+        """``switch_to(failing)`` fails and rolls back (its saved config
+        backup is damaged, say); every other switch goes through."""
+        from ai_quota_swap.exceptions import SwitchError
+
+        real = h.switcher.switch_to
+
+        def switch_to(number, *a, **k):
+            if str(number) == failing:
+                raise SwitchError("Switch failed and was rolled back")
+            return real(number, *a, **k)
+
+        monkeypatch.setattr(h.switcher, "switch_to", switch_to)
+        monkeypatch.setattr(h.engine, "_freshen_target", lambda num, email: "ok")
+
+    def test_a_subscription_whose_switch_fails_sends_it_back_underneath(
+        self, temp_home, monkeypatch
+    ):
+        """The re-check's case: #2 at $600 of $500, #1 underneath full, #3
+        with room but its switch fails. Every tick used to end in an error
+        with the key line still in."""
+        h = _fleet(temp_home)
+        h.switcher.switch_to("2", json_output=True)
+        self._failing_switch_to(h, monkeypatch, "3")
+        over = _reading(h, used=600.0)
+        assert _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(10)}, {"2": over}) is (
+            TickOutcome.SWITCHED
+        )
+        assert h.switcher.current_account_number() == "1"
+        assert _settings_line(temp_home) is None
+        failed = [e for e in _holds(h) if e.reason == "switch-failed"]
+        assert failed and failed[0].account == "3"
+        assert failed[0].human().startswith("Could not switch to #3")
+        assert failed[0].human().endswith(
+            ", so the next account was tried (Switch failed and was rolled back). To "
+            "repair it, log in to it in Claude Code (/login), then run: qswap add"
+        )
+
+    def test_on_the_way_back_the_next_subscription_is_tried(self, temp_home, monkeypatch):
+        """An engine key under its limit, #3 roomier than #1 underneath but
+        its switch fails: back to #1 rather than an error every tick."""
+        h = _fleet(temp_home)
+        _enter(h)
+        h.clock.advance(600)
+        self._failing_switch_to(h, monkeypatch, "3")
+        assert _tick(h, {"1": _usage(40), "2": "api key", "3": _usage(10)}) is (
+            TickOutcome.SWITCHED
+        )
+        assert h.switcher.current_account_number() == "1"
+        assert _settings_line(temp_home) is None
+
     def test_with_no_login_at_all_it_stays_and_says_so_once(self, temp_home):
         h = _fleet(temp_home)
         h.switcher.switch_to("2", json_output=True)
