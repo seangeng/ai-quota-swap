@@ -56,8 +56,10 @@ wherever they are listed.
 - A command that would leave the user worse off says so first: switching to an account that
   needs re-login is refused unless `--anyway`; switching to one whose usage is unreadable or
   stale goes ahead with a one-line warning; switching to an API-key account when qswap
-  cannot add its key line to Claude Code's settings is refused unless `--log-out-sessions`,
-  since then a session started on a subscription would stop with "Not logged in"
+  cannot add its key line to Claude Code's settings is refused with the fix, and goes ahead
+  only with `--log-out-sessions`, since then a session started on a subscription would stop
+  with "Not logged in"; where the saved key could not help either (another `apiKeyHelper`,
+  a credential in the settings' `env` block), that flag is not offered and is refused
   ([api-key-sessions.md](api-key-sessions.md)). A rotation (`switch` with no account, its
   strategies, `qswap codex switch`) skips an account that needs re-login, as it skips a
   disabled one, with one line each ("Skipped #2 work: needs re-login."), and when nothing is

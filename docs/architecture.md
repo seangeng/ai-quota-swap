@@ -44,10 +44,11 @@ Sizes are rounded and move with every change; they are here so you know what you
 | `macos_keychain.py` | 200 | Keychain access through the `security` CLI |
 | `oauth.py` | 1,300 | Token parsing and refresh, the usage request and its normalization, window math |
 | `subscription.py` | 300 | The plan label (Max, Pro, Team) from the profile endpoint |
-| `session.py` | 2,500 | `qswap run`: per-account Claude Code profiles and shared history; `qswap run N` on a key; the settings copies run profiles hold while a key is active |
-| `key_activation.py` | 400 | An API key made active through Claude Code's `apiKeyHelper`: who is active and who is underneath, entering and leaving a key, the repair `switch` runs first |
-| `claude_settings.py` | 450 | Reads Claude Code's user settings and edits its one `apiKeyHelper` key, keeping everything else as it was |
-| `key_helper.py`, `entry.py` | 200 | `qswap key-helper N`, answered before the command line module loads: prints the saved key and nothing else |
+| `session.py` | 2,700 | `qswap run`: per-account Claude Code profiles and shared history; `qswap run N` on a key; the settings copies run profiles hold while a key is active |
+| `key_activation.py` | 1,100 | An API key made active through Claude Code's `apiKeyHelper`: who is active and who is underneath, who entered the key, entering and leaving it, and the one reconcile every switch and engine tick runs first |
+| `claude_settings.py` | 850 | Reads Claude Code's user settings and edits its one `apiKeyHelper` key, keeping everything else as it was; reads qswap's line back and checks that it answers |
+| `key_helper.py`, `entry.py` | 250 | `qswap key-helper N`, answered before the command line module loads: prints the saved key and nothing else (`--check`: nothing at all) |
+| `installed.py` | 150 | The command that runs this install of qswap, for the key line and the menu bar's LaunchAgent |
 | `mappings.py` | 100 | `qswap map`: directory to account bindings |
 | `claude_locks.py` | 200 | Taking Claude Code's own lock directories while writing its files |
 | `paths.py` | 300 | Where Claude Code and qswap keep their files, mirroring Claude Code's rules |
