@@ -247,7 +247,10 @@ What the code does where this part leaves room, or where it had to differ:
   and every surface names the way out. A line with neither counts as the
   user's: it is only left at its budget or credit, or by the user. The record is written
   before the line, so a crash between the two leaves a record with no line, which the next
-  switch clears, rather than a line nobody recorded.
+  switch clears, rather than a line nobody recorded. From one key to another the old record
+  is kept beside the new one until the line is replaced, so a stop in between leaves the old
+  key's line with its own record, not a line that seems to have come back. Removing a line
+  that names an account that cannot give a key keeps the other keys' tombstones.
 - **`activeAccountNumber`** in `sequence.json` is set to the key on entering, and back to the
   live login on every path that removes the line. `qswap add` while a key is active saves
   the new login but leaves it, and says the key is still active and how to switch.

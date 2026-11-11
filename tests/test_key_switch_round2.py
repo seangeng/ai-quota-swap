@@ -451,6 +451,69 @@ class TestTombstones:
         snap = h.switcher.accounts_snapshot(fetch=set())
         assert "came back" in " ".join(snap.key_notes)
 
+    def test_an_interrupted_key_to_key_switch_does_not_say_the_line_came_back(
+        self, temp_home, monkeypatch
+    ):
+        """The re-check's case: #5 active, qswap switch 6 interrupted while
+        the line was being written. The record named #6 with a tombstone for
+        #5, so the surfaces said #5's line came back, which it had not."""
+        s = _fleet()
+        _activate(s)
+        real = claude_settings.install
+
+        def interrupted(number, *a, **k):
+            if str(number) == "6":
+                raise KeyboardInterrupt
+            return real(number, *a, **k)
+
+        monkeypatch.setattr(claude_settings, "install", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            s.switch_to("6", json_output=True)
+        monkeypatch.setattr(claude_settings, "install", real)
+        assert _line(temp_home) == f"{QSWAP} key-helper 5"
+        f = s.key_findings()
+        assert (f.key, f.came_back, f.entered_by, f.lost) == ("5", False, "user", None)
+        assert s.key_entered_by() == "user"
+        assert "came back" not in _notes(s)
+        assert "no longer in" not in _notes(s)
+        s.reconcile_key_helper()  # the record is #5's again
+        assert _key_record(s)["number"] == "5" and "replacing" not in _key_record(s)
+        # And the next switch to #6 goes through as usual.
+        s.switch_to("6", json_output=True)
+        assert _key_record(s)["number"] == "6" and "5" in _key_record(s)["left"]
+
+    def test_removing_a_line_that_cannot_give_a_key_keeps_the_other_tombstones(
+        self, temp_home
+    ):
+        """The re-check's case: {left: {6: engine}}, and a line for #9 (no
+        such account). Removing it deleted key_helper.json whole, so #6's
+        line coming back later read as the user's."""
+        s = _fleet()
+        s._write_key_state({"left": {"6": {"at": time.time(), "enteredBy": "engine"}}})
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": f"{QSWAP} key-helper 9"}), encoding="utf-8"
+        )
+        s.switch_to("7", json_output=True)
+        assert _key_record(s)["left"]["6"]["enteredBy"] == "engine"
+        _settings(temp_home).write_text(
+            json.dumps({"apiKeyHelper": f"{QSWAP} key-helper 6"}), encoding="utf-8"
+        )
+        assert s.key_findings().came_back is True
+        assert s.key_entered_by() == "engine"
+
+    def test_every_reader_agrees_on_who_entered_a_line_that_came_back(self, temp_home):
+        """The re-check's case: auto-switch entered #5, the user switched to
+        #6, then an old copy with #5's line was written back. key_findings
+        said engine, key_entered_by (the engine, the row, JSON) said user."""
+        s = _fleet()
+        s.switch_to("5", json_output=True, entered_by="engine")
+        old = _settings(temp_home).read_bytes()
+        s.switch_to("6", json_output=True)
+        _settings(temp_home).write_bytes(old)
+        f = s.key_findings()
+        assert (f.key, f.came_back, f.entered_by) == ("5", True, "engine")
+        assert s.key_entered_by() == "engine"
+
     def test_a_line_with_neither_a_record_nor_a_tombstone_is_the_users(self, temp_home):
         s = _fleet()
         _settings(temp_home).write_text(

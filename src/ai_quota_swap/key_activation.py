@@ -128,6 +128,45 @@ def _tombstones(record: dict) -> dict:
     return dict(left) if isinstance(left, dict) else {}
 
 
+def effective_record(record: object, line_number: str | None) -> dict:
+    """key_helper.json as it stands for the line in the settings. From one
+    key to another the new record is written before the line with the old
+    one under ``replacing``: when the line still names that old key (the
+    switch stopped in between), the old record is the one in force, so its
+    line is not taken for one that came back."""
+    record = record if isinstance(record, dict) else {}
+    replacing = record.get("replacing")
+    if not isinstance(replacing, dict):
+        return record
+    rest = {k: v for k, v in record.items() if k != "replacing"}
+    if (
+        line_number is not None and replacing.get("number") is not None
+        and str(replacing["number"]) == line_number
+        and str(record.get("number")) != line_number
+    ):
+        out = {k: v for k, v in replacing.items() if k != "left"}
+        left = _tombstones(rest)
+        left.pop(line_number, None)
+        if left:
+            out["left"] = left
+        return out
+    return rest
+
+
+def entered_by_of(record: dict, key: str) -> tuple[str, bool]:
+    """``(enteredBy, came_back)`` for qswap's line for ``key``, from the
+    effective record: its own record's; a tombstone's when the line came
+    back after qswap took it out (decision B5); else the user's."""
+    entered = str(record["number"]) if record.get("number") is not None else None
+    if entered == key and record.get("enteredBy") in ENTERED_BY:
+        return record["enteredBy"], False
+    tomb = _tombstones(record).get(key)
+    if entered != key and isinstance(tomb, dict):
+        by = tomb.get("enteredBy")
+        return (by if by in ENTERED_BY else "user"), True
+    return "user", False
+
+
 @dataclass(frozen=True)
 class KeyFindings:
     """Decision B5: the key line in the user settings, the account list,
@@ -175,11 +214,13 @@ def assess_key_state(
     account list could not be read). No I/O: doctor reads the same files
     through its probes and calls this too."""
     record = record if isinstance(record, dict) else {}
-    entered = str(record["number"]) if record.get("number") is not None else None
     if state.kind == claude_settings.INVALID:
+        entered = str(record["number"]) if record.get("number") is not None else None
         return KeyFindings(state, unknown="settings", unreadable_record=entered)
     if accounts is None:
         return KeyFindings(state, unknown="accounts")
+    record = effective_record(record, state.number if state.ours else None)
+    entered = str(record["number"]) if record.get("number") is not None else None
     key = problem = None
     line_number = state.number if state.ours else None
     if line_number is not None:
@@ -192,14 +233,7 @@ def assess_key_state(
             key = line_number
     entered_by, came_back = None, False
     if key is not None:
-        tomb = _tombstones(record).get(key)
-        if entered == key and record.get("enteredBy") in ENTERED_BY:
-            entered_by = record["enteredBy"]
-        elif entered != key and isinstance(tomb, dict):
-            came_back = True
-            entered_by = tomb.get("enteredBy") if tomb.get("enteredBy") in ENTERED_BY else "user"
-        else:
-            entered_by = "user"
+        entered_by, came_back = entered_by_of(record, key)
     lost = entered if entered is not None and entered != line_number else None
     stale_active = None
     if active_number is not None:
@@ -392,21 +426,15 @@ class KeyActivationMixin:
     def key_entered_by(self) -> str | None:
         """Who entered the active key: ``user`` or ``engine``; None when no
         key is active through the helper. A line that came back after qswap
-        took it out (no record, a tombstone for its number) keeps the name of
+        took it out (no record of its own, a tombstone for its number) keeps the name of
         whoever had entered it (decision B5). A line qswap has no trace of
         (written by an older run, or by hand) counts as the user's: such a
         key is only left at its budget or by the user."""
         number = self.helper_account()
         if number is None:
             return None
-        state = self._key_state()
-        if str(state.get("number")) == number and state.get("enteredBy") in ENTERED_BY:
-            return state["enteredBy"]
-        tomb = _tombstones(state).get(number)
-        if state.get("number") is None and isinstance(tomb, dict):
-            if tomb.get("enteredBy") in ENTERED_BY:
-                return tomb["enteredBy"]
-        return "user"
+        # The same rule list, status and doctor read (assess_key_state).
+        return entered_by_of(effective_record(self._key_state(), number), number)[0]
 
     def _adopt_engine_key(self, number: str) -> str | None:
         """The user asked for the key the engine entered: record the choice,
@@ -788,7 +816,20 @@ class KeyActivationMixin:
             # line leaves a record naming it, so a key the engine entered
             # stays the engine's; a crash before it leaves a record with no
             # line, which every surface reports and the next switch clears.
-            self._write_key_state(key_state)
+            # From one key to another the old record rides along (under
+            # ``replacing``, its key not yet tombstoned) until the line is
+            # replaced: a stop in between leaves the old line with the record
+            # that names it, not a line that seems to have come back.
+            pending = key_state
+            if previous_key is not None and str(old.get("number")) == previous_key:
+                pending = dict(key_state)
+                left = _tombstones(pending)
+                left.pop(previous_key, None)
+                pending.pop("left", None)
+                if left:
+                    pending["left"] = left
+                pending["replacing"] = {k: v for k, v in old.items() if k != "left"}
+            self._write_key_state(pending)
             try:
                 created_now, _ = claude_settings.install(number)
             except claude_settings.SettingsError as e:
@@ -801,6 +842,7 @@ class KeyActivationMixin:
                 ) from e
             if created_now and not key_state["createdSettings"]:
                 key_state["createdSettings"] = True
+            if pending is not key_state or created_now:
                 self._write_key_state(key_state)
             # A qswap run launch between the two steps saw no line yet and
             # may have put its link back: a second pass, now that launches
@@ -973,9 +1015,9 @@ class KeyActivationMixin:
         line was removed. Raises :class:`SwitchError` when the settings file
         cannot be parsed, so the line cannot be found."""
         self._refuse_session_shell()
-        state = self._key_state()
         line = self.key_helper_state()
         number = line.number if line.ours else None
+        state = effective_record(self._key_state(), number)
         with FileLock(self.lock_file):
             try:
                 blank = state.get("blankSettings")
@@ -991,7 +1033,14 @@ class KeyActivationMixin:
                     f"The key line cannot be removed: {path} {e.reason}. Fix the "
                     'file, or delete its "apiKeyHelper" line by hand, then retry.'
                 ) from e
-            self._write_key_state(self._left_record(state, number) if tombstone else None)
+            # Without a tombstone for the line taken out (one naming an
+            # account that cannot give a key), the other keys' stay.
+            left = self._left_record(state, number if tombstone else None)
+            if not tombstone and left is not None and number is not None:
+                stones = _tombstones(left)
+                stones.pop(number, None)
+                left = {"left": stones} if stones else None
+            self._write_key_state(left)
             self.restore_run_profiles()
             self._active_number_back(number or (
                 str(state["number"]) if state.get("number") is not None else None
@@ -1094,6 +1143,17 @@ class KeyActivationMixin:
             if f.unknown is not None:
                 return done
             state = f.state
+            stored = self._key_state()
+            if "replacing" in stored:
+                # A switch from one key to another stopped between its record
+                # and its line: the record in force is written down plainly.
+                with FileLock(self.lock_file):
+                    stored = self._key_state()
+                    if "replacing" in stored:
+                        self._write_key_state(
+                            effective_record(stored, state.number if state.ours else None)
+                            or None
+                        )
             if f.key is not None and state.stale_command:
                 # qswap moved (a reinstall): the line runs a command that is
                 # gone. The same line, pointing at this qswap.
