@@ -288,10 +288,11 @@ def run_menubar(args: argparse.Namespace, switcher, *, beside: bytes | None) -> 
     if beside is not None:
         backdrop = menubar_page.Backdrop(beside, alt="The qswap dashboard")
 
-    def draw(menu, target: Path, *, closed: bool) -> None:
+    def draw(menu, target: Path, *, closed: bool, notification=None) -> None:
         target.write_text(menubar_page.page(
             menu, theme=args.theme or "dark", open_path=args.open, highlight=args.highlight,
             clock=host.clock_text(), closed=closed, backdrop=backdrop, size=args.size,
+            notification=notification,
         ), encoding="utf-8")
 
     try:
@@ -300,9 +301,15 @@ def run_menubar(args: argparse.Namespace, switcher, *, beside: bytes | None) -> 
             for i in range(args.ticks):
                 with host.after_tick("claude"):
                     menu = host.menu()
+                    # What the app would post for this check; the closed
+                    # frame shows the last of it as a banner.
+                    notes = host.notifications()
                     draw(menu, args.frames / f"frame-{i:02d}.html", closed=args.closed)
-                    draw(menu, args.frames / f"frame-{i:02d}-closed.html", closed=True)
-                    (args.frames / f"frame-{i:02d}.txt").write_text(menu.outline() + "\n", encoding="utf-8")
+                    draw(menu, args.frames / f"frame-{i:02d}-closed.html", closed=True,
+                         notification=notes[-1] if notes else None)
+                    said = "".join(f"notification: {n.body}\n" for n in notes)
+                    (args.frames / f"frame-{i:02d}.txt").write_text(
+                        menu.outline() + "\n" + said, encoding="utf-8")
         else:
             menu = host.menu()
         print(menu.outline())
@@ -330,13 +337,21 @@ class MenuBarHost:
     ``AutoSwitchEngine`` per provider (``dry_run=False``, host label ``qswap
     menubar``) in a thread of its own, against the scenario's canned API.
     Each engine's check is followed by a pause until the menu has been drawn
-    from what it left, so a picture never shows half a tick.
+    from what it left, so a picture never shows half a tick. The engines'
+    events are queued as the app queues them, and :meth:`notifications`
+    turns them into what the app would post (``menubar_notify.Notifier``).
+
+    *Start at login* is drawn checked: that is the state the first
+    ``qswap menubar`` leaves, and the app reads it from launchd, which the
+    sandbox never reaches.
     """
 
     def __init__(self, switcher, *, auto_switch: str | None) -> None:
         import queue
+        import threading
 
         from ai_quota_swap import menubar, menubar_data
+        from ai_quota_swap.menubar_notify import Notifier
         from ai_quota_swap.snapshot_source import SnapshotSource
 
         self.switcher = switcher
@@ -352,6 +367,9 @@ class MenuBarHost:
         self.supervisor = None
         self._ticks: queue.Queue = queue.Queue()
         self._closing = False
+        self._events: list = []  # (provider, event), as MenuBarApp._queue_event keeps them
+        self._events_lock = threading.Lock()
+        self._notifier = Notifier()
 
     # -- engines --------------------------------------------------------------
 
@@ -383,6 +401,30 @@ class MenuBarHost:
         engine.tick = reported_tick
         return engine
 
+    def _queue_event(self, provider: str, event) -> None:
+        # Engine thread, as in the app: queue it for the main thread.
+        with self._events_lock:
+            self._events.append((provider, event))
+
+    def notifications(self) -> list:
+        """The notifications the app would post for the engines' events since
+        the last call: ``MenuBarApp._drain_events`` without the screen."""
+        import time
+
+        from ai_quota_swap import menubar_data
+
+        with self._events_lock:
+            events, self._events = self._events, []
+        both = menubar_data.codex_registry_count(self.root) > 0
+        out = []
+        for provider, event in events:
+            if getattr(event, "kind", "") == "engine-stopped":
+                continue  # the app says this through engine_stopped; the host stops them itself
+            note = self._notifier.event(provider, event, both=both, now=time.monotonic())
+            if note is not None:
+                out.append(note)
+        return out
+
     def _checked(self, provider: str) -> None:
         # Engine thread: wait until the main thread has drawn this state.
         import threading
@@ -404,7 +446,7 @@ class MenuBarHost:
         wanted = self.wanted()
         if not any(wanted.values()):
             return
-        self.supervisor = EngineSupervisor(self._make_engine, lambda provider, event: None)
+        self.supervisor = EngineSupervisor(self._make_engine, self._queue_event)
         failed = self.supervisor.apply(wanted)
         pending = {p for p, want in wanted.items() if want and p not in failed}
         while pending:
@@ -491,6 +533,7 @@ class MenuBarHost:
             },
             can_add_token=hasattr(self.switcher, "add_account_from_token"),
             resets=load_reset_settings(root),
+            start_at_login=True,
         )
         return menubar.build_menu(inp)
 

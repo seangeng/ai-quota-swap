@@ -6,7 +6,9 @@ after each of the engine's checks), embedded unchanged as an ``<iframe
 srcdoc>``. This module adds no row and no title of its own: it only says
 which drawing shows when, cross-fades from one to the next, and can show a
 drawing magnified on the menu bar's right-hand end, so the title's figures
-can be read while the menu is shut.
+can be read while the menu is shut. Every magnified shot gets the same
+scale, the largest that keeps each one's title and notification banner in
+view.
 
 The page opens on the first shot. A key press (any key) starts the play,
 which follows a timeline computed here; the script in the page only applies
@@ -74,13 +76,18 @@ SCRIPT = """
   }
   function measure() {
     // Magnify about the bar's right-hand end, as far as keeps the widest
-    // title in view (the drawings are same-origin, so their layout is here).
+    // title, and any banner of a magnified shot, in view (the drawings are
+    // same-origin, so their layout is here).
     var zoom = 1.8;
     try {
       var left = W;
       for (var i = 0; i < shots.length; i++) {
-        var title = shots[i].contentDocument.getElementById("status").getBoundingClientRect();
-        left = Math.min(left, title.left);
+        var doc = shots[i].contentDocument;
+        left = Math.min(left, doc.getElementById("status").getBoundingClientRect().left);
+        var note = doc.getElementById("note");
+        if (note && shots[i].classList.contains("zoomed")) {
+          left = Math.min(left, note.getBoundingClientRect().left);
+        }
       }
       zoom = Math.max(1, Math.min(MAX, (W - MARGIN) / (W - left)));
     } catch (err) {}

@@ -63,14 +63,18 @@ AUTOSWITCH = Story(
         "and watch the active account climb to its 90% line and switch to the account with "
         "the most headroom."
     ),
+    trim_ms=1000,  # the footer's keys appear once the fleet is read
+    # The Go live dialog stays about 2.7 s, long enough to read; the last
+    # pause holds 2 s past the check after the switch, so the GIF does not
+    # redraw just before it loops.
     steps=(
         ("pause", 2000),
         ("type", "g"),  # auto-switch view (opens in dry-run)
         ("pause", 2000),
         ("type", "l"),  # go live...
-        ("pause", 1200),
+        ("pause", 2200),
         ("type", "y"),  # ...confirmed; the switch comes about 3 s later
-        ("pause", 6000),
+        ("pause", 7600),
     ),
 )
 
@@ -85,11 +89,11 @@ RESET = Story(
     ),
     trim_ms=1000,  # the footer's keys appear once the fleet is read
     steps=(
-        ("pause", 2400),
+        ("pause", 1400),
         ("type", "g"),
         ("pause", 1800),
         ("type", "l"),
-        ("pause", 1000),
+        ("pause", 2000),  # the Go live dialog, long enough to read
         ("type", "y"),  # the first live check spends the reset
         ("pause", 4500),
         ("key", "Escape"),  # back to the dashboard, window refilled
@@ -111,20 +115,20 @@ DASHBOARD = Story(
     # The footer's s / w / g keys appear once the showcase is read.
     trim_ms=1000,
     # LittleDemo adds 500 ms after each typed key and 1.3 s after each
-    # pressed one: each view stays about 2.9 s, the main view 1.3 s between.
-    # Kept short: the dashboard's clock runs in real time while the recorder
-    # plays at a third of it, and past a minute the readings would age into
-    # "as of 3m ago".
+    # pressed one: each view stays about 3.5 s, the main view 1.3 s between.
+    # Kept under a minute of real time: the dashboard's clock runs in real
+    # time while the recorder plays at a third of it, and past a minute the
+    # readings would age into "as of 3m ago".
     steps=(
-        ("pause", 2400),
+        ("pause", 1800),
         ("type", "w"),  # watch: every account's windows
-        ("pause", 2400),
+        ("pause", 3000),
         ("key", "Escape"),
         ("type", "g"),  # the auto-switch view, in dry run
-        ("pause", 2400),
+        ("pause", 3000),
         ("key", "Escape"),
         ("type", "u"),  # the usage report
-        ("pause", 2400),
+        ("pause", 3000),
         ("key", "Escape"),  # back on the main view
         ("pause", 300),
     ),

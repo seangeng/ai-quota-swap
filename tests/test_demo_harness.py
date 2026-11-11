@@ -493,13 +493,16 @@ class TestScenarioStates:
 
 
 class _Drawing(HTMLParser):
-    """A menu bar page read back: the status item's title and each menu's
-    rows in drawing order (None for a separator)."""
+    """A menu bar page read back: the status item's title, each menu's
+    rows in drawing order (None for a separator), and the notification
+    banner's title and body if one is drawn."""
 
     def __init__(self, page: str) -> None:
         super().__init__()
         self.menus: list[dict] = []
         self.status = ""
+        self.note: dict[str, str] | None = None
+        self._note_part: str | None = None
         self.stage_classes: set[str] = set()
         self.sources: list[str] = []
         self._text: dict | None = None
@@ -514,6 +517,10 @@ class _Drawing(HTMLParser):
                 self.sources.append(a[key])
         if a.get("id") == "stage":
             self.stage_classes = classes
+        if a.get("id") == "note":
+            self.note = {"title": "", "body": ""}
+        elif classes & {"note-title", "note-body"}:
+            self._note_part = "title" if "note-title" in classes else "body"
         if a.get("id") == "status":
             self._in_status = True
         elif "menu" in classes:
@@ -529,9 +536,13 @@ class _Drawing(HTMLParser):
         if tag == "span":
             self._text = None
             self._in_status = False
+        elif tag == "div":
+            self._note_part = None
 
     def handle_data(self, data):
-        if self._text is not None:
+        if self._note_part is not None:
+            self.note[self._note_part] += data
+        elif self._text is not None:
             self._text["text"] += data
         elif self._in_status:
             self.status += data
@@ -659,6 +670,8 @@ class TestMenuBarDrawing:
         assert d.outline(1) == _outline_rows(stdout, ("Settings",))[1]
         assert d.outline(2) == _outline_rows(stdout, ("Settings", "Use resets automatically"))[1]
         assert d.selected(0) == ["Settings"] and d.selected(1) == ["Use resets automatically"]
+        # The state the first `qswap menubar` leaves: it starts at login.
+        assert "✓ Start at login" in d.outline(1)
 
     def test_an_unknown_submenu_or_row_is_refused(self, tmp_path):
         page = tmp_path / "menu.html"
@@ -699,10 +712,17 @@ class TestMenuBarDrawing:
         assert "Auto-switch running · usage read" in last
         assert "  ⚠ #1 personal · 5h 91%" in last
         assert "#1 personal → #2 work · 2026-11-10 14:22" in last
+        # The switch's notification, in the app's own words (its Notifier),
+        # is drawn as a banner on the closed frame of that check only.
+        switched = "Switched #1 personal → #2 work · 5h reached 91%"
+        assert last.endswith(f"notification: {switched}\n")
+        assert "notification:" not in (tmp_path / "frame-01.txt").read_text()
         for i in range(3):
             closed = _Drawing((tmp_path / f"frame-{i:02d}-closed.html").read_text())
             assert "closed" in closed.stage_classes
             assert closed.status == titles[i].removeprefix("title: ")
+            assert closed.note == ({"title": "ai-quota-swap", "body": switched} if i == 2 else None)
+            assert _Drawing((tmp_path / f"frame-{i:02d}.html").read_text()).note is None
 
 
 QUICKSTART = ["add", "--alias", "work", "++", "list", "++", "switch", "1", "++", "status"]

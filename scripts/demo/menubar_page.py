@@ -19,6 +19,11 @@ What it mirrors from ``menubar_app._item`` and ``_draw``:
   separator items;
 * the open submenu's parent row is selected, as AppKit draws it.
 
+It can also draw one notification banner, top right under the bar, as macOS
+shows them: its title and body are a ``menubar_notify.Notification`` the
+caller got from the app's own ``Notifier``. The sender's icon is a neutral
+placeholder (the wrapper app has none of its own).
+
 A status item near the right-hand end of the bar gets its menu pushed left
 to stay on screen, so submenus open to the left. That is what this draws.
 
@@ -46,6 +51,9 @@ EDGE = 8  # the menu stays this far from the screen's right edge
 LEFT_ROOM = 96  # wallpaper left of the menu
 SUB_LEFT_ROOM = 28  # ... and left of an open submenu
 BOTTOM_ROOM = 34
+NOTE_W = 344  # a notification banner's width
+NOTE_TOP = 6  # ... its gap under the bar
+NOTE_RIGHT = 10  # ... and from the screen's right edge
 
 
 class UnknownSubmenu(ValueError):
@@ -67,7 +75,7 @@ class Backdrop:
     png: bytes
     width: int = 760
     top: int = 40
-    overlap: int = 276
+    overlap: int = 196  # the reset times stay clear of the menu
     left: int = 32  # wallpaper left of the window
     alt: str = ""
 
@@ -98,6 +106,8 @@ THEMES = {
         "accent": "#0a6ad8",
         "accent_text": "#ffffff",
         "window_shadow": "0 24px 60px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(0, 0, 0, 0.6)",
+        "note_bg": "rgba(44, 44, 48, 0.80)",
+        "note_icon": "linear-gradient(180deg, #8a8a90 0%, #5e5e64 100%)",
     },
     "light": {
         "wallpaper": (
@@ -113,12 +123,16 @@ THEMES = {
         "panel_ring": "0 0 0 0.5px rgba(0, 0, 0, 0.2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.7)",
         "panel_shadow": "0 14px 36px rgba(30, 30, 60, 0.22), 0 2px 8px rgba(30, 30, 60, 0.12)",
         "text": "rgba(0, 0, 0, 0.86)",
-        "dim": "rgba(0, 0, 0, 0.32)",
+        # Darker than AppKit's disabled grey, so the greyed rows of a light
+        # drawing read about as well as the dark one's (3.2:1 on the panel).
+        "dim": "rgba(0, 0, 0, 0.45)",
         "sep": "rgba(0, 0, 0, 0.11)",
         "attention": "#e07800",
         "accent": "#0a6ad8",
         "accent_text": "#ffffff",
         "window_shadow": "0 24px 60px rgba(40, 40, 80, 0.28), 0 0 0 0.5px rgba(0, 0, 0, 0.18)",
+        "note_bg": "rgba(246, 246, 248, 0.86)",
+        "note_icon": "linear-gradient(180deg, #c4c4ca 0%, #9c9ca3 100%)",
     },
 }
 
@@ -248,13 +262,15 @@ def page(
     backdrop: Backdrop | None = None,
     size: tuple[int, int] | None = None,
     caption: str = "",
+    notification=None,
 ) -> str:
     """The page. ``open_path``: the submenus open, outermost first (each
     parent row drawn selected). ``highlight``: a row of the innermost open
     menu drawn under the pointer (its text, or the start of it; information
     rows cannot be). ``closed``: the menu laid out but not shown, so a
     closed frame lines up with an open one. ``size``: the stage in CSS px,
-    for frames that must all match."""
+    for frames that must all match. ``notification``: a banner with its
+    ``title`` and ``body`` (a ``menubar_notify.Notification``)."""
     if theme not in THEMES:
         raise ValueError(f"unknown theme {theme!r}")
     c = THEMES[theme]
@@ -297,6 +313,13 @@ def page(
         left_room = backdrop.left
     else:
         left_room = SUB_LEFT_ROOM if len(levels) > 1 else LEFT_ROOM
+    note = ""
+    if notification is not None:
+        note = (
+            '<div class="note" id="note" role="status"><div class="note-icon"></div>'
+            f'<div class="note-text"><div class="note-title">{html.escape(notification.title)}</div>'
+            f'<div class="note-body">{html.escape(notification.body)}</div></div></div>'
+        )
     title = html.escape(menu.title)
     hidden = " closed" if closed else ""
     glyph = GLYPHS
@@ -360,6 +383,17 @@ def page(
   .sep {{ height: {SEP_H}px; margin: 0 10px; position: relative; }}
   .sep::after {{ content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 1px;
                  background: {c["sep"]}; }}
+  .note {{
+    position: absolute; z-index: 40; top: {BAR_H + NOTE_TOP}px; right: {NOTE_RIGHT}px;
+    width: {NOTE_W}px; box-sizing: border-box; display: flex; gap: 10px; align-items: flex-start;
+    padding: 11px 14px 12px 11px; border-radius: 18px; background: {c["note_bg"]};
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: {c["panel_ring"]}, {c["panel_shadow"]}; color: {c["text"]};
+    line-height: 16px; letter-spacing: -0.08px;
+  }}
+  .note-icon {{ flex: none; width: 32px; height: 32px; margin-top: 1px; border-radius: 8px;
+                background: {c["note_icon"]}; }}
+  .note-title {{ font-weight: 600; }}
 </style>
 </head>
 <body>
@@ -373,7 +407,7 @@ def page(
     <span class="glyph">{glyph["controls"]}</span>
     <span class="clock">{html.escape(clock)}</span>
   </div>
-  <div class="desk">{window}{"".join(menus)}</div>
+  <div class="desk">{window}{"".join(menus)}</div>{note}
 </div>
 </body>
 </html>

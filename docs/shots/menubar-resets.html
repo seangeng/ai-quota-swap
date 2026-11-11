@@ -58,6 +58,17 @@
   .sep { height: 11px; margin: 0 10px; position: relative; }
   .sep::after { content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 1px;
                  background: rgba(255, 255, 255, 0.13); }
+  .note {
+    position: absolute; z-index: 40; top: 30px; right: 10px;
+    width: 344px; box-sizing: border-box; display: flex; gap: 10px; align-items: flex-start;
+    padding: 11px 14px 12px 11px; border-radius: 18px; background: rgba(44, 44, 48, 0.80);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.25); color: rgba(255, 255, 255, 0.88);
+    line-height: 16px; letter-spacing: -0.08px;
+  }
+  .note-icon { flex: none; width: 32px; height: 32px; margin-top: 1px; border-radius: 8px;
+                background: linear-gradient(180deg, #8a8a90 0%, #5e5e64 100%); }
+  .note-title { font-weight: 600; }
 </style>
 </head>
 <body>

@@ -50,7 +50,7 @@
     padding: 0 18px 0 17px; border-radius: 5px; letter-spacing: -0.08px;
   }
   .item.submenu { padding-right: 34px; }
-  .item.disabled, .item.heading { color: rgba(0, 0, 0, 0.32); }
+  .item.disabled, .item.heading { color: rgba(0, 0, 0, 0.45); }
   .item.attention { color: #e07800; }
   .item.selected { background: #0a6ad8; color: #ffffff; }
   .check { position: absolute; left: 4px; top: 6px; width: 10px; height: 10px; }
@@ -58,6 +58,17 @@
   .sep { height: 11px; margin: 0 10px; position: relative; }
   .sep::after { content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 1px;
                  background: rgba(0, 0, 0, 0.11); }
+  .note {
+    position: absolute; z-index: 40; top: 30px; right: 10px;
+    width: 344px; box-sizing: border-box; display: flex; gap: 10px; align-items: flex-start;
+    padding: 11px 14px 12px 11px; border-radius: 18px; background: rgba(246, 246, 248, 0.86);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.7), 0 14px 36px rgba(30, 30, 60, 0.22), 0 2px 8px rgba(30, 30, 60, 0.12); color: rgba(0, 0, 0, 0.86);
+    line-height: 16px; letter-spacing: -0.08px;
+  }
+  .note-icon { flex: none; width: 32px; height: 32px; margin-top: 1px; border-radius: 8px;
+                background: linear-gradient(180deg, #c4c4ca 0%, #9c9ca3 100%); }
+  .note-title { font-weight: 600; }
 </style>
 </head>
 <body>

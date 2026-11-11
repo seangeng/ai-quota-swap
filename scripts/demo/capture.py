@@ -59,7 +59,8 @@ TUI_QUERY = "fontsize={font}&w={width}&h={height}&theme={theme}"
 # keeps its edges through the video's colour subsampling.
 TYPING_ZOOM = 1.8
 MENUBAR_PLAY_WIDTH = 1440  # px of drawing in the recording, before the GIF's scale-down
-MENUBAR_FRAMES_ARGS = ("--menubar", "--auto-switch", "--ticks", "4")
+MENUBAR_TICKS = 3  # 86%, 88%, then the switch at 91%
+MENUBAR_FRAMES_ARGS = ("--menubar", "--auto-switch", "--ticks", str(MENUBAR_TICKS))
 READY = "document.body.classList.contains('-first-byte')"
 LITTLEDEMO = ("npx", "--yes", "@littledemo/cli")
 LITTLEDEMO_OVERCAPTURE = 3  # @littledemo/recorder 0.3.0, OVERCAPTURE_FACTOR
@@ -474,8 +475,8 @@ def build_menubar_page(story: stories.Story, target: Path) -> Path:
     widest drawing (Switch history open), then the frames at that size with
     the menu as it opens and with Switch history open. The shots: the menu
     open on the first check (the GIF's first frame), the bar alone while the
-    title climbs and the engine switches, then the menu open on the new state
-    with Switch history showing the switch.
+    title climbs, the bar with the app's notification of the switch, then the
+    menu open on the same check with Switch history showing the switch.
     """
     import player_page
 
@@ -483,7 +484,7 @@ def build_menubar_page(story: stories.Story, target: Path) -> Path:
         plain, history = Path(tmp) / "plain", Path(tmp) / "history"
         _run_demo([story.scenario, *MENUBAR_FRAMES_ARGS, "--open", "Switch history",
                    "--frames", str(history)])
-        sizes = [asyncio.run(_element_size(history / f"frame-{i:02d}.html", "#stage")) for i in range(4)]
+        sizes = [asyncio.run(_element_size(history / f"frame-{i:02d}.html", "#stage")) for i in range(MENUBAR_TICKS)]
         w, h = max(s[0] for s in sizes) + 4, max(s[1] for s in sizes) + 4
         size = f"{w}x{h}"
         _run_demo([story.scenario, *MENUBAR_FRAMES_ARGS, "--size", size, "--frames", str(plain)])
@@ -495,17 +496,20 @@ def build_menubar_page(story: stories.Story, target: Path) -> Path:
 
         shots = [
             # The menu open on the first check: #1 personal active, 5h 86%.
-            player_page.Shot(drawn(plain / "frame-00.html"), hold_ms=2000),
+            # Short: the recorder shows this frame for about a second before
+            # its key starts the play.
+            player_page.Shot(drawn(plain / "frame-00.html"), hold_ms=1000),
             # The menu shut, the bar magnified: the title climbs a minute at a
-            # time and changes when the engine switches at 91%.
-            # Fades are short, as the Mac's are (a title changes at once), and
-            # each full-frame step of a fade costs a GIF about 130 KB.
-            player_page.Shot(drawn(plain / "frame-00-closed.html"), hold_ms=2000, fade_ms=200, zoom=True),
-            player_page.Shot(drawn(plain / "frame-01-closed.html"), hold_ms=2000, fade_ms=120, zoom=True),
-            player_page.Shot(drawn(plain / "frame-02-closed.html"), hold_ms=2400, fade_ms=120, zoom=True),
-            # A minute later the menu opens: #2 work checked, #1 personal over
-            # its line, and the switch in Switch history.
-            player_page.Shot(drawn(history / "frame-03.html"), hold_ms=4600, fade_ms=240),
+            # time. Fades are short, as the Mac's are (a title changes at
+            # once), and each full-frame step of a fade costs a GIF about 130 KB.
+            player_page.Shot(drawn(plain / "frame-00-closed.html"), hold_ms=1500, fade_ms=200, zoom=True),
+            player_page.Shot(drawn(plain / "frame-01-closed.html"), hold_ms=1500, fade_ms=120, zoom=True),
+            # The engine switches at 91%: the title changes, and the banner is
+            # the notification the app posts, which says why.
+            player_page.Shot(drawn(plain / "frame-02-closed.html"), hold_ms=3400, fade_ms=200, zoom=True),
+            # The menu opens on the same check: #2 work checked, #1 personal
+            # orange at 91%, and the switch in Switch history.
+            player_page.Shot(drawn(history / "frame-02.html"), hold_ms=4400, fade_ms=240),
         ]
     target.write_text(player_page.page(shots, width=w, height=h, scale=MENUBAR_PLAY_WIDTH / w),
                       encoding="utf-8")

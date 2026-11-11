@@ -107,9 +107,14 @@ MENUBAR_SHOTS = (
                 "Use a reset: each held usage reset and Codex reset credit, and whether "
                 "it can be used now",
                 open="Use a reset", highlight="Codex #2 work"),
+    # One submenu level each, so the menus stay at a readable size on the page.
     MenubarShot("menubar-settings", "showcase",
-                "Settings: the auto-switch toggle for each provider, their thresholds, and "
-                "when usage resets are used automatically",
+                "Settings: the title, the auto-switch toggle for each provider and its "
+                "threshold, automatic resets, and Start at login",
+                open="Settings"),
+    MenubarShot("menubar-auto-resets", "showcase",
+                "Use resets automatically: when the engines spend a usage reset by "
+                "themselves, as a last resort by default",
                 open="Settings > Use resets automatically"),
     MenubarShot("menubar-key", "showcase",
                 "An API key active: today's and this month's spend against its $40 budget, "

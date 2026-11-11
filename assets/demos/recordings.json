@@ -5,7 +5,7 @@
     "mode": "littledemo",
     "video": "assets/demos/autoswitch.mp4",
     "gif": "assets/demos/autoswitch.gif",
-    "gifBytes": 860621,
+    "gifBytes": 913761,
     "recorder": "@littledemo/cli record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg"
   },
   "reset": {
@@ -14,7 +14,7 @@
     "mode": "littledemo",
     "video": "assets/demos/reset.mp4",
     "gif": "assets/demos/reset.gif",
-    "gifBytes": 846785,
+    "gifBytes": 888995,
     "recorder": "@littledemo/cli record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg"
   },
   "menubar": {
@@ -25,7 +25,7 @@
     "video": "assets/demos/menubar.mp4",
     "recorder": "@littledemo/cli record (local Chrome, loopback page), GIF re-encoded with ffmpeg",
     "gif": "assets/demos/menubar.gif",
-    "gifBytes": 1228343
+    "gifBytes": 1321376
   },
   "quickstart": {
     "name": "quickstart",
@@ -44,6 +44,6 @@
     "video": "assets/demos/dashboard.mp4",
     "recorder": "@littledemo/cli record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg",
     "gif": "assets/demos/dashboard.gif",
-    "gifBytes": 1363238
+    "gifBytes": 1374171
   }
 }
