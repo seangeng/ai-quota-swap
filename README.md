@@ -64,10 +64,10 @@ Every screen and key: [docs/dashboard.md](https://github.com/seangeng/ai-quota-s
 
 ## Install
 
-ai-quota-swap is not on PyPI yet, so install it from GitHub with [uv](https://docs.astral.sh/uv/). On a Mac, install it with the menu bar:
+Install it from PyPI with [uv](https://docs.astral.sh/uv/). On a Mac, install it with the menu bar:
 
 ```bash
-uv tool install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
+uv tool install 'ai-quota-swap[menubar]'
 qswap menubar                 # start the menu bar now and at every login
 qswap menubar --auto-switch   # let it switch Claude Code accounts for you
 ```
@@ -75,10 +75,10 @@ qswap menubar --auto-switch   # let it switch Claude Code accounts for you
 On Linux (WSL included) or Windows:
 
 ```bash
-uv tool install git+https://github.com/seangeng/ai-quota-swap
+uv tool install ai-quota-swap
 ```
 
-pipx takes the same arguments (`pipx install git+https://github.com/seangeng/ai-quota-swap`). You need Python 3.12 or newer, and Claude Code logged in; Codex is optional. `qswap upgrade` updates qswap with whichever tool installed it (on Windows it prints the command to run).
+pipx takes the same package names (`pipx install 'ai-quota-swap[menubar]'`, `pipx install ai-quota-swap`). You need Python 3.12 or newer, and Claude Code logged in; Codex is optional. `qswap upgrade` updates qswap with whichever tool installed it (on Windows it prints the command to run).
 
 ## Quick start
 

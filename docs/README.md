@@ -38,7 +38,7 @@ Start with the [quick start](quickstart.md). Each page below opens with what it 
 |---|---|
 | [settings.md](settings.md) | see and change every setting |
 | [json-output.md](json-output.md) | script against `--json` output and exit codes |
-| [troubleshooting.md](troubleshooting.md) | fix what `qswap doctor` reports, and the problems people hit |
+| [troubleshooting.md](troubleshooting.md) | fix what `qswap doctor` reports, and the problems people hit; upgrade, or move an install from GitHub to the release |
 
 ## Security
 

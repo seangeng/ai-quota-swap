@@ -8,28 +8,28 @@ The recording runs steps 3 to 5 against made-up accounts, with `#1 personal` sav
 
 ## 1. Install
 
-ai-quota-swap is not on PyPI yet, so install it from the repository with uv or pipx:
+Install it from PyPI with uv or pipx:
 
 ```bash
-uv tool install git+https://github.com/seangeng/ai-quota-swap
+uv tool install ai-quota-swap
 # or
-pipx install git+https://github.com/seangeng/ai-quota-swap
+pipx install ai-quota-swap
 ```
 
 On a Mac, install it with the `menubar` extra instead, for the menu bar app ([menubar.md](menubar.md)):
 
 ```bash
-uv tool install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
+uv tool install 'ai-quota-swap[menubar]'
 ```
 
 It needs Python 3.12 or newer and runs on macOS, Linux (WSL included) and Windows. Check that it is on your PATH:
 
 ```text
 $ qswap --version
-qswap 0.1.0 (fdeb279)
+qswap 0.1.0
 ```
 
-The part in brackets is the commit you installed; `qswap upgrade` names it too, so you can tell a new build of the same version from no change.
+For the newest build from `main` instead of the release, install from GitHub: `uv tool install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'`. `qswap --version` then adds the commit in brackets (`qswap 0.1.0 (fdeb279)`), and so does `qswap upgrade`, so you can tell a new build of the same version from no change.
 
 ## 2. Save your first account
 
