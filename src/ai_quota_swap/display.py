@@ -1166,6 +1166,15 @@ def key_leave_followup(target: str, *, login_switch: bool = False) -> list[str]:
     return wrap(f"Running Claude Code sessions are back on {target} within a few seconds.")
 
 
+#: After the saved key of the active key's account was replaced. The line is
+#: the same, so Claude Code keeps its cached key until the cache expires (5
+#: minutes in Claude Code 2.1.322) or a request is rejected (a 401 clears it).
+KEY_REFRESH = (
+    "Running Claude Code sessions pick up the new key within 5 minutes, or at once "
+    "after a request is rejected."
+)
+
+
 def key_still_active(key: str, number: str | int) -> list[str]:
     """After ``qswap add`` saved the login while a key is active: sessions
     keep the key, and the switch that puts them on that login."""

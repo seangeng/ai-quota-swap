@@ -1694,7 +1694,7 @@ class TestAccountChangesWhileOnAKey:
         import_accounts(s, str(out), force=True)
         err = " ".join(capsys.readouterr().err.split())
         assert "The saved key for #5 ci was replaced." in err
-        assert "from their next key refresh" in err
+        assert "pick up the new key within 5 minutes, or at once after a request" in err
         assert s.helper_account() == "5"
 
 

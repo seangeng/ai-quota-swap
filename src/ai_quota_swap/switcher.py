@@ -4520,6 +4520,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 )
                 if old_num and old_num != account_num:
                     migrate_from = old_num
+                    # A move from the slot the key line names would leave
+                    # the line on a number that is gone (F2).
+                    self._refuse_moving_the_key(migrate_from, account_num, "qswap add")
 
             # Check if target slot is occupied by a different account
             if account_num in data.get("accounts", {}):
@@ -4791,6 +4794,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             kind_label = "API key" if is_api_key else "token"
             self._logger.info(f"Updated {kind_label} for account {account_num}: {email}")
             print(f"{accent('Updated')} the {kind_label} of {self.label(account_num)}")
+            self._say_key_refresh(account_num, is_api_key)
             return
 
         displace_slot = None
@@ -4811,6 +4815,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 old_num = self._find_account_slot(data, email, "")
                 if old_num and old_num != account_num:
                     migrate_from = old_num
+                    # A move from (or into) the slot the key line names
+                    # would leave the line on a number that is gone, or on
+                    # another account's key (F2).
+                    self._refuse_moving_the_key(migrate_from, account_num, "qswap add-token")
 
             if account_num in data.get("accounts", {}):
                 existing = data["accounts"][account_num]
@@ -4904,6 +4912,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if migrate_from:
             print(dimmed(f"Moved from slot {migrate_from} → {slot}"))
         print(f"{accent('Added')} {self.label(account_num)} {muted(f'(from {source_label})')}")
+        self._say_key_refresh(account_num, is_api_key)
+
+    def _say_key_refresh(self, number: str, is_api_key: bool) -> None:
+        """Decision B7 (F60): a new saved key for the key the line names
+        leaves the line as it is, so say when running sessions take it."""
+        if not is_api_key or self.helper_account() != str(number):
+            return
+        from ai_quota_swap import display
+
+        for line in display.wrap(display.KEY_REFRESH):
+            print(line)
 
     def remove_account(self, identifier: str, assume_yes: bool = False) -> None:
         """Remove account from managed accounts.
@@ -7146,6 +7165,14 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 settings=load_settings(self.backup_dir), view=view,
             )
             out.extend(display.render_block(block))
+            if view[1] is None and identity is not None and not self._account_exists(
+                identity[0], identity[1]
+            ):
+                # The login underneath is one qswap does not manage (F27).
+                out.append(
+                    f"  {identity[0]} · {display.UNDERNEATH} · not managed · "
+                    "add it with: qswap add"
+                )
             return out
         if identity is None:
             if accounts:
@@ -7996,6 +8023,19 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             self._logger.debug(f"Could not list unreadable session records: {e!r}")
             return []
 
+    def _login_store_lacks_login(self) -> bool:
+        """Whether the live login store holds no claude.ai login: absent or
+        empty, or an object with only MCP sign-ins in it. False when that
+        cannot be told (a value qswap cannot parse), so nothing is forced."""
+        try:
+            live = self._store._read_oauth_store()
+        except Exception as e:
+            self._logger.debug(f"Could not read the login store: {e!r}")
+            return False
+        if not (live or "").strip():
+            return True
+        return holds_no_login(live)
+
     def _login_item_holds_no_login(self) -> bool:
         """Whether the live login item (or ``.credentials.json``) has no
         Claude login in it: a JSON object without ``claudeAiOauth``, as
@@ -8280,6 +8320,11 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         underneath = self.login_account_number()
         from_ref = account_ref(int(key), key_email) if key else None
         target_label = self.label(target_account, long=False)
+        if target_account == underneath and not force and self._login_store_lacks_login():
+            # ~/.claude.json names the account, but the login store holds no
+            # login (F26): taking the line out alone would leave every
+            # session logged out. Its saved login goes in, as any switch.
+            force = True
         if target_account == underneath and not force:
             record = (
                 (self._get_sequence_data() or {}).get("accounts", {}).get(target_account) or {}

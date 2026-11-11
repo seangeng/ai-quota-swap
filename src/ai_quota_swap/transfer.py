@@ -789,10 +789,9 @@ def import_accounts(
         if same:
             _eprint(f"{name} is already the active account; nothing needs doing.")
         else:
-            _eprint(
-                f"The saved key for {name} was replaced. Claude Code sessions use the new "
-                "key from their next key refresh, within five minutes."
-            )
+            from ai_quota_swap.display import KEY_REFRESH
+
+            _eprint(f"The saved key for {name} was replaced. {KEY_REFRESH}")
     identity = switcher._get_current_account()
     if identity is not None and final is not None:
         live_slot = switcher._find_account_slot(final, identity[0], identity[1])
@@ -804,10 +803,12 @@ def import_accounts(
                 if same:
                     _eprint(f"{name} is already the active account; nothing needs doing.")
                 else:
+                    # Part 2: the switch writes the key line, which running
+                    # sessions follow, and its helper prints the new key.
                     _eprint(
-                        f"The saved key for {name} was replaced; Claude Code is still using "
-                        "the previous one. Load the new key, which replaces the live key, "
-                        f"with: qswap switch {live_slot} --force"
+                        f"The saved key for {name} was replaced; Claude Code sessions still "
+                        "use the previous one. Move them onto the new key, through the key "
+                        f"line, with: qswap switch {live_slot} --force"
                     )
             elif live_dead:
                 _eprint(

@@ -663,9 +663,16 @@ class ProviderState:
 
     @property
     def unmanaged_live(self) -> str | None:
-        """The live login's email when qswap does not manage it (unknown, so
-        None, while the provider could not be read)."""
-        if not self.live_email or self.active is not None or self.error:
+        """The live login's email when qswap does not manage it, also under
+        an active key with no managed subscription underneath (decision B7,
+        F27); unknown, so None, while the provider could not be read."""
+        if not self.live_email or self.error:
+            return None
+        active = self.active
+        if active is not None:
+            if active.kind != "api_key" or any(a.underneath for a in self.accounts):
+                return None
+        if any(a.email == self.live_email for a in self.accounts):
             return None
         return self.live_email
 

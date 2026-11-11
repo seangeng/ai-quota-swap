@@ -554,17 +554,23 @@ class TestConflictPolicy:
         the next switch away would save it over the imported key."""
         from tests.admin_fakes import KEY_A, KEY_B
 
+        from ai_quota_swap import claude_settings, key_helper
+
         s, out = self._active_api_key(temp_home, monkeypatch, KEY_B)
         capsys.readouterr()
         import_accounts(s, str(out), force=True)
         err = " ".join(capsys.readouterr().err.split())
-        assert ("The saved key for #2 ci@example.com was replaced; Claude Code is still using the "
-                "previous one. Load the new key, which replaces the live key, with: "
-                "qswap switch 2 --force") in err
+        assert ("The saved key for #2 ci@example.com was replaced; Claude Code sessions still "
+                "use the previous one. Move them onto the new key, through the key line, "
+                "with: qswap switch 2 --force") in err
         assert "nothing needs doing" not in err
         assert s._read_credentials() == KEY_A
-        s.switch_to("2", force=True, log_out_sessions=True)  # the saved-key reload
-        assert s._read_credentials() == KEY_B
+        # Exactly the command the note prints (F8): running sessions follow
+        # the key line, whose helper prints the new key.
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: ["/opt/qswap/bin/qswap"])
+        s.switch_to("2", force=True)
+        assert s.helper_account() == "2"
+        assert key_helper.read_key("2", root=Path(s.backup_dir)) == KEY_B
 
     def test_import_without_matching_live_login_prints_no_hint(
         self, temp_home: Path, capsys

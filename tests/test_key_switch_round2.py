@@ -8,6 +8,7 @@ does, whose fleet and helpers these tests share.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -895,3 +896,140 @@ class TestDoctorReadsTheOtherLayers:
         check = _check("claude.settings_env")
         assert check is not None and check.status == "warn"
         assert "ANTHROPIC_API_KEY" in check.summary and SECRET not in check.summary
+
+
+# == B7: changing accounts while a key is active =====================================
+
+
+NEW_LOGIN = {"oauthAccount": {"emailAddress": "new@example.com", "accountUuid": "",
+                              "organizationUuid": None}}
+
+
+class TestAccountsChangeUnderAKey:
+    def test_add_token_cannot_renumber_the_key_by_its_address(self, temp_home):
+        """F2: the migrate path of add-token, by --email."""
+        from ai_quota_swap.exceptions import ValidationError
+
+        s = _fleet()
+        s.add_account_from_token(KEY_6.replace("k6", "k8"), email="ci@corp.example", slot=8)
+        s.switch_to("8", json_output=True)
+        before = s.sequence_file.read_bytes()
+        with pytest.raises(ValidationError) as caught:
+            s.add_account_from_token(
+                KEY_6.replace("k6", "k9"), email="ci@corp.example", slot=9, assume_yes=True,
+            )
+        text = " ".join(str(caught.value).split())
+        assert "This would renumber #8" in text and "the active API key" in text
+        assert "qswap switch 1" in text
+        assert s.sequence_file.read_bytes() == before
+        assert _line(temp_home) == f"{QSWAP} key-helper 8"
+
+    @pytest.mark.parametrize("slot", [5, None])
+    def test_a_new_key_for_the_active_account_says_when_sessions_take_it(
+        self, temp_home, capsys, slot
+    ):
+        """F60: the line is the same, so Claude Code's cached key stands."""
+        s = _fleet()
+        _activate(s)
+        capsys.readouterr()
+        email = None if slot else "api-key-5@token.local"
+        s.add_account_from_token(KEY_6.replace("k6", "k8"), slot=slot, email=email,
+                                 assume_yes=True)
+        out = capsys.readouterr().out
+        text = " ".join(out.split())
+        assert (
+            "Running Claude Code sessions pick up the new key within 5 minutes, or at "
+            "once after a request is rejected."
+        ) in text
+        _fits(out)
+
+    def test_a_new_key_for_another_account_says_nothing_more(self, temp_home, capsys):
+        s = _fleet()
+        _activate(s)
+        capsys.readouterr()
+        s.add_account_from_token(KEY_6.replace("k6", "k8"), slot=6, assume_yes=True)
+        assert "within 5 minutes" not in capsys.readouterr().out
+
+    def test_leaving_for_a_login_the_store_no_longer_holds_switches_it_in(
+        self, temp_home, block_real_keychain
+    ):
+        """F26: ~/.claude.json still names #1, but the login item has only
+        MCP sign-ins: the line alone would leave every session logged out."""
+        from tests.test_key_helper_live import MCP, _acct
+        from ai_quota_swap.credentials import CLAUDE_CODE_KEYCHAIN_SERVICE
+
+        s = _fleet()
+        _activate(s)
+        block_real_keychain.set_password(
+            CLAUDE_CODE_KEYCHAIN_SERVICE, _acct(), json.dumps({"mcpOAuth": MCP})
+        )
+        result = s.switch_to("1", json_output=True)
+        assert result["switched"] is True
+        live = json.loads(block_real_keychain.get_password(CLAUDE_CODE_KEYCHAIN_SERVICE, _acct()))
+        assert "claudeAiOauth" in live
+        assert _line(temp_home) is None
+        assert "within about 30 seconds" in " ".join(result["followup"])
+
+    def test_leaving_for_the_login_underneath_still_touches_no_login(
+        self, temp_home, block_real_keychain
+    ):
+        from tests.test_key_helper_live import _claude_state
+
+        s = _fleet()
+        _activate(s)
+        before = _claude_state(block_real_keychain)
+        s.switch_to("1", json_output=True)
+        assert _claude_state(block_real_keychain) == before
+
+
+class TestTheLoginUnderAKeyOnTheSurfaces:
+    """F27: the login a surface offers to add is the one underneath."""
+
+    def _view(self, s):
+        from ai_quota_swap.tui import data as tui_data
+
+        snap = s.accounts_snapshot(fetch=set())
+        return tui_data.ProviderView(
+            provider="claude", snapshot=snap,
+            live_email=tui_data.unmanaged_login_email(s, snap),
+        )
+
+    def test_the_dashboard_offers_the_login_underneath(self, temp_home):
+        from ai_quota_swap.tui import data as tui_data
+
+        s = _fleet()
+        _activate(s)
+        view = self._view(s)
+        assert tui_data.login_email(view) == MAYA
+        assert view.live_email is None
+
+    def test_an_unmanaged_login_under_a_key_is_offered_everywhere(self, temp_home):
+        from ai_quota_swap import menubar, menubar_data
+        from ai_quota_swap.tui import data as tui_data
+
+        s = _fleet()
+        _activate(s)
+        get_global_config_path().write_text(json.dumps(NEW_LOGIN), encoding="utf-8")
+        view = self._view(s)
+        assert view.live_email == "new@example.com"
+        assert tui_data.login_email(view) == "new@example.com"
+        snap = s.accounts_snapshot(fetch=set())
+        state = menubar.ProviderState(
+            "claude", menubar_data.account_states(snap, "claude", {}, now=time.time()),
+            live_email=s.live_login_email(),
+        )
+        assert state.unmanaged_live == "new@example.com"
+        status = " ".join(" ".join(s.status_lines()).split())
+        assert "new@example.com · underneath · not managed · add it with: qswap add" in status
+
+    def test_a_managed_login_under_a_key_is_not_unmanaged(self, temp_home):
+        from ai_quota_swap import menubar, menubar_data
+
+        s = _fleet()
+        _activate(s)
+        snap = s.accounts_snapshot(fetch=set())
+        state = menubar.ProviderState(
+            "claude", menubar_data.account_states(snap, "claude", {}, now=time.time()),
+            live_email=s.live_login_email(),
+        )
+        assert state.unmanaged_live is None
