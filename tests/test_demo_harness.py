@@ -495,7 +495,10 @@ class TestScenarioStates:
 class _Drawing(HTMLParser):
     """A menu bar page read back: the status item's title, each menu's
     rows in drawing order (None for a separator), and the notification
-    banner's title and body if one is drawn."""
+    banner's title and body if one is drawn. A chart row keeps what the
+    page draws for it: the caption, each day's column (its parts, their
+    boxes and its weekday letter) and each legend entry (its dot and the
+    name and amount shown)."""
 
     def __init__(self, page: str) -> None:
         super().__init__()
@@ -506,6 +509,7 @@ class _Drawing(HTMLParser):
         self.stage_classes: set[str] = set()
         self.sources: list[str] = []
         self._text: dict | None = None
+        self._into: tuple[dict, str] | None = None
         self._in_status = False
         self.feed(page)
 
@@ -527,12 +531,40 @@ class _Drawing(HTMLParser):
             self.menus.append({"level": int(a["data-level"]), "title": a.get("data-title"), "rows": []})
         elif "item" in classes:
             self.menus[-1]["rows"].append({"classes": classes, "text": ""})
+        elif "chart" in classes:
+            self.menus[-1]["rows"].append({
+                "classes": classes, "chart": True, "label": a.get("aria-label"), "caption": "",
+                "days": [], "entries": [],
+            })
         elif "sep" in classes:
             self.menus[-1]["rows"].append(None)
         elif tag == "span" and classes == {"t"}:
             self._text = self.menus[-1]["rows"][-1]
+        elif self.menus and self.menus[-1]["rows"] and (self.menus[-1]["rows"][-1] or {}).get("chart"):
+            self._chart_tag(self.menus[-1]["rows"][-1], tag, classes, a)
+
+    def _chart_tag(self, row: dict, tag: str, classes: set[str], a: dict) -> None:
+        if "cap" in classes:
+            self._into = (row, "caption")
+        elif "day" in classes:
+            row["days"].append({"day": a["data-day"], "total": a["data-total"], "parts": [], "letter": ""})
+        elif tag in ("rect", "path") and classes & {"seg", "stub"}:
+            row["days"][-1]["parts"].append({"classes": classes, **a})
+        elif "letter" in classes:
+            row["days"][-1]["today"] = "today" in classes
+            self._into = (row["days"][-1], "letter")
+        elif "entry" in classes:
+            row["entries"].append({"name": a["data-name"], "amount": a["data-amount"],
+                                   "shown": "", "shown_amount": "", "dot": set()})
+        elif "dot" in classes:
+            row["entries"][-1]["dot"] = classes - {"dot"}
+        elif "name" in classes:
+            self._into = (row["entries"][-1], "shown")
+        elif "amt" in classes:
+            self._into = (row["entries"][-1], "shown_amount")
 
     def handle_endtag(self, tag):
+        self._into = None
         if tag == "span":
             self._text = None
             self._in_status = False
@@ -540,7 +572,10 @@ class _Drawing(HTMLParser):
             self._note_part = None
 
     def handle_data(self, data):
-        if self._note_part is not None:
+        if self._into is not None:
+            target, key = self._into
+            target[key] += data
+        elif self._note_part is not None:
             self.note[self._note_part] += data
         elif self._text is not None:
             self._text["text"] += data
@@ -548,12 +583,19 @@ class _Drawing(HTMLParser):
             self.status += data
 
     def outline(self, level: int) -> list[str]:
-        """One drawn menu in ``Menu.outline``'s words, without the indent."""
+        """One drawn menu in ``Menu.outline``'s words, without the indent.
+        A chart row is its caption, greyed, and the ``chart:`` line: each
+        drawn day's total, then each drawn legend entry."""
         menu = next(m for m in self.menus if m["level"] == level)
         lines = []
         for row in menu["rows"]:
             if row is None:
                 lines.append("────")
+                continue
+            if row.get("chart"):
+                days = " · ".join(f"{d['day']} {d['total']}" for d in row["days"])
+                legend = " · ".join(f"{e['name']} {e['amount']}" for e in row["entries"])
+                lines += [f"  {row['caption']}  (greyed)", f"    chart: {days} | {legend}"]
                 continue
             c = row["classes"]
             text = ("✓ " if "checked" in c else "  ") + ("⚠ " if "attention" in c else "") + row["text"]
@@ -566,9 +608,14 @@ class _Drawing(HTMLParser):
             lines.append(text)
         return lines
 
+    def chart(self, level: int = 0) -> dict | None:
+        menu = next(m for m in self.menus if m["level"] == level)
+        return next((r for r in menu["rows"] if r is not None and r.get("chart")), None)
+
     def selected(self, level: int) -> list[str]:
         menu = next(m for m in self.menus if m["level"] == level)
-        return [r["text"] for r in menu["rows"] if r is not None and "selected" in r["classes"]]
+        return [r["text"] for r in menu["rows"]
+                if r is not None and not r.get("chart") and "selected" in r["classes"]]
 
 
 def _outline_rows(stdout: str, parents: tuple[str, ...] = ()) -> tuple[str, list[str]]:
@@ -672,6 +719,99 @@ class TestMenuBarDrawing:
         assert d.selected(0) == ["Settings"] and d.selected(1) == ["Use resets automatically"]
         # The state the first `qswap menubar` leaves: it starts at login.
         assert "✓ Start at login" in d.outline(1)
+
+    def test_the_cost_row_is_drawn_as_its_chart(self, drawn):
+        stdout, page = drawn["dark"]
+        chart = _Drawing(page).chart()
+        caption = next(line for line in stdout.splitlines() if line.startswith("  Today $"))
+        assert f"  {chart['caption']}  (greyed)" == caption
+        assert chart["label"].startswith(chart["caption"] + ". Wednesday $")  # VoiceOver's words
+        # Seven columns, a weekday letter under each, today's in the label
+        # colour; each column a stack of segments, the top one rounded.
+        assert [d["letter"] for d in chart["days"]] == list("WTFSSMT")
+        assert [d["today"] for d in chart["days"]] == [False] * 6 + [True]
+        for day in chart["days"]:
+            assert day["parts"] and all("seg" in part["classes"] for part in day["parts"])
+            assert day["parts"][-1].get("d", "").startswith("M")  # the rounded top
+        # The legend: a coloured dot each, the name shown whole or cut with
+        # an ellipsis (or to its number), the amount whole.
+        entries = chart["entries"]
+        assert entries[-1]["name"] == "other" and entries[-1]["dot"] == {"cx"}
+        assert len({frozenset(e["dot"]) for e in entries}) == len(entries)
+        for e in entries:
+            assert e["shown_amount"] == e["amount"]
+            assert e["shown"] == e["name"] or e["shown"].endswith("…") or (
+                e["shown"].startswith(("#", "Claude #", "Codex #")) and e["name"].startswith(e["shown"]))
+        # Light draws the same stacks (its menu is narrower: auto-switch is
+        # off, so its first row is shorter).
+        light = _Drawing(drawn["light"][1]).chart()
+
+        def stacks(c):
+            return [[(p["class"], p.get("height")) for p in d["parts"]] for d in c["days"]]
+
+        assert stacks(light) == stacks(chart)
+
+    def test_the_chart_is_laid_out_by_the_views_own_layout(self):
+        # menubar_page draws each segment where menubar_chart.layout_columns,
+        # which the AppKit view draws with, puts it.
+        r = _snippet("""
+            import datetime as dt, json
+            import menubar_page
+            from ai_quota_swap.menubar import Row
+            from ai_quota_swap.menubar_chart import (
+                CostAccount, CostDay, CostSummary, build_chart, layout_columns)
+            today = dt.date(2026, 11, 10)
+            a1 = CostAccount("claude", "maya@example.com|", 1, "#1 personal")
+            a2 = CostAccount("claude", "maya@northwind.example.com|", 2, "#2 work")
+            x1 = CostAccount("codex", "maya@example.com|", 1, "#1 maya@example.com")
+            week = {a1: (12, 0, 9.5, 0.4, 30, 7, 3), a2: (4, 0, 0.2, 0.1, 9, 2, 0),
+                    x1: (0.3, 0, 6, 0, 1, 0, 2)}
+            days = tuple(CostDay(today - dt.timedelta(days=6 - i),
+                                 tuple((a, v[i]) for a, v in week.items() if v[i])) for i in range(7))
+            chart = build_chart(CostSummary(today=5.0, week=86.0, days=days))
+            html = menubar_page._chart_html(Row(chart.caption, chart=chart), 420)
+            base = menubar_page._chart_frame().base
+            inner = 420 - menubar_page.ITEM_LEFT - menubar_page.ITEM_RIGHT
+            cols = layout_columns(chart, left=menubar_page.ITEM_LEFT, width=inner, base=base)
+            expect = [[[p.box.x, p.box.y, p.box.w, p.box.h] for p in c.segments]
+                      or [[c.stub.x, c.stub.y, c.stub.w, c.stub.h]] for c in cols]
+            print(json.dumps({"html": html, "expect": expect, "centres": [c.centre for c in cols]}))
+        """)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        chart = _Drawing('<div class="menu" data-level="0">' + data["html"] + "</div>").chart()
+        drawn = []
+        for day in chart["days"]:
+            boxes = []
+            for part in day["parts"]:
+                if "d" in part:  # M x y+h V y+r A r r 0 0 1 x+r y H .. A r r 0 0 1 x+w y+r V y+h Z
+                    n = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", part["d"])]
+                    x, bottom, top, right = n[0], n[1], n[9], n[16]
+                    boxes.append([x, top, right - x, bottom - top])
+                else:
+                    boxes.append([float(part[k]) for k in ("x", "y", "width", "height")])
+            drawn.append(boxes)
+        assert drawn == data["expect"]
+        assert any(len(b) == 1 and b[0][3] == 1.0 for b in drawn)  # Thursday's stub
+
+    def test_the_page_draws_the_chart_or_the_plain_row(self, tmp_path):
+        on, off = tmp_path / "on.html", tmp_path / "off.html"
+        r_on = _run(["usage", "--menubar", "--html", str(on)])
+        r_off = _run(["usage", "--menubar", "--no-usage-chart", "--html", str(off)])
+        for r in (r_on, r_off):
+            assert r.returncode == 0, r.stderr
+            assert "crossed the sandbox" not in r.stderr
+        with_chart, plain = _Drawing(on.read_text()), _Drawing(off.read_text())
+        assert with_chart.outline(0) == _outline_rows(r_on.stdout)[1]
+        assert plain.outline(0) == _outline_rows(r_off.stdout)[1]
+        chart = with_chart.chart()
+        assert chart is not None and len(chart["days"]) == 7
+        assert [e["name"] for e in chart["entries"]] == ["#1 personal", "Claude #2 work", "#3 night-shift", "other"]
+        # Off: the same sentence as a plain greyed row, and no chart.
+        assert plain.chart() is None and "chart:" not in r_off.stdout
+        assert f"  {chart['caption']}  (greyed)" in plain.outline(0)
+        assert [line for line in with_chart.outline(0) if "chart:" not in line] == plain.outline(0)
+        assert 'class="chart"' not in off.read_text()
 
     def test_an_unknown_submenu_or_row_is_refused(self, tmp_path):
         page = tmp_path / "menu.html"

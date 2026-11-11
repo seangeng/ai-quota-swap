@@ -54,7 +54,7 @@ Turning *Auto-switch Claude Code* off, or quitting the menu bar, while sessions 
 
 ## The menu, top to bottom
 
-The demo harness also prints the menu as an outline, which this page quotes. In it, `✓` is a check mark, `⚠` a row drawn in orange, `▸` a submenu, `(heading)` a section heading and `(greyed)` a row you cannot click:
+The demo harness also prints the menu as an outline, which this page quotes. In it, `✓` is a check mark, `⚠` a row drawn in orange, `▸` a submenu, `(heading)` a section heading, `(greyed)` a row you cannot click and `chart:` the cost row's chart, each day's total and then its legend:
 
 ```text
 $ uv run python scripts/demo/run.py showcase --menubar --auto-switch
@@ -73,6 +73,7 @@ title: ⇄ personal · 46% · 38%
   #2 work · 5h 8% · 7d 15% · 1 reset credit
 ────
   Today $5.16 · 7 days $78.25 (estimated)  (greyed)
+    chart: Wed $17.03 · Thu $15.85 · Fri $16.91 · Sat $2.27 · Sun $5.67 · Mon $15.35 · Tue $5.16 | #1 personal $34 · Claude #2 work $23 · #5 ci $16 · Codex #2 work $3 · other $3
 ────
   Rotate to next (Claude Code)
   Switch to best (Claude Code)
@@ -142,7 +143,7 @@ The notes `qswap list` prints about the line get one orange row under the accoun
 
 `Today $5.16 · 7 days $78.25 (estimated)` totals both providers over today and the last seven days at API list prices, as `qswap usage` does ([usage.md](usage.md)). It appears once the ledger holds anything. Clicking it does nothing. The menu bar reads new session files a minute after it starts and every 15 minutes after that. A `qswap usage` run shows up at the next refresh.
 
-With *Settings → Show usage chart* on, as it is by default, the same sentence sits above a small chart: one column per day for the last seven days, today on the right, each split by account at the estimated cost `qswap usage --by account` gives it. The tallest day fills the chart. One line below names up to four accounts as their rows do, with their seven-day amounts in whole dollars; the rest are `other`, in grey. Turn the setting off for the plain row.
+With *Settings → Show usage chart* on, as it is by default, the same sentence sits above a small chart: one column per day for the last seven days, today on the right, each split by account at the estimated cost `qswap usage --by account` gives it. The tallest day fills the chart. One line below names up to four accounts as their rows do, with their seven-day amounts in whole dollars; the rest are `other`, in grey. Where two accounts would read the same, the legend adds the provider (`Claude #2 work`, `Codex #2 work`). An account's colour comes from its provider and number, not its rank: Claude Code's #1 is blue, #2 orange, #3 purple, and Codex's #1 green; when two accounts with usage that week would share one, the later takes the next free colour. Turn the setting off for the plain row.
 
 ### Below the cost row
 

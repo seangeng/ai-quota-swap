@@ -57,6 +57,14 @@ submenus open to the left, as they do on a Mac. *Start at login* is drawn
 checked, the state the first `qswap menubar` leaves: the app reads it from
 launchd, which the sandbox never reaches.
 
+The cost row is drawn as the app's seven-day chart, in inline SVG: the bars
+are placed by the same function the app's AppKit view uses
+(`menubar_chart.layout_columns`), in the system colours' light and dark
+values. A page has no script to measure text, so the chart's width and its
+legend's cut names come from a table of the system font's advances, measured
+in the harness's headless Chrome. `--no-usage-chart` draws the plain sentence
+instead.
+
 A drawing can also carry a notification banner, top right under the bar,
 as macOS shows one. Its title and body come from the app's own
 `menubar_notify.Notifier`, fed the events the hosted engines emitted; the
@@ -70,12 +78,19 @@ sender's icon is a neutral placeholder.
 | `--closed` | draws the bar with the menu shut, at the size of the open picture |
 | `--beside PNG` | puts a 2x screenshot on the desktop as a window behind the menu; the hero uses the dashboard |
 | `--size WxH` | fixes the picture's size in CSS px, so frames line up |
+| `--no-usage-chart` | turns *Show usage chart* off, so the cost row is the plain sentence |
 | `--auto-switch [claude\|codex\|both]` | turns the menu bar's auto-switch on and runs its engines (below); `both` when no value is given |
 | `--frames DIR` | with `--auto-switch`: one picture after each of Claude Code's engine checks |
 | `--ticks N` | how many checks `--frames` draws (default 4) |
 
 The page is plain HTML and CSS, with no font, script or image from anywhere
 else (the window behind the hero is embedded in the page).
+
+`menubar_chart.py` draws the chart alone with the app's own AppKit view, off
+screen into PNGs (light and dark, at 2x), from invented shapes or from a
+scenario read in the sandbox: `uv run --with pyobjc-framework-Cocoa python
+scripts/demo/menubar_chart.py --out DIR` (`--list` names the shapes). It
+needs macOS and makes no window, menu or application object.
 
 Without `--auto-switch` the menu's first row reads `Auto-switch off`, as it
 does on a Mac where nobody turned it on. With it, the harness turns the
