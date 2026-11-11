@@ -225,6 +225,13 @@ def _all_above_margin_met(candidate_headroom: float, active_headroom: float) -> 
 # (the two-phase commit in _tick_inner).
 
 
+def _number(value: object) -> float | None:
+    """``value`` as a float when it is a real number (not a bool), else None."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
 def _now_iso() -> str:
     return (
         datetime.now(timezone.utc)
@@ -1664,6 +1671,9 @@ class AutoSwitchEngine:
         self._dry_latches: dict = {}
         # Whether this tick claimed a usage reset (free before paid).
         self._reset_claimed = False
+        # API keys whose ledger figure this tick's scan could not vouch for
+        # (decision EM3): their spend counts as unknown.
+        self._ledger_unsure: set[str] = set()
 
     # -- state file ---------------------------------------------------------
 
@@ -2223,6 +2233,7 @@ class AutoSwitchEngine:
         self._idle_hold_slow = False
         self._tick_cause = {}
         self._reset_claimed = False
+        self._ledger_unsure = set()
         self._context = EventContext(
             provider=self._provider_id(), names=self._alias_names()
         )
@@ -4278,9 +4289,15 @@ class AutoSwitchEngine:
             reason = self._latched_reason(num, reading)
         if reason is not None:
             return reason
-        return api_spend.engine_limit_reason(
-            reading, now=self.clock(), limited=self._key_limited(num, entries)
-        )
+        limited = self._key_limited(num, entries)
+        if (
+            limited and num in self._ledger_unsure
+            and self._spend_source(num, entries) != api_spend.SOURCE_ADMIN
+        ):
+            # This tick's scan could not cover the period the limit is
+            # measured over: the ledger's figure may miss usage (EM3).
+            return api_spend.SPEND_UNKNOWN
+        return api_spend.engine_limit_reason(reading, now=self.clock(), limited=limited)
 
     # A limit that was reached stays reached: a later reading under it whose
     # source got worse (the Admin API's figure replaced by the ledger's lower
@@ -4434,6 +4451,19 @@ class AutoSwitchEngine:
         """Only Claude Code's API keys are counted from the local ledger."""
         return self._provider_id() == "claude" and hasattr(self.switcher, "backup_dir")
 
+    def _scan_start(self, nums: Collection[str], now: float) -> float:
+        """Where the ledger scan for the keys ``nums`` starts: the earlier of
+        the start of the UTC month (as a budget is measured) and the start
+        of a credit recorded before it (decision EM3)."""
+        from ai_quota_swap import admin_api, api_spend
+
+        start = admin_api.utc_month_bounds(now)[0].timestamp()
+        for num in nums:
+            credit = api_spend.credit_from_record(self._account_record(num))
+            if credit is not None and credit["since"] < start:
+                start = float(credit["since"])
+        return start
+
     def _keep_spend_fresh(
         self,
         state: dict,
@@ -4442,32 +4472,55 @@ class AutoSwitchEngine:
         *,
         every: float,
     ) -> dict:
-        """Scan the ledger (at most once per ``every`` seconds across engines
-        and processes: ``spendScanAt`` in the state file), then read the API
-        keys ``nums`` again. Returns ``entries`` with theirs replaced. Never
-        raises; a dry run never scans (the scan writes the ledger)."""
+        """Scan the ledger over the whole period the limits of the API keys
+        ``nums`` are measured over (:meth:`_scan_start`), at most once per
+        ``every`` seconds across engines and processes, then read those keys
+        again. Returns ``entries`` with theirs replaced. ``spendScan`` in the
+        state file says when the last scan ran, from when, and whether it
+        covered that period; a scan that raised, or that found session files
+        it could not read (they may hold usage of the period), covers
+        nothing, and until a scan does the keys' ledger figures count as no
+        figure (``spend-unknown``, decision EM3). The scan is incremental, so
+        the wide window costs once. Never raises; a dry run never scans (the
+        scan writes the ledger)."""
         if self.dry_run or not nums or not self._scans_ledger():
             return entries
         now = self.clock()
-        last = state.get("spendScanAt")
-        if (
-            isinstance(last, (int, float)) and not isinstance(last, bool)
-            and 0 <= now - last < every
+        start = self._scan_start(nums, now)
+        last = state.get("spendScan")
+        if isinstance(last, dict) and _number(last.get("at")) is not None and (
+            0 <= now - last["at"] < every
+            and _number(last.get("from")) is not None and last["from"] <= start
         ):
+            if not last.get("ok"):
+                self._ledger_unsure.update(nums)
             return entries
         from ai_quota_swap.ledger import usage as ledger_usage
 
+        ok = False
         try:
-            ledger_usage.scan_recent(
+            stats = ledger_usage.scan_recent(
                 Path(self.switcher.backup_dir),
                 registry=self.switcher._get_sequence_data(),
+                start=start,
             )
-        except Exception as e:  # the figure stays as old as it was
+            unreadable = getattr(stats, "missing", 0)
+            ok = not (isinstance(unreadable, int) and unreadable > 0)
+            if not ok:
+                _logger.warning(
+                    "The usage ledger scan could not read %s session files; API-key "
+                    "spend counts as unknown", unreadable,
+                )
+        except Exception as e:  # no figure until a scan covers the period
             _logger.warning("Could not scan the usage ledger for API-key spend: %r", e)
-        state["spendScanAt"] = now
+        if not ok:
+            self._ledger_unsure.update(nums)
+        record = {"at": now, "from": start, "ok": ok}
+        state["spendScan"] = record
 
         def remember(s: dict) -> None:
-            s["spendScanAt"] = now
+            s["spendScan"] = record
+            s.pop("spendScanAt", None)  # the round-2 record, which knew no period
 
         try:
             self._mutate_state(remember)

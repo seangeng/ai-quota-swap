@@ -36,12 +36,18 @@ def _fixed_command(monkeypatch):
     monkeypatch.setattr(claude_settings, "command_missing", lambda command: False)
 
 
+class _Scans(list):
+    real = None
+
+
 @pytest.fixture(autouse=True)
 def scans(monkeypatch):
-    """The engine's ledger scan, counted (no real scan unless a test asks)."""
-    calls: list = []
+    """The engine's ledger scan, counted by its keyword arguments; a test
+    that wants a real scan uses ``scans.real``."""
+    calls = _Scans()
     from ai_quota_swap.ledger import usage as ledger_usage
 
+    calls.real = ledger_usage.scan_recent
     monkeypatch.setattr(ledger_usage, "scan_recent", lambda *a, **k: calls.append(k),
                         raising=False)
     return calls
@@ -688,3 +694,175 @@ class TestAnOrganizationKey:
         views = {v.number: v for v in h.events[0].context.accounts}
         assert views["2"].key_hold == "spend-unknown"
         assert "API key, limit not enforced: no spend figure" in autolog.poll_sentence(h.events[0])
+
+
+# == EM3: the engine's scan covers the whole period the limit is measured over ================
+
+SCAN_NOW = datetime(2027, 3, 20, 12, 0, tzinfo=timezone.utc).timestamp()
+MARCH = datetime(2027, 3, 1, tzinfo=timezone.utc).timestamp()
+
+
+class _Stats:
+    def __init__(self, missing=0):
+        self.missing = missing
+        self.older_not_in_ledger = 0
+        self.modified_since = None
+
+
+class TestTheWideScan:
+    def test_it_starts_at_the_budget_month(self, temp_home, scans):
+        h = _fleet(temp_home)
+        h.clock.now = SCAN_NOW
+        _enter(h)
+        assert scans[-1]["start"] == MARCH
+
+    def test_a_credit_from_before_the_month_widens_it(self, temp_home, scans):
+        h = _fleet(temp_home, limit=None)
+        api_spend.set_credit(h.switcher, "2", 100, now=SCAN_NOW - 40 * 86400)
+        h.clock.now = SCAN_NOW
+        credit = {"amount": 100.0, "used": 1.0, "left": 99.0, "spent": False,
+                  "expired": False, "since": _iso(SCAN_NOW - 40 * 86400), "expires": None,
+                  "source": "ledger"}
+        _tick(h, EXHAUSTED, {"2": _reading(h, limit=None, credit=credit)})
+        assert scans[-1]["start"] == pytest.approx(SCAN_NOW - 40 * 86400, abs=1)
+
+    def test_a_period_wider_than_the_last_scan_scans_again_at_once(self, temp_home, scans):
+        h = _fleet(temp_home, limit=None)
+        api_spend.set_budget(h.switcher, "2", 500)
+        h.clock.now = SCAN_NOW
+        _tick(h, EXHAUSTED)
+        assert len(scans) == 1
+        api_spend.set_credit(h.switcher, "2", 100, now=SCAN_NOW - 40 * 86400)
+        h.clock.advance(10)  # well inside the minute between scans
+        h.engine = h._make_engine()
+        _tick(h, {"1": _usage(100), "2": "api key", "3": _usage(100)})
+        assert len(scans) == 2 and scans[-1]["start"] < MARCH
+
+    def test_the_7_day_default_stays_for_the_others(self, temp_home, scans):
+        import time
+
+        from ai_quota_swap.ledger import scanner
+        from ai_quota_swap.ledger.report import day_bounds
+        from ai_quota_swap.ledger.usage import resolve_range
+
+        real = scans.real
+        hour = int((time.time() - 40 * 86400) // 3600) * 3600
+        wide = real(temp_home / "data", start=hour + 59)
+        assert wide.modified_since == hour - scanner.MTIME_MARGIN
+        week = real(temp_home / "data")
+        since, until = resolve_range(days=7, since=None, until=None)
+        assert week.modified_since == day_bounds(since, until)[0] * 3600 - scanner.MTIME_MARGIN
+
+    @pytest.mark.parametrize("how", ["raises", "unreadable-files"])
+    def test_a_scan_that_cannot_cover_the_period_is_no_figure(self, temp_home, monkeypatch, how):
+        from ai_quota_swap.ledger import usage as ledger_usage
+
+        def scan(*a, **k):
+            if how == "raises":
+                raise OSError("disk")
+            return _Stats(missing=2)
+
+        monkeypatch.setattr(ledger_usage, "scan_recent", scan)
+        h = _fleet(temp_home)
+        # The figure looks fresh, but the scan could not cover the month.
+        assert _tick(h, EXHAUSTED, {"2": _reading(h, age=0)}) is TickOutcome.BLOCKED
+        assert h.switcher.current_account_number() == "1"
+        assert [e.reason for e in _holds(h)][-1] == "spend-unknown"
+
+    @pytest.mark.parametrize("how", ["raises", "unreadable-files"])
+    def test_and_a_key_that_is_active_is_left(self, temp_home, monkeypatch, how):
+        from ai_quota_swap.ledger import usage as ledger_usage
+
+        h = _fleet(temp_home, cooldown_seconds=3600)
+        _enter(h)
+
+        def scan(*a, **k):
+            if how == "raises":
+                raise OSError("disk")
+            return _Stats(missing=1)
+
+        monkeypatch.setattr(ledger_usage, "scan_recent", scan)
+        h.clock.advance(5 * 60)
+        assert _tick(h, EXHAUSTED, {"2": _reading(h, age=0)}) is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        assert _switches(h)[-1].limit_reason == api_spend.SPEND_UNKNOWN
+
+    def test_within_the_minute_a_failed_scan_still_counts(self, temp_home, monkeypatch):
+        """A failed scan is not retried for a minute; meanwhile the figure
+        is still unknown, never trusted for being recent."""
+        from ai_quota_swap.ledger import usage as ledger_usage
+
+        calls = []
+
+        def scan(*a, **k):
+            calls.append(1)
+            raise OSError("disk")
+
+        monkeypatch.setattr(ledger_usage, "scan_recent", scan)
+        h = _fleet(temp_home)
+        _tick(h, EXHAUSTED, {"2": _reading(h, age=0)})
+        h.clock.advance(20)
+        h.engine = h._make_engine()
+        assert _tick(h, EXHAUSTED, {"2": _reading(h, age=0)}) is TickOutcome.BLOCKED
+        assert len(calls) == 1
+
+
+class TestUsageOlderThanAWeek:
+    """The re-check's case on a real scan: #2 spent $40 through the key line
+    nine days ago and nothing has scanned since (no menu bar). The 7-day scan
+    left the file out and the engine moved to the key on "$0 of $20"."""
+
+    def _world(self, temp_home, monkeypatch, time_machine, limit: str, real_scan):
+        import os
+        import time
+
+        from ai_quota_swap import paths
+        from ai_quota_swap.ledger import usage as ledger_usage
+        from ai_quota_swap.ledger.activations import record_activation
+        from tests.ledger_fixtures import claude_line, write_lines
+        from tests.test_autoswitch import _entry_for
+
+        # Every clock at SCAN_NOW: the engine's, the readings', and the
+        # scan's own "today" (its 7-day default is from the local date).
+        time_machine.move_to(datetime.fromtimestamp(SCAN_NOW, tz=timezone.utc), tick=False)
+        h = _fleet(temp_home, limit=None, cooldown_seconds=3600)
+        h.clock.now = time.time()
+        monkeypatch.setattr(ledger_usage, "scan_recent", real_scan)
+        if limit == "budget":
+            api_spend.set_budget(h.switcher, "2", 20)
+        else:
+            api_spend.set_credit(h.switcher, "2", 20, now=SCAN_NOW - 10 * 86400)
+        then = SCAN_NOW - 9 * 86400
+        root = h.switcher.backup_dir
+        record_activation(root, number=2, email="key2@token.local", org="", now=then - 3600,
+                          how="helper")
+        record_activation(root, number=1, email="a@example.com", org="", now=then + 3600,
+                          how="login")
+        path = paths.get_claude_config_home() / "projects" / "-work-demo" / "old.jsonl"
+        write_lines(path, [claude_line(mid="o1", ts=then, inp=10_000_000, out=0, cr=0, w5=0)])
+        os.utime(path, (then, then))
+        real = h.switcher.usage_entries_by_account
+
+        def collect(fetch=None, scheduled=False):
+            entries = real(fetch=set())  # the key's real reading, no network
+            entries.update({"1": _entry_for(_usage(100), h.clock.now),
+                            "3": _entry_for(_usage(100), h.clock.now)})
+            return entries
+
+        monkeypatch.setattr(h.switcher, "usage_entries_by_account", collect)
+        return h
+
+    @pytest.mark.parametrize("limit", ["budget", "credit"])
+    def test_not_entered(self, temp_home, scans, monkeypatch, time_machine, limit):
+        h = self._world(temp_home, monkeypatch, time_machine, limit, scans.real)
+        assert h.engine.tick() is TickOutcome.BLOCKED
+        assert h.switcher.current_account_number() == "1"
+        assert _settings_line(temp_home) is None
+
+    @pytest.mark.parametrize("limit", ["budget", "credit"])
+    def test_left_when_active(self, temp_home, scans, monkeypatch, time_machine, limit):
+        h = self._world(temp_home, monkeypatch, time_machine, limit, scans.real)
+        h.switcher.switch_to("2", json_output=True, entered_by="engine")
+        assert h.engine.tick() is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        assert _switches(h)[-1].limit_reason in ("budget", "credit-spent")

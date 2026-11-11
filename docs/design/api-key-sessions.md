@@ -312,7 +312,11 @@ What the code does where this part leaves room, or where it had to differ:
 - **The engine.** The thresholds are named constants in `autoswitch.py`: a spend figure is
   fresh for 20 minutes (`api_spend.SPEND_FRESH_S`); while a key with a budget or credit is
   active the engine scans the ledger every 5 minutes (`SPEND_SCAN_INTERVAL_S`), and before it
-  enters a key. For a key linked to an organization only Anthropic's figure counts: the
+  enters a key, from the earlier of the start of the UTC month and the start of the key's
+  credit (`scan_recent(start=...)`; others keep the 7-day default). A scan that raises, or
+  that finds session files it cannot read, covers nothing: until one covers the period
+  (`spendScan` in the state file: when, from when, whether it did) the ledger's figure is
+  `spend-unknown`. For a key linked to an organization only Anthropic's figure counts: the
   ledger's is shown (`this machine only`) but never fresh, and with each of those scans the
   engine reads Anthropic's figure again, accepting an answer at most a minute old
   (`ADMIN_REFRESH_S`) whatever `admin_api.CACHE_TTL_S` says for the other readers; the way back needs 5 points of room in every window
