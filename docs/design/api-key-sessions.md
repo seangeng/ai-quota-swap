@@ -310,10 +310,14 @@ What the code does where this part leaves room, or where it had to differ:
   active the engine scans the ledger every 5 minutes (`SPEND_SCAN_INTERVAL_S`), and before it
   enters a key; the way back needs 5 points of room in every window
   (`RETURN_ROOM_PCT`). A key judged at its budget or credit stays at it in the engine's
-  state file until the month rolls over or the budget or credit is set again, so a later
-  reading that looks lower (an estimate in place of Anthropic's figure) does not make it a
-  candidate again; the row says so (`budget reached earlier`, with the command that clears
-  it) and the engine says once why it does not use the key (`limit-latched`). A reset the
+  state file, one latch per kind (`limitLatch[N]` holds `budget` and `credit` apart): the
+  budget latch until the month rolls over or `qswap budget` sets it again, the credit latch
+  until `qswap credit` records another; each command clears only its own, and the key stays
+  out while either holds. A state file from before keeps its one latch as the kind its reason
+  names. So a later reading that looks lower (an estimate in place of Anthropic's figure)
+  does not make it a candidate again; the row says so (`budget reached earlier`, with the
+  command that clears it) and the engine says once why it does not use the key
+  (`limit-latched`). A reset the
   planner claimed whose refill no reading has shown yet holds key entry, for at most the
   30 minutes a successful claim keeps the account out of planning. A key the engine cannot
   use (its slot does not hold a key) is skipped and reported once, and leaving a key, a

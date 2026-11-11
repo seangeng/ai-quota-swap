@@ -520,7 +520,7 @@ class TestTheLatch:
             assert _tick(h, EXHAUSTED, {"2": _lower(h)}) is TickOutcome.BLOCKED
             h.clock.advance(60)
         assert h.switcher.current_account_number() == "1"
-        assert h.state()["limitLatch"]["2"]["reason"] == "budget"
+        assert h.state()["limitLatch"]["2"]["budget"]["reason"] == "budget"
 
     def test_an_active_key_is_left_and_stays_left(self, temp_home):
         h = _fleet(temp_home)

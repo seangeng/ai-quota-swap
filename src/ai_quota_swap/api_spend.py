@@ -242,11 +242,45 @@ def limit_reason(reading: object, *, latched: bool = True) -> str | None:
 
 #: The limits a latch holds.
 LATCH_REASONS = frozenset({"budget", "credit-spent"})
+#: The kind of limit each latched reason belongs to. ``limitLatch[N]`` holds
+#: one latch per kind (decision EM8): ``qswap budget`` clears only the budget
+#: latch, ``qswap credit`` only the credit latch, and the key stays out while
+#: either holds.
+LATCH_KINDS = {"credit-spent": "credit", "budget": "budget"}
 #: On a row whose latch holds while its figure reads under the limit.
 LATCHED_WORDS = {
     "budget": "budget reached earlier",
     "credit-spent": "credit counted as spent",
 }
+
+
+def latch_entries(stored: object) -> dict[str, dict]:
+    """``{kind: latch}`` from one account's ``limitLatch`` entry, in either
+    shape: ``{"credit": {...}, "budget": {...}}``, or the one latch
+    ``{"reason": ...}`` an older engine wrote, read as the kind its reason
+    names. Credit first, as :func:`limit_reason` orders them. Never raises."""
+    if not isinstance(stored, dict):
+        return {}
+    reason = stored.get("reason")
+    if isinstance(reason, str):
+        kind = LATCH_KINDS.get(reason)
+        return {kind: dict(stored)} if kind is not None else {}
+    out: dict[str, dict] = {}
+    for reason, kind in LATCH_KINDS.items():
+        latch = stored.get(kind)
+        if isinstance(latch, dict) and latch.get("reason") == reason:
+            out[kind] = dict(latch)
+    return out
+
+
+def latched_reasons(stored: object, reading: object, record: object, now: float) -> list[str]:
+    """The latched limits of one account (``limitLatch[N]``) that still apply
+    to ``reading``: the same month and budget, the same credit. Credit first."""
+    return [
+        latch["reason"]
+        for latch in latch_entries(stored).values()
+        if latch_identity(latch["reason"], reading, record, now) == latch
+    ]
 
 
 def latch_identity(reason: str, reading: object, record: object, now: float) -> dict | None:
@@ -280,6 +314,21 @@ def latch_identity(reason: str, reading: object, record: object, now: float) -> 
             return None
         return {"reason": reason, "credit": f"{int(since)}|{float(amount)}"}
     return None
+
+
+def reached_latches(reading: object) -> list[str]:
+    """Every latched kind of limit the reading's own figures reach:
+    ``credit-spent`` and ``budget`` (both, when both are). An expired credit
+    is decided by its date and needs no latch."""
+    if not isinstance(reading, dict):
+        return []
+    out = []
+    credit = reading.get("credit")
+    if isinstance(credit, dict) and credit.get("spent") and not credit.get("expired"):
+        out.append("credit-spent")
+    if over_budget(reading):
+        out.append("budget")
+    return out
 
 
 def latch_of(reading: object) -> str | None:
@@ -436,17 +485,18 @@ def set_credit(
         record["credit"] = value
     data["lastUpdated"] = get_timestamp()
     switcher._write_json(switcher.sequence_file, data)
-    _clear_latch(switcher, num)
+    _clear_latch(switcher, num, "credit")
     return num, email, credit_from_record(record), True
 
 
-def _clear_latch(switcher, number: str) -> None:
-    """A budget or credit set again: auto-switch forgets that the old one
-    was reached (autoswitch.clear_limit_latch). Best-effort."""
+def _clear_latch(switcher, number: str, kind: str) -> None:
+    """A budget (``kind`` ``budget``) or a credit (``credit``) set again:
+    auto-switch forgets that the old one was reached, and only that one
+    (autoswitch.clear_limit_latch). Best-effort."""
     try:
         from ai_quota_swap.autoswitch import clear_limit_latch
 
-        clear_limit_latch(Path(switcher.backup_dir), number)
+        clear_limit_latch(Path(switcher.backup_dir), number, kind=kind)
     except Exception:
         pass
 
@@ -885,12 +935,9 @@ def readings(
         reading["month"] = month.strftime("%Y-%m")
         if note:
             reading["note"] = note
-        stored = latches.get(num)
-        if (
-            isinstance(stored, dict) and stored.get("reason") in LATCH_REASONS
-            and latch_identity(stored["reason"], reading, record, now) == stored
-        ):
-            reading["latched"] = {"reason": stored["reason"], "account": num}
+        held = latched_reasons(latches.get(num), reading, record, now)
+        if held:
+            reading["latched"] = {"reason": held[0], "account": num}
         out[num] = reading
     return out
 
@@ -1313,7 +1360,7 @@ def set_budget(switcher, identifier: str, amount: object | None) -> tuple[str, s
     current = budget_from_record(record)
     if normalized == current and (normalized is not None or "budget" not in record):
         if normalized is not None:
-            _clear_latch(switcher, num)  # set again: the old one is forgotten
+            _clear_latch(switcher, num, "budget")  # set again: the old one is forgotten
         return num, email, normalized, False
     if normalized is None:
         record.pop("budget", None)
@@ -1321,5 +1368,5 @@ def set_budget(switcher, identifier: str, amount: object | None) -> tuple[str, s
         record["budget"] = normalized
     data["lastUpdated"] = get_timestamp()
     switcher._write_json(switcher.sequence_file, data)
-    _clear_latch(switcher, num)
+    _clear_latch(switcher, num, "budget")
     return num, email, normalized, True
