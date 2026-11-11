@@ -382,4 +382,6 @@ class ResetRunner:
                 return manual_reset.may_have_been_used_text(what, who, reason, codex=codex)
             if isinstance(e, manual_reset.ResetBusy):
                 return str(e)  # one sentence, nothing sent
+            if isinstance(e, manual_reset.ResetChanged):
+                return f"{e} Open the menu again."  # nothing sent
             return manual_reset.not_used_text(what, who, reason)

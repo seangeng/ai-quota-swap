@@ -841,7 +841,9 @@ def _reset_command(argv: list[str]) -> None:
     Bare: list every account's usage-reset grants, the auto policy, and what
     the engine would spend right now. With an account: spend one reset there
     (asks first unless --yes; off a terminal, --yes is required). Exit 1 when
-    nothing was spent; every failure under --json is the error envelope.
+    nothing was spent or the outcome is unknown; 0 when it was used, now or
+    by an earlier attempt (``already_used``); every failure under --json is
+    the error envelope.
 
     Under the codex prefix (`qswap codex reset`) the same flow lists and
     spends Codex reset credits; only the wording differs.
@@ -875,6 +877,22 @@ def _reset_command(argv: list[str]) -> None:
     noun = "reset credit" if codex else "reset"
     command = "qswap codex reset" if codex else "qswap reset"
     in_flight = False
+    # The claim's answer once spend returns: from then on, whatever happens
+    # while it is being printed, the message says what the answer was.
+    answered = None
+
+    def answer_line(spent) -> tuple[str, int]:
+        """The answer in one line, and the exit code it gives."""
+        kind = manual_reset.outcome_kind(spent.result)
+        what, who = f"a {spent.choice.reset_name}", spent.choice.name
+        if kind == "used":
+            return accent(f"Used {what} on {who}."), 0
+        if kind == "already":
+            return yellowed(manual_reset.already_used_text(what, who, codex=codex)), 0
+        if kind == "unknown":
+            return yellowed(f"The {noun} may have been used. {command} shows where things stand."), 1
+        return dimmed(f"Nothing was spent on {who}."), 1
+
     try:
         switcher = _switcher(debug=args.debug)
         _guard_root(switcher)
@@ -916,9 +934,11 @@ def _reset_command(argv: list[str]) -> None:
         if spent is None:
             return
         in_flight = False
+        answered = spent
         result, grant = spent.result, spent.choice.grant
         num, email, name = spent.choice.number, spent.choice.email, spent.choice.name
         reset_name = resets.reset_name(grant)
+        kind = manual_reset.outcome_kind(result)
         if args.json:
             print(json.dumps({
                 "schemaVersion": SCHEMA_VERSION,
@@ -926,11 +946,11 @@ def _reset_command(argv: list[str]) -> None:
                 "grantId": grant["id"],
                 "result": result.to_json(),
             }))
-        elif result.ok and codex:
+        elif kind == "used" and codex:
             from ai_quota_swap import codex_cli
 
             codex_cli.print_credit_used(switcher, num, email, grant)
-        elif result.ok:
+        elif kind == "used":
             left = f" · {result.resets_left} left on this grant" if result.resets_left is not None else ""
             cleared = ", ".join(
                 resets.WINDOW_LABELS.get(k) or k for k in result.cleared
@@ -944,7 +964,11 @@ def _reset_command(argv: list[str]) -> None:
                 )
                 for line in display.render_block(block)[1:]:
                     print(line)
-        elif result.result in manual_reset.UNKNOWN_RESULTS:
+        elif kind == "already":
+            # The server's answer to a retried request id: an earlier
+            # attempt went through. It was used, never "not used".
+            print(yellowed(manual_reset.already_used_text(f"a {spent.choice.reset_name}", name, codex=codex)))
+        elif kind == "unknown":
             # No decided answer (a timeout, an answer qswap cannot read):
             # the reset may have been spent, so never say it was not.
             detail = (result.reason or result.detail or "").replace("_", " ")
@@ -953,24 +977,37 @@ def _reset_command(argv: list[str]) -> None:
                 + (f" ({detail})" if detail else "")
                 + f". {command} shows where things stand."
             )
+        elif result.reason == "no_credit":
+            error("Credit not used: no reset credit left; nothing was spent")
         else:
             detail = (result.reason or result.detail or "").replace("_", " ")
             error(
                 f"{'Credit' if codex else 'Reset'} not used: {result.result.replace('_', ' ')}"
                 + (f" ({detail})" if detail else "")
             )
-        if not result.ok:
+        if kind in ("unknown", "not-used"):
             sys.exit(1)
     except ProviderError as e:
         if args.json:
             print(json.dumps(error_envelope(e), indent=2))
         else:
             error(f"Error: {e}")
+            if isinstance(e, manual_reset.ResetChanged):
+                print(dimmed(f"See the new numbers with: {command}"))
+            if answered is not None:
+                # The answer came; printing it failed. Say what it was.
+                line, code = answer_line(answered)
+                print(line)
+                sys.exit(code)
             if in_flight:
                 # The request was sent: the reset may have been used.
                 print(yellowed(f"The {noun} may have been used. {command} shows where things stand."))
         sys.exit(1)
     except KeyboardInterrupt:
+        if answered is not None:
+            line, code = answer_line(answered)
+            print(f"\n{line}")
+            sys.exit(code if code == 0 else 130)
         if in_flight:
             # The POST may have reached the server; the pending record keeps
             # its request id, so a retry (`qswap reset N` or the engine)

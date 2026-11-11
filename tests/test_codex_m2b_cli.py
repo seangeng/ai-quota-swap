@@ -309,10 +309,68 @@ class TestCodexReset:
         assert "not used" not in err
 
     def test_a_refused_spend_says_not_used(self, two, capsys):
-        two.answer = ClaimResult("already_used")
+        two.answer = ClaimResult("ineligible", reason="nothing_to_reset")
         code, _, err = run(["codex", "reset", "2", "--yes"], capsys)
         assert code == 1
-        assert "Credit not used: already used" in err
+        assert "Credit not used: ineligible (nothing to reset)" in err
+
+    def test_no_credit_left_is_a_decided_nothing_spent(self, two, capsys):
+        two.answer = ClaimResult("unavailable", reason="no_credit")
+        code, _, err = run(["codex", "reset", "2", "--yes"], capsys)
+        assert code == 1
+        err = " ".join(err.split())
+        assert "Credit not used: no reset credit left; nothing was spent" in err
+        assert "may have been used" not in err
+
+    def test_a_retry_answered_already_redeemed_was_used(self, two, capsys):
+        # The first attempt timed out; the retry reuses its request id, and
+        # the server's "already redeemed" means the first one went through.
+        two.answer = ClaimResult("error", detail="network")
+        code, _, err = run(["codex", "reset", "2", "--yes"], capsys)
+        assert code == 1 and "may have been used" in " ".join(err.split())
+        two.answer = ClaimResult("already_used", reason="already_redeemed")
+        code, out, err = run(["codex", "reset", "2", "--yes"], capsys)
+        assert two.consumed[0][2] == two.consumed[1][2]  # the same request id
+        assert code == 0
+        assert " ".join(out.split()) == (
+            "A reset credit on #2 a@example.com was already used: an earlier attempt went through. "
+            "Run qswap codex reset to see where things stand."
+        )
+        assert "not used" not in out + err
+        assert _state(two)["resetLog"][-1]["result"] == "already_used"  # the brake counts it
+
+    def test_ctrl_c_while_printing_a_spent_credit_says_it_was_used(self, two, capsys, monkeypatch):
+        from ai_quota_swap.codex.switcher import CodexSwitcher
+
+        real = CodexSwitcher.usage_entries_by_account
+
+        def interrupt_after_the_spend(self, *a, **kw):
+            if two.consumed:
+                raise KeyboardInterrupt()
+            return real(self, *a, **kw)
+
+        monkeypatch.setattr(CodexSwitcher, "usage_entries_by_account", interrupt_after_the_spend)
+        code, out, _err = run(["codex", "reset", "2", "--yes"], capsys)
+        assert len(two.consumed) == 1 and _state(two)["resetClaims"]["2"]["result"] == "reset"
+        assert code == 0
+        assert "Used a reset credit on #2 a@example.com." in out and "nothing was spent" not in out
+
+    def test_an_error_while_printing_a_spent_credit_says_it_was_used(self, two, capsys, monkeypatch):
+        from ai_quota_swap.codex.switcher import CodexSwitcher
+        from ai_quota_swap.exceptions import ConfigError
+
+        real = CodexSwitcher.usage_entries_by_account
+
+        def fail_after_the_spend(self, *a, **kw):
+            if two.consumed:
+                raise ConfigError("sequence.json could not be read")
+            return real(self, *a, **kw)
+
+        monkeypatch.setattr(CodexSwitcher, "usage_entries_by_account", fail_after_the_spend)
+        code, out, err = run(["codex", "reset", "2", "--yes"], capsys)
+        assert len(two.consumed) == 1
+        assert code == 0
+        assert "Used a reset credit on #2 a@example.com." in out and "sequence.json could not be read" in err
 
     def test_an_unknown_credit(self, two, capsys):
         code, _, err = run(["codex", "reset", "2", "--grant", "nope", "--yes"], capsys)

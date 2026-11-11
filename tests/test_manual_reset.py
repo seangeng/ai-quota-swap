@@ -42,18 +42,29 @@ class FakeSwitcher:
 
     def refresh_account_usage(self, num):
         self.calls.append(("refresh", num))
-        return UsageEntry(last_good=self.usage, fetched_at=NOW)
+        return UsageEntry(last_good=self.usage, fetched_at=manual_reset.time.time())
 
-    def claim_usage_reset(self, num, grant_id, request_id):
+    def claim_usage_reset(self, num, grant_id, request_id, *, before_send=None):
+        if before_send is not None:
+            before_send()  # the request goes out now
         state = _read_state_file(self.backup_dir / STATE_FILENAME)
         # The pending record, with this very request id, is on disk first.
         self.calls.append(("claim", num, grant_id, request_id, state["resetClaims"][num]))
+        _later(1.0)  # a request takes time: the next reading comes after it
         return self.answer
+
+
+_now = [NOW]
+
+
+def _later(seconds: float) -> None:
+    _now[0] += seconds
 
 
 @pytest.fixture(autouse=True)
 def _clock(monkeypatch):
-    monkeypatch.setattr(manual_reset.time, "time", lambda: NOW)
+    _now[0] = NOW
+    monkeypatch.setattr(manual_reset.time, "time", lambda: _now[0])
 
 
 def _fake(tmp_path, answer=None, **kw):
@@ -138,10 +149,10 @@ class _LockTakingSwitcher(FakeSwitcher):
 
     held = None
 
-    def claim_usage_reset(self, num, grant_id, request_id):
+    def claim_usage_reset(self, num, grant_id, request_id, **kw):
         from ai_quota_swap.autoswitch import _state_lock_for
 
-        result = super().claim_usage_reset(num, grant_id, request_id)
+        result = super().claim_usage_reset(num, grant_id, request_id, **kw)
         self.held = _state_lock_for(self.backup_dir / STATE_FILENAME)
         assert self.held.acquire(timeout=1)
         return result
@@ -193,8 +204,8 @@ def test_final_record_write_error_keeps_the_answer(tmp_path, monkeypatch):
 
 def test_a_claim_that_raises_after_the_request_may_have_been_used(tmp_path):
     class Raising(FakeSwitcher):
-        def claim_usage_reset(self, num, grant_id, request_id):
-            super().claim_usage_reset(num, grant_id, request_id)
+        def claim_usage_reset(self, num, grant_id, request_id, **kw):
+            super().claim_usage_reset(num, grant_id, request_id, **kw)
             raise OSError("connection reset after the POST")
 
     notes = _runner_notes(Raising(tmp_path, _fake(tmp_path).usage, ClaimResult("reset")))
@@ -228,7 +239,9 @@ def test_an_engine_claim_in_flight_refuses_a_manual_one_on_another_grant(h, monk
     in_post, release = threading.Event(), threading.Event()
     posts: list = []
 
-    def claim(num, grant_id, request_id):
+    def claim(num, grant_id, request_id, before_send=None):
+        if before_send is not None:
+            before_send()
         posts.append((threading.current_thread().name, num, grant_id, request_id))
         if threading.current_thread().name == "engine":
             in_post.set()
@@ -251,9 +264,21 @@ def test_an_engine_claim_in_flight_refuses_a_manual_one_on_another_grant(h, monk
             manual_reset.spend(h.switcher, "1", other)
         assert len(posts) == 1  # nothing sent
         assert h.state()["resetClaims"]["1"]["requestId"] == engine_rid  # nothing overwritten
-        # The same grant: a retry of that claim, with its stored request id.
+        # A reading taken after the engine's record, on the same grant: a
+        # retry of that claim, with its stored request id; it keeps counting
+        # as the engine's (automatic) claim, marked as retried by hand.
+        h.clock.now += 1
+        seen: dict = {}
+        real_claim = claim
+
+        def watch(num, grant_id, request_id, before_send=None):
+            seen["pending"] = h.state()["resetClaims"]["1"]
+            return real_claim(num, grant_id, request_id, before_send)
+
+        h.switcher.claim_usage_reset.side_effect = watch
         spent = manual_reset.spend(h.switcher, "1", engine_grant)
         assert posts[-1][2:] == (engine_grant, engine_rid) and spent.result.ok
+        assert seen["pending"]["auto"] is True and seen["pending"]["manual"] is True
         release.set()
         engine.join(20)
 
@@ -264,8 +289,8 @@ def test_two_manual_claims_racing_on_one_account_send_one(tmp_path):
     in_post, release = threading.Event(), threading.Event()
 
     class Slow(FakeSwitcher):
-        def claim_usage_reset(self, num, grant_id, request_id):
-            result = super().claim_usage_reset(num, grant_id, request_id)
+        def claim_usage_reset(self, num, grant_id, request_id, **kw):
+            result = super().claim_usage_reset(num, grant_id, request_id, **kw)
             in_post.set()
             assert release.wait(20)
             return result
@@ -296,3 +321,122 @@ def test_a_settled_claim_does_not_hold_a_manual_one_back(tmp_path):
                                        "settled": True})
     sw = _fake(tmp_path)
     assert manual_reset.spend(sw, "1", "fb").result.ok
+
+
+# -- second review: what each answer means, and the claim's guards ------------------------
+
+
+def test_a_retry_answered_already_used_was_used(tmp_path):
+    sw = _fake(tmp_path, ClaimResult("error", detail="network"))
+    first = _runner_notes(sw)
+    sw.answer = ClaimResult("already_used", reason="already_redeemed")
+    second = _runner_notes(sw)
+    rids = [c[3] for c in sw.calls if c[0] == "claim"]
+    assert rids[0] == rids[1]  # the same request id
+    assert "may have been used" in first[0]
+    assert second == [
+        "A Fable reset on #1 personal was already used: an earlier attempt went through. "
+        "Run qswap reset to see where things stand."
+    ]
+
+
+def test_no_credit_left_is_a_decided_nothing_spent(tmp_path):
+    notes = _runner_notes(_fake(tmp_path, ClaimResult("unavailable", reason="no_credit")))
+    assert notes == ["Did not use a Fable reset on #1 personal: no reset credit left; nothing was spent"]
+    assert manual_reset.outcome_kind(ClaimResult("unavailable")) == "unknown"
+    assert manual_reset.outcome_kind(ClaimResult("unavailable", reason="no_credit")) == "not-used"
+    assert manual_reset.outcome_kind(ClaimResult("already_used")) == "already"
+
+
+def test_a_failure_before_the_request_is_decided_and_blocks_nothing(tmp_path):
+    # The switcher could not even look up the account's token: nothing was
+    # sent, so it reads "Did not use", and the account's other grants are
+    # not held back.
+    class NoToken(FakeSwitcher):
+        def claim_usage_reset(self, num, grant_id, request_id, *, before_send=None):
+            self.calls.append(("claim", num, grant_id, request_id, None))
+            return ClaimResult("auth_error", detail="Timed out waiting for ~/.claude.lock")
+
+    sw = NoToken(tmp_path, _fake(tmp_path).usage, ClaimResult("reset"))
+    notes = _runner_notes(sw)
+    assert notes == [
+        "Did not use a Fable reset on #1 personal: auth error (Timed out waiting for ~/.claude.lock)"
+    ]
+    assert _read_state_file(tmp_path / STATE_FILENAME)["resetClaims"]["1"]["result"] == "auth_error"
+    _later(1.0)
+    from tests.test_reset_kinds import weekly
+
+    other = _fake(tmp_path)
+    other.usage["resets"]["grants"].append(weekly("wk", ends=NOW + 40 * 86400))
+    assert manual_reset.spend(other, "1", "wk").result.ok
+
+
+def test_the_claude_switcher_sends_nothing_when_the_token_lookup_fails(temp_home):
+    from unittest.mock import patch
+
+    from ai_quota_swap.exceptions import LockError
+    from ai_quota_swap.switcher import ClaudeAccountSwitcher
+
+    sw = ClaudeAccountSwitcher()
+    sent = []
+    with patch.object(sw, "account_identity", return_value={"organizationUuid": "org-1-00000000"}), \
+         patch.object(sw, "_claim_access_token", side_effect=LockError("Timed out waiting for ~/.claude.lock")), \
+         patch("ai_quota_swap.resets.claim", side_effect=lambda *a, **k: sent.append(a)):
+        result = sw.claim_usage_reset("1", "fb", "r" * 32, before_send=lambda: sent.append("before"))
+    assert result.result == "auth_error" and "claude.lock" in result.detail
+    assert sent == []  # neither the hook nor the request
+
+
+def test_a_reset_recorded_while_the_dialog_was_open_stops_the_claim(tmp_path):
+    sw = _fake(tmp_path, ClaimResult("reset", resets_left=0))
+
+    def confirm(choice):
+        # While the dialog is open, the engine claims this account and the server says reset.
+        _later(5.0)
+        record_reset_claim(tmp_path, "1", {"at": manual_reset.time.time(), "grantId": "fb",
+                                           "requestId": "e" * 32, "reason": "on-limit",
+                                           "auto": True, "result": "reset", "settled": True})
+        return True
+
+    with pytest.raises(manual_reset.ResetChanged,
+                       match=r"^Usage on #1 personal changed while this was open; nothing was used\.$"):
+        manual_reset.spend(sw, "1", "fb", confirm=confirm)
+    assert [c[0] for c in sw.calls] == ["resolve", "refresh"]  # nothing sent
+    # The menu bar says so, and where to look again.
+    from ai_quota_swap import menubar_engines
+
+    notes = []
+    runner = menubar_engines.ResetRunner(manual_reset.spend, notes.append, start=lambda fn: fn())
+    sw2 = _fake(tmp_path)
+    _later(-10.0)  # its reading is older than that record
+    runner.run(sw2, "claude", "1", "fb", who="#1 personal", what="a Fable reset")
+    assert [n.body for n in notes] == [
+        "Usage on #1 personal changed while this was open; nothing was used. Open the menu again."
+    ]
+
+
+def test_a_manual_retry_of_an_engine_claim_keeps_counting_as_automatic(tmp_path):
+    from ai_quota_swap.autoswitch import (
+        MAX_AUTO_RESETS_PER_DAY,
+        reserve_reset_claim,
+        reset_claim_settled,
+        reset_claims_today,
+    )
+
+    path = tmp_path / STATE_FILENAME
+    engine = reserve_reset_claim(
+        path, "1", "fb", at=NOW - 5, reason="on-limit", auto=True, host=None,
+        admit=lambda st, previous: (
+            reset_claims_today(st, NOW) < MAX_AUTO_RESETS_PER_DAY
+            and reset_claim_settled(previous, NOW - 6, NOW)
+        ),
+    )
+    assert reset_claims_today(_read_state_file(path), NOW) == 1
+    sw = _fake(tmp_path, ClaimResult("reset", resets_left=0))
+    spent = manual_reset.spend(sw, "1", "fb")
+    claim = [c for c in sw.calls if c[0] == "claim"][0]
+    assert claim[3] == engine["requestId"]  # the same request id, retried
+    assert claim[4]["auto"] is True and claim[4]["manual"] is True
+    # Whatever happens to the engine now, its claim still counts.
+    assert reset_claims_today(_read_state_file(path), NOW) == 1
+    assert spent.result.ok

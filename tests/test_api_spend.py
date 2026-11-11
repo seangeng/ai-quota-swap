@@ -507,6 +507,38 @@ class TestUnreadableLedger:
         assert menubar.account_row(accs["3"], now=NOW, stale_after_s=900).text == (
             "#3 api-key-3 · API key · $0 of $500 this month")
 
+    @pytest.mark.parametrize("keep", [0, 100, "half"])
+    def test_running_qswap_usage_fixes_every_unreadable_state(self, env, capsys, keep):
+        # The advice holds even for a file that is not a database: qswap
+        # usage rebuilds it (the ledger is derived from the session files).
+        s, email = self._fleet()
+        _break_ledger("schema", email)
+        db = data_root() / DB_FILENAME
+        conn_data = db.read_bytes()
+        for extra in (db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+            extra.unlink(missing_ok=True)
+        size = len(conn_data) // 2 if keep == "half" else keep
+        db.write_bytes(conn_data[:size] if size else b"\0" * 64)  # truncated or zeroed
+        assert api_spend.spend_unknown(_readings(s)["3"])
+        capsys.readouterr()
+        run_main(["usage"])
+        out = capsys.readouterr().out
+        assert "could not be read as a database, so it was rebuilt from the session files." in (
+            " ".join(out.split()))
+        after = _readings(make_switcher())["3"]
+        assert not api_spend.spend_unknown(after) and api_spend.nothing_recorded(after)
+        # The no-meta and schema states recover through the same command.
+        run_main(["usage"])
+        assert "rebuilt" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("how", ["no-meta", "schema"])
+    def test_running_qswap_usage_fixes_a_ledger_without_its_schema(self, env, capsys, how):
+        s, email = self._fleet()
+        _break_ledger(how, email)
+        assert api_spend.spend_unknown(_readings(s)["3"])
+        run_main(["usage"])
+        assert not api_spend.spend_unknown(_readings(make_switcher())["3"])
+
     def test_without_a_budget_an_unreadable_ledger_still_says_so(self, env, capsys):
         s = make_switcher()
         email = seed_api_key(s, 3, KEY_A)

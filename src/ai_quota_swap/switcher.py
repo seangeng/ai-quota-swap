@@ -11,6 +11,7 @@ import shutil
 import threading
 import sys
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -2031,7 +2032,8 @@ class ClaudeAccountSwitcher:
         return None, f"could not renew the stored login ({outcome.error or 'no token'})"
 
     def claim_usage_reset(
-        self, account_num: str, grant_id: str, request_id: str
+        self, account_num: str, grant_id: str, request_id: str,
+        *, before_send: Callable[[], None] | None = None,
     ) -> "resets.ClaimResult":
         """Spend one reset of ``grant_id`` on a slot, then re-read its usage.
 
@@ -2039,14 +2041,24 @@ class ClaudeAccountSwitcher:
         the server decided makes the stored reading obsolete — a reset zeroes
         windows, the others change what is offered — so the slot is made due
         and fetched before returning, and every surface sees the new numbers.
+
+        The steps before the request (the account's identity, its access
+        token) are a decided ``auth_error`` when they fail: nothing was sent.
+        ``before_send`` runs immediately before the request.
         """
         from ai_quota_swap import resets
 
         num = str(account_num)
-        org_uuid = self.account_identity(num).get("organizationUuid") or ""
-        token, why = self._claim_access_token(num)
+        try:
+            org_uuid = self.account_identity(num).get("organizationUuid") or ""
+            token, why = self._claim_access_token(num)
+        except Exception as e:  # a lock, the Keychain, the registry: nothing sent
+            self._logger.warning("usage reset on account %s not sent: %r", num, e)
+            return resets.ClaimResult("auth_error", detail=str(e) or type(e).__name__)
         if token is None:
             return resets.ClaimResult("auth_error", detail=why)
+        if before_send is not None:
+            before_send()
         result = resets.claim(token, org_uuid, grant_id, request_id)
         self._logger.info(
             "usage reset claim on account %s, grant %s: %s%s",

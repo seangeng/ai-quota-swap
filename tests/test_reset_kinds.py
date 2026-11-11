@@ -506,7 +506,9 @@ def _run(h, argv, usage, capsys, *, answer="n", tty=False):
     }
     claimed: list[tuple[str, str]] = []
 
-    def claim(num, grant_id, request_id):
+    def claim(num, grant_id, request_id, before_send=None):
+        if before_send is not None:
+            before_send()
         claimed.append((num, grant_id))
         return ClaimResult("reset", resets_left=0, cleared=("seven_day",))
 

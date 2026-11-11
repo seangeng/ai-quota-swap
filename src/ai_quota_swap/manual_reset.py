@@ -45,6 +45,29 @@ class ResetBusy(ValidationError):
     """Another claim on the account is in flight; nothing was sent."""
 
 
+class ResetChanged(ValidationError):
+    """A claim was recorded for the account after the reading the choice
+    rests on (the engine or another window used a reset meanwhile); nothing
+    was sent."""
+
+
+def outcome_kind(result) -> str:
+    """What a claim's answer means for the person who asked: ``used`` (the
+    reset was spent now), ``already`` (an earlier attempt went through: the
+    server answers ``already_used`` to a retried request id), ``unknown`` (no
+    decided answer: it may have been spent) or ``not-used`` (decided:
+    nothing was spent)."""
+    if result.ok:
+        return "used"
+    if result.result == "already_used":
+        return "already"
+    if result.result == "unavailable" and result.reason == "no_credit":
+        return "not-used"  # Codex: decided, no credit left
+    if result.result in UNKNOWN_RESULTS:
+        return "unknown"
+    return "not-used"
+
+
 def noun_for(codex: bool) -> str:
     """What one reset is called: ``reset`` (Claude Code) or ``reset credit``."""
     return "reset credit" if codex else "reset"
@@ -150,10 +173,12 @@ def choose(switcher, account: str, grant_id: str | None = None, *,
 
 def claim(switcher, choice: Choice, *, started: Callable[[], None] | None = None):
     """Claim ``choice``'s reset (module docstring, step 3). ``started`` runs
-    once the pending record is written, just before the request: from then
-    on the reset may have been used whatever happens. Returns the
-    :class:`resets.ClaimResult`; raises :class:`ResetBusy` (nothing sent)
-    while another claim on the account is in flight for a different grant."""
+    immediately before the request is sent (the switcher's ``before_send``):
+    from then on the reset may have been used whatever happens. Returns the
+    :class:`resets.ClaimResult`. Raises, with nothing sent, :class:`ResetBusy`
+    while another claim on the account is in flight for a different grant,
+    and :class:`ResetChanged` when a claim was recorded for the account after
+    the reading the choice rests on."""
     from ai_quota_swap.autoswitch import (
         STATE_FILENAME,
         record_reset_claim,
@@ -163,23 +188,41 @@ def claim(switcher, choice: Choice, *, started: Callable[[], None] | None = None
 
     num, grant = choice.number, choice.grant
     now = time.time()
+    refused: list[Exception] = []
 
     def admit(_state: dict, previous: object) -> bool:
-        busy = reset_claim_in_flight(previous, choice.fetched_at, now)
-        return not (busy and previous.get("grantId") != grant["id"])  # type: ignore[union-attr]
+        if not isinstance(previous, dict):
+            return True
+        if reset_claim_in_flight(previous, choice.fetched_at, now) and previous.get("grantId") != grant["id"]:
+            refused.append(ResetBusy(
+                f"A {noun_for(choice.codex)} on {choice.name} is already being used; "
+                "try again in a moment."
+            ))
+            return False
+        at = previous.get("at")
+        if (
+            isinstance(at, (int, float)) and not isinstance(at, bool)
+            and isinstance(choice.fetched_at, (int, float)) and at >= choice.fetched_at
+        ):
+            refused.append(ResetChanged(
+                f"Usage on {choice.name} changed while this was open; nothing was used."
+            ))
+            return False
+        return True
 
     reserved = reserve_reset_claim(
         switcher.backup_dir / STATE_FILENAME, num, grant["id"],
         at=now, reason="manual", auto=False, host=switcher, admit=admit,
+        keep_auto_on_retry=True,
     )
     if reserved is None:
-        raise ResetBusy(
+        raise refused[0] if refused else ResetBusy(
             f"A {noun_for(choice.codex)} on {choice.name} is already being used; "
             "try again in a moment."
         )
-    if started is not None:
-        started()
-    result = switcher.claim_usage_reset(num, grant["id"], reserved["requestId"])
+    result = switcher.claim_usage_reset(
+        num, grant["id"], reserved["requestId"], before_send=started,
+    )
     try:
         record_reset_claim(
             switcher.backup_dir, num,
@@ -247,16 +290,17 @@ def staleness(fetched_at: float | None, now: float) -> str | None:
 
 
 def outcome_text(spent: Spent, who: str) -> str:
-    """The notification after a claim, in the auto log's words: ``Used a
-    Fable reset on #1 personal · Fable refilled · 2 left on this grant``,
-    ``Did not use a Fable reset on #1 personal: refused (cooldown)``, or,
-    when the answer does not say (a timeout, an unreadable answer), that it
-    may have been used (:func:`may_have_been_used_text`)."""
+    """The notification after a claim, in the auto log's words, by
+    :func:`outcome_kind`: ``Used a Fable reset on #1 personal · Fable
+    refilled · 2 left on this grant``; :func:`already_used_text`;
+    :func:`may_have_been_used_text`; ``Did not use a Fable reset on #1
+    personal: cooldown``."""
     from ai_quota_swap import resets
 
     result = spent.result
     what = f"a {spent.choice.reset_name}"
-    if result.ok:
+    kind = outcome_kind(result)
+    if kind == "used":
         cleared = ", ".join(
             resets.WINDOW_LABELS.get(k) or k for k in result.cleared
         ) or ", ".join(
@@ -264,12 +308,26 @@ def outcome_text(spent: Spent, who: str) -> str:
         ) or "usage"
         left = f" · {result.resets_left} left on this grant" if result.resets_left is not None else ""
         return f"Used {what} on {who} · {cleared} refilled{left}"
-    if result.result in UNKNOWN_RESULTS:
+    if kind == "already":
+        return already_used_text(what, who, codex=spent.choice.codex)
+    if kind == "unknown":
         return may_have_been_used_text(
             what, who, _outcome_words(result.result, result.reason or result.detail),
             codex=spent.choice.codex,
         )
+    if result.reason == "no_credit":
+        return not_used_text(what, who, "no reset credit left; nothing was spent")
     return not_used_text(what, who, result.result, result.reason or result.detail)
+
+
+def already_used_text(what: str, who: str, *, codex: bool = False) -> str:
+    """``A Fable reset on #1 personal was already used: an earlier attempt
+    went through. Run qswap reset to see where things stand.``: the server's
+    ``already_used``, its answer to a retried request id."""
+    return (
+        f"{what[:1].upper()}{what[1:]} on {who} was already used: an earlier attempt "
+        f"went through. Run {command_for(codex)} to see where things stand."
+    )
 
 
 def _outcome_words(outcome: str, detail: str | None = None) -> str:

@@ -465,6 +465,104 @@ class TestConflictPolicy:
         s.switch_to("2", force=True)
         assert json.loads(s._read_credentials())["claudeAiOauth"]["refreshToken"] == "rt-good"
 
+    @staticmethod
+    def _active_slot_struck_elsewhere(s, temp_home: Path, *, strike_on: str):
+        """Slot 2 (bob) is active with a fresh, working live login (rt-live,
+        say after /login). The strike binds the saved copy (``backup``) or a
+        generation neither holds any more (``old``)."""
+        from ai_quota_swap import oauth
+
+        _seed_account(s, 1, "carol@example.com")
+        _seed_account(s, 2, "bob@example.com")
+        live = json.dumps({"claudeAiOauth": {
+            "accessToken": "sk-live", "refreshToken": "rt-live", "expiresAt": 9999999999000}})
+        backup = json.dumps({"claudeAiOauth": {
+            "accessToken": "sk-old", "refreshToken": "rt-old", "expiresAt": 9999999999000}})
+        s._write_json(s._get_claude_config_path(), {"oauthAccount": {
+            "emailAddress": "bob@example.com", "accountUuid": "acct-2",
+            "organizationUuid": "", "organizationName": ""}})
+        s._store._write_active_credentials_file(live)
+        s._write_account_credentials("2", "bob@example.com", backup)
+        struck = backup if strike_on == "backup" else json.dumps({"claudeAiOauth": {
+            "accessToken": "sk-ancient", "refreshToken": "rt-ancient", "expiresAt": 1}})
+        s._usage_store.record(
+            {"2": FetchRecord(error="invalid_grant", struck_fp=oauth.credential_fingerprint(struck))},
+            {"2": ("bob@example.com", "")},
+        )
+        out = temp_home / "bob.qswap"
+        export_accounts(s, str(out), account="2")
+        env = json.loads(out.read_text())
+        env["accounts"][0]["credentials"] = {"claudeAiOauth": {
+            "accessToken": "sk-exp", "refreshToken": "rt-exp", "expiresAt": 9999999999000}}
+        out.write_text(json.dumps(env))
+        assert s.current_account_number() == "2"
+        return out, live
+
+    @pytest.mark.parametrize("strike_on, force", [("backup", False), ("backup", True), ("old", True)])
+    def test_a_strike_that_does_not_bind_the_live_login_says_nothing_needs_doing(
+        self, temp_home: Path, capsys, strike_on, force
+    ):
+        """The verdict concerns the saved copy (or an older generation), not
+        the login in use: the import may replace the saved copy, and the
+        healthy live login is never pointed at with --force."""
+        s = _linux_switcher(temp_home)
+        out, live = self._active_slot_struck_elsewhere(s, temp_home, strike_on=strike_on)
+        capsys.readouterr()
+
+        import_accounts(s, str(out), force=force)
+
+        err = " ".join(capsys.readouterr().err.split())
+        assert "#2 bob@example.com is already the active account; nothing needs doing." in err
+        assert "--force" not in err and "not working" not in err
+        assert s._read_credentials() == live
+
+    @staticmethod
+    def _active_api_key(temp_home: Path, monkeypatch, key: str):
+        from tests.admin_fakes import KEY_A
+        from tests.api_helpers import make_switcher, pin_platform, seed_api_key, seed_oauth
+
+        pin_platform(monkeypatch, Platform.LINUX)
+        s = make_switcher()
+        seed_oauth(s, 1, "carol@example.com")
+        seed_api_key(s, 2, KEY_A, email="ci@example.com")
+        s.switch_to("2")
+        assert s.current_account_number() == "2" and s._read_credentials() == KEY_A
+        out = temp_home / "k.qswap"
+        export_accounts(s, str(out), account="2")
+        env = json.loads(out.read_text())
+        blob = json.dumps(env["accounts"][0]["credentials"]).replace(KEY_A, key)
+        env["accounts"][0]["credentials"] = json.loads(blob)
+        out.write_text(json.dumps(env))
+        return s, out
+
+    def test_an_active_api_key_imported_unchanged_needs_nothing(self, temp_home: Path, capsys, monkeypatch):
+        from tests.admin_fakes import KEY_A
+
+        s, out = self._active_api_key(temp_home, monkeypatch, KEY_A)
+        capsys.readouterr()
+        import_accounts(s, str(out), force=True)
+        err = " ".join(capsys.readouterr().err.split())
+        assert "#2 ci@example.com is already the active account; nothing needs doing." in err
+
+    def test_an_active_api_key_imported_as_a_new_key_says_how_to_load_it(
+        self, temp_home: Path, capsys, monkeypatch
+    ):
+        """A key is never refreshed: Claude Code keeps the previous one, and
+        the next switch away would save it over the imported key."""
+        from tests.admin_fakes import KEY_A, KEY_B
+
+        s, out = self._active_api_key(temp_home, monkeypatch, KEY_B)
+        capsys.readouterr()
+        import_accounts(s, str(out), force=True)
+        err = " ".join(capsys.readouterr().err.split())
+        assert ("The saved key for #2 ci@example.com was replaced; Claude Code is still using the "
+                "previous one. Load the new key, which replaces the live key, with: "
+                "qswap switch 2 --force") in err
+        assert "nothing needs doing" not in err
+        assert s._read_credentials() == KEY_A
+        s.switch_to("2", force=True)  # what the note says
+        assert s._read_credentials() == KEY_B
+
     def test_import_without_matching_live_login_prints_no_hint(
         self, temp_home: Path, capsys
     ):

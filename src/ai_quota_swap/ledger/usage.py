@@ -146,6 +146,11 @@ def run_usage(
     finally:
         store.close()
     notes: list[str] = []
+    if store.rebuilt:
+        notes.append(
+            f"The usage ledger ({DB_FILENAME}) could not be read as a database, so it was "
+            "rebuilt from the session files."
+        )
     if stats is not None:
         if stats.skipped_compressed:
             notes.append(
