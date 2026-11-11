@@ -378,24 +378,27 @@ def run(monkeypatch, capsys):
 # Part 2 (docs/design/api-key-sessions.md) moves a key in through Claude
 # Code's apiKeyHelper, which running sessions follow, so nothing is refused for
 # them there. The refusal these tests pin is what is left of part 1's guard:
-# the key helper cannot be added (another helper is set), so the only way is
-# the saved key, which running sessions cannot use.
-FOREIGN_HELPER = '{"apiKeyHelper": "/opt/vault/print-key"}'
+# the key helper cannot be added (the settings file is not one qswap can
+# edit), so the only way is the saved key, which running sessions cannot use.
+# (Another apiKeyHelper refuses with no saved-key way at all, decision B6:
+# tests/test_key_switch_round2.py.)
+UNEDITABLE_SETTINGS = "[]"
 
 
 def _no_helper(home: Path) -> None:
-    """Make the key helper unavailable: another apiKeyHelper is set."""
-    (home / ".claude" / "settings.json").write_text(FOREIGN_HELPER, encoding="utf-8")
+    """Make the key helper unavailable: the settings are not a JSON object."""
+    (home / ".claude" / "settings.json").write_text(UNEDITABLE_SETTINGS, encoding="utf-8")
 
 
 REFUSAL = """\
-Error: not switched. qswap cannot add the key helper for #5 ci to the Claude
-Code settings: ~/.claude/settings.json already sets another apiKeyHelper.
+Error: not switched. qswap cannot add the key line for #5 ci to the Claude
+Code settings: ~/.claude/settings.json is not valid JSON (not a JSON object).
 Without it, the key can only be saved for Claude Code, which a running session
 does not pick up. 6 Claude Code sessions are running on the shared login:
 about 30 seconds after the switch each one stops with "Not logged in" until
 you switch back or restart it.
 Sessions started after the switch use the key.
+Fix the JSON in ~/.claude/settings.json, then: qswap switch 5
 To switch anyway:
   qswap switch 5 --log-out-sessions
 """.replace(
@@ -509,8 +512,8 @@ class TestGuard:
         assert out.splitlines() == [
             "Switched #1 personal → #5 ci (API key)",
             "Running Claude Code sessions move to the key within a few seconds. #1 personal",
-            "stays logged in underneath. claude.ai connectors are unavailable while a key is",
-            "in use.",
+            "stays logged in underneath. claude.ai connectors and Remote Control are",
+            "unavailable while a key is in use. Go back with: qswap switch 1",
         ]
         assert "within 30 seconds" not in out and "next message" not in out
 
@@ -1066,7 +1069,7 @@ class TestUnreadableSessions:
         assert code == 1
         assert "Switched" not in out
         assert err.startswith(
-            "Error: not switched. qswap cannot add the key helper for #5 ci to the Claude\n"
+            "Error: not switched. qswap cannot add the key line for #5 ci to the Claude\n"
         )
         assert "could not read the Claude Code session records" in " ".join(err.split())
         assert "qswap switch 5 --log-out-sessions" in err
@@ -1828,6 +1831,9 @@ class TestStaleUnreadableRecords:
             "This session record could not be read:",
             f"  {record}",
             "If Claude Code process 4101 is gone, delete the file.",
+            "Fix the JSON in ~/.claude/settings.json, then: qswap switch 5".replace(
+                "~/.claude/settings.json", str(Path("~", ".claude", "settings.json"))
+            ),
             "To switch anyway:",
             "  qswap switch 5 --log-out-sessions",
         ]
@@ -1847,12 +1853,15 @@ class TestStaleUnreadableRecords:
             s.switch_to("5", json_output=True)
         _title, message, _button = menubar.api_key_switch_question(caught.value)
         lines = message.splitlines()
-        assert lines[0].startswith("qswap cannot add the key helper for #5 ci")
+        assert lines[0].startswith("qswap cannot add the key line for #5 ci")
         assert "could not read the Claude Code session records" in " ".join(message.split())
-        assert lines[-3:] == [
+        assert lines[-4:] == [
             "This session record could not be read:",
             f"  {record}",
             "If Claude Code process 4101 is gone, delete the file.",
+            "Fix the JSON in ~/.claude/settings.json, then: qswap switch 5".replace(
+                "~/.claude/settings.json", str(Path("~", ".claude", "settings.json"))
+            ),
         ]
 
     def test_the_engine_log_prints_the_path_whole(self, temp_home, alive, monkeypatch):

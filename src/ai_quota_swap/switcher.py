@@ -1291,12 +1291,34 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         number = self.key_line_number()
         if number is None or number not in (str(first), str(second)):
             return
+        label = self.label(number, long=False)
+        unreadable = self.key_line_unreadable()
+        if unreadable is not None:
+            raise ValidationError(
+                f"This would renumber {label}, which may be the active API key: "
+                + " ".join(unreadable)
+            )
         under = self.login_account_number()
         way = f"qswap switch {under}" if under else "qswap switch N"
         raise ValidationError(
-            f"{command} would renumber {self.label(number, long=False)}, the "
-            "active API key, which the Claude Code settings name by number. Leave "
-            f"the key first: {way}"
+            f"This would renumber {label}, the active API key, which the Claude "
+            f"Code settings name by number. Leave the key first: {way}"
+        )
+
+    def _refuse_over_the_key(self, number: str, what: str) -> None:
+        """Refuse to save a login (``what``: ``login`` or ``token``) into the
+        slot qswap's key line names."""
+        label = self.label(number, long=False)
+        unreadable = self.key_line_unreadable()
+        if unreadable is not None:
+            raise ValidationError(
+                f"Slot {number} holds {label}, which may be the active API key: "
+                + " ".join(unreadable)
+            )
+        under = self.login_account_number()
+        raise ValidationError(
+            f"Slot {number} holds {label}, the active API key. Leave the key "
+            f"first, then add the {what}: qswap switch {under or 'N'}"
         )
 
     def _read_backup_or_abort(self, account_num: str, email: str) -> str:
@@ -2280,6 +2302,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             taken_at=self._usage_store.clock(),
             underneath_number=under if key is not None else None,
             key_notes=tuple(self.key_helper_notes()),
+            key_entered_by=self.key_entered_by() if key is not None else None,
         )
 
     def usage_fetch_stamps(self) -> dict[str, float | None]:
@@ -4406,6 +4429,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if identity is None:
             raise ConfigError("No active Claude account found. Please log in first.")
         current_email, current_org_uuid, current_account_uuid = identity
+        # Under an active key the login saved here is the one underneath:
+        # sessions stay on the key, and activeAccountNumber keeps naming it.
+        key = self.helper_account()
 
         # When no slot specified and account already exists, refresh credentials in place
         if slot is None and self._account_exists(current_email, current_org_uuid):
@@ -4461,7 +4487,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if alias is not None:
                 seq["accounts"][account_num]["alias"] = alias
 
-            seq["activeAccountNumber"] = int(account_num)
+            if key is None:
+                seq["activeAccountNumber"] = int(account_num)
             seq["lastUpdated"] = get_timestamp()
             self._write_json(self.sequence_file, seq)
 
@@ -4469,6 +4496,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             print(
                 f"{accent('Updated')} the saved login of {self.label(account_num)}"
             )
+            self._say_key_still_active(key, account_num)
             return
 
         # Determine slot number and collect confirmation decisions
@@ -4484,12 +4512,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if self.key_line_number() == account_num:
                 # Claude Code's settings name this slot as the active key: a
                 # login saved over it would leave sessions with no key.
-                under = self.login_account_number()
-                raise ValidationError(
-                    f"Slot {account_num} holds {self.label(account_num, long=False)}, "
-                    "the active API key. Leave the key first, then add the login: "
-                    f"qswap switch {under or 'N'}"
-                )
+                self._refuse_over_the_key(account_num, "login")
 
             # Find if current account already exists in a different slot
             if self._account_exists(current_email, current_org_uuid):
@@ -4498,6 +4521,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 )
                 if old_num and old_num != account_num:
                     migrate_from = old_num
+                    # A move from the slot the key line names would leave
+                    # the line on a number that is gone (F2).
+                    self._refuse_moving_the_key(migrate_from, account_num, "qswap add")
 
             # Check if target slot is occupied by a different account
             if account_num in data.get("accounts", {}):
@@ -4631,7 +4657,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if int(account_num) not in data["sequence"]:
             data["sequence"].append(int(account_num))
             data["sequence"].sort()
-        data["activeAccountNumber"] = int(account_num)
+        if key is None:
+            data["activeAccountNumber"] = int(account_num)
         data["lastUpdated"] = get_timestamp()
 
         self._write_json(self.sequence_file, data)
@@ -4639,6 +4666,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if migrate_from:
             print(dimmed(f"Moved from slot {migrate_from} → {slot}"))
         print(f"{accent('Added')} {self.label(account_num)}")
+        self._say_key_still_active(key, account_num)
+
+    def _say_key_still_active(self, key: str | None, number: str) -> None:
+        """Decision B7: after saving the login under an active key, say that
+        sessions stay on the key and name the switch onto that login."""
+        if key is None or str(key) == str(number):
+            return
+        from ai_quota_swap import display
+
+        for line in display.key_still_active(self.label(key, long=False), number):
+            print(line)
 
     def add_account_from_token(
         self,
@@ -4757,6 +4795,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             kind_label = "API key" if is_api_key else "token"
             self._logger.info(f"Updated {kind_label} for account {account_num}: {email}")
             print(f"{accent('Updated')} the {kind_label} of {self.label(account_num)}")
+            self._say_key_refresh(account_num, is_api_key)
             return
 
         displace_slot = None
@@ -4771,17 +4810,16 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 # Claude Code's settings name this slot as the active key: a
                 # login saved over it would leave every session with no key.
                 # Another key may replace it.
-                under = self.login_account_number()
-                raise ValidationError(
-                    f"Slot {account_num} holds {self.label(account_num, long=False)}, "
-                    "the active API key. Leave the key first, then add the token: "
-                    f"qswap switch {under or 'N'}"
-                )
+                self._refuse_over_the_key(account_num, "token")
 
             if self._account_exists(email, ""):
                 old_num = self._find_account_slot(data, email, "")
                 if old_num and old_num != account_num:
                     migrate_from = old_num
+                    # A move from (or into) the slot the key line names
+                    # would leave the line on a number that is gone, or on
+                    # another account's key (F2).
+                    self._refuse_moving_the_key(migrate_from, account_num, "qswap add-token")
 
             if account_num in data.get("accounts", {}):
                 existing = data["accounts"][account_num]
@@ -4875,6 +4913,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if migrate_from:
             print(dimmed(f"Moved from slot {migrate_from} → {slot}"))
         print(f"{accent('Added')} {self.label(account_num)} {muted(f'(from {source_label})')}")
+        self._say_key_refresh(account_num, is_api_key)
+
+    def _say_key_refresh(self, number: str, is_api_key: bool) -> None:
+        """Decision B7 (F60): a new saved key for the key the line names
+        leaves the line as it is, so say when running sessions take it."""
+        if not is_api_key or self.helper_account() != str(number):
+            return
+        from ai_quota_swap import display
+
+        for line in display.wrap(display.KEY_REFRESH):
+            print(line)
 
     def remove_account(self, identifier: str, assume_yes: bool = False) -> None:
         """Remove account from managed accounts.
@@ -4949,18 +4998,36 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         # A file that cannot be parsed may still hold the line qswap wrote
         # for this account: removing it then is refused (by _leave_key).
         key_line = self.key_line_number() == account_num
+        helper = self.helper_account()
+        try:
+            login = self.login_account_number()
+        except Exception:
+            login = None
         if key_line:
-            under = self.login_account_number()
+            under = login
             warning(f"Warning: {name} is the active API key")
+        elif helper is not None and account_num == login:
+            # Every session goes back to this login when the key is left.
+            warning(
+                f"Warning: {name} is logged in underneath "
+                f"{self.label(helper, long=False)}, the active API key"
+            )
         elif str(active_account) == account_num:
             warning(f"Warning: {name} is the active account")
         runs = self.key_run_pids(account_num) if self._account_kind(account_num) == "api_key" else []
         if runs:
-            noun = "session" if len(runs) == 1 else "sessions"
+            # A session that holds a key keeps sending it when its helper
+            # stops giving one (Claude Code 2.1.322), so removing the
+            # account does not stop them spending on the key.
+            one = len(runs) == 1
+            noun, uses, keeps, them = (
+                ("session", "uses", "keeps", "it") if one
+                else ("sessions", "use", "keep", "them")
+            )
             warning(
                 f"Warning: {len(runs)} {noun} started with qswap run {account_num} "
-                f"(pid {', '.join(map(str, runs))}) use this key and fail with "
-                '"apiKeyHelper script is failing" once it is removed. Exit them first.'
+                f"(pid {', '.join(map(str, runs))}) {uses} this key and {keeps} using "
+                f"it after it is removed, until you exit {them}. Exit {them} first."
             )
 
         from ai_quota_swap import display
@@ -4980,9 +5047,12 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if under:
                 for line in display.key_leave_followup(self.label(under, long=False)):
                     print(dimmed(line))
+            # Leaving set activeAccountNumber back (F25): read it again.
+            data = self._get_sequence_data()
 
         # Remove backup files
         self._delete_account_files(account_num, email)
+        self.forget_key(account_num)
 
         # Update sequence.json
         del data["accounts"][account_num]
@@ -6583,6 +6653,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 accounts[-1]["underneath"] = True
             if key is not None and str(num) == key:
                 accounts[-1]["how"] = display.HOW_HELPER
+                accounts[-1]["enteredBy"] = self.key_entered_by() or "user"
             credit = _record_credit(seq_data, str(num))
             if credit is not None:
                 accounts[-1]["credit"] = credit
@@ -6791,6 +6862,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         helper, under = self.active_view() if view is None else view
         over = ""
         underneath = False
+        by_engine = False
         if helper is not None:
             # The key whose line is installed is the active account; the
             # live login is the one underneath it, never "active".
@@ -6798,6 +6870,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             is_active = str(num) == helper
             if is_active and under:
                 over = self.label(under, long=False)
+            by_engine = is_active and self.key_entered_by() == "engine"
         now = self._usage_store.clock()
         policy = self._policy_from_data(seq_data, str(num))
         line = policy.threshold if policy.threshold is not None else settings.threshold
@@ -6827,7 +6900,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             plan=plan, plan_warning=plan_warning, org=org_name or "",
             kind="api_key" if record.get("kind") == "api_key" else "oauth",
             lines=display.Lines(five_hour=line, weekly=settings.weekly_threshold),
-            set_aside=held_out, underneath=underneath, over=over,
+            set_aside=held_out, underneath=underneath, over=over, by_engine=by_engine,
             sentinel_notes={k: v.replace(" — ", ": ") for k, v in SENTINEL_NOTES.items()},
             login_row=login_row, now=now, stale_after_s=_USAGE_AGE_NOTE_S,
             api_lines=api_lines,
@@ -6847,24 +6920,51 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             under = None
         return key, under
 
-    def key_helper_notes(self) -> list[str]:
-        """The lines every surface shows when the helper line names an
-        account that cannot give a key, or run profiles kept a stale copy of
-        the settings; ``[]`` when all is well."""
+    def key_helper_notes(self, width: int | None = None) -> list[str]:
+        """The lines every surface (list, status, the snapshot behind the
+        dashboard and the menu bar) shows when the key line, key_helper.json
+        and the run profiles do not agree (decision B5,
+        :meth:`key_findings`); ``[]`` when all is well. Each note is wrapped
+        to ``width`` (80 columns by default; status indents its notes)."""
         from ai_quota_swap import display
 
-        out: list[str] = []
-        problem = self.helper_problem()
+        notes = self._key_notes()
+        if width is None or width == display.WIDTH:
+            return [line for note in notes for line in note]
+        return [line for note in notes for line in display.wrap(" ".join(note), width)]
+
+    def _key_notes(self) -> list[list[str]]:
+        """:meth:`key_helper_notes`, one list of lines per note."""
+        from ai_quota_swap import display
+
+        unreadable = self.key_line_unreadable()
+        if unreadable is not None:
+            return [unreadable]
+        f = self.key_findings()
+        if f.unknown is not None:
+            return []
+        out: list[list[str]] = []
         fix = self.helper_fix_command()
-        if problem is not None:
-            out.extend(display.key_helper_problem(problem["number"], problem["why"], fix))
-        elif self.helper_account() is not None and self.key_helper_state().stale_command:
-            key = self.helper_account()
-            out.extend(display.key_helper_moved(key, f"qswap switch {key}"))
-        elif self.helper_account() is None:
-            stale = self.stale_profile_copies()
-            if stale:
-                out.extend(display.stale_copies_line(len(stale), fix))
+        if f.problem is not None:
+            out.append(display.key_helper_problem(f.problem["number"], f.problem["why"], fix))
+        if f.key is not None:
+            label = self.label(f.key, long=False)
+            if f.entered_by == "engine" and not self.engine_watching():
+                out.append(display.key_unwatched(label, fix))
+            if f.state.stale_command:
+                out.append(display.key_helper_moved(f.key, f"qswap switch {f.key}"))
+            if f.came_back:
+                out.append(display.key_line_came_back(label, fix))
+            if f.linked:
+                out.append(display.profiles_still_linked_line(
+                    len(f.linked), label, f"qswap switch {f.key}"
+                ))
+        if f.lost is not None and f.lost in ((self._get_sequence_data() or {}).get("accounts") or {}):
+            out.append(display.key_line_lost(
+                self.label(f.lost, long=False), f.state.shown_path(), f.lost,
+            ))
+        if f.copies:
+            out.append(display.stale_copies_line(len(f.copies), fix))
         return out
 
     def _print_nothing_managed(self) -> None:
@@ -6942,6 +7042,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 "usageStatus": status,
                 "usage": usage,
                 "how": display.HOW_HELPER,
+                "enteredBy": self.key_entered_by() or "user",
                 "needsRelogin": False,
             }
             if record.get("alias"):
@@ -7068,7 +7169,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         identity = self._get_current_account()
         data = (self._get_sequence_data_migrated() or {}) if self.sequence_file.exists() else {}
         accounts = data.get("accounts") or {}
-        notes = [f"  {line}" for line in self.key_helper_notes()] if accounts else []
+        notes = (
+            [f"  {line}" for line in self.key_helper_notes(width=display.WIDTH - 2)]
+            if accounts else []
+        )
         out.extend(yellowed(line) for line in notes)
         view = self.active_view() if accounts else (None, None)
         if view[0] is not None:
@@ -7088,6 +7192,14 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 settings=load_settings(self.backup_dir), view=view,
             )
             out.extend(display.render_block(block))
+            if view[1] is None and identity is not None and not self._account_exists(
+                identity[0], identity[1]
+            ):
+                # The login underneath is one qswap does not manage (F27).
+                out.append(
+                    f"  {identity[0]} · {display.UNDERNEATH} · not managed · "
+                    "add it with: qswap add"
+                )
             return out
         if identity is None:
             if accounts:
@@ -7240,6 +7352,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
 
         if not self.sequence_file.exists():
             raise self._nothing_managed_error()
+        # The list first (F11): one that cannot be read stops here, before
+        # any repair could take a line out on its account.
+        self._get_sequence_data_migrated()
+        self._refuse_unreadable_key_line()
 
         # Part 2 (docs/design/api-key-sessions.md): rotation and the
         # strategies move among subscriptions only. On a key, a rotation
@@ -7270,13 +7386,12 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     self._switch_result_from_op(op, strategy_label, warnings)
                     if json_output else None
                 )
-            # No subscription underneath: leave the key and rotate onto a
-            # subscription. A plain rotation, also for ``best``: what is
-            # left under the line (no login, or a key saved the older way)
-            # is not a place to stay.
-            self._leave_key()
-            strategy = None
-            models = ()
+            # No subscription underneath: a plain rotation from the key, also
+            # for ``best``, whose target is picked before the line is touched.
+            return self._rotate_from_key(
+                key, strategy_label=strategy_label, warnings=warnings,
+                json_output=json_output,
+            )
 
         identity = self._get_current_account()
 
@@ -7699,6 +7814,120 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if json_output else None
         )
 
+    def _refuse_unreadable_key_line(self) -> None:
+        """While the settings cannot be parsed and qswap's record names a key
+        (decision B5, F52), a switch to a subscription is refused with the
+        note every surface shows: qswap cannot take a line out of a file it
+        cannot read, and fixing the file is the next step."""
+        lines = self.key_line_unreadable()
+        if lines is not None:
+            raise SwitchError(" ".join(lines))
+
+    def _rotate_from_key(
+        self, key: str, *, strategy_label: str, warnings: list[str], json_output: bool,
+    ) -> dict | None:
+        """A rotation on the key ``key`` with no subscription logged in
+        underneath (no login at all, one qswap does not manage, or a key saved
+        the older way). Decision B1: the target is picked with the line still
+        in, as a plain rotation from the key's place in the sequence picks it,
+        and only then is the key left, through :meth:`_leave_key_to`, which
+        puts the line back when the login switch fails. With nothing to
+        rotate to, the key stays and the next step is said. A rotation never
+        lands on a key."""
+        key_ref = account_ref(int(key), self.account_email(key))
+        label = self.label(key, long=False)
+        identity = self._get_current_account()
+        if identity is not None and not self._account_exists(identity[0], identity[1]):
+            # A login qswap does not manage is underneath: a rotation from
+            # it would not move either (it is added, or reported), and the
+            # key stays.
+            if json_output:
+                return self._switch_noop(
+                    strategy=strategy_label, reason="unmanaged-account", to_ref=key_ref,
+                    warnings=warnings,
+                    message=(
+                        f"You stay on {label}: the login underneath, {identity[0]}, "
+                        "is not managed. Add it with: qswap add"
+                    ),
+                )
+            print(
+                f"{accent('Notice:')} The login underneath {label}, {identity[0]}, "
+                "was not managed."
+            )
+            self.add_account()
+            return None
+
+        data = self._get_sequence_data() or {}
+        sequence = [str(n) for n in data.get("sequence", [])]
+        relogin = self.relogin_reasons()
+        keys = self._api_key_numbers()
+        start = sequence.index(str(key)) if str(key) in sequence else -1
+        skipped: dict[str, list[str]] = {
+            "relogin": [], "disabled": [], "broken": [], "api_key": [],
+        }
+        target: str | None = None
+        for offset in range(1, len(sequence) + 1):
+            candidate = sequence[(start + offset) % len(sequence)]
+            if candidate == str(key):
+                continue
+            if candidate in keys:
+                if not self._disabled_from_data(data, candidate):
+                    skipped["api_key"].append(candidate)
+                continue
+            if self._disabled_from_data(data, candidate):
+                skipped["disabled"].append(candidate)
+                self._skip_line(warnings, json_output, candidate, "(disabled)", "disabled")
+                continue
+            if not self._account_is_switchable(candidate):
+                skipped["broken"].append(candidate)
+                self._skip_line(
+                    warnings, json_output, candidate, "(no stored credentials/config)",
+                    f"no saved login; re-add it with: qswap add --slot {candidate}",
+                )
+                continue
+            if candidate in relogin:
+                skipped["relogin"].append(candidate)
+                self._skip_line(warnings, json_output, candidate, "(needs re-login)",
+                                "needs re-login")
+                continue
+            target = candidate
+            break
+        if target is not None:
+            op = self._leave_key_to(target, emit_output=not json_output)
+            return self._switch_result_from_op(op, strategy_label, warnings) if json_output else None
+
+        steps = []
+        if skipped["relogin"]:
+            steps.append(
+                "log in to one that needs re-login in Claude Code (/login), then run: "
+                "qswap add"
+            )
+        if skipped["disabled"]:
+            steps.append(f"bring a disabled one back: qswap enable {skipped['disabled'][0]}")
+        if skipped["broken"]:
+            steps.append(f"re-add one: qswap add --slot {skipped['broken'][0]}")
+        if not (skipped["relogin"] or skipped["disabled"] or skipped["broken"]):
+            steps.append(
+                "add a subscription: log in to it in Claude Code (/login), then run: "
+                "qswap add"
+            )
+        if skipped["api_key"]:
+            steps.append(
+                "use another API-key account by naming it: "
+                f"qswap switch {skipped['api_key'][0]}"
+            )
+        head = f"No subscription can take over, so you stay on {label}."
+        tail = "To move, " + "; or ".join(steps)
+        if json_output:
+            return self._switch_noop(
+                strategy=strategy_label,
+                reason="api-key-only" if skipped["api_key"] else "no-valid-target",
+                to_ref=key_ref, warnings=warnings, message=f"{head} {tail}",
+            )
+        say(dimmed(head))
+        say(dimmed(tail))
+        return None
+
     # -- API-key accounts and running sessions (docs/design/api-key-sessions.md) --
 
     def shared_login_scan(self) -> tuple[list, int]:
@@ -7820,6 +8049,19 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         except Exception as e:
             self._logger.debug(f"Could not list unreadable session records: {e!r}")
             return []
+
+    def _login_store_lacks_login(self) -> bool:
+        """Whether the live login store holds no claude.ai login: absent or
+        empty, or an object with only MCP sign-ins in it. False when that
+        cannot be told (a value qswap cannot parse), so nothing is forced."""
+        try:
+            live = self._store._read_oauth_store()
+        except Exception as e:
+            self._logger.debug(f"Could not read the login store: {e!r}")
+            return False
+        if not (live or "").strip():
+            return True
+        return holds_no_login(live)
 
     def _login_item_holds_no_login(self) -> bool:
         """Whether the live login item (or ``.credentials.json``) has no
@@ -7968,27 +8210,43 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         # helper line, and leaving one takes the line out first. A line left
         # naming an account that cannot give a key, and run profiles left
         # with a settings copy, are repaired before anything else.
+        if self._account_kind(target_account) != "api_key":
+            self._refuse_unreadable_key_line()
         repairs = self.reconcile_key_helper()
         if repairs and not json_output:
             for line in repairs:
                 print(dimmed(line))
         target_is_key = self._account_kind(target_account) == "api_key"
         helper = self.helper_account()
+        if target_is_key and log_out_sessions:
+            state = self.key_helper_state()
+            if state.kind == claude_settings.FOREIGN:
+                # Another helper outranks a saved key too (decision B6): the
+                # saved-key way would log every session out for nothing.
+                raise self._key_unavailable(
+                    target_account, f"{state.shown_path()} already sets another apiKeyHelper",
+                    kind=claude_settings.FOREIGN, log_out_sessions=True,
+                )
         if target_is_key and not log_out_sessions:
             if helper == target_account and not force:
                 email = data["accounts"][target_account].get("email", "")
                 ref = account_ref(int(target_account), email)
                 kept = self._adopt_engine_key(target_account) if entered_by == "user" else None
+                # Decision B2: the line is checked as Claude Code runs it,
+                # and written again (with the record and the run profiles)
+                # when it does not answer.
+                fixed = self.repair_active_key(target_account, entered_by=entered_by)
                 if not json_output:
                     print(f"{accent('Already on')} {self._landed_label(target_account, email)}")
-                    if kept:
-                        print(dimmed(kept))
+                    for text in [*fixed, *([kept] if kept else [])]:
+                        for line in display.wrap(text):
+                            print(dimmed(line))
                     return None
                 message = f"Already on Account-{target_account} ({email})"
                 return self._switch_noop(
                     strategy="direct", reason="already-active", from_ref=ref, to_ref=ref,
                     message=f"{message}. {kept}" if kept else message,
-                    warnings=repairs,
+                    warnings=repairs + fixed,
                 )
             op = self._enter_key(
                 target_account, entered_by=entered_by, emit_output=not json_output
@@ -8000,6 +8258,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 # --log-out-sessions onto a key: the saved-key path, with the
                 # line out of the way first so sessions do not follow it.
                 left_key = (helper, self._key_state())
+                active_before = self._active_number()
                 self._leave_key()
             else:
                 op = self._leave_key_to(target_account, force=force, emit_output=not json_output)
@@ -8045,6 +8304,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                         from_ref=ref,
                         to_ref=ref,
                         message=f"Already on Account-{target_account} ({email})",
+                        warnings=repairs,
                     )
 
         try:
@@ -8054,11 +8314,11 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 force_activate=force,
                 provenance=provenance,
             )
-        except Exception as e:
-            # The line came out for this switch: a switch that failed moves
-            # no session, so it goes back in.
+        except BaseException as e:
+            # The line came out for this switch: a switch that failed (or was
+            # interrupted, Ctrl-C included) moves no session, so it goes back.
             if left_key is not None:
-                self._restore_key(*left_key, e)
+                self._restore_key(*left_key, e, active=active_before)
             raise
         result = self._switch_result_from_op(op, "direct", repairs) if json_output else None
         # A forced self-activation really rewrote the live credentials from the
@@ -8082,10 +8342,16 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         key = self.helper_account()
         key_email = self.account_email(key) if key else ""
         key_state = self._key_state()
+        active_before = self._active_number()
         self._leave_key()
         underneath = self.login_account_number()
         from_ref = account_ref(int(key), key_email) if key else None
         target_label = self.label(target_account, long=False)
+        if target_account == underneath and not force and self._login_store_lacks_login():
+            # ~/.claude.json names the account, but the login store holds no
+            # login (F26): taking the line out alone would leave every
+            # session logged out. Its saved login goes in, as any switch.
+            force = True
         if target_account == underneath and not force:
             record = (
                 (self._get_sequence_data() or {}).get("accounts", {}).get(target_account) or {}
@@ -8114,10 +8380,11 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 shown_from=self.label(key, long=False) if key else None,
                 followup_override=display.key_leave_followup(target_label, login_switch=True),
             )
-        except Exception as e:
-            # A switch that failed moves no session: the line goes back in.
+        except BaseException as e:
+            # A switch that failed, or was interrupted (Ctrl-C included),
+            # moves no session: the line goes back in.
             if key:
-                self._restore_key(key, key_state, e)
+                self._restore_key(key, key_state, e, active=active_before)
             raise
         if from_ref is not None:
             op["from"] = from_ref
@@ -9737,17 +10004,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             state = self.key_helper_state()
             if state.ours:
                 self._leave_key()
-                removed_items.append("The apiKeyHelper line in Claude Code's settings")
+                removed_items.append("The key line in Claude Code's settings")
             elif self.key_line_number() is not None:
                 # The file cannot be parsed, and qswap's line may be in it.
                 warning(
                     f"{claude_settings.shown_path(state.path)} cannot be parsed, so qswap "
-                    "could not check it for its apiKeyHelper line. If it is there, "
-                    "delete that line by hand."
+                    "could not check it for its key line. If it is there, delete "
+                    'its "apiKeyHelper" line by hand.'
                 )
         except Exception as e:
             warning(
-                f"Could not remove qswap's apiKeyHelper line from Claude Code's settings "
+                f"Could not remove qswap's key line from Claude Code's settings "
                 f"({e}). Delete it by hand: {claude_settings.shown_path(claude_settings.settings_path())}"
             )
 

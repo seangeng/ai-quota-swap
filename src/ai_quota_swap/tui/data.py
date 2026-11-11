@@ -122,8 +122,10 @@ def _empty_snapshot() -> AccountsSnapshot:
 class ProviderView:
     """One provider as the dashboard shows it.
 
-    ``live_email`` is the provider's live login when no managed account is
-    active (``None`` otherwise, or when there is none); ``cli_found`` whether
+    ``live_email`` is the provider's live login when qswap does not manage
+    it: no managed account is active, or a key is active through the key
+    line over such a login (``None`` otherwise, or when there is none;
+    :func:`unmanaged_login_email`); ``cli_found`` whether
     its command is on PATH, read only when it has neither accounts nor a
     login. ``set_aside`` holds the accounts the engine will not use until
     their owner logs in again (number → reason). ``lines`` are the
@@ -276,9 +278,7 @@ class FleetSource:
         except ProviderError as e:
             return ProviderView(provider, lines=lines, error=str(e))
         set_aside = self._set_aside_for(provider, switcher) if snap.accounts else {}
-        live = None
-        if snap.active_number is None:
-            live = _quiet(switcher, "live_login_email", None)
+        live = unmanaged_login_email(switcher, snap)
         found = None
         if not snap.accounts and not live:
             if provider not in self._cli_found:
@@ -288,6 +288,41 @@ class FleetSource:
             provider, snap, set_aside=dict(set_aside), live_email=live,
             cli_found=found, lines=lines, include_api_key_accounts=include_api,
         )
+
+
+def _key_is_active(snap: AccountsSnapshot) -> bool:
+    active = next((a for a in snap.accounts if a.number == snap.active_number), None)
+    return active is not None and getattr(active, "kind", None) == "api_key"
+
+
+def unmanaged_login_email(switcher: object, snap: AccountsSnapshot) -> str | None:
+    """The live login's email when qswap does not manage it: with no
+    managed account active, or under a key with no managed subscription
+    underneath (decision B7, F27). None otherwise."""
+    if snap.active_number is not None and not (
+        _key_is_active(snap) and snap.underneath_number is None
+    ):
+        return None
+    live = _quiet(switcher, "live_login_email", None)
+    if not live or any(a.email == live for a in snap.accounts):
+        return None
+    return live
+
+
+def login_email(view: "ProviderView") -> str | None:
+    """The login an "add the current login" would save: under a key, the
+    login underneath it (managed or not), never the key's own address;
+    otherwise the active account's, or the unmanaged live login's."""
+    snap = view.snapshot
+    if snap.underneath_number is not None:
+        acc = view.account(snap.underneath_number)
+        return acc.email if acc else None
+    if view.live_email:
+        return view.live_email
+    if view.active_number is not None and not _key_is_active(snap):
+        acc = view.account(view.active_number)
+        return acc.email if acc else None
+    return None
 
 
 def _managed_count(switcher: object) -> int:
@@ -388,6 +423,7 @@ def block_for(
         email=acc.email, alias=acc.alias, provider=view.provider,
         show_provider=show_provider, active=acc.is_active, disabled=acc.disabled,
         underneath=bool(getattr(acc, "underneath", False)), over=over,
+        by_engine=getattr(view.snapshot, "key_entered_by", None) == "engine",
         plan=plan, plan_warning=plan_warning,
         org=acc.org_name if view.provider == "claude" else "",
         kind="api_key" if acc.kind == "api_key" else "oauth",

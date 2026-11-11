@@ -17,8 +17,11 @@ Reading gives a :class:`HelperState`:
 ``ours``
     ``apiKeyHelper`` is qswap's line for account ``number``. The line is
     recognised by its structure (a ``qswap`` or ``ai-quota-swap`` command, or
-    ``python -m ai_quota_swap``, then ``key-helper`` and a number), not by an
-    exact path, so a reinstall that moved the command still reads as ours.
+    ``python -P -m ai_quota_swap``, or ``-m`` alone as older lines have it,
+    then ``key-helper`` and a number), not by an exact path, so a reinstall
+    that moved the command still reads as ours. Every line qswap writes reads
+    back this way: the quoting is a round trip on each platform, and a line
+    that would not read back is refused before it is written.
 ``foreign``
     ``apiKeyHelper`` is someone else's. Its value is never shown: a helper
     command may carry a key.
@@ -26,15 +29,24 @@ Reading gives a :class:`HelperState`:
     The file is not a JSON object (a parse error, or another JSON value).
 
 Writing changes that one key and keeps everything else as it was: the other
-keys and their order, the indentation, the trailing newline and the file
-mode. The change is made in the text itself (one member added, replaced or
-removed), and the result is checked by parsing it; only if the text edit does
-not give the expected object is the file written again in its own indentation.
-A write is atomic (a temporary file renamed over the target), goes through a
-symbolic link rather than over it, and re-reads the file immediately before
-the rename: Claude Code writes this file too, so when the file changed since
-it was read the edit starts again from the new contents. Nothing is ever
-written to a file that cannot be parsed or holds another helper.
+keys and their order, the indentation, the trailing newline, a byte order
+mark and the file mode. The change is made in the text itself (one member
+added, replaced or removed), and the result is checked by parsing it; only if
+the text edit does not give the expected object is the file written again in
+its own indentation. qswap's member goes in first, so in a file with one
+member per line deleting that line by hand leaves the file as it was, and
+taking it out again gives back the same bytes (an empty object keeps its own
+spelling). A write is atomic (a temporary file renamed over the target), goes
+through a symbolic link rather than over it, and re-reads the file
+immediately before the rename: Claude Code writes this file too, so when the
+file changed since it was read the edit starts again from the new contents.
+Nothing is ever written to a file that cannot be parsed or holds another
+helper.
+
+Whether the line can give Claude Code the key is :func:`check_command`: the
+line's own command, run with ``--check`` the way Claude Code runs it. Doctor
+reports it, and a switch to the active key writes the line again when it
+does not answer (:func:`line_answers`).
 """
 
 from __future__ import annotations
@@ -42,18 +54,17 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from ai_quota_swap.installed import COMMAND_NAMES  # names the installed command goes by
+
 #: The key qswap owns in Claude Code's settings.
 HELPER_KEY = "apiKeyHelper"
 #: The hidden verb every helper line runs.
 HELPER_VERB = "key-helper"
-#: Names the installed command goes by.
-COMMAND_NAMES = ("qswap", "ai-quota-swap")
 #: How often a write is tried again when the file keeps changing under it.
 WRITE_ATTEMPTS = 5
 
@@ -62,8 +73,9 @@ NO_FILE, NONE, OURS, FOREIGN, INVALID = "no-file", "none", "ours", "foreign", "i
 
 class SettingsError(Exception):
     """qswap did not change the settings file. ``reason`` is what follows the
-    file's path in a message ("is not valid JSON (...)"); ``kind`` is the state that stopped
-    it (``invalid``, ``foreign``, ``write``, ``changing``)."""
+    file's path in a message ("is not valid JSON (...)"); ``kind`` is the state
+    that stopped it (``invalid``, ``foreign``, ``write``, ``changing``, or
+    ``command``: the line would not read back as qswap's)."""
 
     def __init__(self, reason: str, *, kind: str, path: Path | None = None):
         super().__init__(reason)
@@ -129,22 +141,43 @@ def settings_path() -> Path:
 
 
 # -- recognising qswap's line -------------------------------------------------------
+#
+# The reading side is the exact inverse of _quote on each platform: on POSIX a
+# word is single-quoted (taken as it is), double-quoted with backslash escapes
+# (undone as sh undoes them), or bare; on Windows cmd.exe takes nothing out of
+# a double-quoted word, so neither does qswap (a UNC path keeps its leading
+# backslashes, and a backslash before $ stays).
 
-_LINE_RE = re.compile(
-    r"""^\s*(?P<exe>"[^"]+"|'[^']+'|\S+)(?P<mod>\s+-m\s+ai_quota_swap)?"""
-    r"""\s+key-helper\s+(?P<num>\d+)"""
-    r"""(?:\s+--data-dir\s+(?P<dir>"[^"]+"|'[^']+'|\S+))?\s*$"""
-)
+_POSIX_WORD = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)"""
+_WINDOWS_WORD = r"""(?:"[^"]*"|\S+)"""
+
+
+def _line_re() -> re.Pattern:
+    word = _WINDOWS_WORD if sys.platform == "win32" else _POSIX_WORD
+    return re.compile(
+        rf"""^\s*(?P<exe>{word})(?P<mod>(?:\s+-P)?\s+-m\s+ai_quota_swap)?"""
+        rf"""\s+key-helper\s+(?P<num>\d+)"""
+        rf"""(?:\s+--data-dir\s+(?P<dir>{word}))?\s*$""",
+        re.DOTALL,
+    )
 
 
 def _unquote(token: str) -> str:
-    """A program path as the shell reads it: single quotes taken off as they
-    are, double quotes with their backslash escapes undone."""
+    """A word as the shell Claude Code runs the line in reads it."""
     token = token.strip()
+    if sys.platform == "win32":
+        if len(token) >= 2 and token[0] == token[-1] == '"':
+            return token[1:-1]
+        return token
     if len(token) >= 2 and token[0] == token[-1] == "'":
         return token[1:-1]
     if len(token) >= 2 and token[0] == token[-1] == '"':
-        return re.sub(r'\\([\\"$`])', r"\1", token[1:-1])
+        # Inside double quotes sh undoes a backslash before \ " $ ` and drops
+        # one before a newline; any other backslash stays.
+        return re.sub(r'\\([\\"$`\n])', lambda m: "" if m.group(1) == "\n" else m.group(1),
+                      token[1:-1])
+    # A bare word: _quote writes one only when it holds nothing the shell
+    # would change.
     return token
 
 
@@ -157,44 +190,194 @@ def _base_name(token: str) -> str:
     return name
 
 
-def parse_line(value: object) -> str | None:
-    """The account number a helper command is qswap's line for, or None."""
+@dataclass(frozen=True)
+class HelperLine:
+    """qswap's line taken apart, each word as the shell reads it."""
+
+    #: The program the line runs: qswap's console script, or an interpreter.
+    program: str
+    number: str
+    #: ``-m`` or ``-P -m`` when ``program`` is an interpreter, else None.
+    module: str | None = None
+    data_dir: str | None = None
+
+
+def read_line(value: object) -> HelperLine | None:
+    """qswap's line taken apart, or None when ``value`` is not one: a
+    ``qswap`` or ``ai-quota-swap`` program, or a Python interpreter with
+    ``-P -m ai_quota_swap`` (``-m`` alone, as older lines have it), then
+    ``key-helper N`` and optionally ``--data-dir DIR``."""
     if not isinstance(value, str):
         return None
-    m = _LINE_RE.match(value)
+    m = _line_re().match(value)
     if not m:
         return None
     base = _base_name(m.group("exe"))
+    module = None
     if m.group("mod"):
         if not base.startswith("python") and base != "py":
             return None
+        module = "-P -m" if re.search(r"\s-P\s", m.group("mod")) else "-m"
     elif base not in COMMAND_NAMES:
         return None
-    return str(int(m.group("num")))
+    return HelperLine(
+        program=_unquote(m.group("exe")),
+        number=str(int(m.group("num"))),
+        module=module,
+        data_dir=_unquote(m.group("dir")) if m.group("dir") else None,
+    )
+
+
+def parse_line(value: object) -> str | None:
+    """The account number a helper command is qswap's line for, or None."""
+    line = read_line(value)
+    return None if line is None else line.number
+
+
+def _is_absolute(path: str) -> bool:
+    import ntpath
+    import posixpath
+
+    if sys.platform == "win32":
+        return ntpath.isabs(path)
+    return posixpath.isabs(path)
 
 
 def command_missing(command: str | None) -> bool:
     """Whether qswap's line names a program by absolute path that does not
-    exist. A bare name (found on PATH by the shell) is not checked."""
-    if not command:
+    exist. A bare name (found on PATH by the shell) is not checked here."""
+    line = read_line(command)
+    if line is None or not _is_absolute(line.program):
         return False
-    m = _LINE_RE.match(command)
-    if not m:
-        return False
-    exe = _unquote(m.group("exe"))
-    if not (os.path.isabs(exe) or re.match(r"^[A-Za-z]:[\\/]", exe)):
-        return False
-    return not os.path.exists(exe)
+    return not os.path.exists(line.program)
+
+
+# -- whether the line answers -------------------------------------------------------
+
+#: How long a check of the line waits for its command. Claude Code 2.1.322
+#: says "apiKeyHelper is taking a while" after 10 seconds.
+CHECK_TIMEOUT = 10.0
+_HELPER_PREFIX = "qswap key-helper: "
+
+
+def command_problem(command: str | None) -> str | None:
+    """Why qswap's line cannot answer, from the line and the file it runs
+    alone (no process is started); None when nothing there is wrong. The
+    reason follows "the line" in a sentence."""
+    line = read_line(command)
+    if line is None:
+        return "is not a key line of qswap's"
+    if not _is_absolute(line.program):
+        return (
+            "runs qswap by name only, which a session without it on its PATH "
+            "cannot find"
+        )
+    if command_missing(command):
+        return "runs a qswap that is no longer there"
+    if not os.path.isfile(line.program):
+        return f"runs {line.program}, which is not a program"
+    if sys.platform != "win32" and not os.access(line.program, os.X_OK):
+        return f"runs {line.program}, which is not executable"
+    if line.module == "-m":
+        return (
+            "runs Python with -m, which can import files from the project "
+            "directory of each session in place of qswap"
+        )
+    return None
+
+
+def _check_dir() -> str:
+    """Where the check runs: qswap's own data directory (a directory of
+    nobody's project), else the home directory."""
+    from ai_quota_swap import key_helper
+
+    for candidate in (key_helper.data_dir(), Path.home()):
+        if candidate.is_dir():
+            return str(candidate)
+    return os.getcwd()
+
+
+def _run_check(command: str, *, cwd: str, timeout: float) -> tuple[int, str]:
+    """Run qswap's line with ``--check`` added, the way Claude Code runs the
+    line (through the shell). Returns the exit status and standard error;
+    standard output is never read. On a timeout the command and everything
+    it started are stopped and ``subprocess.TimeoutExpired`` is raised."""
+    import signal
+    import subprocess
+
+    text = command + " --check"
+    if sys.platform == "win32":
+        argv: str | list[str] = text
+        options: dict = {"shell": True}
+    else:
+        argv = ["/bin/sh", "-c", text]
+        options = {"start_new_session": True}
+    proc = subprocess.Popen(
+        argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE, **options,
+    )
+    try:
+        _out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            if sys.platform == "win32":
+                proc.kill()
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            proc.communicate(timeout=5)  # a child that left the group may hold the pipe
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    return proc.returncode, (err or b"").decode("utf-8", "replace")
+
+
+def check_command(command: str | None, *, timeout: float = CHECK_TIMEOUT,
+                  cwd: str | None = None) -> str | None:
+    """Whether qswap's line can give Claude Code the key: None when its
+    command, run with ``--check`` the way Claude Code runs it, answers; else
+    why not, in words that follow "the line" ("fails (#5 has no saved key;
+    save one: qswap add-token KEY --slot 5)"). Of what the command prints
+    only the helper's own one-line message is ever shown. Never raises."""
+    import subprocess
+
+    problem = command_problem(command)
+    if problem is not None:
+        return problem
+    try:
+        code, err = _run_check(command or "", cwd=cwd or _check_dir(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return f"did not answer within {timeout:g} seconds"
+    except Exception as e:
+        return f"could not be run ({getattr(e, 'strerror', None) or type(e).__name__})"
+    if code == 0:
+        return None
+    first = (err.strip().splitlines() or [""])[0]
+    if first.startswith(_HELPER_PREFIX):
+        return f"fails ({first[len(_HELPER_PREFIX):]})"
+    return f"fails (exit {code})"
+
+
+def line_answers(state: HelperState) -> str | None:
+    """Whether qswap's line in ``state`` answers (:func:`check_command`):
+    None when it does, else the reason. A switch to the key that is already
+    active calls this and writes the line again when it does not answer."""
+    if not state.ours:
+        return "is not a key line of qswap's"
+    return check_command(state.command)
 
 
 def _quote(path: str) -> str:
-    """``path`` as one word for the shell Claude Code runs the helper in. On
-    Windows (cmd.exe) double quotes, which a Windows path cannot contain. On
-    POSIX single quotes, inside which ``sh`` expands nothing; a path with a
-    single quote in it gets double quotes with ``\\``, ``"``, ``$`` and the
-    backtick escaped."""
+    """``path`` as one word for the shell Claude Code runs the helper in.
+    :func:`read_line` reads back every word this writes. On Windows (cmd.exe)
+    double quotes, which a Windows path cannot contain. On POSIX single
+    quotes, inside which ``sh`` expands nothing; a path with a single quote
+    in it gets double quotes with ``\\``, ``"``, ``$`` and the backtick
+    escaped."""
     if sys.platform == "win32":
-        if re.search(r"""[\s"'$`!*?&;|<>()^%]""", path):
+        if re.search(r"""[\s"'$`!*?&;|<>()^%,=]""", path):
             return '"' + path + '"'
         return path
     if not re.search(r"""[\s"'$`\\!*?&;|<>()\[\]{}#~=]""", path):
@@ -204,31 +387,21 @@ def _quote(path: str) -> str:
     return '"' + re.sub(r'([\\"$`])', r"\\\1", path) + '"'
 
 
-
 def qswap_executable() -> list[str]:
-    """The command that runs this qswap, as argv: the installed ``qswap``
-    script by absolute path, or this interpreter with ``-m ai_quota_swap``."""
-    argv0 = sys.argv[0] if sys.argv else ""
-    if argv0 and _base_name(argv0) in COMMAND_NAMES:
-        found = shutil.which(argv0) if not os.path.isabs(argv0) else argv0
-        if found and os.path.isfile(found):
-            return [os.path.abspath(found)]
-    for name in COMMAND_NAMES:
-        beside = Path(sys.executable).parent / (name + (".exe" if sys.platform == "win32" else ""))
-        if beside.is_file():
-            return [str(beside)]
-    for name in COMMAND_NAMES:
-        found = shutil.which(name)
-        if found:
-            return [os.path.abspath(found)]
-    return [sys.executable, "-m", "ai_quota_swap"]
+    """The command that runs this qswap, as argv: this install's console
+    script (the PATH link to it when there is one), or this interpreter with
+    ``-P -m ai_quota_swap`` when it has none. The menu bar's LaunchAgent
+    uses the same resolver (:func:`ai_quota_swap.installed.command`)."""
+    from ai_quota_swap import installed
+
+    return installed.command()
 
 
 def helper_command(number: str | int) -> str:
     """qswap's line for account ``number``: ``/abs/path/qswap key-helper 5``.
-    When the data directory comes from ``XDG_DATA_HOME`` it is named too
-    (``--data-dir``): Claude Code runs the line with its own environment,
-    which may not have that variable."""
+    On Linux the data directory is named too (``--data-dir``): Claude Code
+    runs the line with its own environment, whose ``XDG_DATA_HOME`` may
+    differ from qswap's in either direction."""
     from ai_quota_swap import key_helper
 
     parts = [_quote(p) for p in qswap_executable()]
@@ -242,9 +415,21 @@ def helper_command(number: str | int) -> str:
 # -- reading ------------------------------------------------------------------------
 
 
+#: A UTF-8 byte order mark. Some editors write one; qswap reads past it and
+#: keeps it on every write.
+_BOM = "\ufeff"
+
+
 def _decode(raw: bytes) -> str:
-    text = raw.decode("utf-8")
-    return text[1:] if text.startswith("﻿") else text
+    """The file's text as it is, a byte order mark included."""
+    return raw.decode("utf-8")
+
+
+def _split_bom(text: str | None) -> tuple[str, str | None]:
+    """``(mark, text)``: the byte order mark (or ``""``) and the text after it."""
+    if text is not None and text.startswith(_BOM):
+        return _BOM, text[1:]
+    return "", text
 
 
 def _parse(text: str) -> tuple[dict | None, str | None]:
@@ -263,6 +448,7 @@ def state_of_text(text: str | None, path: Path) -> HelperState:
     """The :class:`HelperState` of a file's text (None: no file)."""
     if text is None:
         return HelperState(NO_FILE, path)
+    _bom, text = _split_bom(text)
     obj, error = _parse(text)
     if obj is None:
         return HelperState(INVALID, path, error=error)
@@ -425,7 +611,17 @@ def _separator(text: str, members: list[_Member]) -> str:
 
 
 def _edit_text(text: str, value: str | None) -> str:
-    """``text`` with ``apiKeyHelper`` set to ``value`` (None: removed)."""
+    """``text`` with ``apiKeyHelper`` set to ``value`` (None: removed).
+
+    A new line goes in as the first member, followed by what separated the
+    brace from the old first member: in a file with one member per line it
+    is a whole line of its own ending in a comma, so deleting that line by
+    hand leaves the file as it was (a last member would leave a trailing
+    comma on the line above). Taking the first member out removes exactly
+    that text again, and taking out the only member removes it with the
+    whitespace before it, so every insertion here is undone byte for byte.
+    (A file whose first member shares the brace's line keeps that shape:
+    the line goes on the brace's line too.)"""
     open_at, close_at, members = _members(text)
     encoded = json.dumps(value, ensure_ascii=False) if value is not None else None
     found = [m for m in members if m.key == HELPER_KEY]
@@ -442,24 +638,27 @@ def _edit_text(text: str, value: str | None) -> str:
         if len(members) > 1:
             nxt = members[1]
             return text[: m.start] + text[nxt.start :]
-        # The only member: leave the object empty, keeping what came around it.
-        inner = text[open_at + 1 : close_at]
-        newline = "\n" if "\n" in inner else ""
-        return text[: open_at + 1] + newline + text[close_at:]
+        # The only member: the object is left with what followed it.
+        return text[: open_at + 1] + text[m.end :]
     if encoded is None:
         return text
-    key = json.dumps(HELPER_KEY)
-    sep = _separator(text, members)
-    unit = _indent_unit(text, members)
+    member = f"{json.dumps(HELPER_KEY)}{_separator(text, members)}{encoded}"
     if not members:
+        # One line or several is decided by the text inside the braces only.
         inner = text[open_at + 1 : close_at]
-        if "\n" in inner or text.count("\n") > 1:
-            return text[: open_at + 1] + f"\n  {key}{sep}{encoded}\n" + text[close_at:]
-        return text[: open_at + 1] + f"{key}{sep}{encoded}" + text[close_at:]
-    last = members[-1]
-    if unit is None:
-        return text[: last.end] + f", {key}{sep}{encoded}" + text[last.end :]
-    return text[: last.end] + f",\n{unit}{key}{sep}{encoded}" + text[last.end :]
+        if "\n" in inner:
+            newline = "\r\n" if "\r\n" in inner else "\n"
+            return text[: open_at + 1] + f"{newline}  {member}" + inner + text[close_at:]
+        return text[: open_at + 1] + member + inner + text[close_at:]
+    first = members[0]
+    lead = text[open_at + 1 : first.start]
+    if "\n" in lead:
+        between = "," + lead
+    elif len(members) > 1:
+        between = text[first.end : members[1].start]  # the file's own ", " or ","
+    else:
+        between = ", " if lead or _separator(text, members).endswith(" ") else ","
+    return text[: first.start] + member + between + text[first.start :]
 
 
 def edited(text: str | None, value: str | None) -> str | None:
@@ -476,8 +675,10 @@ def edited(text: str | None, value: str | None) -> str | None:
     expected = dict(obj)
     if value is None:
         expected.pop(HELPER_KEY, None)
-    else:
+    elif HELPER_KEY in expected:
         expected[HELPER_KEY] = value
+    else:
+        expected = {HELPER_KEY: value, **expected}  # first, as the text edit puts it
     try:
         out = _edit_text(text, value)
         if json.loads(out) == expected:
@@ -492,13 +693,15 @@ def edited(text: str | None, value: str | None) -> str | None:
 
 
 def without_helper(text: str) -> str:
-    """``text`` with any ``apiKeyHelper`` removed (for a run profile's copy).
-    Text that cannot be parsed is returned as it is."""
+    """``text`` with any ``apiKeyHelper`` removed (for a run profile's copy),
+    read past a byte order mark (which the copy keeps). Text that cannot be
+    parsed is returned as it is."""
+    bom, body = _split_bom(text)
     try:
-        out = edited(text, None)
+        out = edited(body, None)
     except SettingsError:
         return text
-    return text if out is None else out
+    return text if out is None else bom + out
 
 
 # -- writing --------------------------------------------------------------------------
@@ -535,15 +738,18 @@ def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
             want: str | None = None,
             restore_blank: str | None = None) -> tuple[str | None, str | None]:
     """Set (or remove) the helper, re-reading before the write and starting
-    again when the file changed. Returns ``(before, after)`` texts.
-    ``restore_blank``: the blank text the file held before qswap's line, put
-    back when removing the line leaves an empty object."""
+    again when the file changed. Returns ``(before, after)`` texts (without a
+    byte order mark; a file that has one keeps it). ``restore_blank``: the
+    text the file held before qswap's line when it held no settings
+    (:func:`blank_text`), put back when removing the line leaves an empty
+    object."""
     for attempt in range(WRITE_ATTEMPTS):
         try:
-            before = _read(path)
+            raw = _read(path)
         except (OSError, UnicodeDecodeError) as e:
             raise SettingsError(f"could not be read ({type(e).__name__})", kind=INVALID,
                                 path=path) from e
+        bom, before = _split_bom(raw)
         state = state_of_text(before, path)
         if state.kind == INVALID:
             raise SettingsError(f"is not valid JSON ({state.error})", kind=INVALID, path=path)
@@ -564,12 +770,12 @@ def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
         try:
             again = _read(path)
         except (OSError, UnicodeDecodeError):
-            again = None if before is None else ""
-        if again != before:
+            again = None if raw is None else ""
+        if again != raw:
             time.sleep(0.01 * (attempt + 1))
             continue
         try:
-            _publish(path, after, mode)
+            _publish(path, None if after is None else bom + after, mode)
         except OSError as e:
             raise SettingsError(
                 f"could not be written ({e.strerror or type(e).__name__})",
@@ -587,19 +793,35 @@ def install(number: str | int, *, path: Path | None = None,
     the file cannot be parsed or holds another helper."""
     path = settings_path() if path is None else path
     value = command if command is not None else helper_command(number)
+    if parse_line(value) != str(int(number)):
+        # qswap could neither recognise nor remove a line it cannot read back.
+        raise SettingsError(
+            "would get a key line qswap cannot read back as its own", kind="command",
+            path=path,
+        )
     before, _after = _change(path, value)
     return before is None, read_state(path)
 
 
 def blank_text(path: Path | None = None) -> str | None:
-    """The file's text when it exists and holds only whitespace (Claude Code
-    reads it as no settings); None otherwise. Never raises."""
+    """The file's text when it exists and holds no settings: only whitespace
+    (Claude Code reads that as no settings) or an empty object in any
+    spelling (``{ }``, ``{\\n\\n}``, ``{}`` with blank lines around it).
+    None otherwise. Recorded when a key is entered and put back, in place of
+    the empty object, when the line comes out: so the file is as it was even
+    when Claude Code rewrote it in its own format meanwhile. A byte order
+    mark is not part of the text (the file keeps its own). Never raises."""
     path = settings_path() if path is None else path
     try:
-        text = _read(path)
+        _bom, text = _split_bom(_read(path))
     except (OSError, UnicodeDecodeError):
         return None
-    return text if text is not None and not text.strip() else None
+    if text is None:
+        return None
+    if not text.strip():
+        return text
+    obj, _error = _parse(text)
+    return text if obj == {} else None
 
 
 def remove(*, path: Path | None = None, remove_file_if_empty: bool = False,

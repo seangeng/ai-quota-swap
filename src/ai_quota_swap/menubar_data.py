@@ -130,6 +130,8 @@ def account_states(
             lines=_account_lines(acc, lines),
             underneath=bool(getattr(acc, "underneath", False)),
             over=over if acc.is_active else "",
+            by_engine=bool(acc.is_active)
+            and getattr(snapshot, "key_entered_by", None) == "engine",
         )
         for acc in snapshot.accounts
     )

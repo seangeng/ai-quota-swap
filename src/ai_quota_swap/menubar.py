@@ -615,6 +615,8 @@ class AccountState:
     #: account underneath (``#1 personal``). docs/design/api-key-sessions.md.
     underneath: bool = False
     over: str = ""
+    #: On the active key: auto-switch entered it (decision B8).
+    by_engine: bool = False
 
     def label(self, *, provider_prefix: bool = False, long: bool = True) -> str:
         """``#2 work (maya@example.com)``; ``Claude #2 work (…)`` with the prefix."""
@@ -663,9 +665,16 @@ class ProviderState:
 
     @property
     def unmanaged_live(self) -> str | None:
-        """The live login's email when qswap does not manage it (unknown, so
-        None, while the provider could not be read)."""
-        if not self.live_email or self.active is not None or self.error:
+        """The live login's email when qswap does not manage it, also under
+        an active key with no managed subscription underneath (decision B7,
+        F27); unknown, so None, while the provider could not be read."""
+        if not self.live_email or self.error:
+            return None
+        active = self.active
+        if active is not None:
+            if active.kind != "api_key" or any(a.underneath for a in self.accounts):
+                return None
+        if any(a.email == self.live_email for a in self.accounts):
             return None
         return self.live_email
 
@@ -907,7 +916,7 @@ def account_block(acc: AccountState, *, now: float, stale_after_s: float, show_p
         email=acc.email, alias=acc.alias, provider=acc.provider, show_provider=show_provider,
         active=acc.active, disabled=acc.disabled, plan=acc.plan, org=acc.org,
         kind=acc.kind, lines=acc.lines, set_aside=acc.set_aside, sentinel_notes=notes,
-        underneath=acc.underneath, over=acc.over,
+        underneath=acc.underneath, over=acc.over, by_engine=acc.by_engine,
         now=now, stale_after_s=stale_after_s, reset_strings=_reset_strings(now),
         api_lines=_api_lines,
     )
@@ -957,6 +966,8 @@ def account_row(
         parts.append("API key")
         if acc.over:
             parts.append(display.over_fact(acc.over))
+        if acc.by_engine:
+            parts.append(display.BY_ENGINE)
         if api_spend.budget_state(reading) is not None or (
             isinstance(reading, dict) and isinstance(reading.get("credit"), dict)
         ):
@@ -1671,13 +1682,19 @@ def api_key_switch_question(error: BaseException | None) -> tuple[str, str, str]
     where ``button`` (:data:`API_KEY_SWITCH_BUTTON`, or "Switch anyway" when
     the active account is a key too and no one is logged out) goes ahead and
     Cancel is the default. The message drops the "To switch anyway" lines the button
-    stands for. Anything else is not a question (None)."""
+    stands for. Anything else is not a question (None), and neither is a
+    refusal with no saved-key way (``error.log_out_sessions`` False)."""
     if not isinstance(error, SessionsRunningError):
         return None
     from_key = bool(getattr(error, "from_key", False))
     if isinstance(error, KeyHelperUnavailableError):
-        # The key helper could not be added (another apiKeyHelper, a file
-        # that cannot be parsed): the saved-key way is what the button does.
+        if not getattr(error, "log_out_sessions", True):
+            # Another apiKeyHelper, or a credential in the settings' env
+            # block, defeats a saved key too: nothing to ask, the refusal
+            # (an alert) names the one way forward (decision B6).
+            return None
+        # The key helper could not be added (a file that cannot be parsed
+        # or written): the saved-key way is what the button does.
         return (
             KEY_HELPER_QUESTION_TITLE,
             display.api_key_question(str(error)),

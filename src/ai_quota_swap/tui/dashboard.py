@@ -108,7 +108,9 @@ class DashboardScreen(Screen):
         if fleet is None:
             return list(ROOT_MENU)
         entries: MenuEntries = []
-        unmanaged = [v for v in fleet.views if v.live_email and v.active_number is None]
+        # live_email is set only for a login qswap does not manage, also
+        # one under an active key (decision B7, F27).
+        unmanaged = [v for v in fleet.views if v.live_email]
         for view in unmanaged:
             # The first step on a first run: the live login, one key away.
             label = f"Add {view.live_email}"

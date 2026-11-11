@@ -36,8 +36,10 @@ outlives upgrades, and the two paths age differently: ``uv tool upgrade`` (and
 ``qswap upgrade``) rebuilds the tool's virtualenv — ``sys.executable`` points
 inside that virtualenv and can be replaced — while the console script keeps its
 path across upgrades. Pinning the script means an upgraded qswap needs a
-``launchctl kickstart``, not a reinstalled service. ``sys.executable -m
+``launchctl kickstart``, not a reinstalled service. ``sys.executable -P -m
 ai_quota_swap`` stays as the fallback for installs that expose no console script.
+The ``apiKeyHelper`` line qswap writes into Claude Code's settings uses the same
+resolver (``ai_quota_swap.installed``).
 
 *Logs go to ``~/Library/Logs``, not ``/tmp``.* ``/tmp`` is world-writable and
 periodically purged, so a crash log can vanish before anyone reads it, and a
@@ -52,7 +54,6 @@ from __future__ import annotations
 import json
 import os
 import plistlib
-import shutil
 import subprocess
 import sys
 import time
@@ -259,27 +260,23 @@ def domain_target(uid: int | None = None) -> str:
 def resolve_program() -> list[str]:
     """Argv prefix that launchd should run, minus the subcommand.
 
-    Prefers the installed console script (stable across upgrades, see the
-    module docstring) and falls back to running the package through the
-    interpreter that is executing right now.
+    The same answer as the ``apiKeyHelper`` line in Claude Code's settings
+    (:func:`ai_quota_swap.installed.command`): this install's console script
+    (stable across upgrades, see the module docstring), found from the
+    package's own environment, as the PATH link to it when there is one;
+    a ``qswap`` on PATH that belongs to another install is not used. Only
+    an install with no console script falls back to the interpreter that is
+    executing right now, with ``-P -m ai_quota_swap``.
 
-    The path is made absolute but deliberately NOT resolved: a `uv tool
+    The link is made absolute but deliberately NOT resolved: a `uv tool
     install` puts a symlink at ``~/.local/bin/qswap`` pointing into the tool's
     virtualenv, and resolving it would write that virtualenv-internal path
     into the plist — the very path this module avoids pinning, since a
     reinstall recreates the virtualenv while the symlink keeps its name.
     """
-    candidate = sys.argv[0] if sys.argv and sys.argv[0] else None
-    if candidate is not None:
-        absolute = Path(os.path.abspath(candidate))
-        if absolute.name == "qswap" and absolute.is_file():
-            return [str(absolute)]
+    from ai_quota_swap import installed
 
-    which = shutil.which("qswap")
-    if which:
-        return [str(Path(os.path.abspath(which)))]
-
-    return [sys.executable, "-m", "ai_quota_swap"]
+    return installed.command()
 
 
 def program_arguments(program: list[str] | None = None) -> list[str]:

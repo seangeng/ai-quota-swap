@@ -708,6 +708,35 @@ def _fake_codex_processes(monkeypatch):
     monkeypatch.setattr(processes, "run_codex_login", _no_login)
 
 
+@pytest.fixture(autouse=True)
+def _no_key_line_runs(monkeypatch):
+    """Safety net: no test runs the command of qswap's key line for real.
+
+    ``qswap doctor`` and a switch to the active key run the line with
+    ``--check`` (``claude_settings._run_check``). In the suite that line names
+    this checkout's own ``qswap``, and a child process does not see the fake
+    Keychain: on macOS it would read the saved key from the real one. Here
+    the line is taken to answer. Tests of the check itself put the real
+    runner back and point the line at a stand-in program.
+    """
+    from ai_quota_swap import claude_settings
+
+    monkeypatch.setattr(claude_settings, "_run_check", lambda command, *, cwd, timeout: (0, ""))
+
+
+@pytest.fixture(autouse=True)
+def _no_machine_settings(monkeypatch, tmp_path):
+    """Determinism: doctor reads Claude Code's machine-wide managed settings
+    and the project settings of the directory it runs in. Here neither is
+    this machine's: the managed file is a path that does not exist, and the
+    directory is an empty one. Tests of those checks pass their own probes."""
+    from ai_quota_swap import doctor
+
+    empty = tmp_path / "doctor-cwd"
+    monkeypatch.setattr(doctor, "_managed_settings_path", lambda: tmp_path / "no-managed.json")
+    monkeypatch.setattr(doctor, "_cwd", lambda: empty)
+
+
 #: Where every test finds the CLIs unless it says otherwise (see _fixed_clis).
 FAKE_CLI_DIR = "/usr/local/bin"
 

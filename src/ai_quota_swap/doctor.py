@@ -275,6 +275,41 @@ def _claude_unreadable_sessions() -> list:
     return unreadable_session_records()
 
 
+def _key_line_answers(command: str) -> str | None:
+    """Whether qswap's key line answers: None, or why not (it runs the line's
+    command with ``--check``, which prints nothing)."""
+    from ai_quota_swap import claude_settings
+
+    return claude_settings.check_command(command)
+
+
+#: The machine-wide managed settings file, which outranks every other layer
+#: (Claude Code's documented precedence), by platform.
+MANAGED_SETTINGS = {
+    Platform.MACOS: Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+    Platform.LINUX: Path("/etc/claude-code/managed-settings.json"),
+    Platform.WINDOWS: Path("C:/Program Files/ClaudeCode/managed-settings.json"),
+}
+
+
+def _managed_settings_path() -> Path | None:
+    return MANAGED_SETTINGS.get(Platform.detect())
+
+
+def _cwd() -> Path:
+    return Path.cwd()
+
+
+def _link_leads_to(path: Path) -> str | None:
+    """Where the link at ``path`` leads (resolved, a dangling one too), or
+    None when ``path`` is not a link."""
+    from ai_quota_swap.fsutil import is_link
+
+    if not is_link(path):
+        return None
+    return os.path.realpath(path)
+
+
 def _now() -> float:
     return time.time()
 
@@ -352,6 +387,14 @@ class Probes:
     list_dir: Callable[[Path], list[Path]] = _list_dir
     #: The session records on the shared login that could not be read.
     claude_unreadable_sessions: Callable[[], list] = _claude_unreadable_sessions
+    #: Whether qswap's key line answers: None, or why not.
+    key_line_answers: Callable[[str], str | None] = _key_line_answers
+    #: Where a link leads (resolved), or None for a path that is not a link.
+    link_leads_to: Callable[[Path], str | None] = _link_leads_to
+    #: The directory doctor runs in (its project and local settings).
+    cwd: Callable[[], Path] = _cwd
+    #: The machine-wide managed settings file, or None on this platform.
+    managed_settings_path: Callable[[], Path | None] = _managed_settings_path
 
 
 def default_probes() -> Probes:
@@ -383,6 +426,10 @@ def default_probes() -> Probes:
         claude_sessions=_claude_sessions,
         list_dir=_list_dir,
         claude_unreadable_sessions=_claude_unreadable_sessions,
+        key_line_answers=_key_line_answers,
+        link_leads_to=_link_leads_to,
+        cwd=_cwd,
+        managed_settings_path=_managed_settings_path,
     )
 
 
@@ -573,6 +620,10 @@ class _Facts:
     menubar_configured: bool = False
     menubar_login: bool = False  # the plist sits in ~/Library/LaunchAgents
     menubar_plist: Path | None = None
+    #: The key active through qswap's line, and the switch that leaves it
+    #: (set by the key-line checks).
+    key_line_active: str | None = None
+    key_line_leave: str = "qswap switch N"
 
 
 def _claude_checks(p: Probes, f: _Facts) -> list[Check]:
@@ -649,9 +700,15 @@ def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
 
     checks: list[Check] = []
     checks.extend(_key_helper_checks(p, f))
+    checks.extend(_other_settings_checks(p, f))
 
     environ, _ = _try(p.environ, default={})
     names = display.exported_overrides(environ or {})
+    following = []
+    if f.key_line_active is not None and display.OAUTH_TOKEN_VAR in names:
+        # The key line comes before this variable (decision B6, F62).
+        names = [n for n in names if n != display.OAUTH_TOKEN_VAR]
+        following = [display.OAUTH_TOKEN_VAR]
     if names:
         verb = "is" if len(names) == 1 else "are"
         checks.append(Check(
@@ -659,6 +716,13 @@ def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
             f"{' and '.join(names)} {verb} set in this shell; Claude Code started "
             "from it uses that instead of the active account",
             fix=f"unset {' '.join(names)}",
+        ))
+    elif following:
+        checks.append(Check(
+            "claude.env", "claude", WARN,
+            f"{display.OAUTH_TOKEN_VAR} is set in this shell, but the key line comes "
+            f"before it: Claude Code started from it uses {f.key_line_active} too",
+            fix=f"to keep those sessions off the key, leave it: {f.key_line_leave}",
         ))
 
     stale = _api_key_session_check(p, f)
@@ -672,12 +736,18 @@ def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
 
 def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
     """Claude Code's user settings and qswap's key helper line
-    (docs/design/api-key-sessions.md, part 2): qswap's own line for an
-    API-key account is the active key, reported as such; a line for an
-    account that does not exist (or is not an API-key account) fails with the
-    repair; another helper overrides the active account; run profiles left
-    with a settings copy after the line is gone fail with the repair."""
-    from ai_quota_swap import claude_settings
+    (docs/design/api-key-sessions.md, part 2), compared with the account
+    list, key_helper.json, the run profiles and ``activeAccountNumber`` by
+    the same function every switch and surface uses
+    (``key_activation.assess_key_state``, decision B5): qswap's own line for
+    an API-key account is the active key, reported as such; a line for an
+    account that does not exist (or is not an API-key account) fails with
+    the repair; another helper overrides the active account; a line that
+    came back, a record whose line is gone, profiles still linked under the
+    line or left with a copy after it, and a settings file that cannot be
+    read while qswap's record names a key are each reported."""
+    from ai_quota_swap import claude_settings, display
+    from ai_quota_swap.key_activation import KEY_STATE_FILENAME, assess_key_state
 
     checks: list[Check] = []
     settings_path, err = _try(p.claude_settings_path)
@@ -685,26 +755,54 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
         return checks
     where = _abbr(settings_path, f.home)
     raw, read_err = _try(p.read_bytes, settings_path)
-    registry = None
+    registry, reg_err = None, None
+    record = None
     if f.data_dir is not None:
-        registry, _ = _read_json(p, f.data_dir / "sequence.json")
+        registry, reg_err = _read_json(p, f.data_dir / "sequence.json")
+        record, _ = _read_json(p, f.data_dir / KEY_STATE_FILENAME)
     fix = _key_repair_command(p, f, registry)
-    state = None
     if read_err is None:
         try:
-            text = None if raw is None else raw.decode("utf-8").lstrip("\ufeff")
+            text = None if raw is None else raw.decode("utf-8")
         except UnicodeDecodeError:
             text = "\x00"
         state = claude_settings.state_of_text(text, Path(settings_path))
-    if state is None:
-        pass
-    elif state.kind == claude_settings.INVALID:
-        checks.append(Check(
-            "claude.settings", "claude", WARN,
-            f"{where} is not valid JSON ({state.error}); Claude Code cannot read "
-            "it and qswap will not change it",
-            fix=f"fix the JSON in {where}",
-        ))
+    else:
+        state = claude_settings.HelperState(
+            claude_settings.INVALID, Path(settings_path),
+            error=f"could not be read: {_reason(read_err)}",
+        )
+    accounts = None if reg_err is not None else _accounts(registry)
+    login_slot = fix.removeprefix("qswap switch ") if fix != "qswap switch N" else None
+    findings = assess_key_state(
+        state, accounts, record, active_number=(registry or {}).get("activeAccountNumber"),
+        login_slot=login_slot,
+        linked=tuple(_profiles_linked(p, f, settings_path)) if state.ours else (),
+        copies=tuple(range(_stale_profile_copies(p, f, state))),
+    )
+
+    def label(number: str) -> str:
+        row = _accounts(registry).get(number)
+        row = row if isinstance(row, dict) else {}
+        return _label(number, row, row.get("email", "") if isinstance(row.get("email"), str) else "")
+
+    if state.kind == claude_settings.INVALID:
+        if read_err is None:
+            checks.append(Check(
+                "claude.settings", "claude", WARN,
+                f"{where} is not valid JSON ({state.error}); Claude Code cannot read "
+                "it and qswap will not change it",
+                fix=f"fix the JSON in {where}",
+            ))
+        if findings.unreadable_record is not None:
+            sentence = " ".join(display.key_settings_unreadable(
+                where, state.error, label(findings.unreadable_record)
+            ))
+            checks.append(Check(
+                "claude.key_helper", "claude", FAIL,
+                sentence.removesuffix(f" Fix the JSON in {where}, then retry.").rstrip("."),
+                fix=f"fix the JSON in {where}",
+            ))
     elif state.kind == claude_settings.FOREIGN:
         checks.append(Check(
             "claude.api_key_helper", "claude", WARN,
@@ -713,15 +811,16 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             fix=f"remove apiKeyHelper from {where}",
         ))
     elif state.kind == claude_settings.OURS:
-        record = _accounts(registry).get(state.number)
-        if not isinstance(record, dict) or record.get("kind") != "api_key":
-            what = "does not exist" if not isinstance(record, dict) else (
+        row = _accounts(registry).get(state.number)
+        if findings.problem is not None:
+            what = "does not exist" if not isinstance(row, dict) else (
                 "is not an API-key account"
             )
             checks.append(Check(
                 "claude.key_helper", "claude", FAIL,
                 f"{where} makes #{state.number} the active API key, but #{state.number} "
-                f"{what}; every Claude Code session fails to get a key",
+                f"{what}; new Claude Code sessions fail to get a key, and running "
+                "ones keep the key they have until the settings change",
                 fix=fix,
             ))
         elif state.stale_command:
@@ -731,14 +830,55 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
                 "is no longer there; Claude Code sessions cannot get the key",
                 fix=f"qswap switch {state.number}",
             ))
-        else:
-            email = record.get("email") if isinstance(record.get("email"), str) else ""
-            checks.append(Check(
-                "claude.key_helper", "claude", PASS,
-                f"active API key: {_label(state.number, record, email)}, through "
-                f"qswap's apiKeyHelper line in {where}",
-            ))
-    stale = _stale_profile_copies(p, f, state)
+        elif findings.key is not None:
+            f.key_line_active = label(findings.key)
+            f.key_line_leave = fix
+            if findings.entered_by == "engine" and not _engine_watching(p, f):
+                # Decision B8 (F33): nothing leaves the key now.
+                checks.append(Check(
+                    "claude.key_watch", "claude", WARN,
+                    f"auto-switch entered {label(findings.key)} and is not running, so "
+                    "nothing watches its limit and sessions stay on the key",
+                    fix=fix,
+                ))
+            check = _key_line_check(p, f, state, row if isinstance(row, dict) else {}, where)
+            if findings.came_back and check.status == PASS:
+                check = Check(
+                    "claude.key_helper", "claude", WARN,
+                    f"{where} makes {label(state.number)} the active API key again: "
+                    "its key line came back after qswap took it out (another "
+                    "program wrote an older copy of the settings)",
+                    fix=fix,
+                )
+            checks.append(check)
+    env_check = _settings_env_check(raw if read_err is None else None, where, findings.key)
+    if env_check is not None:
+        checks.append(env_check)
+    if findings.lost is not None and isinstance((accounts or {}).get(findings.lost), dict):
+        checks.append(Check(
+            "claude.key_helper", "claude", WARN,
+            f"qswap made {label(findings.lost)} the active API key, but its key line "
+            f"is no longer in {where}; Claude Code sessions do not use it",
+            fix=f"qswap switch {findings.lost}",
+        ))
+    if findings.stale_active is not None:
+        checks.append(Check(
+            "claude.active_number", "claude", WARN,
+            f"the account list names {label(findings.stale_active)} as the active "
+            "account, but its key line is gone; the next switch sets it back",
+            fix=fix,
+        ))
+    if findings.linked:
+        n = len(findings.linked)
+        noun = "profile still shares" if n == 1 else "profiles still share"
+        its = "its" if n == 1 else "their"
+        checks.append(Check(
+            "claude.profile_settings", "claude", FAIL,
+            f"{n} qswap run {noun} Claude Code's settings while the key line for "
+            f"{label(findings.key)} is in them, so {its} sessions use the key too",
+            fix=f"qswap switch {findings.key}",
+        ))
+    stale = len(findings.copies)
     if stale:
         noun = "profile keeps" if stale == 1 else "profiles keep"
         checks.append(Check(
@@ -748,6 +888,185 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             fix=fix,
         ))
     return checks
+
+
+def _engine_watching(p: Probes, f: _Facts) -> bool:
+    """Whether an auto-switch loop for Claude Code is running (its
+    heartbeat is current)."""
+    from ai_quota_swap import autoswitch
+
+    if f.data_dir is None:
+        return False
+    beat, _ = _try(p.heartbeat, f.data_dir)
+    now, _ = _try(p.now, default=None)
+    if not isinstance(now, (int, float)):
+        now = time.time()
+    return isinstance(beat, dict) and autoswitch.engine_running(beat, now)
+
+
+def _defeating(raw: bytes | None) -> tuple[bool, list[str], str | None]:
+    """What a settings file sets that outranks or redirects qswap's line:
+    ``(apiKeyHelper set, env variables by name, the other host)``."""
+    from ai_quota_swap import key_activation
+
+    try:
+        text = raw.decode("utf-8") if raw else None
+    except UnicodeDecodeError:
+        text = None
+    obj = key_activation.settings_object(text)
+    env = key_activation.env_block(obj)
+    return (
+        "apiKeyHelper" in obj, key_activation.defeating_names(env),
+        key_activation.other_host(env),
+    )
+
+
+def _settings_env_check(raw: bytes | None, where: str, key: str | None) -> Check | None:
+    """The user settings' env block (decision B6, F59): a variable Claude
+    Code obeys before the key line, or a base URL the key is sent to."""
+    _helper, names, host = _defeating(raw)
+    if names:
+        verb = "sets" if len(names) == 1 else "set"
+        return Check(
+            "claude.settings_env", "claude", WARN,
+            f"{where} {verb} {' and '.join(names)} in its env block, which Claude "
+            "Code obeys before qswap's key line; qswap will not switch to an API "
+            "key while it is there",
+            fix=f"remove {' and '.join(names)} from the env block of {where}",
+        )
+    if host is not None:
+        sent = "the active key" if key is not None else "an API key qswap makes active"
+        return Check(
+            "claude.settings_env", "claude", WARN,
+            f"{where} sets ANTHROPIC_BASE_URL, so Claude Code sends {sent} to {host}",
+            fix=f"remove ANTHROPIC_BASE_URL from the env block of {where} if that is not meant",
+        )
+    return None
+
+
+def _other_settings_checks(p: Probes, f: _Facts) -> list[Check]:
+    """The layers that outrank the user settings (Claude Code's documented
+    precedence: managed, then project local, then shared project): one that
+    sets apiKeyHelper, a variable that outranks the line, or a base URL
+    decides for the sessions that read it, whatever qswap's line says
+    (decision B6, F15). Read: the machine's managed file, and the project and
+    local settings of the directory doctor runs in."""
+    checks: list[Check] = []
+    user, _ = _try(p.claude_settings_path)
+    try:
+        user_real = os.path.realpath(user) if user is not None else None
+    except (OSError, ValueError):
+        user_real = None
+    places: list[tuple[str, Path]] = []
+    managed, _ = _try(p.managed_settings_path)
+    if managed is not None:
+        places.append(("managed", Path(managed)))
+    cwd, err = _try(p.cwd)
+    if err is None and cwd is not None:
+        places.append(("project", Path(cwd) / ".claude" / "settings.json"))
+        places.append(("local", Path(cwd) / ".claude" / "settings.local.json"))
+    for kind, path in places:
+        try:
+            if user_real is not None and os.path.realpath(path) == user_real:
+                continue  # doctor runs in the home directory: that is the user file
+        except (OSError, ValueError):
+            pass
+        raw, read_err = _try(p.read_bytes, path)
+        if read_err is not None or not raw:
+            continue
+        helper, names, host = _defeating(raw)
+        what = (["apiKeyHelper"] if helper else []) + names + (
+            ["ANTHROPIC_BASE_URL"] if host else []
+        )
+        if not what:
+            continue
+        where = _abbr(path, f.home)
+        fix = (
+            f"ask whoever manages this machine about {where}" if kind == "managed"
+            else f"remove {' and '.join(what)} from {where}"
+        )
+        checks.append(Check(
+            "claude.other_settings", "claude", WARN,
+            f"{where} sets {' and '.join(what)}; Claude Code reads it before your "
+            "user settings, so sessions that read it do not follow qswap's key line",
+            fix=fix,
+        ))
+    return checks
+
+
+def _profiles_linked(p: Probes, f: _Facts, settings_path: Path) -> list[Path]:
+    """Run profiles whose ``settings.json`` is a link leading to the user
+    settings (F9): while the key line is in, their sessions follow it."""
+    if f.data_dir is None:
+        return []
+    target, err = _try(os.path.realpath, settings_path)
+    if err is not None:
+        return []
+    entries, _ = _try(p.list_dir, f.data_dir / "sessions", default=[])
+    out = []
+    for entry in entries or []:
+        if Path(entry).name.startswith("."):
+            continue
+        leads, _ = _try(p.link_leads_to, Path(entry) / "settings.json")
+        if leads is not None and os.path.normcase(leads) == os.path.normcase(target):
+            out.append(Path(entry))
+    return out
+
+
+def _key_line_check(p: Probes, f: _Facts, state, record: dict, where: str) -> Check:
+    """qswap's line for an API-key account: run with ``--check`` the way
+    Claude Code runs it (decision B2). It passes naming the command it runs,
+    or fails with why it cannot answer and the next step: the helper's own
+    when its message names one, else ``qswap switch N``, which writes the
+    line again for this install. A check that could not be made warns."""
+    from ai_quota_swap import claude_settings
+
+    why, err = _try(p.key_line_answers, state.command)
+    if err is not None:
+        return Check(
+            "claude.key_helper", "claude", WARN,
+            f"{where} makes #{state.number} the active API key; qswap could not "
+            f"check that its line answers ({_reason(err)})",
+            fix=f"qswap key-helper {state.number} --check",
+        )
+    if why is not None:
+        line = claude_settings.read_line(state.command)
+        then = ""
+        if line is None or line.module != "-m":
+            then = (
+                "; new Claude Code sessions fail to get a key from it, and running "
+                "ones keep the key they have until the settings change"
+            )
+        # The helper names its own fix when it has one ("save one: qswap
+        # add-token KEY --slot 5"); else the switch writes the line again.
+        named = re.search(r": (qswap [^;()]+)\)$", why)
+        return Check(
+            "claude.key_helper", "claude", FAIL,
+            f"{where} makes #{state.number} the active API key, but its line {why}{then}",
+            fix=named.group(1) if named else f"qswap switch {state.number}",
+        )
+    email = record.get("email") if isinstance(record.get("email"), str) else ""
+    return Check(
+        "claude.key_helper", "claude", PASS,
+        f"active API key: {_label(state.number, record, email)}, through "
+        f"qswap's key line in {where}, which runs "
+        f"{_line_program(state.command, f.home)}",
+    )
+
+
+def _line_program(command: str | None, home: Path | None) -> str:
+    """What qswap's line runs, for a message: the program (``~`` for the home
+    directory, in quotes when it has a space) and, for an interpreter, its
+    ``-m`` flags."""
+    from ai_quota_swap import claude_settings
+
+    line = claude_settings.read_line(command)
+    if line is None:
+        return "an unknown command"
+    shown = _abbr(line.program, home)
+    if any(c.isspace() for c in shown):
+        shown = f'"{shown}"'
+    return f"{shown} {line.module} ai_quota_swap" if line.module else shown
 
 
 def _key_repair_command(p: Probes, f: _Facts, registry: dict | None) -> str:
@@ -767,10 +1086,13 @@ def _key_repair_command(p: Probes, f: _Facts, registry: dict | None) -> str:
 def _stale_profile_copies(p: Probes, f: _Facts, state) -> int:
     """How many run profiles hold a settings copy (session.SETTINGS_COPY_MARKER)
     while the user settings carry no key line of qswap's."""
+    from ai_quota_swap import claude_settings
     from ai_quota_swap.session import SETTINGS_COPY_MARKER
 
     if f.data_dir is None or (state is not None and state.ours):
         return 0
+    if state is not None and state.kind == claude_settings.INVALID:
+        return 0  # cannot tell whether the line is in: nothing to report
     entries, err = _try(p.list_dir, f.data_dir / "sessions", default=[])
     count = 0
     for entry in entries or []:

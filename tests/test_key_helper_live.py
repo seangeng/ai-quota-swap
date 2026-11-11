@@ -63,9 +63,12 @@ EMAIL_5 = "api-key-5@token.local"
 EMAIL_6 = "api-key-6@token.local"
 QSWAP = "/opt/qswap/bin/qswap"
 
-#: The real functions, before the autouse fixture below replaces them.
+#: The real functions, before the autouse fixtures below (and conftest's
+#: _no_key_line_runs) replace them.
 _REAL_COMMAND_MISSING = claude_settings.command_missing
 _REAL_EXECUTABLE = claude_settings.qswap_executable
+_REAL_CHECK_COMMAND = claude_settings.check_command
+_REAL_RUN_CHECK = claude_settings._run_check
 
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
 
@@ -108,9 +111,11 @@ def _fleet(platform: Platform = Platform.MACOS) -> ClaudeAccountSwitcher:
 @pytest.fixture(autouse=True)
 def _fixed_command(monkeypatch):
     """The installed command every helper line names, fixed for the tests
-    (and taken to exist: TestMovedQswap is about one that does not)."""
+    (and taken to exist and to answer: TestMovedQswap is about one that does
+    not exist, TestTheLineAnswers about one that does not answer)."""
     monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [QSWAP])
     monkeypatch.setattr(claude_settings, "command_missing", lambda command: False)
+    monkeypatch.setattr(claude_settings, "check_command", lambda command, **kw: None)
 
 
 @pytest.fixture
@@ -137,6 +142,11 @@ def _settings(home: Path) -> Path:
 
 def _settings_obj(home: Path) -> dict:
     return json.loads(_settings(home).read_text(encoding="utf-8"))
+
+
+def _settings_obj_any(home: Path) -> dict:
+    """The settings object, read past a byte order mark."""
+    return json.loads(_settings(home).read_bytes().decode("utf-8-sig"))
 
 
 def _acct() -> str:
@@ -261,10 +271,28 @@ class TestKeyHelper:
         assert _helper(["5"])[0] == 1  # the default directory has no accounts
         assert _helper(["5", "--data-dir", str(root)]) == (0, KEY_5 + "\n", "")
 
-    def test_the_default_data_directory_is_not_named(self, temp_home, monkeypatch):
+    def test_on_linux_the_line_always_names_the_data_directory(
+        self, temp_home, monkeypatch, tmp_path
+    ):
+        """The other direction of the XDG case (F4): qswap ran without
+        XDG_DATA_HOME, the session that runs the helper has one. The line
+        names the directory in use, so the helper still finds the key."""
         monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
-        assert claude_settings.helper_command(5) == f"{QSWAP} key-helper 5"
-        monkeypatch.setattr(key_helper, "_platform", lambda: "macos")
+        root = key_helper.data_dir()
+        assert root == temp_home / ".local" / "share" / "ai-quota-swap"
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        line = claude_settings.helper_command(5)
+        assert line == f"{QSWAP} key-helper 5 --data-dir {claude_settings._quote(str(root))}"
+        args = line.split(" key-helper ", 1)[1]
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "elsewhere"))
+        parts = claude_settings.read_line(line)
+        assert parts is not None and parts.data_dir == str(root)
+        assert _helper([args.split()[0], "--data-dir", parts.data_dir]) == (0, KEY_5 + "\n", "")
+
+    @pytest.mark.parametrize("name", ["macos", "windows"])
+    def test_elsewhere_the_data_directory_is_not_named(self, temp_home, monkeypatch, name):
+        monkeypatch.setattr(key_helper, "_platform", lambda: name)
         assert claude_settings.helper_command(5) == f"{QSWAP} key-helper 5"
 
     def test_the_previous_copy_when_the_saved_one_is_not_a_key(self, temp_home, monkeypatch):
@@ -312,17 +340,55 @@ class TestKeyHelper:
         assert err.startswith("qswap key-helper: ") and err.count("\n") == 1
         assert KEY_5 not in err
 
-    @pytest.mark.parametrize("argv", [[], ["x"], ["5", "6"], ["-5"]])
-    def test_a_bad_argument_is_a_usage_error(self, argv):
+    @pytest.mark.parametrize("argv", [
+        [], ["x"], ["5", "6"], ["-5"], ["--check"], ["5", "--data-dir"],
+        ["5", "--check", "--check"], ["5", "--data-dir", "/a", "--data-dir", "/b"],
+        ["5", "--other"],
+    ])
+    def test_a_bad_argument_is_a_usage_error_in_one_line(self, argv):
+        """Claude Code shows the helper's standard error as it is: one line,
+        exit 64 (E1)."""
         code, out, err = _helper(argv)
         assert (code, out) == (64, "")
+        assert err.count("\n") == 1 and err.startswith("qswap key-helper: ")
         assert "usage: qswap key-helper N" in err
+        assert len(err.rstrip("\n")) <= display.WIDTH
 
     def test_help(self):
         code, out, err = _helper(["--help"])
         assert code == 0 and err == ""
         assert out.startswith("usage: qswap key-helper N")
-        assert "Example:" in out
+        assert "examples:" in out  # as every other verb's help
+        assert "--check" in out
+        # The exit status of each outcome is stated (E1).
+        assert "exits 1" in out and "64" in out
+        assert "exits 1" in key_helper.__doc__ and "64" in key_helper.__doc__
+
+    def test_check_says_nothing_when_the_key_can_be_read(self, temp_home, monkeypatch):
+        monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
+        root = key_helper.data_dir()
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        assert _helper(["5", "--check"]) == (0, "", "")
+        # Any order after the number, as doctor appends it to the line.
+        assert _helper(["5", "--data-dir", str(root), "--check"]) == (0, "", "")
+        assert _helper(["5", "--check", "--data-dir", str(root)]) == (0, "", "")
+
+    @pytest.mark.parametrize("case", ["missing", "no-key", "subscription"])
+    def test_check_fails_in_one_line_when_the_key_cannot_be_read(
+        self, temp_home, monkeypatch, case
+    ):
+        monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
+        root = key_helper.data_dir()
+        accounts = {"5": {"email": EMAIL_5, "kind": "api_key"}, "1": {"email": MAYA}}
+        if case == "missing":
+            _seed_data(root, {"1": {"email": MAYA}})
+        else:
+            _seed_data(root, accounts, {f".creds-1-{MAYA}.enc": '{"claudeAiOauth": {}}'})
+        number = "1" if case == "subscription" else "5"
+        code, out, err = _helper([number, "--check"])
+        assert (code, out) == (1, "")
+        assert err.startswith("qswap key-helper: ") and err.count("\n") == 1
 
     def test_hidden_from_the_main_help_map(self):
         from ai_quota_swap import helptext
@@ -396,7 +462,8 @@ class TestKeyHelper:
                 code = e.code
             mods = sorted(m for m in sys.modules if m.startswith("ai_quota_swap"))
             heavy = [m for m in ("urllib.request", "http.client", "ssl", "sqlite3",
-                                 "textual", "rumps") if m in sys.modules]
+                                 "textual", "rumps", "importlib.metadata", "email",
+                                 "zipfile") if m in sys.modules]
             sys.stderr.write(json.dumps({"code": code, "mods": mods, "heavy": heavy}))
         """)
         env = {"HOME": str(home), "USERPROFILE": str(home), "PATH": os.defpath}
@@ -435,6 +502,8 @@ class TestSettingsStates:
         ("C:\\Users\\a\\.local\\bin\\qswap.exe key-helper 3", "3"),
         ("/home/u/.local/bin/ai-quota-swap key-helper 4", "4"),
         ("/usr/bin/python3 -m ai_quota_swap key-helper 6", "6"),
+        ("/usr/bin/python3 -P -m ai_quota_swap key-helper 6", "6"),
+        ('"/a b/python3.12" -P -m ai_quota_swap key-helper 6 --data-dir /d', "6"),
         ("qswap key-helper 05", "5"),
     ])
     def test_qswaps_line_by_its_structure(self, tmp_path, line, number):
@@ -470,20 +539,23 @@ class TestSettingsWrites:
     LINE = f"{QSWAP} key-helper 5"
 
     @pytest.mark.parametrize("before, after", [
+        # The line goes first (decision B4): deleting it by hand leaves the
+        # object valid, where a last member would leave a trailing comma.
         (
             '{\n  "model": "opus",\n  "hooks": {"Stop": []}\n}\n',
-            '{\n  "model": "opus",\n  "hooks": {"Stop": []},\n  "apiKeyHelper": "LINE"\n}\n',
+            '{\n  "apiKeyHelper": "LINE",\n  "model": "opus",\n  "hooks": {"Stop": []}\n}\n',
         ),
         (
             '{\n    "b": 1,\n    "a": 2\n}',
-            '{\n    "b": 1,\n    "a": 2,\n    "apiKeyHelper": "LINE"\n}',
+            '{\n    "apiKeyHelper": "LINE",\n    "b": 1,\n    "a": 2\n}',
         ),
         (
             '{\n\t"z": true\n}\n',
-            '{\n\t"z": true,\n\t"apiKeyHelper": "LINE"\n}\n',
+            '{\n\t"apiKeyHelper": "LINE",\n\t"z": true\n}\n',
         ),
-        ('{"a":1}', '{"a":1, "apiKeyHelper":"LINE"}'),  # the file's own separator
-        ('{\n  "name": "café"\n}\n', '{\n  "name": "café",\n  "apiKeyHelper": "LINE"\n}\n'),
+        ('{"a":1}', '{"apiKeyHelper":"LINE","a":1}'),  # the file's own separators
+        ('{"a": 1, "b": 2}', '{"apiKeyHelper": "LINE", "a": 1, "b": 2}'),
+        ('{\n  "name": "café"\n}\n', '{\n  "apiKeyHelper": "LINE",\n  "name": "café"\n}\n'),
         ("{}", '{"apiKeyHelper": "LINE"}'),
     ])
     def test_adds_one_key_and_keeps_the_rest(self, tmp_path, before, after):
@@ -493,6 +565,78 @@ class TestSettingsWrites:
         assert path.read_text(encoding="utf-8") == after.replace("LINE", self.LINE)
         claude_settings.remove(path=path)
         assert path.read_text(encoding="utf-8") == before
+
+    @pytest.mark.parametrize("before", [
+        '{\n  "model": "opus",\n  "hooks": {\n    "Stop": []\n  }\n}\n',
+        '{\n    "b": 1\n}',
+        '{\n\t"z": true,\n\t"y": [1, 2]\n}\n',
+        '{\r\n  "a": 1,\r\n  "b": "x"\r\n}\r\n',
+        '\n{\n  "a": 1\n}\n\n',
+    ])
+    def test_deleting_the_line_by_hand_leaves_the_file_as_it_was(self, tmp_path, before):
+        """docs/api-accounts.md tells the reader to delete the apiKeyHelper
+        line by hand (F49): in a file with one member per line that is one
+        whole line, and what is left is the file as it was."""
+        path = tmp_path / "settings.json"
+        path.write_bytes(before.encode("utf-8"))
+        claude_settings.install(5, path=path, command=self.LINE)
+        lines = path.read_bytes().decode("utf-8").splitlines(keepends=True)
+        mine = [line for line in lines if '"apiKeyHelper"' in line]
+        assert len(mine) == 1
+        left = "".join(line for line in lines if line not in mine)
+        assert left == before
+        json.loads(left)
+
+    @pytest.mark.parametrize("before", [
+        '﻿{\n  "model": "opus"\n}\n',
+        '﻿{\r\n  "a": 1\r\n}\r\n',
+        '﻿{}',
+        '﻿',
+    ])
+    def test_a_byte_order_mark_is_kept(self, tmp_path, before):
+        """F14: the mark stays on every write, and the round trip is byte
+        for byte."""
+        path = tmp_path / "settings.json"
+        path.write_bytes(before.encode("utf-8"))
+        blank = claude_settings.blank_text(path)  # what _enter_key records
+        claude_settings.install(5, path=path, command=self.LINE)
+        assert path.read_bytes().startswith("﻿".encode("utf-8"))
+        assert claude_settings.read_state(path).number == "5"
+        claude_settings.install(6, path=path, command=f"{QSWAP} key-helper 6")
+        assert path.read_bytes().startswith("﻿".encode("utf-8"))
+        claude_settings.remove(path=path, restore_blank=blank)
+        assert path.read_bytes() == before.encode("utf-8")
+
+    @pytest.mark.parametrize("before", [
+        "{}", "{}\n", "{\n}", "{\n}\n", "{ }", "{\n\n}", "{\n  \n}", "{\r\n}\r\n",
+        "{}\n\n", "\n\n  {}  \n\n",
+    ])
+    def test_an_empty_object_in_any_spelling_round_trips(self, tmp_path, before):
+        """F14: one line or several is decided from the text inside the
+        braces, and the line comes out leaving that text as it was."""
+        path = tmp_path / "settings.json"
+        path.write_bytes(before.encode("utf-8"))
+        claude_settings.install(5, path=path, command=self.LINE)
+        assert json.loads(path.read_text(encoding="utf-8")) == {"apiKeyHelper": self.LINE}
+        claude_settings.remove(path=path)
+        assert path.read_bytes() == before.encode("utf-8")
+
+    @pytest.mark.parametrize("before", ["{ }", "{\n\n}", "\n{}\n\n", "﻿{ }"])
+    def test_an_empty_object_comes_back_after_the_key(self, temp_home, before):
+        """The blank-file record, generalised: a file that was an empty
+        object gets its own text back when the line comes out, even when
+        Claude Code rewrote it in its own format meanwhile."""
+        s = _fleet()
+        _settings(temp_home).write_bytes(before.encode("utf-8"))
+        _activate(s)
+        bom = "﻿" if before.startswith("﻿") else ""
+        line = _settings_obj_any(temp_home)["apiKeyHelper"]
+        _settings(temp_home).write_bytes(
+            (bom + json.dumps({"apiKeyHelper": line}, indent=2) + "\n").encode("utf-8")
+        )
+        s.switch_to("6", json_output=True)
+        s.switch_to("1", json_output=True)
+        assert _settings(temp_home).read_bytes() == before.encode("utf-8")
 
     def test_replaces_its_own_line_in_place(self, tmp_path):
         path = tmp_path / "settings.json"
@@ -611,10 +755,23 @@ class TestSettingsWrites:
         assert claude_settings.without_helper("{bad") == "{bad"
 
     def test_the_command_names_the_installed_qswap(self, monkeypatch, tmp_path):
+        """The real resolver: started through a link (in a directory with a
+        space) to this install's own console script, off PATH, the line
+        names that link, quoted."""
+        from ai_quota_swap import installed
+
         monkeypatch.setattr(claude_settings, "qswap_executable", _REAL_EXECUTABLE)
-        exe = tmp_path / "bin with space" / "qswap"
+        monkeypatch.setattr(key_helper, "_platform", lambda: "macos")
+        own = installed.own_scripts()
+        if not own:
+            pytest.skip("this environment has no qswap console script")
+        exe = tmp_path / "bin with space" / own[0].name
         exe.parent.mkdir()
-        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        try:
+            exe.symlink_to(own[0])
+        except (OSError, NotImplementedError):
+            pytest.skip("symbolic links are not available here")
+        monkeypatch.setenv("PATH", os.defpath)
         monkeypatch.setattr(sys, "argv", [str(exe), "switch", "5"])
         line = claude_settings.helper_command(5)
         quote = '"' if sys.platform == "win32" else "'"
@@ -641,6 +798,197 @@ class TestSettingsWrites:
         assert _REAL_COMMAND_MISSING(line) is False
         exe.unlink()
         assert _REAL_COMMAND_MISSING(line) is True
+
+
+def _random_path(rng, alphabet: str, sep: str, head: str, tail: str) -> str:
+    segments = [
+        "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 8)))
+        for _ in range(rng.randint(1, 3))
+    ]
+    return head + sep.join(segments) + sep + tail
+
+
+#: Every character _quote treats specially on POSIX, both quotes together,
+#: and some that are not special at all.
+_POSIX_CHARS = "ab Z.-_é'\"$`\\!*?&;|<>()[]{}#~=\t\n%^,"
+#: What a Windows path can hold (no double quote), with cmd.exe's specials.
+_WINDOWS_CHARS = "ab Z.-_é'$`!&;()^%#~=[]{},"
+
+
+class TestTheLineReadsBack:
+    """Quoting is a round trip (F3, F19): every line _quote can write reads
+    back as qswap's line for the same account, with the same program and
+    data directory, and command_missing tests the path the line runs."""
+
+    def _line(self, monkeypatch, program: str, data_dir: str | None, number: int = 5) -> str:
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [program])
+        monkeypatch.setattr(key_helper, "pinned_data_dir", lambda: data_dir)
+        return claude_settings.helper_command(number)
+
+    @POSIX_ONLY
+    def test_posix_paths_with_every_special_character(self, monkeypatch, tmp_path):
+        import random
+
+        rng = random.Random(20261110)
+        cases = [("/Users/o'brien/say \"hi\"/bin/qswap", "/d/it's \"x\"")] + [
+            (
+                _random_path(rng, _POSIX_CHARS, "/", "/", "qswap"),
+                _random_path(rng, _POSIX_CHARS, "/", "/", "ai-quota-swap"),
+            )
+            for _ in range(300)
+        ]
+        for i, (program, data_dir) in enumerate(cases):
+            line = self._line(monkeypatch, program, data_dir, number=i)
+            parts = claude_settings.read_line(line)
+            assert parts is not None, line
+            assert (parts.program, parts.data_dir, parts.number) == (program, data_dir, str(i))
+            assert claude_settings.parse_line(line) == str(i)
+            if i % 20 == 0:
+                # The shell reads the same words the parser does.
+                done = subprocess.run(
+                    ["/bin/sh", "-c", "printf '%s\\0' " + line], capture_output=True,
+                )
+                words = done.stdout.decode("utf-8").split("\0")[:-1]
+                assert words == [program, "key-helper", str(i), "--data-dir", data_dir]
+
+    @POSIX_ONLY
+    def test_command_missing_tests_the_path_the_line_runs(self, monkeypatch, tmp_path):
+        exe = tmp_path / "it's \"x\" $y" / "qswap"
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        line = self._line(monkeypatch, str(exe), None)
+        assert _REAL_COMMAND_MISSING(line) is False
+        exe.unlink()
+        assert _REAL_COMMAND_MISSING(line) is True
+
+    def test_windows_paths_are_not_unescaped(self, monkeypatch):
+        """cmd.exe takes nothing out of a double-quoted word: a UNC path and
+        a backslash before $ keep every backslash."""
+        import random
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        rng = random.Random(1110)
+        cases = [
+            (r"\\fileserver\home$\jsmith\.local\bin\qswap.exe", None),
+            (r"C:\Users\John Smith\$x\qswap.exe", r"C:\Users\John Smith\data$"),
+        ] + [
+            (
+                _random_path(rng, _WINDOWS_CHARS, "\\", rng.choice(["C:\\", "\\\\srv\\s$\\"]),
+                             "qswap.exe"),
+                _random_path(rng, _WINDOWS_CHARS, "\\", "D:\\", "data"),
+            )
+            for _ in range(300)
+        ]
+        for program, data_dir in cases:
+            line = self._line(monkeypatch, program, data_dir)
+            parts = claude_settings.read_line(line)
+            assert parts is not None, line
+            assert (parts.program, parts.data_dir) == (program, data_dir)
+            assert claude_settings.parse_line(line) == "5"
+            seen: list[str] = []
+            monkeypatch.setattr(claude_settings.os.path, "exists", lambda p: seen.append(p))
+            assert _REAL_COMMAND_MISSING(line) is True
+            assert seen == [program]
+            monkeypatch.setattr(claude_settings.os.path, "exists", lambda p: p == program)
+            assert _REAL_COMMAND_MISSING(line) is False
+            monkeypatch.undo()
+            monkeypatch.setattr(sys, "platform", "win32")
+
+    @POSIX_ONLY
+    @pytest.mark.parametrize("on_path", [True, False])
+    def test_the_menu_bars_switch_writes_a_line_the_shell_runs(
+        self, temp_home, monkeypatch, tmp_path, on_path
+    ):
+        """F21: the real resolver in the menu bar's process shape (the
+        bundle's interpreter, argv[0] the package's __main__.py, the plist's
+        PATH): the engine's switch writes this install's console script, the
+        PATH link when the plist's PATH has it, and /bin/sh runs the line."""
+        from ai_quota_swap import installed
+
+        monkeypatch.setattr(claude_settings, "qswap_executable", _REAL_EXECUTABLE)
+        monkeypatch.setattr(key_helper, "_platform", lambda: "macos")
+        venv = tmp_path / "tools" / "ai-quota-swap"
+        site = venv / "lib" / "python3.12" / "site-packages"
+        info = site / "ai_quota_swap-0.1.0.dist-info"
+        info.mkdir(parents=True)
+        (info / "RECORD").write_text("../../../bin/qswap,sha256=x,1\n", encoding="utf-8")
+        script = venv / "bin" / "qswap"
+        script.parent.mkdir()
+        script.write_text('#!/bin/sh\necho "ran $*"\n', encoding="utf-8")
+        script.chmod(0o755)
+        contents = tmp_path / "AI Quota Swap Menubar.app" / "Contents"
+        (contents / "MacOS").mkdir(parents=True)
+        (contents / "lib").mkdir()
+        (contents / "lib" / "python3.12").symlink_to(venv / "lib" / "python3.12")
+        bundle_site = contents / "lib" / "python3.12" / "site-packages"
+        link = temp_home / ".local" / "bin" / "qswap"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(script)
+        monkeypatch.setattr(installed, "_package_dir", lambda: bundle_site / "ai_quota_swap")
+        monkeypatch.setattr(installed, "_interpreter_site_dirs", lambda: [bundle_site])
+        monkeypatch.setattr(sys, "executable", str(contents / "MacOS" / "python"))
+        monkeypatch.setattr(sys, "argv", [
+            str(bundle_site / "ai_quota_swap" / "__main__.py"), "menubar", "--foreground",
+        ])
+        plist_path = "/usr/bin:/bin:/usr/sbin:/sbin"
+        monkeypatch.setenv("PATH", f"{link.parent}:{plist_path}" if on_path else plist_path)
+        s = _fleet()
+        s.switch_to("5", json_output=True, entered_by="engine")
+        line = _settings_obj(temp_home)["apiKeyHelper"]
+        assert line == f"{link if on_path else script} key-helper 5"
+        done = subprocess.run(["/bin/sh", "-c", line], cwd=tmp_path, capture_output=True,
+                              text=True)
+        assert (done.returncode, done.stdout) == (0, "ran key-helper 5\n")
+
+    @POSIX_ONLY
+    def test_the_interpreter_form_ignores_the_sessions_project_files(self, tmp_path):
+        """F17: Claude Code runs the line from the session's project
+        directory. With -P a project file named like a standard-library
+        module is not imported; the bare -m form imports it."""
+        root = tmp_path / "data"
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        project = tmp_path / "project"
+        project.mkdir()
+        for module in ("base64", "json", "calendar"):
+            (project / f"{module}.py").write_text(
+                "open('ran', 'w').write('x')\nraise SystemExit(3)\n", encoding="utf-8"
+            )
+        q = claude_settings._quote
+        env = {"HOME": str(tmp_path / "home"), "PATH": os.defpath}
+        for flags, answers in (("-P -m", True), ("-m", False)):
+            line = f"{q(sys.executable)} {flags} ai_quota_swap key-helper 5 --data-dir {q(str(root))}"
+            assert claude_settings.parse_line(line) == "5"
+            done = subprocess.run(["/bin/sh", "-c", line], cwd=project, env=env,
+                                  capture_output=True, text=True, timeout=60)
+            if answers:
+                assert (done.returncode, done.stdout) == (0, KEY_5 + "\n"), done.stderr
+                assert not (project / "ran").exists()
+            else:
+                assert done.returncode != 0 and (project / "ran").exists()
+
+    def test_a_line_qswap_could_not_read_back_is_never_written(self, monkeypatch, tmp_path):
+        """A command that would not read as qswap's line for that account is
+        refused before the write (F19): qswap could never remove it."""
+        path = tmp_path / "settings.json"
+        path.write_text('{"a": 1}\n', encoding="utf-8")
+        for command in ("/opt/tool/print-key key-helper 5", f"{QSWAP} key-helper 6"):
+            with pytest.raises(claude_settings.SettingsError) as caught:
+                claude_settings.install(5, path=path, command=command)
+            assert caught.value.kind == "command"
+            assert path.read_text(encoding="utf-8") == '{"a": 1}\n'
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: ["/opt/tool/notqswap"])
+        with pytest.raises(claude_settings.SettingsError):
+            claude_settings.install(5, path=path)
+        assert path.read_text(encoding="utf-8") == '{"a": 1}\n'
+
+    def test_the_switch_is_refused_rather_than_writing_it(self, temp_home, monkeypatch):
+        s = _fleet()
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: ["/opt/tool/notqswap"])
+        with pytest.raises(KeyHelperUnavailableError):
+            s.switch_to("5", json_output=True)
+        assert not _settings(temp_home).exists()
+        assert s.current_account_number() == "1"
 
 
 # == C. who is active =====================================================================
@@ -901,8 +1249,8 @@ class TestSwitching:
         assert out.splitlines() == [
             "Switched #1 personal → #5 ci (API key)",
             "Running Claude Code sessions move to the key within a few seconds. #1 personal",
-            "stays logged in underneath. claude.ai connectors are unavailable while a key is",
-            "in use.",
+            "stays logged in underneath. claude.ai connectors and Remote Control are",
+            "unavailable while a key is in use. Go back with: qswap switch 1",
         ]
         _fits(out)
 
@@ -1092,8 +1440,10 @@ class TestSwitching:
         s.switch_to("1", json_output=True)
         assert _settings(temp_home).read_text(encoding="utf-8") == original
 
+    # Another apiKeyHelper is refused with no saved-key way (decision B6):
+    # tests/test_key_switch_round2.py, TestAnotherHelper.
     @pytest.mark.parametrize("text, reason", [
-        ('{"apiKeyHelper": "/opt/vault/print-key"}', "already sets another apiKeyHelper"),
+        ("[]", "is not valid JSON (not a JSON object)"),
         ("{not json", "is not valid JSON"),
     ])
     def test_refused_when_the_line_cannot_be_installed(
@@ -1124,8 +1474,7 @@ class TestSwitching:
         self, temp_home, block_real_keychain, alive
     ):
         s = _fleet()
-        _settings(temp_home).write_text('{"apiKeyHelper": "/opt/vault/print-key"}',
-                                        encoding="utf-8")
+        _settings(temp_home).write_text("{not json", encoding="utf-8")
         _write_sessions(temp_home, [4101])
         alive.add(4101)
         s.switch_to("5", json_output=True, log_out_sessions=True)
@@ -1228,7 +1577,7 @@ class TestAccountChangesWhileOnAKey:
         s = _fleet()
         _activate(s)
         _settings(temp_home).write_text("{broken", encoding="utf-8")
-        with pytest.raises(SwitchError, match="cannot remove its key line"):
+        with pytest.raises(SwitchError, match="key line cannot be removed"):
             s.remove_account("5", assume_yes=True)
         assert "5" in s._get_sequence_data()["accounts"]
 
@@ -1309,7 +1658,7 @@ class TestAccountChangesWhileOnAKey:
         assert s.purge(assume_yes=True) is True
         captured = capsys.readouterr()
         text = " ".join((captured.out + captured.err).split())
-        assert "cannot be parsed, so qswap could not check it for its apiKeyHelper line" in text
+        assert "cannot be parsed, so qswap could not check it for its key line" in text
 
     def test_a_new_key_for_the_active_account_is_saved(self, temp_home, capsys):
         s = _fleet()
@@ -1345,7 +1694,7 @@ class TestAccountChangesWhileOnAKey:
         import_accounts(s, str(out), force=True)
         err = " ".join(capsys.readouterr().err.split())
         assert "The saved key for #5 ci was replaced." in err
-        assert "from their next key refresh" in err
+        assert "pick up the new key within 5 minutes, or at once after a request" in err
         assert s.helper_account() == "5"
 
 
@@ -1418,6 +1767,33 @@ class TestRunProfiles:
         # The next launch links it again.
         SessionManager(s)._sync_items(d, ("settings.json",), scope=("settings.json",))
         assert dest.is_symlink() or "apiKeyHelper" not in dest.read_text()
+
+    def test_a_settings_file_with_a_byte_order_mark_is_copied_without_the_line(
+        self, temp_home
+    ):
+        """F12: an editor saved the user settings with a byte order mark while
+        the line is in. The copy a launch (or a switch) gives the profile
+        still has no line."""
+        from ai_quota_swap.session import SETTINGS_COPY_MARKER, SessionManager
+
+        s = _fleet()
+        d = _profile(s)
+        _activate(s)
+        raw = _settings(temp_home).read_bytes()
+        _settings(temp_home).write_bytes("﻿".encode("utf-8") + raw)
+        assert s.key_helper_state().number == "5"
+        dest = d / "settings.json"
+        SessionManager(s)._sync_items(d, ("settings.json",), scope=("settings.json",))
+        assert not dest.is_symlink() and (d / SETTINGS_COPY_MARKER).exists()
+        assert "apiKeyHelper" not in dest.read_bytes().decode("utf-8")
+        assert json.loads(dest.read_bytes().decode("utf-8-sig")) == {"model": "opus"}
+        dest.unlink()
+        try:
+            dest.symlink_to(_settings(temp_home))
+        except (OSError, NotImplementedError):
+            pytest.skip("symbolic links are not available here")
+        assert s.isolate_run_profiles() == []
+        assert "apiKeyHelper" not in dest.read_bytes().decode("utf-8")
 
     def test_a_crash_between_the_steps_is_found_and_repaired(self, temp_home):
         s = _fleet()
@@ -2124,14 +2500,16 @@ class TestSurfaces:
         alive.add(4101)
         assert _activate(s)["switched"] is True  # no question at all
         s.switch_to("1", json_output=True)
-        _settings(temp_home).write_text('{"apiKeyHelper": "/opt/x"}', encoding="utf-8")
+        # (Another apiKeyHelper asks nothing either, decision B6: the saved
+        # key would not be used; TestAnotherHelper in test_key_switch_round2.)
+        _settings(temp_home).write_text("{not json", encoding="utf-8")
         with pytest.raises(KeyHelperUnavailableError) as caught:
             _activate(s)
         assert isinstance(caught.value, SessionsRunningError)
         title, message, button = menubar.api_key_switch_question(caught.value)
         assert title == "Use the saved key instead?"
         assert button == "Switch and log out sessions"
-        assert "already sets another apiKeyHelper" in message
+        assert "is not valid JSON" in message
         assert "--log-out-sessions" not in message
 
     def test_the_menu_bar_notices_a_change_of_the_settings_file(self, temp_home):
@@ -2244,6 +2622,176 @@ class TestMovedQswap:
         assert command_missing("qswap key-helper 5") is False  # found on PATH
 
 
+@POSIX_ONLY
+class TestTheLineAnswers:
+    """Decision B2 (F18): doctor runs the line's own command with --check,
+    as Claude Code runs it (through the shell), and reports a line that
+    cannot answer: a bare name, a path that is not an executable program,
+    an interpreter that cannot import the package, a bare -m, a failure or
+    no answer in time. Only a line parse_line reads as qswap's is run, and
+    nothing it prints is shown but the helper's own one-line message."""
+
+    @pytest.fixture(autouse=True)
+    def _real(self, monkeypatch):
+        monkeypatch.setattr(claude_settings, "command_missing", _REAL_COMMAND_MISSING)
+        monkeypatch.setattr(claude_settings, "check_command", _REAL_CHECK_COMMAND)
+        monkeypatch.setattr(claude_settings, "_run_check", _REAL_RUN_CHECK)
+
+    def _program(self, tmp_path, body: str, name: str = "qswap", mode: int = 0o755) -> Path:
+        exe = tmp_path / "bin" / name
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        exe.chmod(mode)
+        return exe
+
+    def _line(self, home: Path, command: str) -> None:
+        _settings(home).write_text(json.dumps({"apiKeyHelper": command}), encoding="utf-8")
+
+    def _check(self):
+        return {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
+
+    def test_a_line_that_answers_passes_and_names_its_command(self, temp_home, tmp_path):
+        # $1 key-helper, $2 the number, $3 --check: only that answers.
+        exe = self._program(tmp_path, 'test "$3" = --check && exit 0\nexit 9\n')
+        s = _fleet()
+        self._line(temp_home, f"{exe} key-helper 5")
+        check = self._check()
+        assert check.status == "pass"
+        assert check.summary.endswith(f", which runs {exe}")
+        assert claude_settings.line_answers(s.key_helper_state()) is None
+
+    def test_a_failure_is_said_in_the_helpers_own_words(self, temp_home, tmp_path):
+        exe = self._program(tmp_path, (
+            'echo "qswap key-helper: #5 has no saved key; save one: '
+            'qswap add-token KEY --slot 5" >&2\nexit 1\n'
+        ))
+        s = _fleet()
+        self._line(temp_home, f"{exe} key-helper 5")
+        check = self._check()
+        assert check.status == "fail"
+        assert "but its line fails (#5 has no saved key; save one:" in check.summary
+        assert check.fix == "qswap add-token KEY --slot 5"  # the helper's own next step
+        assert "running ones keep the key they have" in check.summary
+        assert claude_settings.line_answers(s.key_helper_state()).startswith("fails (#5")
+
+    def test_a_failure_without_a_command_is_repaired_by_the_switch(self, temp_home, tmp_path):
+        exe = self._program(
+            tmp_path, 'echo "qswap key-helper: qswap manages no accounts on this machine" >&2\n'
+                      "exit 1\n",
+        )
+        _fleet()
+        self._line(temp_home, f"{exe} key-helper 5")
+        check = self._check()
+        assert "fails (qswap manages no accounts on this machine)" in check.summary
+        assert check.fix == "qswap switch 5"
+
+    def test_what_the_program_prints_is_never_shown(self, temp_home, tmp_path):
+        exe = self._program(tmp_path, f'echo {KEY_5}\necho "{KEY_6}" >&2\nexit 2\n')
+        _fleet()
+        self._line(temp_home, f"{exe} key-helper 5")
+        check = self._check()
+        assert check.status == "fail" and "fails (exit 2)" in check.summary
+        for text in (check.summary, check.hint or "", json.dumps(doctor.to_json(
+            doctor.run_checks(), online=False))):
+            assert KEY_5 not in text and KEY_6 not in text
+
+    @pytest.mark.parametrize("case, words", [
+        ("bare-name", "runs qswap by name only"),
+        ("not-executable", "is not executable"),
+        ("directory", "is not a program"),
+    ])
+    def test_a_line_that_cannot_run_is_reported(self, temp_home, tmp_path, monkeypatch,
+                                                 case, words):
+        ran: list[str] = []
+        monkeypatch.setattr(claude_settings, "_run_check",
+                            lambda command, **kw: ran.append(command) or (0, ""))
+        if case == "bare-name":
+            command = "qswap key-helper 5"
+        elif case == "not-executable":
+            command = f"{self._program(tmp_path, 'exit 0\n', mode=0o644)} key-helper 5"
+        else:
+            (tmp_path / "qswap").mkdir()
+            command = f"{tmp_path / 'qswap'} key-helper 5"
+        s = _fleet()
+        self._line(temp_home, command)
+        check = self._check()
+        assert check.status == "fail" and check.fix == "qswap switch 5"
+        assert words in check.summary
+        assert words in claude_settings.line_answers(s.key_helper_state())
+        assert ran == []
+
+    def test_an_interpreter_that_cannot_import_the_package(self, temp_home, tmp_path):
+        python = self._program(
+            tmp_path, 'echo "python3: No module named ai_quota_swap" >&2\nexit 1\n',
+            name="python3",
+        )
+        _fleet()
+        self._line(temp_home, f"{python} -P -m ai_quota_swap key-helper 5")
+        check = self._check()
+        assert check.status == "fail" and "its line fails (exit 1)" in check.summary
+
+    def test_a_bare_dash_m_line_is_reported_without_running_it(
+        self, temp_home, monkeypatch
+    ):
+        ran: list[str] = []
+        monkeypatch.setattr(claude_settings, "_run_check",
+                            lambda command, **kw: ran.append(command) or (0, ""))
+        _fleet()
+        self._line(temp_home, f"{sys.executable} -m ai_quota_swap key-helper 5")
+        check = self._check()
+        assert check.status == "fail" and "Python with -m" in check.summary
+        assert ran == []
+
+    def test_a_line_that_does_not_answer_in_time(self, tmp_path):
+        exe = self._program(tmp_path, "sleep 30\n")
+        started = time.monotonic()
+        reason = claude_settings.check_command(f"{exe} key-helper 5", timeout=0.3)
+        assert reason == "did not answer within 0.3 seconds"
+        assert time.monotonic() - started < 10  # the program and its children are gone
+
+    def test_a_check_that_could_not_be_made_warns(self, temp_home, tmp_path):
+        from dataclasses import replace as with_probe
+
+        def boom(command):
+            raise OSError("no shell")
+
+        _fleet()
+        self._line(temp_home, f"{self._program(tmp_path, 'exit 0\n')} key-helper 5")
+        probes = with_probe(doctor.default_probes(), key_line_answers=boom)
+        check = {c.id: c for c in doctor.run_checks(probes)}["claude.key_helper"]
+        assert check.status == "warn" and "could not check" in check.summary
+        assert check.fix == "qswap key-helper 5 --check"
+
+    def test_only_qswaps_own_line_is_run(self, temp_home, monkeypatch):
+        ran: list[str] = []
+        monkeypatch.setattr(claude_settings, "_run_check",
+                            lambda command, **kw: ran.append(command) or (0, ""))
+        _fleet()
+        self._line(temp_home, "/opt/vault/print-key")
+        checks = {c.id: c for c in doctor.run_checks()}
+        assert "claude.key_helper" not in checks
+        assert ran == []
+        state = claude_settings.read_state(_settings(temp_home))
+        assert claude_settings.line_answers(state) == "is not a key line of qswap's"
+
+    def test_this_installs_own_line_answers(self, temp_home, tmp_path, monkeypatch):
+        """End to end with this install's console script: the line qswap
+        writes, run the way doctor runs it. It names the data directory, so
+        the child reads only the key file there (never a Keychain)."""
+        from ai_quota_swap import installed
+
+        if not installed.own_scripts():
+            pytest.skip("this environment has no qswap console script")
+        monkeypatch.setattr(claude_settings, "qswap_executable", _REAL_EXECUTABLE)
+        root = tmp_path / "data"
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        monkeypatch.setattr(key_helper, "pinned_data_dir", lambda: root)
+        assert claude_settings.check_command(claude_settings.helper_command(5)) is None
+        reason = claude_settings.check_command(claude_settings.helper_command(9))
+        assert reason == "fails (#9 does not exist; qswap list shows the accounts)"
+
+
 class TestProblemEverywhere:
     def _broken(self, home):
         _settings(home).write_text(
@@ -2288,8 +2836,8 @@ class TestRemovingAKeyInUse:
         capsys.readouterr()
         s.remove_account("5", assume_yes=True)
         out = " ".join(capsys.readouterr().out.split())
-        assert "1 session started with qswap run 5 (pid 4242) use this key" in out
-        assert "apiKeyHelper script is failing" in out
+        assert "1 session started with qswap run 5 (pid 4242) uses this key" in out
+        assert "keeps using it after it is removed" in out
 
     def test_run_records_its_pid(self, temp_home, monkeypatch):
         from ai_quota_swap import clis

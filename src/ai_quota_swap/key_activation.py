@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from ai_quota_swap import claude_settings, display
@@ -44,6 +45,180 @@ KEY_STATE_FILENAME = "key_helper.json"
 #: ``qswap run N`` sessions on a key: one JSON line per launch (pid, number).
 KEY_RUNS_FILENAME = "key_runs.jsonl"
 ENTERED_BY = ("user", "engine")
+
+
+# -- key_helper.json ------------------------------------------------------------------
+#
+# While a key is in, the record says which (``number``), who entered it
+# (``enteredBy``), since when, whether qswap created the settings file
+# (``createdSettings``) and what a blank file held (``blankSettings``).
+# Leaving a key keeps a tombstone for it under ``left`` (number -> ``at``,
+# ``enteredBy``) instead of deleting the record (decision B5): a line of
+# qswap's that turns up again with no record (another program wrote back an
+# older copy of the settings) is then known to have come back, and keeps the
+# name of whoever had entered it.
+
+
+# -- what defeats the line (decision B6) ---------------------------------------------
+#
+# Claude Code obeys these, set in a settings file's ``env`` block, before any
+# key line: a credential of its own, or another provider altogether. Named in
+# a message, never their values.
+DEFEATING_ENV = (
+    "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+)
+_PROVIDER_SWITCHES = DEFEATING_ENV[2:]
+_SWITCHED_OFF = {"", "0", "false", "no", "off"}
+BASE_URL_VAR = "ANTHROPIC_BASE_URL"
+_ANTHROPIC_HOSTS = {"api.anthropic.com"}
+
+
+def settings_object(text: str | None) -> dict:
+    """A settings file's object (read past a byte order mark), or ``{}``."""
+    if not text:
+        return {}
+    try:
+        obj = json.loads(text.removeprefix("\ufeff"))
+    except ValueError:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def env_block(obj: dict) -> dict[str, str]:
+    """The ``env`` block of a settings object, its values as strings."""
+    env = obj.get("env") if isinstance(obj, dict) else None
+    if not isinstance(env, dict):
+        return {}
+    return {str(k): "" if v is None else str(v) for k, v in env.items()}
+
+
+def defeating_names(env: dict[str, str]) -> list[str]:
+    """The variables in ``env`` that Claude Code obeys before a key line."""
+    out = []
+    for name in DEFEATING_ENV:
+        value = (env.get(name) or "").strip()
+        if not value:
+            continue
+        if name in _PROVIDER_SWITCHES and value.lower() in _SWITCHED_OFF:
+            continue
+        out.append(name)
+    return out
+
+
+def other_host(env: dict[str, str]) -> str | None:
+    """The host ``ANTHROPIC_BASE_URL`` sends the key to, when it is not
+    Anthropic's API (only the host: a URL can carry a password)."""
+    from urllib.parse import urlsplit
+
+    value = (env.get(BASE_URL_VAR) or "").strip()
+    if not value:
+        return None
+    try:
+        host = urlsplit(value if "//" in value else f"//{value}").hostname
+    except ValueError:
+        host = None
+    if not host:
+        return "a host qswap cannot read from it"
+    return None if host.lower() in _ANTHROPIC_HOSTS else host
+
+
+def _tombstones(record: dict) -> dict:
+    left = record.get("left")
+    return dict(left) if isinstance(left, dict) else {}
+
+
+@dataclass(frozen=True)
+class KeyFindings:
+    """Decision B5: the key line in the user settings, the account list,
+    ``key_helper.json``, the run profiles and ``activeAccountNumber``
+    compared, and what does not agree. Every switch, list, status, the
+    snapshot and doctor read this; :meth:`KeyActivationMixin.reconcile_key_helper`
+    repairs from it."""
+
+    state: claude_settings.HelperState
+    #: The API-key account active through qswap's line, or None.
+    key: str | None = None
+    #: The line names an account that cannot give a key: ``{"number", "why"}``.
+    problem: dict | None = None
+    #: What could not be read, so nothing can be told or repaired:
+    #: ``settings`` (the file cannot be parsed or read) or ``accounts``.
+    unknown: str | None = None
+    #: Who entered the active key (``user`` or ``engine``).
+    entered_by: str | None = None
+    #: The active key's line came back after qswap took it out.
+    came_back: bool = False
+    #: The key ``key_helper.json`` records as entered, whose line is gone.
+    lost: str | None = None
+    #: ``activeAccountNumber`` names a key whose line is gone (and which is
+    #: not saved the older way under the login).
+    stale_active: str | None = None
+    #: Run profiles still sharing the user settings while the line is in.
+    linked: tuple[Path, ...] = ()
+    #: Run profiles holding a settings copy while no line is in.
+    copies: tuple[Path, ...] = ()
+    #: The settings cannot be parsed while ``key_helper.json`` names a key.
+    unreadable_record: str | None = None
+
+
+def assess_key_state(
+    state: claude_settings.HelperState,
+    accounts: dict | None,
+    record: dict | None,
+    *,
+    active_number: object = None,
+    login_slot: str | None = None,
+    linked: tuple = (),
+    copies: tuple = (),
+) -> KeyFindings:
+    """The comparison itself, from what was read (``accounts`` None: the
+    account list could not be read). No I/O: doctor reads the same files
+    through its probes and calls this too."""
+    record = record if isinstance(record, dict) else {}
+    entered = str(record["number"]) if record.get("number") is not None else None
+    if state.kind == claude_settings.INVALID:
+        return KeyFindings(state, unknown="settings", unreadable_record=entered)
+    if accounts is None:
+        return KeyFindings(state, unknown="accounts")
+    key = problem = None
+    line_number = state.number if state.ours else None
+    if line_number is not None:
+        row = accounts.get(line_number)
+        if not isinstance(row, dict):
+            problem = {"number": line_number, "why": "missing"}
+        elif row.get("kind") != "api_key":
+            problem = {"number": line_number, "why": "not-api-key"}
+        else:
+            key = line_number
+    entered_by, came_back = None, False
+    if key is not None:
+        tomb = _tombstones(record).get(key)
+        if entered == key and record.get("enteredBy") in ENTERED_BY:
+            entered_by = record["enteredBy"]
+        elif entered != key and isinstance(tomb, dict):
+            came_back = True
+            entered_by = tomb.get("enteredBy") if tomb.get("enteredBy") in ENTERED_BY else "user"
+        else:
+            entered_by = "user"
+    lost = entered if entered is not None and entered != line_number else None
+    stale_active = None
+    if active_number is not None:
+        active = str(active_number)
+        row = accounts.get(active)
+        # Only a key qswap has a trace of entering through the line (a
+        # record or a tombstone): a number an import seeded is left alone.
+        traced = active == entered or active in _tombstones(record)
+        if (
+            traced and isinstance(row, dict) and row.get("kind") == "api_key"
+            and active != line_number and active != login_slot
+        ):
+            stale_active = active
+    return KeyFindings(
+        state, key=key, problem=problem, entered_by=entered_by, came_back=came_back,
+        lost=lost, stale_active=stale_active,
+        linked=tuple(linked) if key is not None else (),
+        copies=tuple(copies) if line_number is None else (),
+    )
 
 
 class KeyActivationMixin:
@@ -88,10 +263,9 @@ class KeyActivationMixin:
         if not state.ours or state.number is None:
             return None, None
         if data is None:
-            try:
-                data = self._get_sequence_data() or {}
-            except Exception:
-                data = {}
+            # A list that cannot be read raises: "unknown", never "missing"
+            # (decision B5), so no caller repairs or reports on it.
+            data = self._get_sequence_data() or {}
         record = (data.get("accounts") or {}).get(state.number)
         if not isinstance(record, dict):
             return None, {"number": state.number, "why": "missing"}
@@ -122,6 +296,59 @@ class KeyActivationMixin:
             number = self._key_state().get("number")
             return str(number) if number is not None else None
         return None
+
+    def key_line_unreadable(self) -> list[str] | None:
+        """The one note every surface (and the guards, and a refused switch)
+        shows while the settings cannot be parsed and key_helper.json names a
+        key (decision B5, F52): the file cannot be read, qswap last made #N
+        active there, and fixing the file is the next step. None otherwise."""
+        try:
+            state = self.key_helper_state()
+            if state.kind != claude_settings.INVALID:
+                return None
+            number = self._key_state().get("number")
+            if number is None:
+                return None
+            label = self.label(str(number), long=False)
+        except Exception:
+            return None
+        return display.key_settings_unreadable(state.shown_path(), state.error, label)
+
+    def key_findings(self) -> KeyFindings:
+        """The line, the account list, key_helper.json, the run profiles and
+        ``activeAccountNumber`` compared (:func:`assess_key_state`). Reads
+        only; never raises."""
+        state = self.key_helper_state()
+        accounts: dict | None
+        active = login = None
+        try:
+            data = self._get_sequence_data() or {}
+            accounts = data.get("accounts") or {}
+            active = data.get("activeAccountNumber")
+        except Exception:
+            accounts = None
+        if (
+            accounts is not None and active is not None
+            and (accounts.get(str(active)) or {}).get("kind") == "api_key"
+            and not (state.ours and state.number == str(active))
+        ):
+            # Only then does it matter whether the key is saved the older
+            # way under the login (read only when needed).
+            try:
+                login = self.login_account_number()
+            except Exception:
+                login = None
+        linked: tuple = ()
+        copies: tuple = ()
+        if accounts is not None and state.kind != claude_settings.INVALID:
+            if state.ours:
+                linked = tuple(self.profiles_still_linked())
+            else:
+                copies = tuple(self.stale_profile_copies())
+        return assess_key_state(
+            state, accounts, self._key_state(), active_number=active, login_slot=login,
+            linked=linked, copies=copies,
+        )
 
     def helper_problem(self) -> dict | None:
         """A helper line naming an account that cannot give a key, or None."""
@@ -164,7 +391,9 @@ class KeyActivationMixin:
 
     def key_entered_by(self) -> str | None:
         """Who entered the active key: ``user`` or ``engine``; None when no
-        key is active through the helper. A line qswap has no record of
+        key is active through the helper. A line that came back after qswap
+        took it out (no record, a tombstone for its number) keeps the name of
+        whoever had entered it (decision B5). A line qswap has no trace of
         (written by an older run, or by hand) counts as the user's: such a
         key is only left at its budget or by the user."""
         number = self.helper_account()
@@ -173,6 +402,10 @@ class KeyActivationMixin:
         state = self._key_state()
         if str(state.get("number")) == number and state.get("enteredBy") in ENTERED_BY:
             return state["enteredBy"]
+        tomb = _tombstones(state).get(number)
+        if state.get("number") is None and isinstance(tomb, dict):
+            if tomb.get("enteredBy") in ENTERED_BY:
+                return tomb["enteredBy"]
         return "user"
 
     def _adopt_engine_key(self, number: str) -> str | None:
@@ -181,19 +414,91 @@ class KeyActivationMixin:
         sentence that says so, or None when nothing changed."""
         state = self._key_state()
         if str(state.get("number")) != str(number) or state.get("enteredBy") != "engine":
+            if state.get("number") is None and self.key_entered_by() == "engine":
+                # Came back with the engine's name: the record is made anew.
+                with FileLock(self.lock_file):
+                    self._write_key_state(self._entered_record(state, str(number), "user"))
+                return display.KEY_KEPT
             return None
         with FileLock(self.lock_file):
             self._write_key_state({**state, "enteredBy": "user"})
-        return (
-            "Auto-switch keeps it now, and leaves it only at its budget or when its "
-            "credit is spent or expires."
-        )
+        return display.KEY_KEPT
+
+    def repair_active_key(self, number: str, *, entered_by: str = "user") -> list[str]:
+        """Decision B2: ``qswap switch N`` to the key that is already active
+        checks its line the way Claude Code runs it
+        (:func:`claude_settings.line_answers`) and, when it does not answer,
+        writes it again for this install; a missing record is written (by
+        ``entered_by``), and run profiles still linked get their copy.
+        Returns what was done, in words. Raises :class:`SwitchError` when the
+        line cannot answer even so: the saved key's own refusal when the key
+        is gone, else the line's reason and the check to run."""
+        number = str(number)
+        done: list[str] = []
+        label = self.label(number, long=False)
+        why = claude_settings.line_answers(self.key_helper_state())
+        if why is not None:
+            row = ((self._get_sequence_data() or {}).get("accounts") or {}).get(number) or {}
+            self._require_saved_key(number, row.get("email", ""))
+            with FileLock(self.lock_file):
+                try:
+                    claude_settings.install(number)
+                except claude_settings.SettingsError as e:
+                    path = claude_settings.shown_path(e.path or claude_settings.settings_path())
+                    raise SwitchError(
+                        f"The key line for {label} {why}, and it could not be written "
+                        f"again: {path} {e.reason}."
+                    ) from e
+            again = claude_settings.line_answers(self.key_helper_state())
+            if again is not None:
+                raise SwitchError(
+                    f"The key line for {label} {again}, also after it was written "
+                    f"again for this qswap. Check it with: qswap key-helper {number} --check"
+                )
+            self._logger.info(f"Wrote the key line for account {number} again: it {why}")
+            done.append(f"Wrote the key line for {label} again: it {why}.")
+        state = self._key_state()
+        if str(state.get("number")) != number:
+            with FileLock(self.lock_file):
+                self._write_key_state(self._entered_record(
+                    state, number, entered_by, path=claude_settings.settings_path(),
+                ))
+        if self.profiles_still_linked():
+            with FileLock(self.lock_file):
+                still = self.isolate_run_profiles()
+            if still:
+                raise SwitchError(self._profiles_unisolated_reason(still).capitalize() + ".")
+        return done
+
+    def _settings_env(self) -> dict[str, str]:
+        """The ``env`` block of the user settings (``{}`` when there is none
+        or the file cannot be read)."""
+        try:
+            raw = claude_settings.settings_path().read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return {}
+        return env_block(settings_object(raw))
+
+    def engine_watching(self) -> bool:
+        """Whether an auto-switch engine is running for this data directory
+        (its loop's heartbeat is current): one is watching the limit of a key
+        it entered (decision B8). Never raises."""
+        try:
+            from ai_quota_swap.autoswitch import engine_running, read_heartbeat
+
+            return engine_running(read_heartbeat(Path(self.backup_dir)), time.time())
+        except Exception:
+            return False
 
     def key_helper_available(self) -> bool:
-        """Whether qswap can install its helper line now (no other helper,
-        and a file it can parse)."""
+        """Whether qswap can install its helper line now and sessions would
+        follow it: no other helper, a file it can parse, and no variable in
+        the file's ``env`` block that Claude Code obeys before the line. The
+        engine reads this before it enters a key (key-helper-unavailable)."""
         try:
-            return self.key_helper_state().installable
+            return self.key_helper_state().installable and not defeating_names(
+                self._settings_env()
+            )
         except Exception:
             return False
 
@@ -303,9 +608,45 @@ class KeyActivationMixin:
         except Exception:
             return []
 
+    def profiles_still_linked(self) -> list[Path]:
+        """Run profiles whose settings still lead to the user settings while
+        qswap's line is in them (F9): their sessions follow the key."""
+        if not self._profiles_share_user_settings():
+            return []
+        try:
+            return self._session_manager().settings_still_shared()
+        except Exception:
+            return []
+
     # -- entering and leaving a key -----------------------------------------------
 
-    def _key_unavailable(self, number: str, reason: str) -> KeyHelperUnavailableError:
+    def _key_unavailable(
+        self, number: str, reason: str, *, kind: str | None = None,
+        names: tuple[str, ...] = (), log_out_sessions: bool = False,
+    ) -> KeyHelperUnavailableError:
+        """The refusal of a switch to the key ``number`` (decision B6):
+        ``kind`` is what stopped it. Another helper (``foreign``) and a
+        variable in the env block (``env``) are refused with the one way
+        forward, removing it; anything else offers ``--log-out-sessions``
+        after the fix that keeps everyone logged in."""
+        path = claude_settings.shown_path(claude_settings.settings_path())
+        label = self.label(number, long=False)
+        if kind in (claude_settings.FOREIGN, "env"):
+            text = (
+                display.key_helper_foreign_refusal(
+                    label, number, path, log_out_sessions=log_out_sessions,
+                )
+                if kind == claude_settings.FOREIGN
+                else display.key_line_defeated_refusal(label, number, path, names)
+            )
+            return KeyHelperUnavailableError(
+                text, number=number, reason=reason, log_out_sessions=False,
+            )
+        fix = None
+        if kind == claude_settings.INVALID:
+            fix = f"Fix the JSON in {path}"
+        elif kind == "write":
+            fix = f"Make {path} writable"
         sessions, unreadable = self.shared_login_scan()
         current = self.login_account_number()
         from_key = (
@@ -316,9 +657,9 @@ class KeyActivationMixin:
         records = self.shared_login_unreadable() if unreadable else []
         return KeyHelperUnavailableError(
             display.key_helper_refusal(
-                self.label(number, long=False), number, reason,
+                label, number, reason,
                 display.blocking_sessions(len(sessions), unreadable), from_key=from_key,
-                records=records,
+                records=records, fix=fix,
             ),
             number=number, reason=reason, sessions=len(sessions), unreadable=unreadable,
             from_key=from_key is not None, records=records,
@@ -369,8 +710,18 @@ class KeyActivationMixin:
         state = self.key_helper_state()
         if not state.installable:
             raise self._key_unavailable(
-                number, f"{state.shown_path()} {state.reason() or 'cannot be changed'}"
+                number, f"{state.shown_path()} {state.reason() or 'cannot be changed'}",
+                kind=state.kind,
             )
+        env = self._settings_env()
+        names = tuple(defeating_names(env))
+        if names:
+            raise self._key_unavailable(
+                number,
+                f"{state.shown_path()} sets {', '.join(names)} in its env block",
+                kind="env", names=names,
+            )
+        host = other_host(env)
         previous_key = self.helper_account()
         underneath = self.login_account_number()
         source = previous_key or underneath
@@ -380,6 +731,11 @@ class KeyActivationMixin:
             # A key saved the older way (--log-out-sessions) is in the login's
             # place: no subscription is logged in underneath.
             underneath = None
+        unmanaged = None
+        if underneath is None and source is None:
+            identity = self._get_current_account()
+            if identity is not None and identity[0]:
+                unmanaged = identity[0]  # a login qswap does not manage
         with FileLock(self.lock_file):
             shared = self.isolate_run_profiles()
             if shared is None or shared:
@@ -387,38 +743,43 @@ class KeyActivationMixin:
                 if previous_key is None:
                     self.restore_run_profiles(force=True)
                 raise self._key_unavailable(number, self._profiles_unisolated_reason(shared))
+            old = self._key_state()
             blank = claude_settings.blank_text(state.path) if previous_key is None else None
+            if previous_key is not None and isinstance(old.get("blankSettings"), str):
+                blank = old["blankSettings"]
+            created = state.kind == claude_settings.NO_FILE or bool(
+                previous_key is not None and old.get("createdSettings")
+            )
+            key_state = self._entered_record(
+                old, number, entered_by, created=created, path=state.path, blank=blank,
+            )
+            # The record goes in before the line (F13): a crash after the
+            # line leaves a record naming it, so a key the engine entered
+            # stays the engine's; a crash before it leaves a record with no
+            # line, which every surface reports and the next switch clears.
+            self._write_key_state(key_state)
             try:
-                created, _ = claude_settings.install(number)
+                created_now, _ = claude_settings.install(number)
             except claude_settings.SettingsError as e:
+                self._write_key_state(old or None)
                 if previous_key is None:
                     self.restore_run_profiles(force=True)
                 raise self._key_unavailable(
-                    number, f"{claude_settings.shown_path(e.path or state.path)} {e.reason}"
+                    number, f"{claude_settings.shown_path(e.path or state.path)} {e.reason}",
+                    kind=e.kind,
                 ) from e
+            if created_now and not key_state["createdSettings"]:
+                key_state["createdSettings"] = True
+                self._write_key_state(key_state)
             # A qswap run launch between the two steps saw no line yet and
             # may have put its link back: a second pass, now that launches
             # see the line and copy by themselves.
             shared = self.isolate_run_profiles()
             if shared is None or shared:
-                self._undo_install(previous_key, created, blank)
+                self._undo_install(previous_key, created_now, blank)
+                self._write_key_state(old or None)
                 raise self._key_unavailable(number, self._profiles_unisolated_reason(shared))
-            old = self._key_state()
-            created = bool(created or (previous_key is not None and old.get("createdSettings")))
-            if previous_key is not None and isinstance(old.get("blankSettings"), str):
-                blank = old["blankSettings"]
             self._record_active_number(number)
-            key_state = {
-                "number": number,
-                "enteredBy": entered_by if entered_by in ENTERED_BY else "user",
-                "since": time.time(),
-                "createdSettings": created,
-                "settingsPath": str(state.path),
-            }
-            if blank is not None:
-                # The file was there but blank: leaving puts that back.
-                key_state["blankSettings"] = blank
-            self._write_key_state(key_state)
         self._logger.info(
             f"Activated account {number} through the key helper "
             f"(entered by {entered_by}; from {source or 'none'})"
@@ -429,17 +790,93 @@ class KeyActivationMixin:
             from_ref = account_ref(int(source), self.account_email(source))
         followup = display.key_switch_followup(
             target=self.label(number, long=False),
-            underneath=self.label(underneath, long=False) if underneath else None,
+            underneath=self.label(underneath, long=False) if underneath else unmanaged,
             from_key=self.label(previous_key, long=False) if previous_key else None,
+            back=f"qswap switch {underneath}" if underneath else None,
+        )
+        sent = (
+            [display.key_sent_elsewhere(state.shown_path(), host, self.label(number, long=False))]
+            if host else []
         )
         if emit_output:
             where = f"{self.label(source, long=False)} → " if source else "to "
             print(f"{accent('Switched')} {where}{self._landed_label(number, email)}")
             for line in followup:
                 print(line)
-        op = self._op_result(from_ref, account_ref(int(number), email), [], followup)
+            from ai_quota_swap.printer import warning
+
+            for line in sent:
+                warning(line)
+        op = self._op_result(
+            from_ref, account_ref(int(number), email),
+            [line.removeprefix("Warning: ") for line in sent], followup,
+        )
         op["how"] = display.HOW_HELPER
         return op
+
+    @staticmethod
+    def _entered_record(
+        old: dict, number: str, entered_by: str, *, created: bool = False,
+        path: Path | None = None, blank: str | None = None,
+    ) -> dict:
+        """key_helper.json once ``number`` is entered: its record, the
+        tombstones kept, the key left on the way (key to key) tombstoned and
+        ``number``'s own tombstone dropped."""
+        left = _tombstones(old)
+        previous = old.get("number")
+        if previous is not None and str(previous) != number:
+            by = old.get("enteredBy")
+            left[str(previous)] = {
+                "at": time.time(), "enteredBy": by if by in ENTERED_BY else "user",
+            }
+        left.pop(number, None)
+        record: dict = {
+            "number": number,
+            "enteredBy": entered_by if entered_by in ENTERED_BY else "user",
+            "since": time.time(),
+            "createdSettings": bool(created),
+            "settingsPath": str(path if path is not None else claude_settings.settings_path()),
+        }
+        if blank is not None:
+            # The file was there but held no settings: leaving puts that back.
+            record["blankSettings"] = blank
+        if left:
+            record["left"] = left
+        return record
+
+    @staticmethod
+    def _left_record(old: dict, number: str | None) -> dict | None:
+        """key_helper.json once the key is left: no record, a tombstone for
+        ``number`` (the line taken out) and for the key the record named.
+        None when nothing is left to keep."""
+        left = _tombstones(old)
+        entered = str(old["number"]) if old.get("number") is not None else None
+        for n in {entered, number} - {None}:
+            if n == entered:
+                by = old.get("enteredBy")
+            else:
+                by = (left.get(n) or {}).get("enteredBy")
+            left[n] = {"at": time.time(), "enteredBy": by if by in ENTERED_BY else "user"}
+        return {"left": left} if left else None
+
+    def forget_key(self, number: str) -> None:
+        """Drop the record and tombstone of ``number`` (the account is being
+        removed): a line for that number later is nobody's. Never raises."""
+        try:
+            state = self._key_state()
+            left = _tombstones(state)
+            changed = left.pop(str(number), None) is not None
+            if str(state.get("number")) == str(number):
+                state = {}
+                changed = True
+            if not changed:
+                return
+            state = {k: v for k, v in state.items() if k != "left"}
+            if left:
+                state["left"] = left
+            self._write_key_state(state or None)
+        except Exception as e:
+            self._logger.debug(f"Could not forget the key record of {number}: {e!r}")
 
     def _undo_install(
         self, previous_key: str | None, created: bool, blank: str | None = None,
@@ -472,13 +909,36 @@ class KeyActivationMixin:
         except Exception as e:
             self._logger.warning(f"Could not record the active account: {e!r}")
 
-    def _leave_key(self) -> bool:
+    def _active_number_back(self, number: str | None) -> None:
+        """``activeAccountNumber`` once the line for ``number`` is out: the
+        live login's slot when it named the key, or no number at all (decision
+        B5, F25). The caller holds the account lock."""
+        if number is None:
+            return
+        from ai_quota_swap.models import get_timestamp
+
+        try:
+            data = self._get_sequence_data() or {}
+            if data.get("activeAccountNumber") != int(number):
+                return
+            login = self.login_account_number()
+            data["activeAccountNumber"] = int(login) if login else None
+            data["lastUpdated"] = get_timestamp()
+            self._write_json(self.sequence_file, data)
+        except Exception as e:
+            self._logger.warning(f"Could not record the active account: {e!r}")
+
+    def _leave_key(self, *, tombstone: bool = True) -> bool:
         """Remove qswap's helper line (any line of qswap's, valid or not),
-        then put the run profiles' settings sharing back. Returns whether a
+        then put the run profiles' settings sharing back. key_helper.json
+        keeps a tombstone for the key (``tombstone``), and
+        ``activeAccountNumber`` goes back to the live login. Returns whether a
         line was removed. Raises :class:`SwitchError` when the settings file
         cannot be parsed, so the line cannot be found."""
         self._refuse_session_shell()
         state = self._key_state()
+        line = self.key_helper_state()
+        number = line.number if line.ours else None
         with FileLock(self.lock_file):
             try:
                 blank = state.get("blankSettings")
@@ -489,42 +949,71 @@ class KeyActivationMixin:
             except claude_settings.SettingsError as e:
                 path = claude_settings.shown_path(e.path or claude_settings.settings_path())
                 raise SwitchError(
-                    f"qswap cannot remove its key line: {path} {e.reason}. Fix the "
+                    f"The key line cannot be removed: {path} {e.reason}. Fix the "
                     'file, or delete its "apiKeyHelper" line by hand, then retry.'
                 ) from e
-            self._write_key_state(None)
+            self._write_key_state(self._left_record(state, number) if tombstone else None)
             self.restore_run_profiles()
+            self._active_number_back(number or (
+                str(state["number"]) if state.get("number") is not None else None
+            ))
         if removed:
             self._logger.info("Removed the key helper line from Claude Code's settings")
         return removed
 
-    def _restore_key(self, number: str, state: dict, cause: BaseException) -> None:
+    def _active_number(self) -> object:
+        """``activeAccountNumber`` as it stands (None when it cannot be read),
+        for a put-back that restores it exactly."""
+        try:
+            return (self._get_sequence_data() or {}).get("activeAccountNumber")
+        except Exception:
+            return None
+
+    def _restore_key(
+        self, number: str, state: dict, cause: BaseException, active: object = ...,
+    ) -> None:
         """Put the helper line for ``number`` back after the switch that
         followed its removal failed, so the failed switch moves no session.
         ``state`` is key_helper.json as it stood before. Reads no Keychain
         (a locked one may be the cause). Raises :class:`SwitchError` naming
-        both failures when the line cannot be put back."""
+        both failures when the line cannot be put back; the run profiles
+        given a copy on the way are then given their sharing back, since no
+        line is in."""
         try:
             with FileLock(self.lock_file):
                 shared = self.isolate_run_profiles()
                 if shared is None or shared:
+                    self.restore_run_profiles(force=True)
                     raise OSError(self._profiles_unisolated_reason(shared))
                 try:
                     claude_settings.install(number)
                 except Exception:
                     self.restore_run_profiles(force=True)
                     raise
-                if state:
-                    self._write_key_state(state)
+                self._write_key_state(state or None)
+                if active is not ...:
+                    self._put_active_number(active)
             self._logger.info(f"Put the key line for account {number} back after: {cause}")
         except Exception as e:
             under = self.login_account_number()
             where = self.label(under, long=False) if under else "the live login"
+            what = str(cause) or "The switch was interrupted."
             raise SwitchError(
-                f"{cause} {self.label(number, long=False)} was left, and its key line "
+                f"{what} {self.label(number, long=False)} was left, and its key line "
                 f"could not be put back ({e}): running sessions are on {where}. To go "
                 f"back to the key: qswap switch {number}"
             ) from cause
+
+    def _put_active_number(self, value: object) -> None:
+        """``activeAccountNumber`` set back to exactly ``value``. The caller
+        holds the account lock."""
+        try:
+            data = self._get_sequence_data() or {}
+            if data.get("activeAccountNumber") != value:
+                data["activeAccountNumber"] = value
+                self._write_json(self.sequence_file, data)
+        except Exception as e:
+            self._logger.warning(f"Could not record the active account: {e!r}")
 
     def leave_key_for_unmanaged_login(self) -> dict | None:
         """Leave the active key when the login underneath is one qswap does
@@ -551,27 +1040,54 @@ class KeyActivationMixin:
         }
 
     def reconcile_key_helper(self) -> list[str]:
-        """Repair what a crash or a removed account left: a helper line that
-        cannot give a key is removed, and run profiles holding a stale
-        settings copy get their sharing back. Returns what was done, in
-        words. Never raises."""
+        """Decision B5: the one repair, run first by every switch. From
+        :meth:`key_findings`: a line that runs a qswap no longer there is
+        pointed at this one; a line naming an account that cannot give a key
+        is removed; a record whose line is gone becomes a tombstone; an
+        ``activeAccountNumber`` naming a key whose line is gone goes back to
+        the live login; run profiles still linked under the line get their
+        copy, and copies left with no line get their sharing back. Nothing is
+        repaired while the settings or the account list cannot be read.
+        Returns what was done, in words. Never raises."""
         done: list[str] = []
         try:
-            state = self.key_helper_state()
-            number, problem = self._helper_verdict(state)
-            if number is not None and state.stale_command:
+            f = self.key_findings()
+            if f.unknown is not None:
+                return done
+            state = f.state
+            if f.key is not None and state.stale_command:
                 # qswap moved (a reinstall): the line runs a command that is
                 # gone. The same line, pointing at this qswap.
-                claude_settings.install(number)
+                claude_settings.install(f.key)
                 done.append(
-                    f"Updated the key line for #{number} to run qswap from its new place."
+                    f"Updated the key line for #{f.key} to run qswap from its new place."
                 )
-            if problem is not None:
-                self._leave_key()
+            if f.problem is not None:
+                self._leave_key(tombstone=False)
                 done.append(
-                    f"Removed the key line for #{problem['number']} from Claude Code's settings."
+                    f"Removed the key line for #{f.problem['number']} from Claude Code's "
+                    "settings."
                 )
-            stale = self.stale_profile_copies()
+            elif f.lost is not None:
+                with FileLock(self.lock_file):
+                    self._write_key_state(self._left_record(self._key_state(), None))
+                done.append(
+                    f"Cleared the record of #{f.lost} as the active API key: its key "
+                    "line is no longer in Claude Code's settings."
+                )
+            if f.stale_active is not None:
+                with FileLock(self.lock_file):
+                    self._active_number_back(f.stale_active)
+            if f.linked:
+                with FileLock(self.lock_file):
+                    still = self.isolate_run_profiles()
+                given = len(f.linked) - len(still or ()) if still is not None else 0
+                if given > 0:
+                    noun = "profile" if given == 1 else "profiles"
+                    done.append(
+                        f"Gave {given} qswap run {noun} its own copy of the settings."
+                    )
+            stale = self.stale_profile_copies() if f.problem is not None else f.copies
             if stale:
                 restored = self.restore_run_profiles()
                 if restored:

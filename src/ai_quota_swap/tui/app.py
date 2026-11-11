@@ -36,6 +36,7 @@ from ai_quota_swap.tui.data import (
     ProviderView,
     cost_line,
     format_duration,
+    login_email,
     run_action,
     settings_root,
     usage_report,
@@ -390,6 +391,9 @@ class QswapApp(App):
             if (
                 not result.ok and not log_out_sessions and result.error
                 and result.error_type in ("SessionsRunningError", "KeyHelperUnavailableError")
+                # No saved-key way to offer (another apiKeyHelper, a
+                # credential in the settings' env block): the refusal shows.
+                and (result.error_fields or {}).get("logOutSessions") is not False
             ):
                 # Through the key helper a switch to a key asks nothing; this
                 # is the saved-key way, offered when the helper cannot be
@@ -539,14 +543,12 @@ class QswapApp(App):
 
     def live_email(self, provider: str) -> str | None:
         """The provider's live login: the active managed account's email, or
-        the unmanaged login's."""
+        the unmanaged login's; under a key, the login underneath it
+        (:func:`ai_quota_swap.tui.data.login_email`)."""
         view = self.fleet.view(provider) if self.fleet else None
         if view is None:
             return None
-        if view.active_number is not None:
-            acc = view.account(view.active_number)
-            return acc.email if acc else None
-        return view.live_email
+        return login_email(view)
 
     def add_current(self, provider: str) -> None:
         sw = self.switcher_for(provider)

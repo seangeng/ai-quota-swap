@@ -2058,14 +2058,17 @@ def _is_api_key_target(switcher, identifier: str) -> bool:
     return switcher.account_kind_for(number) == "api_key"
 
 
-def _warn_env_overrides() -> None:
+def _warn_env_overrides(*, key_line: bool = False) -> None:
     """One line when the shell exports a variable that makes Claude Code
-    ignore the active account (names only, never values)."""
+    ignore the active account (names only, never values). ``key_line``: the
+    switch is onto a key through the key line, which Claude Code ranks above
+    CLAUDE_CODE_OAUTH_TOKEN, so such sessions follow it (decision B6)."""
     from ai_quota_swap import display
 
-    names = display.exported_overrides(os.environ)
-    if names:
-        warning(display.override_warning(names))
+    for line in display.override_warnings(
+        display.exported_overrides(os.environ), key_line=key_line,
+    ):
+        warning(line)
 
 
 # -- list and status across both providers ----------------------------------------
@@ -2301,6 +2304,12 @@ def _help_and_usage(argv: list[str]) -> list[str] | None:
             return None
         if target in helptext.LEGACY_VERB_HELP:
             print(helptext.legacy_help(target), end="")
+            sys.exit(0)
+        if target == "key-helper":
+            # Hidden from the map, but its help is there (F54).
+            from ai_quota_swap.key_helper import HELP as key_helper_help
+
+            print(key_helper_help, end="")
             sys.exit(0)
         if target in _OWN_PARSER_VERBS:
             _dispatch([target, "--help"])
@@ -2540,7 +2549,7 @@ def _dispatch(argv: list[str]) -> None:
         action="store_true",
         help=(
             "With 'switch ACCOUNT' for an API-key account: save the key for "
-            "Claude Code instead of adding the key helper; running sessions on "
+            "Claude Code instead of adding the key line; running sessions on "
             "a subscription stop with \"Not logged in\""
         ),
     )
@@ -2926,7 +2935,9 @@ def _dispatch(argv: list[str]) -> None:
             if not args.json:
                 for note in notes:
                     warning(f"Warning: {note}")
-                _warn_env_overrides()
+                _warn_env_overrides(key_line=(
+                    not args.log_out_sessions and _is_api_key_target(switcher, args.switch_to)
+                ))
             # The flag travels only when given, so every switch_to keeps its
             # plain call shape.
             extra = {"log_out_sessions": True} if args.log_out_sessions else {}
