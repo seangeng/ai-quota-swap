@@ -14,8 +14,8 @@ Feature-complete for a first release, 0.1.0, which is prepared but not yet on Py
 - Claude Code accounts, from claude-swap 1.1.0b1 and extended: switching by hand and
   automatically, parallel sessions (`run`, `map`), export and import, JSON output.
 - Codex accounts (experimental): add, `qswap codex login`, switch, auto-switch, reset credits.
-  Tested against fakes only; not yet run with two real Codex accounts, and no real reset credit
-  has been spent.
+  Tested against fakes and with one real account; not yet run with two real Codex accounts, and
+  no real reset credit has been spent.
 - Usage resets by kind for both providers, spent by hand or by the engine under `resets.auto`,
   with a fresh reading, a daily cap per provider and request-id reuse.
 - `qswap usage`: tokens and estimated cost from the local session files of both CLIs.

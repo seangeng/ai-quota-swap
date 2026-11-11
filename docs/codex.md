@@ -8,7 +8,7 @@ qswap keeps several OpenAI Codex CLI logins (ChatGPT accounts), shows each one's
 - Usage for every saved account, in `qswap codex list` and in a "Codex accounts" section of `qswap list`. `--json` works on `list`, `status`, `switch`, `reset`, `auto` and `priority` ([json-output.md](json-output.md)).
 - `qswap usage --provider codex` attributes Codex tokens to the account that was active, from the switches qswap records ([usage.md](usage.md)).
 
-Codex support is experimental. It has been tested only against fakes and has never been run with two real Codex accounts. No real reset credit has been spent with it. Treat your first switches with care and read the warnings a switch prints.
+Codex support is experimental. It has been tested against fakes and with one real account, and has never been run with two real Codex accounts. No real reset credit has been spent with it. Treat your first switches with care and read the warnings a switch prints.
 
 ## Add your first account
 

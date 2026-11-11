@@ -88,7 +88,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - Task-first pages under `docs/`: quickstart, auto-switch, resets, Codex, usage, API accounts, sessions, dashboard, menu bar, settings, JSON output, troubleshooting, and coming from claude-swap, indexed in `docs/README.md`.
 - `docs/settings.md` is generated from the settings in the code (`scripts/settings_doc.py`), and a test fails when a setting is missing from it, when it is stale, or when a link or anchor in any Markdown file does not resolve.
 - Every screenshot is regenerated from the current build, most from a new `showcase` scenario, and the auto-switch and reset recordings are re-made.
-- The README opens on the menu bar, with a picture of its menu beside the dashboard, and docs/menubar.md walks through the menu with drawings of it in dark and light; new recordings show the menu bar switching, the quick start and the dashboard.
+- The README opens on the menu bar, with a picture of its menu beside the dashboard, and docs/menubar.md walks through the menu; the demo harness now draws the menu bar from `build_menu` (`run.py SCENARIO --menubar --html FILE`, dark and light, any submenu open), and new recordings show the menu bar switching, the quick start and the dashboard.
 
 ### Tooling
 
