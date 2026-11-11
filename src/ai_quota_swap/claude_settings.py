@@ -299,9 +299,21 @@ def helper_command(number: str | int) -> str:
 # -- reading ------------------------------------------------------------------------
 
 
+#: A UTF-8 byte order mark. Some editors write one; qswap reads past it and
+#: keeps it on every write.
+_BOM = "\ufeff"
+
+
 def _decode(raw: bytes) -> str:
-    text = raw.decode("utf-8")
-    return text[1:] if text.startswith("﻿") else text
+    """The file's text as it is, a byte order mark included."""
+    return raw.decode("utf-8")
+
+
+def _split_bom(text: str | None) -> tuple[str, str | None]:
+    """``(mark, text)``: the byte order mark (or ``""``) and the text after it."""
+    if text is not None and text.startswith(_BOM):
+        return _BOM, text[1:]
+    return "", text
 
 
 def _parse(text: str) -> tuple[dict | None, str | None]:
@@ -320,6 +332,7 @@ def state_of_text(text: str | None, path: Path) -> HelperState:
     """The :class:`HelperState` of a file's text (None: no file)."""
     if text is None:
         return HelperState(NO_FILE, path)
+    _bom, text = _split_bom(text)
     obj, error = _parse(text)
     if obj is None:
         return HelperState(INVALID, path, error=error)
@@ -482,7 +495,17 @@ def _separator(text: str, members: list[_Member]) -> str:
 
 
 def _edit_text(text: str, value: str | None) -> str:
-    """``text`` with ``apiKeyHelper`` set to ``value`` (None: removed)."""
+    """``text`` with ``apiKeyHelper`` set to ``value`` (None: removed).
+
+    A new line goes in as the first member, followed by what separated the
+    brace from the old first member: in a file with one member per line it
+    is a whole line of its own ending in a comma, so deleting that line by
+    hand leaves the file as it was (a last member would leave a trailing
+    comma on the line above). Taking the first member out removes exactly
+    that text again, and taking out the only member removes it with the
+    whitespace before it, so every insertion here is undone byte for byte.
+    (A file whose first member shares the brace's line keeps that shape:
+    the line goes on the brace's line too.)"""
     open_at, close_at, members = _members(text)
     encoded = json.dumps(value, ensure_ascii=False) if value is not None else None
     found = [m for m in members if m.key == HELPER_KEY]
@@ -499,24 +522,27 @@ def _edit_text(text: str, value: str | None) -> str:
         if len(members) > 1:
             nxt = members[1]
             return text[: m.start] + text[nxt.start :]
-        # The only member: leave the object empty, keeping what came around it.
-        inner = text[open_at + 1 : close_at]
-        newline = "\n" if "\n" in inner else ""
-        return text[: open_at + 1] + newline + text[close_at:]
+        # The only member: the object is left with what followed it.
+        return text[: open_at + 1] + text[m.end :]
     if encoded is None:
         return text
-    key = json.dumps(HELPER_KEY)
-    sep = _separator(text, members)
-    unit = _indent_unit(text, members)
+    member = f"{json.dumps(HELPER_KEY)}{_separator(text, members)}{encoded}"
     if not members:
+        # One line or several is decided by the text inside the braces only.
         inner = text[open_at + 1 : close_at]
-        if "\n" in inner or text.count("\n") > 1:
-            return text[: open_at + 1] + f"\n  {key}{sep}{encoded}\n" + text[close_at:]
-        return text[: open_at + 1] + f"{key}{sep}{encoded}" + text[close_at:]
-    last = members[-1]
-    if unit is None:
-        return text[: last.end] + f", {key}{sep}{encoded}" + text[last.end :]
-    return text[: last.end] + f",\n{unit}{key}{sep}{encoded}" + text[last.end :]
+        if "\n" in inner:
+            newline = "\r\n" if "\r\n" in inner else "\n"
+            return text[: open_at + 1] + f"{newline}  {member}" + inner + text[close_at:]
+        return text[: open_at + 1] + member + inner + text[close_at:]
+    first = members[0]
+    lead = text[open_at + 1 : first.start]
+    if "\n" in lead:
+        between = "," + lead
+    elif len(members) > 1:
+        between = text[first.end : members[1].start]  # the file's own ", " or ","
+    else:
+        between = ", " if lead or _separator(text, members).endswith(" ") else ","
+    return text[: first.start] + member + between + text[first.start :]
 
 
 def edited(text: str | None, value: str | None) -> str | None:
@@ -533,8 +559,10 @@ def edited(text: str | None, value: str | None) -> str | None:
     expected = dict(obj)
     if value is None:
         expected.pop(HELPER_KEY, None)
-    else:
+    elif HELPER_KEY in expected:
         expected[HELPER_KEY] = value
+    else:
+        expected = {HELPER_KEY: value, **expected}  # first, as the text edit puts it
     try:
         out = _edit_text(text, value)
         if json.loads(out) == expected:
@@ -549,13 +577,15 @@ def edited(text: str | None, value: str | None) -> str | None:
 
 
 def without_helper(text: str) -> str:
-    """``text`` with any ``apiKeyHelper`` removed (for a run profile's copy).
-    Text that cannot be parsed is returned as it is."""
+    """``text`` with any ``apiKeyHelper`` removed (for a run profile's copy),
+    read past a byte order mark (which the copy keeps). Text that cannot be
+    parsed is returned as it is."""
+    bom, body = _split_bom(text)
     try:
-        out = edited(text, None)
+        out = edited(body, None)
     except SettingsError:
         return text
-    return text if out is None else out
+    return text if out is None else bom + out
 
 
 # -- writing --------------------------------------------------------------------------
@@ -592,15 +622,18 @@ def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
             want: str | None = None,
             restore_blank: str | None = None) -> tuple[str | None, str | None]:
     """Set (or remove) the helper, re-reading before the write and starting
-    again when the file changed. Returns ``(before, after)`` texts.
-    ``restore_blank``: the blank text the file held before qswap's line, put
-    back when removing the line leaves an empty object."""
+    again when the file changed. Returns ``(before, after)`` texts (without a
+    byte order mark; a file that has one keeps it). ``restore_blank``: the
+    text the file held before qswap's line when it held no settings
+    (:func:`blank_text`), put back when removing the line leaves an empty
+    object."""
     for attempt in range(WRITE_ATTEMPTS):
         try:
-            before = _read(path)
+            raw = _read(path)
         except (OSError, UnicodeDecodeError) as e:
             raise SettingsError(f"could not be read ({type(e).__name__})", kind=INVALID,
                                 path=path) from e
+        bom, before = _split_bom(raw)
         state = state_of_text(before, path)
         if state.kind == INVALID:
             raise SettingsError(f"is not valid JSON ({state.error})", kind=INVALID, path=path)
@@ -621,12 +654,12 @@ def _change(path: Path, value: str | None, *, remove_if_empty: bool = False,
         try:
             again = _read(path)
         except (OSError, UnicodeDecodeError):
-            again = None if before is None else ""
-        if again != before:
+            again = None if raw is None else ""
+        if again != raw:
             time.sleep(0.01 * (attempt + 1))
             continue
         try:
-            _publish(path, after, mode)
+            _publish(path, None if after is None else bom + after, mode)
         except OSError as e:
             raise SettingsError(
                 f"could not be written ({e.strerror or type(e).__name__})",
@@ -655,14 +688,24 @@ def install(number: str | int, *, path: Path | None = None,
 
 
 def blank_text(path: Path | None = None) -> str | None:
-    """The file's text when it exists and holds only whitespace (Claude Code
-    reads it as no settings); None otherwise. Never raises."""
+    """The file's text when it exists and holds no settings: only whitespace
+    (Claude Code reads that as no settings) or an empty object in any
+    spelling (``{ }``, ``{\\n\\n}``, ``{}`` with blank lines around it).
+    None otherwise. Recorded when a key is entered and put back, in place of
+    the empty object, when the line comes out: so the file is as it was even
+    when Claude Code rewrote it in its own format meanwhile. A byte order
+    mark is not part of the text (the file keeps its own). Never raises."""
     path = settings_path() if path is None else path
     try:
-        text = _read(path)
+        _bom, text = _split_bom(_read(path))
     except (OSError, UnicodeDecodeError):
         return None
-    return text if text is not None and not text.strip() else None
+    if text is None:
+        return None
+    if not text.strip():
+        return text
+    obj, _error = _parse(text)
+    return text if obj == {} else None
 
 
 def remove(*, path: Path | None = None, remove_file_if_empty: bool = False,

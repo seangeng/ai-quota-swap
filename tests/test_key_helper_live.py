@@ -139,6 +139,11 @@ def _settings_obj(home: Path) -> dict:
     return json.loads(_settings(home).read_text(encoding="utf-8"))
 
 
+def _settings_obj_any(home: Path) -> dict:
+    """The settings object, read past a byte order mark."""
+    return json.loads(_settings(home).read_bytes().decode("utf-8-sig"))
+
+
 def _acct() -> str:
     return macos_keychain.keychain_account_name()
 
@@ -529,20 +534,23 @@ class TestSettingsWrites:
     LINE = f"{QSWAP} key-helper 5"
 
     @pytest.mark.parametrize("before, after", [
+        # The line goes first (decision B4): deleting it by hand leaves the
+        # object valid, where a last member would leave a trailing comma.
         (
             '{\n  "model": "opus",\n  "hooks": {"Stop": []}\n}\n',
-            '{\n  "model": "opus",\n  "hooks": {"Stop": []},\n  "apiKeyHelper": "LINE"\n}\n',
+            '{\n  "apiKeyHelper": "LINE",\n  "model": "opus",\n  "hooks": {"Stop": []}\n}\n',
         ),
         (
             '{\n    "b": 1,\n    "a": 2\n}',
-            '{\n    "b": 1,\n    "a": 2,\n    "apiKeyHelper": "LINE"\n}',
+            '{\n    "apiKeyHelper": "LINE",\n    "b": 1,\n    "a": 2\n}',
         ),
         (
             '{\n\t"z": true\n}\n',
-            '{\n\t"z": true,\n\t"apiKeyHelper": "LINE"\n}\n',
+            '{\n\t"apiKeyHelper": "LINE",\n\t"z": true\n}\n',
         ),
-        ('{"a":1}', '{"a":1, "apiKeyHelper":"LINE"}'),  # the file's own separator
-        ('{\n  "name": "café"\n}\n', '{\n  "name": "café",\n  "apiKeyHelper": "LINE"\n}\n'),
+        ('{"a":1}', '{"apiKeyHelper":"LINE","a":1}'),  # the file's own separators
+        ('{"a": 1, "b": 2}', '{"apiKeyHelper": "LINE", "a": 1, "b": 2}'),
+        ('{\n  "name": "café"\n}\n', '{\n  "apiKeyHelper": "LINE",\n  "name": "café"\n}\n'),
         ("{}", '{"apiKeyHelper": "LINE"}'),
     ])
     def test_adds_one_key_and_keeps_the_rest(self, tmp_path, before, after):
@@ -552,6 +560,78 @@ class TestSettingsWrites:
         assert path.read_text(encoding="utf-8") == after.replace("LINE", self.LINE)
         claude_settings.remove(path=path)
         assert path.read_text(encoding="utf-8") == before
+
+    @pytest.mark.parametrize("before", [
+        '{\n  "model": "opus",\n  "hooks": {\n    "Stop": []\n  }\n}\n',
+        '{\n    "b": 1\n}',
+        '{\n\t"z": true,\n\t"y": [1, 2]\n}\n',
+        '{\r\n  "a": 1,\r\n  "b": "x"\r\n}\r\n',
+        '\n{\n  "a": 1\n}\n\n',
+    ])
+    def test_deleting_the_line_by_hand_leaves_the_file_as_it_was(self, tmp_path, before):
+        """docs/api-accounts.md tells the reader to delete the apiKeyHelper
+        line by hand (F49): in a file with one member per line that is one
+        whole line, and what is left is the file as it was."""
+        path = tmp_path / "settings.json"
+        path.write_bytes(before.encode("utf-8"))
+        claude_settings.install(5, path=path, command=self.LINE)
+        lines = path.read_bytes().decode("utf-8").splitlines(keepends=True)
+        mine = [line for line in lines if '"apiKeyHelper"' in line]
+        assert len(mine) == 1
+        left = "".join(line for line in lines if line not in mine)
+        assert left == before
+        json.loads(left)
+
+    @pytest.mark.parametrize("before", [
+        '﻿{\n  "model": "opus"\n}\n',
+        '﻿{\r\n  "a": 1\r\n}\r\n',
+        '﻿{}',
+        '﻿',
+    ])
+    def test_a_byte_order_mark_is_kept(self, tmp_path, before):
+        """F14: the mark stays on every write, and the round trip is byte
+        for byte."""
+        path = tmp_path / "settings.json"
+        path.write_bytes(before.encode("utf-8"))
+        blank = claude_settings.blank_text(path)  # what _enter_key records
+        claude_settings.install(5, path=path, command=self.LINE)
+        assert path.read_bytes().startswith("﻿".encode("utf-8"))
+        assert claude_settings.read_state(path).number == "5"
+        claude_settings.install(6, path=path, command=f"{QSWAP} key-helper 6")
+        assert path.read_bytes().startswith("﻿".encode("utf-8"))
+        claude_settings.remove(path=path, restore_blank=blank)
+        assert path.read_bytes() == before.encode("utf-8")
+
+    @pytest.mark.parametrize("before", [
+        "{}", "{}\n", "{\n}", "{\n}\n", "{ }", "{\n\n}", "{\n  \n}", "{\r\n}\r\n",
+        "{}\n\n", "\n\n  {}  \n\n",
+    ])
+    def test_an_empty_object_in_any_spelling_round_trips(self, tmp_path, before):
+        """F14: one line or several is decided from the text inside the
+        braces, and the line comes out leaving that text as it was."""
+        path = tmp_path / "settings.json"
+        path.write_bytes(before.encode("utf-8"))
+        claude_settings.install(5, path=path, command=self.LINE)
+        assert json.loads(path.read_text(encoding="utf-8")) == {"apiKeyHelper": self.LINE}
+        claude_settings.remove(path=path)
+        assert path.read_bytes() == before.encode("utf-8")
+
+    @pytest.mark.parametrize("before", ["{ }", "{\n\n}", "\n{}\n\n", "﻿{ }"])
+    def test_an_empty_object_comes_back_after_the_key(self, temp_home, before):
+        """The blank-file record, generalised: a file that was an empty
+        object gets its own text back when the line comes out, even when
+        Claude Code rewrote it in its own format meanwhile."""
+        s = _fleet()
+        _settings(temp_home).write_bytes(before.encode("utf-8"))
+        _activate(s)
+        bom = "﻿" if before.startswith("﻿") else ""
+        line = _settings_obj_any(temp_home)["apiKeyHelper"]
+        _settings(temp_home).write_bytes(
+            (bom + json.dumps({"apiKeyHelper": line}, indent=2) + "\n").encode("utf-8")
+        )
+        s.switch_to("6", json_output=True)
+        s.switch_to("1", json_output=True)
+        assert _settings(temp_home).read_bytes() == before.encode("utf-8")
 
     def test_replaces_its_own_line_in_place(self, tmp_path):
         path = tmp_path / "settings.json"
@@ -1595,6 +1675,30 @@ class TestRunProfiles:
         # The next launch links it again.
         SessionManager(s)._sync_items(d, ("settings.json",), scope=("settings.json",))
         assert dest.is_symlink() or "apiKeyHelper" not in dest.read_text()
+
+    def test_a_settings_file_with_a_byte_order_mark_is_copied_without_the_line(
+        self, temp_home
+    ):
+        """F12: an editor saved the user settings with a byte order mark while
+        the line is in. The copy a launch (or a switch) gives the profile
+        still has no line."""
+        from ai_quota_swap.session import SETTINGS_COPY_MARKER, SessionManager
+
+        s = _fleet()
+        d = _profile(s)
+        _activate(s)
+        raw = _settings(temp_home).read_bytes()
+        _settings(temp_home).write_bytes("﻿".encode("utf-8") + raw)
+        assert s.key_helper_state().number == "5"
+        dest = d / "settings.json"
+        SessionManager(s)._sync_items(d, ("settings.json",), scope=("settings.json",))
+        assert not dest.is_symlink() and (d / SETTINGS_COPY_MARKER).exists()
+        assert "apiKeyHelper" not in dest.read_bytes().decode("utf-8")
+        assert json.loads(dest.read_bytes().decode("utf-8-sig")) == {"model": "opus"}
+        dest.unlink()
+        dest.symlink_to(_settings(temp_home))
+        assert s.isolate_run_profiles() == []
+        assert "apiKeyHelper" not in dest.read_bytes().decode("utf-8")
 
     def test_a_crash_between_the_steps_is_found_and_repaired(self, temp_home):
         s = _fleet()
