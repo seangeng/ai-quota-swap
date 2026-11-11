@@ -63,8 +63,9 @@ EMAIL_5 = "api-key-5@token.local"
 EMAIL_6 = "api-key-6@token.local"
 QSWAP = "/opt/qswap/bin/qswap"
 
-#: The real check, before the autouse fixture below replaces it.
+#: The real functions, before the autouse fixture below replaces them.
 _REAL_COMMAND_MISSING = claude_settings.command_missing
+_REAL_EXECUTABLE = claude_settings.qswap_executable
 
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
 
@@ -577,7 +578,7 @@ class TestSettingsWrites:
         assert claude_settings.without_helper("{bad") == "{bad"
 
     def test_the_command_names_the_installed_qswap(self, monkeypatch, tmp_path):
-        monkeypatch.undo()
+        monkeypatch.setattr(claude_settings, "qswap_executable", _REAL_EXECUTABLE)
         exe = tmp_path / "bin with space" / "qswap"
         exe.parent.mkdir()
         exe.write_text("#!/bin/sh\n", encoding="utf-8")

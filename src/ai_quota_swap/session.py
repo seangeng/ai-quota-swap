@@ -1762,10 +1762,20 @@ class SessionManager:
                 if dest.exists() and not is_link(dest):
                     dest.unlink()
                 if src.exists() and not is_link(dest) and not dest.exists():
+                    linked = False
                     if self._can_link("settings.json", session_dir, src.parent):
                         target = src.resolve() if src.is_symlink() else src
-                        self._make_link(target, dest)
-                    else:
+                        try:
+                            self._make_link(target, dest)
+                            linked = True
+                        except OSError as e:
+                            # As _sync_items does: a copy beats nothing, and
+                            # the next launch re-syncs it.
+                            self._logger.warning(
+                                f"Could not link settings.json into {session_dir} ({e}); "
+                                "copying it instead."
+                            )
+                    if not linked:
                         self._copy_item(src, dest)
                 marker.unlink(missing_ok=True)
             except OSError as e:
