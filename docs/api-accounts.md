@@ -275,9 +275,9 @@ Auto-switch (`qswap auto`, the menu bar, the dashboard's auto view) never ranks 
 
 ### What a budget is not
 
-A budget is a brake inside qswap, not a cap at Anthropic. It changes only what auto-switch does. Claude Code keeps working on the account if you switch to it by hand, and anything else that uses the same key is not affected. For a hard cap, set a spend limit on the key's workspace in the Claude Console.
+A budget is a brake inside qswap, not a cap at Anthropic. It does nothing unless auto-switch is running (`qswap auto`, the menu bar, the dashboard's auto view). While it runs, sessions are moved off the key at its budget, also when you switched to the key yourself. Claude Code itself is never blocked: with no engine running, sessions keep using the key past its budget, and anything else that uses the same key is not affected either way. For a hard cap, set a spend limit on the key's workspace in the Claude Console.
 
-Figures also arrive late: Anthropic's by about five minutes, the local estimate only when `qswap usage` runs. An account can go past its budget before qswap notices.
+Figures also arrive late: Anthropic's by about five minutes, the local estimate when `qswap usage` runs or, while a key with a budget or credit is active, when auto-switch reads this machine's session files (every 5 minutes). An account can go past its budget before qswap notices.
 
 ## Record a prepaid credit
 
