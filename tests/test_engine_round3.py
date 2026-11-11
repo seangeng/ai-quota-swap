@@ -1067,3 +1067,174 @@ class TestTheNewLinesFit:
                 if line.strip().startswith("qswap "):
                     continue
                 assert len(line) <= 80, line
+
+
+# == EM4: a reset the user's settings keep stays banked, and is named =========================
+
+from ai_quota_swap import resets  # noqa: E402
+from ai_quota_swap.settings import ResetSettings  # noqa: E402
+from tests.test_engine_money import _tick_resets  # noqa: E402
+from tests.test_resets import _grant, _usage as _rusage  # noqa: E402
+
+
+def _week(**kw):
+    return _grant("g-week", clears=("seven_day",), **kw)
+
+
+def _views(usage: dict, *, current="1", threshold=90.0, can_claim=None):
+    allowed = set(usage) if can_claim is None else set(can_claim)
+    return [
+        resets.AccountView(num=n, usage=u, threshold=threshold, can_claim=n in allowed)
+        for n, u in usage.items()
+    ]
+
+
+class TestKeptResetsInWords:
+    """The pure function: which usable resets the planner keeps, and why."""
+
+    NOW = 1_000_000.0
+
+    def _kept(self, usage, settings=ResetSettings(), **kw):
+        return resets.kept_resets(
+            _views(usage), current=kw.pop("current", "1"), settings=settings,
+            watched=kw.pop("watched", ()), now=self.NOW, **kw,
+        )
+
+    def test_too_little_time_left_in_the_window(self):
+        usage = {"1": _rusage(d7=100, reset_in=9 * 3600, grants=[_week()]),
+                 "3": _rusage(d7=100, reset_in=9 * 3600)}
+        (kept,) = self._kept(usage)
+        assert (kept.account, kept.reason) == ("1", "min-hours-left")
+        assert kept.words == "its 7d window refills in 9h"
+        assert kept.note("#1 personal") == (
+            "#1 personal holds 1 weekly reset auto mode keeps (its 7d window refills in "
+            "9h); to spend it instead: qswap reset 1"
+        )
+        assert kept.to_json() == {
+            "account": 1, "reason": "min-hours-left",
+            "resets": [{"kind": "weekly", "count": 1}], "fix": "qswap reset 1",
+        }
+
+    def test_the_daily_limit(self):
+        usage = {"1": _rusage(d7=100, grants=[_week()]), "3": _rusage(d7=100)}
+        (kept,) = self._kept(usage, claims_today=3, daily_cap=3)
+        assert kept.words == "today's limit on automatic resets is reached"
+
+    def test_active_mode_on_another_account(self):
+        usage = {"1": _rusage(d7=100), "3": _rusage(d7=100, grants=[_week()])}
+        (kept,) = self._kept(usage, ResetSettings(auto="active"))
+        assert kept.account == "3"
+        assert kept.words == "auto mode spends resets of the active account only"
+
+    def test_a_weekly_reset_when_only_a_model_window_is_full(self):
+        weekly = _grant("g-week", clears=("seven_day", "seven_day_overage_included"))
+        usage = {"1": _rusage(d7=40, fable=100, grants=[weekly]), "3": _rusage(d7=100)}
+        (kept,) = self._kept(usage, watched=("Fable",))
+        assert kept.words == "it is a weekly reset and only a model window is full"
+
+    def test_auto_mode_off(self):
+        usage = {"1": _rusage(d7=100, grants=[_week(left=2)]), "3": _rusage(d7=100)}
+        (kept,) = self._kept(usage, ResetSettings(auto="off"))
+        assert kept.words == "auto mode is off"
+        assert kept.held() == "2 weekly resets"
+
+    def test_one_per_account(self):
+        usage = {"1": _rusage(d7=100, grants=[_week()]),
+                 "3": _rusage(d7=100, grants=[_week(left=2)])}
+        kept = self._kept(usage, ResetSettings(auto="off"))
+        assert [(k.account, k.held()) for k in kept] == [
+            ("1", "1 weekly reset"), ("3", "2 weekly resets"),
+        ]
+        mixed = resets.KeptReset("3", "auto-off", "auto mode is off",
+                                 (("Fable", 1), ("weekly", 1), ("five-hour", 1)))
+        assert mixed.held() == "1 Fable reset, 1 weekly reset and 1 five-hour reset"
+
+    def test_a_reset_the_planner_spends_is_not_kept(self):
+        usage = {"1": _rusage(d7=100, grants=[_week()]), "3": _rusage(d7=100)}
+        assert self._kept(usage) == []
+
+    def test_a_reset_that_would_give_no_room_is_not_named(self):
+        # A Fable reset while the all-models weekly window is full.
+        usage = {"1": _rusage(d7=100, fable=100, grants=[_grant("g-f")]), "3": _rusage(d7=100)}
+        assert self._kept(usage, ResetSettings(auto="off")) == []
+
+    def test_an_account_that_cannot_claim_is_left_out(self):
+        usage = {"1": _rusage(d7=100, grants=[_week()]), "3": _rusage(d7=100)}
+        views = _views(usage, can_claim={"3"})
+        assert resets.kept_resets(views, current="1", settings=ResetSettings(auto="off"),
+                                  now=self.NOW) == []
+
+
+class TestTheEngineNamesTheKeptReset:
+    def _ten_hours_left(self):
+        return {"1": _rusage(d7=100, reset_in=10 * 3600, grants=[_week()]), "2": "api key",
+                "3": _rusage(d7=100, reset_in=10 * 3600)}
+
+    def test_the_re_checks_case(self, temp_home):
+        """Defaults (last-resort, minHoursLeft 24): #1 and #3 at 100% on 7d
+        with 10 hours to go; #1 holds a weekly reset. The key is entered (the
+        user's settings keep the reset) and the switch line says so."""
+        h = _fleet(temp_home)
+        outcome, claims = _tick_resets(h, self._ten_hours_left())
+        assert claims == [] and outcome is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+        switch = _switches(h)[-1]
+        assert switch.human() == (
+            "Switched #1 a@example.com → #2 ci · 7d limit reached; #1 a@example.com "
+            "holds 1 weekly reset auto mode keeps (its 7d window refills in 10h); to "
+            "spend it instead: qswap reset 1"
+        )
+        assert switch.to_json()["resetsKept"] == [{
+            "account": 1, "reason": "min-hours-left",
+            "resets": [{"kind": "weekly", "count": 1}], "fix": "qswap reset 1",
+        }]
+        assert switch.human() in _notes(h)
+
+    def test_the_auto_log_gives_each_account_its_own_line(self, temp_home):
+        from ai_quota_swap import autolog
+        from ai_quota_swap.settings import set_setting
+
+        h = _fleet(temp_home)
+        set_setting(h.switcher.backup_dir, "resets.auto", "off")
+        usage = {"1": _rusage(d7=100, grants=[_week()]), "2": "api key",
+                 "3": _rusage(d7=100, grants=[_week()])}
+        _tick_resets(h, usage)
+        lines: list[str] = []
+        log = autolog.AutoLog(lines.append, clock=lambda: "12:00:00", width=80)
+        for event in h.events:
+            log(event)
+        log.flush()
+        text = [line for chunk in lines for line in chunk.splitlines()]
+        switch = next(i for i, line in enumerate(text) if "Switched" in line)
+        assert text[switch].endswith("· 7d limit reached")
+        following = " ".join(" ".join(text[switch + 1:]).split())
+        assert ("#1 a@example.com holds 1 weekly reset auto mode keeps (auto mode is "
+                "off); to spend it instead: qswap reset 1") in following
+        assert ("#3 c@example.com holds 1 weekly reset auto mode keeps (auto mode is "
+                "off); to spend it instead: qswap reset 3") in following
+        for line in text:
+            if not line.strip().startswith("qswap "):
+                assert len(line) <= 80, line
+
+    def test_the_dry_run_says_the_same(self, temp_home):
+        h = _fleet(temp_home)
+        h.engine = h._make_engine(dry_run=True)
+        _tick_resets(h, self._ten_hours_left())
+        switch = _switches(h)[-1]
+        assert switch.dry_run
+        assert switch.human() == (
+            "Would switch #1 a@example.com → #2 ci · 7d limit reached (dry run); #1 "
+            "a@example.com holds 1 weekly reset auto mode keeps (its 7d window refills "
+            "in 10h); to spend it instead: qswap reset 1"
+        )
+
+    def test_the_surfaces_ask_the_same_function(self, temp_home):
+        """What status, list, the dashboard and the menu bar call once the
+        integrator wires them: the same notes from the stored readings."""
+        from ai_quota_swap.autoswitch import kept_resets_now
+        from tests.test_autoswitch import _entry_for
+
+        h = _fleet(temp_home)
+        entries = {n: _entry_for(v, h.clock.now) for n, v in self._ten_hours_left().items()}
+        kept = kept_resets_now(h.switcher, h.settings, entries, now=h.clock.now)
+        assert [(k.account, k.reason) for k in kept] == [("1", "min-hours-left")]

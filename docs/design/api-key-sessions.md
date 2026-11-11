@@ -172,7 +172,11 @@ return to it when the key is left.
   - It enters a key only when the active subscription is at its limit and no other
     subscription can take over: never at a switch line, never because usage is unreadable.
   - Only a key with a monthly budget or a credit, and only with a spend figure no older than
-    20 minutes. A usage reset that could be spent comes first.
+    20 minutes. A usage reset the planner spends comes first, and so does one whose answer
+    or refill is still out. A reset the user's settings keep (`resets.minHoursLeft`, the
+    daily cap, the `active` mode, the kind rule, `resets.auto off`) stays banked: the
+    engine does not override them to stay off a key, and names each such reset on the
+    switch with `qswap reset N` (`resets.kept_resets`, decision EM4).
   - A key it entered is left for a subscription under its own lines with at least 5 points of
     room in every window, once the cooldown has passed since the key was entered.
   - Any key is left at once at its budget, with its credit spent or expired, or when its spend

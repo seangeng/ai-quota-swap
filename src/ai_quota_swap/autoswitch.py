@@ -428,10 +428,13 @@ class SwitchEvent(AutoSwitchEvent):
     # went back to the account underneath.
     limit_reason: str | None = _human_only()
     back_underneath: bool = _human_only(False)
-    # Entering a key with resets.auto off: which account holds a reset that
-    # was not spent, and the command that spends it ("#1 personal holds 1
-    # weekly reset: qswap reset 1").
-    reset_note: str | None = _human_only()
+    # Entering a key while subscriptions hold usable resets the planner kept
+    # (decision EM4): one line per account, with the reason and the command
+    # that spends it ("#1 personal holds 1 weekly reset auto mode keeps (its
+    # 7d window refills in 9h); to spend it instead: qswap reset 1"). The
+    # same in JSON: ``resets_kept`` (``resetsKept``), one entry per account.
+    reset_notes: tuple[str, ...] = _human_only(default=())
+    resets_kept: tuple[dict, ...] = ()
     # Where the figure behind ``limit_reason`` came from (``ledger``: an
     # estimate, said so).
     limit_source: str | None = _human_only()
@@ -441,13 +444,17 @@ class SwitchEvent(AutoSwitchEvent):
     target_binding: BindingWindow | None = _human_only()
 
     def _fields(self) -> dict:
-        return {
+        fields = {
             "trigger": self.trigger,
             "from": self.from_ref,
             "to": self.to_ref,
             "warnings": self.warnings,
             "dryRun": self.dry_run,
         }
+        if self.resets_kept:
+            # Additive: usable resets auto mode keeps while it moves to a key.
+            fields["resetsKept"] = [dict(entry) for entry in self.resets_kept]
+        return fields
 
     def human(self) -> str:
         """``Switched #1 personal → #2 work · 5h reached 91%``."""
@@ -1183,6 +1190,81 @@ def preview_reset_plan(
     )
 
 
+def _reset_views(
+    switcher, state: dict, entries: Mapping[str, object], usage: Mapping[str, object],
+    thresholds: Mapping[str, float], weekly_threshold: float | None,
+    quarantined: Collection[str], current: str | None, now: float,
+) -> tuple[list, str | None]:
+    """The views the reset planner plans on (``resets.views_from``): the
+    rotation's subscriptions, ``current`` first when it is not one of them,
+    and the accounts whose last claim is still settling. Returns ``(views,
+    current)``."""
+    from ai_quota_swap import resets
+
+    rotation = [
+        n for n in switcher.switchable_account_numbers()
+        if n not in quarantined and switcher.account_kind_for(n) != "api_key"
+    ]
+    accounts = rotation if current in rotation or current is None else [current, *rotation]
+    claims = state.get("resetClaims") if isinstance(state.get("resetClaims"), dict) else {}
+    settling = [
+        n for n in accounts
+        if not reset_claim_settled(claims.get(n), getattr(entries.get(n), "fetched_at", None), now)
+    ]
+    views = resets.views_from(
+        usage, claimable=rotation, thresholds=thresholds,
+        weekly_threshold=weekly_threshold, accounts=accounts, settling=settling,
+    )
+    return views, current
+
+
+def kept_resets_now(
+    switcher: ClaudeAccountSwitcher,
+    settings: AutoSwitchSettings,
+    entries: Mapping[str, object],
+    *,
+    now: float | None = None,
+) -> list:
+    """The usable resets auto mode keeps now (``resets.KeptReset``, one per
+    account), on ``entries`` (``usage_entries_by_account()``), as the engine
+    plans: on a key it entered, the account underneath stands for the active
+    one. For the surfaces (status, list, the dashboard, the menu bar's key
+    row) while a key the engine entered is active: each is a note
+    (``KeptReset.note(label)``) and a JSON entry (``to_json()``), decision
+    EM4. Read-only; [] when there is nothing to say. Never raises."""
+    from ai_quota_swap import resets
+
+    try:
+        now = time.time() if now is None else now
+        state = _read_state_file(Path(switcher.backup_dir) / STATE_FILENAME)
+        quarantine = state.get("quarantine")
+        quarantined = set(quarantine) if isinstance(quarantine, dict) else set()
+        current = switcher.current_account_number()
+        entered_by = getattr(switcher, "key_entered_by", None)
+        if current is not None and callable(entered_by) and entered_by() == "engine":
+            under = getattr(switcher, "underneath_account_number", None)
+            current = (under() if callable(under) else None) or current
+        policies = switcher.account_policies()
+        thresholds = ThresholdMap(
+            {n: p.threshold for n, p in policies.items() if p.threshold is not None},
+            settings.threshold,
+        )
+        usage = {
+            num: entry.decision_value() for num, entry in entries.items()  # type: ignore[union-attr]
+        }
+        views, current = _reset_views(
+            switcher, state, entries, usage, thresholds, settings.weekly_threshold,
+            quarantined, current, now,
+        )
+        return resets.kept_resets(
+            views, current=current, settings=switcher.reset_settings(),
+            watched=parse_model_names(settings.model), now=now,
+            claims_today=reset_claims_today(state, now), daily_cap=MAX_AUTO_RESETS_PER_DAY,
+        )
+    except Exception:
+        return []
+
+
 def _new_reset_request_id() -> str:
     """Claude Code's request id: a random UUID as 32 hex digits."""
     import uuid
@@ -1878,38 +1960,49 @@ class AutoSwitchEngine:
             for fetched in (getattr(entries.get(str(num)), "fetched_at", None),)
         )
 
-    def _unspent_reset_note(self, usage: Mapping[str, object], quarantined: set[str]) -> str | None:
-        """With ``resets.auto`` off, the first rotation account holding a reset
-        usable now, as the words a switch onto a key adds; None otherwise."""
+    def _kept_resets(
+        self,
+        state: dict,
+        entries: Mapping[str, object],
+        usage: Mapping[str, object],
+        thresholds: "ThresholdMap",
+        quarantined: set[str],
+        current: str,
+    ) -> list:
+        """The usable resets the planner keeps this tick
+        (``resets.kept_resets``), on the views it plans on. Never raises."""
         from ai_quota_swap import resets
 
         try:
             rs = self.switcher.reset_settings()
-        except Exception:
-            return None
-        if rs.enabled and rs.auto != "off":
-            return None
-        now = self.clock()
-        for num in self.switcher.switchable_account_numbers():
-            if num in quarantined or self.switcher.account_kind_for(num) == "api_key":
-                continue
-            value = usage.get(num)
-            status = value.get("resets") if isinstance(value, dict) else None
-            usable = [
-                g for g in resets.unused_grants(status, now)
-                if resets.grant_unusable_reason(g, now) is None
-            ]
-            if not usable:
-                continue
-            counts = resets.counts_by_kind({"grants": usable}, now)
-            held = " and ".join(
-                f"{n} {label} reset{'' if n == 1 else 's'}" for label, n in counts
+            now = self.clock()
+            views, planning = _reset_views(
+                self.switcher, state, entries, usage, thresholds,
+                self.settings.weekly_threshold, quarantined,
+                self._reset_planning_account(current, [
+                    n for n in self.switcher.switchable_account_numbers()
+                    if n not in quarantined and self.switcher.account_kind_for(n) != "api_key"
+                ]),
+                now,
             )
-            from ai_quota_swap.autolog import number_label
+            return resets.kept_resets(
+                views, current=planning, settings=rs, watched=self._models, now=now,
+                claims_today=reset_claims_today(state, now),
+                daily_cap=MAX_AUTO_RESETS_PER_DAY,
+            )
+        except Exception as e:  # words only; never cost the tick
+            _logger.debug("could not tell which usage resets are kept: %r", e)
+            return []
 
-            who = number_label(num, self.switcher.account_email(num) or "", self._context)
-            return f"{who} holds {held}: qswap reset {num}"
-        return None
+    def _label_of(self, num: str) -> str:
+        """``#1 personal`` or ``#1 a@example.com``, for event text."""
+        from ai_quota_swap.autolog import number_label
+
+        try:
+            email = self.switcher.account_email(num) or ""
+        except Exception:
+            email = ""
+        return number_label(num, email, self._context)
 
     # -- quarantine -----------------------------------------------------------
 
@@ -2771,9 +2864,13 @@ class AutoSwitchEngine:
                 ordered, entries = self._enterable_keys(state, entries, api_key_candidates)
                 held_for_sessions = not ordered
                 if ordered:
-                    self._tick_cause["reset_note"] = self._unspent_reset_note(
-                        usage, quarantined
+                    # A reset the user's settings keep stays banked, and is
+                    # named with the command that spends it (decision EM4).
+                    kept = self._kept_resets(state, entries, usage, thresholds, quarantined, current)
+                    self._tick_cause["reset_notes"] = tuple(
+                        k.note(self._label_of(k.account)) for k in kept
                     )
+                    self._tick_cause["resets_kept"] = tuple(k.to_json() for k in kept)
 
         if held_for_sessions:
             # The way out was a key the engine cannot move to now. When every
@@ -4020,7 +4117,8 @@ class AutoSwitchEngine:
             "priority_up": priority_up,
             "limit_reason": cause.get("limit_reason"),
             "back_underneath": bool(cause.get("back_underneath")),
-            "reset_note": cause.get("reset_note"),
+            "reset_notes": tuple(cause.get("reset_notes") or ()),
+            "resets_kept": tuple(cause.get("resets_kept") or ()),
             "limit_source": cause.get("limit_source"),
             "before_key": bool(cause.get("before_key")),
             "target_binding": (cause.get("target_bindings") or {}).get(number),

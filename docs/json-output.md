@@ -216,7 +216,7 @@ Each line has `schemaVersion`, `event` and `ts`. Account numbers inside `headroo
 | `event` | Fields | Emitted when |
 |---|---|---|
 | `poll` | `active`, `headroomPct` (account → percent left, `null` unknown), `threshold`, `windowsPct`, `fetchErrors`, `weeklyThreshold` when set | every check |
-| `switch` | `trigger` (`proactive`, `at-limit`, `failover`, `consume-first`, `priority`, `key-return`: a key the engine moved to is left because a subscription has room), `from`, `to`, `warnings`, `dryRun`. The engine moves onto a key only with `at-limit`, and leaves one at its budget, its credit or with no fresh spend figure with `at-limit` too | it switched, or would have with `--dry-run` |
+| `switch` | `trigger` (`proactive`, `at-limit`, `failover`, `consume-first`, `priority`, `key-return`: a key the engine moved to is left because a subscription has room), `from`, `to`, `warnings`, `dryRun`, and moving onto a key while subscriptions hold usable resets auto mode keeps, `resetsKept`: one `{account, reason, resets, fix}` per account, `reason` one of `min-hours-left`, `daily-cap`, `active-only`, `kind`, `off-line`, `auto-off`, `resets` `[{kind, count}]`, `fix` the command that spends it (`qswap reset 1`). The engine moves onto a key only with `at-limit`, and leaves one at its budget, its credit or with no fresh spend figure with `at-limit` too | it switched, or would have with `--dry-run` |
 | `no-switch` | `reason`, `detail` | it stayed |
 | `limit-reset` | `account`, `plan`, `scope`, `result` (`null` in a dry run), `dryRun` | it spent a usage reset |
 | `account-quarantined` | `number`, `email`, `reason` (`invalid_grant`, `identity-conflict`) | it set an account aside; text says `needs re-login` |

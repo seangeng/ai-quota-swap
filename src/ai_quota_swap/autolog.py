@@ -468,8 +468,7 @@ def switch_reason(event: object) -> str:
             ):
                 words += " (estimate)"  # this machine's count, not Anthropic's
             return words + back
-        note = getattr(event, "reset_note", None)
-        tail = f"; {note}" if note else ""
+        tail = ""
         if getattr(event, "before_key", False):
             # A subscription taken instead of an API key (decision EM9).
             target = getattr(event, "target_binding", None)
@@ -492,10 +491,14 @@ def switch_reason(event: object) -> str:
     return trigger.replace("-", " ")
 
 
-def switch_sentence(event: object, *, src: str | None = None, dst: str | None = None) -> str:
+def switch_sentence(
+    event: object, *, src: str | None = None, dst: str | None = None, notes: bool = True,
+) -> str:
     """``Switched #1 personal → #2 work · 5h reached 91%``; a dry run
     ``Would switch … (dry run)``. ``src``/``dst`` replace the labels (the
-    renderer passes fitted ones)."""
+    renderer passes fitted ones). Onto a key, the usable resets auto mode
+    keeps follow, one per account (decision EM4); ``notes`` False leaves
+    them out for a renderer that prints each on a line of its own."""
     context = getattr(event, "context", None)
     src = ref_label(getattr(event, "from_ref", None), context) if src is None else src
     dst = ref_label(getattr(event, "to_ref", None), context) if dst is None else dst
@@ -503,7 +506,8 @@ def switch_sentence(event: object, *, src: str | None = None, dst: str | None = 
     verb = "Would switch" if getattr(event, "dry_run", False) else "Switched"
     move = f"{src} → {dst}" if src else f"to {dst}"
     tail = " (dry run)" if getattr(event, "dry_run", False) else ""
-    return f"{verb} {move} · {switch_reason(event)}{tail}"
+    kept = "".join(f"; {note}" for note in getattr(event, "reset_notes", ()) or ()) if notes else ""
+    return f"{verb} {move} · {switch_reason(event)}{tail}{kept}"
 
 
 # -- no switch, in words ---------------------------------------------------------------
@@ -1211,8 +1215,8 @@ class AutoLog:
 
             def compose(ls: list[str]) -> str:
                 if src:
-                    return switch_sentence(decision, src=ls[0], dst=ls[1])
-                return switch_sentence(decision, src="", dst=ls[0])
+                    return switch_sentence(decision, src=ls[0], dst=ls[1], notes=False)
+                return switch_sentence(decision, src="", dst=ls[0], notes=False)
 
             text = _fit_labels(compose, labels, room)
             style = _style("" if getattr(decision, "dry_run", False) else "accent")
@@ -1265,6 +1269,9 @@ class AutoLog:
         if kind == "switch":
             for warning in getattr(decision, "warnings", None) or ():
                 self._indented(str(warning), _style("yellow"))
+            # Usable resets auto mode keeps, one line per account (EM4).
+            for note in getattr(decision, "reset_notes", None) or ():
+                self._indented(str(note), _style(""))
         if kind == "no-switch" and getattr(decision, "records", None):
             # Session records that could not be read: each path whole on its
             # own line, never cut to the width (ux.md), then what to do.

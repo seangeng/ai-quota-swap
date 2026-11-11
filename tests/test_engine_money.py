@@ -760,7 +760,8 @@ class TestFreeBeforePaid:
         assert h.switcher.current_account_number() == "2"
         assert _switches(h)[-1].human() == (
             "Switched #1 a@example.com → #2 ci · 7d limit reached; #1 a@example.com "
-            "holds 1 weekly reset: qswap reset 1"
+            "holds 1 weekly reset auto mode keeps (auto mode is off); to spend it "
+            "instead: qswap reset 1"
         )
 
 
