@@ -156,6 +156,43 @@ class TestItHoldsTheSwitch:
         assert outcome is TickOutcome.SWITCHED and not _held(h)
 
 
+class TestTheWordsQuoteTheResetLine:
+    """The reset line is printed with the decimals it has, and the reading on
+    a held check never reads as that line or above it: it has not reached it
+    (with resets.threshold 100 the words are TestItHoldsTheSwitch's)."""
+
+    @pytest.mark.parametrize(("line", "reset_line", "d7", "reading", "shown"), [
+        (90.0, "95", 94.6, "94", "95"),
+        (98.0, "99.5", 99.46, "99", "99.5"),
+        (98.5, "99.5", 99.46, "99.4", "99.5"),
+    ], ids=["94.6-under-95", "99.46-under-99.5", "99.46-under-99.5-on-a-98.5-line"])
+    def test_the_fragment_the_sentence_and_the_row(
+        self, temp_home, line, reset_line, d7, reading, shown
+    ):
+        h = _fleet(temp_home, threshold=line)
+        _settings(h, threshold=reset_line)
+        outcome, claims = _tick_resets(h, _usage(d7))
+        assert outcome is TickOutcome.NO_ACTION and claims == []
+        (held,) = _held(h)
+        fragment = f"its own weekly reset comes first, at 7d {shown}%"
+        assert autolog.no_switch_fragment(held) == (fragment, "routine")
+        assert held.human() == (
+            f"No switch yet: auto mode spends #1 a@example.com's own weekly reset when 7d "
+            f"reaches {shown}%, rather than switching away (resets.beforeSwitch)"
+        )
+        assert held.to_json()["detail"] == (
+            f"account 1's own weekly reset is spent when 7d reaches {shown}% "
+            "(resets.beforeSwitch)"
+        )
+        text = _log_text(h.events)
+        row = " ".join(" ".join(text).split())
+        switch_at = f"{line:g}"
+        assert (
+            f"12:00:00 #1 a@example.com at 7d {reading}% (switch at {switch_at}%) · {fragment}"
+        ) in row, text
+        assert all(len(ln) <= 80 for ln in text), text
+
+
 class TestTheSettingOffIsMain:
     @pytest.mark.parametrize("auto", ["active", "on-limit"])
     @pytest.mark.parametrize("before_switch", [None, False])

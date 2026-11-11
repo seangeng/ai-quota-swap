@@ -111,6 +111,22 @@ def pct_pair(value: float, line: float) -> tuple[str, str]:
     return pct_text(value, decimals, under=line), f"{line:.{decimals}f}"
 
 
+def line_text(line: float) -> str:
+    """A line on its own, with the decimals it has: ``95``, ``99.5``."""
+    return pct_text(line, pct_decimals(line))
+
+
+def held_pct_pair(value: float, line: float, reset_line: object) -> tuple[str, str]:
+    """:func:`pct_pair` for a reading held over its switch line until
+    ``reset_line`` (``resets.threshold``, reason ``reset-ahead``), which it
+    has not reached: the reading never reads as that line or above it, so
+    94.6 against a 90 line and a 95 reset line reads ``("94", "90")``."""
+    shown, line_shown = pct_pair(value, line)
+    if isinstance(reset_line, (int, float)) and value >= line:
+        shown = pct_text(value, pct_decimals(line), under=float(reset_line))
+    return shown, line_shown
+
+
 # -- account labels ------------------------------------------------------------------
 
 
@@ -703,7 +719,7 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         line = getattr(event, "reset_line", None)
         noun = getattr(event, "reset_noun", None) or "reset"
         if binding is not None and isinstance(line, (int, float)):
-            return f"its own {noun} comes first, at {binding.label} {pct_text(line)}%", "routine"
+            return f"its own {noun} comes first, at {binding.label} {line_text(line)}%", "routine"
         return f"its own {noun} comes first", "routine"
     if reason == "usage-unreadable-hold":
         account = getattr(event, "account", None)
@@ -799,7 +815,7 @@ def no_switch_sentence(event: object) -> str:
         noun = getattr(event, "reset_noun", None) or "reset"
         line = getattr(event, "reset_line", None)
         when = (
-            f" when {binding.label} reaches {pct_text(line)}%"
+            f" when {binding.label} reaches {line_text(line)}%"
             if binding is not None and isinstance(line, (int, float)) else ""
         )
         return (
@@ -1284,8 +1300,15 @@ class AutoLog:
         decided = getattr(decision, "binding", None) if kind == "no-switch" else None
         if label and decided is not None:
             # The window the engine decided on, which a usage reset spent
-            # between the poll and the decision can have refilled.
-            value, line = pct_pair(decided.pct, decided.line)
+            # between the poll and the decision can have refilled. Held for
+            # the account's own reset, the reading is under resets.threshold
+            # too, which the fragment after it names.
+            if getattr(decision, "reason", "") == "reset-ahead":
+                value, line = held_pct_pair(
+                    decided.pct, decided.line, getattr(decision, "reset_line", None)
+                )
+            else:
+                value, line = pct_pair(decided.pct, decided.line)
             rest = f"at {decided.label} {value}% (switch at {line}%)"
             level = "warn" if decided.over else "ok"
         blocked = False
