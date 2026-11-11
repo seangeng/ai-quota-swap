@@ -138,9 +138,13 @@ class KeyActivationMixin:
 
     def underneath_account_number(self) -> str | None:
         """The subscription logged in under an active key; None otherwise."""
-        if self.helper_account() is None:
+        key = self.helper_account()
+        if key is None:
             return None
-        return self.login_account_number()
+        under = self.login_account_number()
+        if under is None or under == key or self._account_kind(under) == "api_key":
+            return None
+        return under
 
     def key_entered_by(self) -> str | None:
         """Who entered the active key: ``user`` or ``engine``; None when no
@@ -309,6 +313,12 @@ class KeyActivationMixin:
         previous_key = self.helper_account()
         underneath = self.login_account_number()
         source = previous_key or underneath
+        if underneath == number or (
+            underneath is not None and self._account_kind(underneath) == "api_key"
+        ):
+            # A key saved the older way (--log-out-sessions) is in the login's
+            # place: no subscription is logged in underneath.
+            underneath = None
         with FileLock(self.lock_file):
             self.isolate_run_profiles()
             try:

@@ -1618,8 +1618,6 @@ class TestSurfaces:
             "claude", menubar_data.account_states(snap, "claude", {}, now=time.time()),
             key_notes=snap.key_notes,
         )
-        inp = replace(menubar.MenuInput.__new__(menubar.MenuInput)) if False else None
-        del inp
         rows = menubar._provider_rows(
             type("I", (), {"settings": type("S", (), {"refresh_interval": 60})(),
                            "now": time.time()})(), state,
@@ -1648,8 +1646,7 @@ class TestSurfaces:
             *display.key_helper_problem("12", "not-api-key", "qswap switch 1"),
             *display.stale_copies_line(3, "qswap switch 1"),
             key_helper.HELP,
-            "\n".join(display.wrap(api_spend.NOT_ANTHROPICS)) if hasattr(
-                api_spend, "NOT_ANTHROPICS") else "",
+            *display.key_helper_moved("12", "qswap switch 12"),
         ]
         from ai_quota_swap import api_cli
 
@@ -1763,3 +1760,51 @@ class TestRemovingAKeyInUse:
             mgr.run("5", [], share=True)
         monkeypatch.setattr("ai_quota_swap.process_detection.is_pid_alive", lambda pid: True)
         assert s.key_run_pids("5") == [os.getpid()]
+
+
+class TestExactlyTheseFiles:
+    """Each direction of a switch writes exactly the files it should: outside
+    qswap's data directory, only Claude Code's settings file (and, for the
+    login switch, the login itself)."""
+
+    @staticmethod
+    def _outside(home: Path, data: Path) -> dict[str, bytes]:
+        out = {}
+        for path in home.rglob("*"):
+            if path.is_file() and data not in path.parents:
+                out[str(path.relative_to(home))] = path.read_bytes()
+        return out
+
+    def _changed(self, before: dict, after: dict) -> set[str]:
+        return {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)}
+
+    def test_each_direction(self, temp_home, block_real_keychain):
+        s = _fleet(Platform.MACOS)
+        settings = str(Path(".claude") / "settings.json")
+        steps = [
+            ("5", {settings}, False),   # subscription → key
+            ("6", {settings}, False),   # key → key
+            ("1", {settings}, False),   # key → the account underneath
+            ("5", {settings}, False),
+            ("7", {settings, ".claude.json"}, True),  # key → another subscription
+        ]
+        for target, expected, login_changes in steps:
+            before = self._outside(temp_home, s.backup_dir)
+            items = dict(block_real_keychain.data)
+            s.switch_to(target, json_output=True)
+            assert self._changed(before, self._outside(temp_home, s.backup_dir)) == expected, target
+            changed_items = {k for k in items.keys() | block_real_keychain.data.keys()
+                             if items.get(k) != block_real_keychain.data.get(k)}
+            login_items = {k for k in changed_items if k[0] != SECURITY_SERVICE}
+            if login_changes:
+                assert login_items == {(CLAUDE_CODE_KEYCHAIN_SERVICE, _acct())}, target
+            else:
+                assert login_items == set(), target
+
+    def test_from_a_saved_key_nothing_is_underneath(self, temp_home, block_real_keychain):
+        s = _fleet()
+        s.switch_to("5", json_output=True, log_out_sessions=True)
+        result = s.switch_to("6", json_output=True)
+        assert result["how"] == "helper"
+        assert s.active_view() == ("6", None)
+        assert "underneath" not in " ".join(result["followup"])

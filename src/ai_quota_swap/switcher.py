@@ -6829,7 +6829,12 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         key = self.helper_account()
         if key is None:
             return None, None
-        return key, self.login_account_number()
+        under = self.login_account_number()
+        # A key saved the older way (--log-out-sessions) in the login's place
+        # is not a subscription logged in underneath.
+        if under is not None and (under == key or self._account_kind(under) == "api_key"):
+            under = None
+        return key, under
 
     def key_helper_notes(self) -> list[str]:
         """The lines every surface shows when the helper line names an
