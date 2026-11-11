@@ -241,6 +241,48 @@ class TestRotationFromAKeyDecidesFirst:
                 s.switch(json_output=True)
         assert (_line(temp_home), s._key_state()) == before
 
+    @pytest.mark.parametrize("how", ["named", "rotation", "log-out-sessions"])
+    @pytest.mark.parametrize("where", ["restore_run_profiles", "login_account_number", "label"])
+    def test_ctrl_c_after_the_line_came_out_puts_it_back(
+        self, temp_home, block_real_keychain, monkeypatch, how, where
+    ):
+        """The re-check's case: an interrupt between taking the line out and
+        the login switch (restoring the run profiles, reading the login
+        underneath, a label) left the line out and the login unchanged:
+        sessions on neither the key nor the account asked for."""
+        s = _fleet()
+        _activate(s)
+        if how == "rotation":
+            get_global_config_path().write_text("{}", encoding="utf-8")
+        before = (_line(temp_home), s._key_state())
+        real_remove = claude_settings.remove
+        removed = {"done": False}
+
+        def remove(*a, **k):
+            removed["done"] = True
+            return real_remove(*a, **k)
+
+        monkeypatch.setattr(claude_settings, "remove", remove)
+        real = getattr(s, where)
+
+        def interrupted(*a, **k):
+            if removed["done"]:
+                raise KeyboardInterrupt
+            return real(*a, **k)
+
+        monkeypatch.setattr(s, where, interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            if how == "named":
+                s.switch_to("7", json_output=True)
+            elif how == "rotation":
+                s.switch(json_output=True)
+            else:
+                s.switch_to("6", json_output=True, log_out_sessions=True)
+        monkeypatch.setattr(s, where, real)
+        assert removed["done"]
+        assert (_line(temp_home), s._key_state()) == before
+        assert s.current_account_number() == "5"
+
     def test_a_put_back_that_half_fails_leaves_no_stale_copy(
         self, temp_home, block_real_keychain, monkeypatch
     ):

@@ -8266,61 +8266,65 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             )
             return self._switch_result_from_op(op, "direct", repairs) if json_output else None
         left_key: tuple[str, dict] | None = None
-        if helper is not None:
-            if target_is_key:
-                # --log-out-sessions onto a key: the saved-key path, with the
-                # line out of the way first so sessions do not follow it.
-                left_key = (helper, self._key_state())
-                active_before = self._active_number()
-                self._leave_key()
-            else:
-                op = self._leave_key_to(target_account, force=force, emit_output=not json_output)
-                return self._switch_result_from_op(op, "direct", repairs) if json_output else None
-
-        # Short-circuit a no-op before mutating (issue #79). A self-switch
-        # would first back up the live credentials into the target slot —
-        # destroying a freshly imported backup with a possibly stale login —
-        # then read them straight back. It also re-writes credentials, takes
-        # the lock, and (on macOS) touches the Keychain for nothing. --force
-        # skips this guard on purpose: its job is to rewrite the live login
-        # from the stored backup. Provenance-aware (issue #117): the no-op is
-        # only taken when the live credential matches the slot's backup or
-        # the divergence can't be classified — pre-fix behavior, silent — and
-        # a *resolved* divergence falls through so _perform_switch can
-        # reconcile it.
-        provenance: dict | None = None
-        if not force and data:
-            identity = self._get_current_account()
-            if identity is not None:
-                cur_slot = self._find_account_slot(data, identity[0], identity[1])
-                if cur_slot == target_account:
-                    action, provenance = self._self_switch_action(
-                        target_account, identity[0]
-                    )
-                if cur_slot == target_account and action != "reconcile":
-                    email = (
-                        data.get("accounts", {}).get(target_account, {}).get("email", "")
-                    )
-                    ref = account_ref(int(target_account), email)
-                    if not json_output:
-                        print(
-                            f"{accent('Already on')} {self.label(target_account, email)}"
-                        )
-                        print(dimmed(
-                            "To reload its saved login (after an import): "
-                            f"qswap switch {target_account} --force"
-                        ))
-                        return None
-                    return self._switch_noop(
-                        strategy="direct",
-                        reason="already-active",
-                        from_ref=ref,
-                        to_ref=ref,
-                        message=f"Already on Account-{target_account} ({email})",
-                        warnings=repairs,
-                    )
-
+        active_before: object = None
+        # From taking the line out (--log-out-sessions onto a key) to the end
+        # of the login switch, a failure or an interrupt (Ctrl-C included)
+        # puts the line back: the failed switch moves no session (B1).
         try:
+            if helper is not None:
+                if target_is_key:
+                    # --log-out-sessions onto a key: the saved-key path, with the
+                    # line out of the way first so sessions do not follow it.
+                    left_key = (helper, self._key_state())
+                    active_before = self._active_number()
+                    self._leave_key()
+                else:
+                    op = self._leave_key_to(target_account, force=force, emit_output=not json_output)
+                    return self._switch_result_from_op(op, "direct", repairs) if json_output else None
+
+            # Short-circuit a no-op before mutating (issue #79). A self-switch
+            # would first back up the live credentials into the target slot —
+            # destroying a freshly imported backup with a possibly stale login —
+            # then read them straight back. It also re-writes credentials, takes
+            # the lock, and (on macOS) touches the Keychain for nothing. --force
+            # skips this guard on purpose: its job is to rewrite the live login
+            # from the stored backup. Provenance-aware (issue #117): the no-op is
+            # only taken when the live credential matches the slot's backup or
+            # the divergence can't be classified — pre-fix behavior, silent — and
+            # a *resolved* divergence falls through so _perform_switch can
+            # reconcile it.
+            provenance: dict | None = None
+            if not force and data:
+                identity = self._get_current_account()
+                if identity is not None:
+                    cur_slot = self._find_account_slot(data, identity[0], identity[1])
+                    if cur_slot == target_account:
+                        action, provenance = self._self_switch_action(
+                            target_account, identity[0]
+                        )
+                    if cur_slot == target_account and action != "reconcile":
+                        email = (
+                            data.get("accounts", {}).get(target_account, {}).get("email", "")
+                        )
+                        ref = account_ref(int(target_account), email)
+                        if not json_output:
+                            print(
+                                f"{accent('Already on')} {self.label(target_account, email)}"
+                            )
+                            print(dimmed(
+                                "To reload its saved login (after an import): "
+                                f"qswap switch {target_account} --force"
+                            ))
+                            return None
+                        return self._switch_noop(
+                            strategy="direct",
+                            reason="already-active",
+                            from_ref=ref,
+                            to_ref=ref,
+                            message=f"Already on Account-{target_account} ({email})",
+                            warnings=repairs,
+                        )
+
             op = self._perform_switch(
                 target_account,
                 emit_output=not json_output,
@@ -8328,9 +8332,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 provenance=provenance,
             )
         except BaseException as e:
-            # The line came out for this switch: a switch that failed (or was
-            # interrupted, Ctrl-C included) moves no session, so it goes back.
-            if left_key is not None:
+            if left_key is not None and self._key_line_out(left_key[0]):
                 self._restore_key(*left_key, e, active=active_before)
             raise
         result = self._switch_result_from_op(op, "direct", repairs) if json_output else None
@@ -8356,15 +8358,52 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         key_email = self.account_email(key) if key else ""
         key_state = self._key_state()
         active_before = self._active_number()
-        self._leave_key()
+        # The login underneath does not depend on the line, so it is read
+        # before the line comes out: from there to the login switch, a
+        # failure or an interrupt (Ctrl-C included) puts the line back
+        # unless taking it out was the whole switch (decision B1).
         underneath = self.login_account_number()
-        from_ref = account_ref(int(key), key_email) if key else None
-        target_label = self.label(target_account, long=False)
         if target_account == underneath and not force and self._login_store_lacks_login():
             # ~/.claude.json names the account, but the login store holds no
             # login (F26): taking the line out alone would leave every
             # session logged out. Its saved login goes in, as any switch.
             force = True
+        line_only = target_account == underneath and not force
+        switched: list[bool] = []
+        try:
+            self._leave_key()
+            return self._leave_key_rest(
+                target_account, key, key_email, underneath, force=force,
+                emit_output=emit_output, switched=switched,
+            )
+        except BaseException as e:
+            # The line came out for a login switch that did not happen: back
+            # in, so the failed switch moves no session. When taking it out
+            # was the whole switch, sessions are where they were sent.
+            if key and not line_only and not switched and self._key_line_out(key):
+                self._restore_key(key, key_state, e, active=active_before)
+            raise
+
+    def _key_line_out(self, key: str) -> bool:
+        """Whether the line for ``key`` is known to be out of the settings
+        (False while the file cannot be read: nothing to put back then)."""
+        try:
+            state = self.key_helper_state()
+        except Exception:
+            return False
+        if state.kind == claude_settings.INVALID:
+            return False
+        return not (state.ours and state.number == str(key))
+
+    def _leave_key_rest(
+        self, target_account: str, key: str | None, key_email: str,
+        underneath: str | None, *, force: bool, emit_output: bool, switched: list[bool],
+    ) -> dict:
+        """The part of :meth:`_leave_key_to` after the line came out; a
+        failure here is the caller's to put right. ``switched`` gets an
+        entry once the login switch is done."""
+        from_ref = account_ref(int(key), key_email) if key else None
+        target_label = self.label(target_account, long=False)
         if target_account == underneath and not force:
             record = (
                 (self._get_sequence_data() or {}).get("accounts", {}).get(target_account) or {}
@@ -8385,20 +8424,14 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             op = self._op_result(from_ref, account_ref(int(target_account), email), [], followup)
             op["how"] = display.HOW_LOGIN
             return op
-        try:
-            op = self._perform_switch(
-                target_account,
-                emit_output=emit_output,
-                force_activate=force,
-                shown_from=self.label(key, long=False) if key else None,
-                followup_override=display.key_leave_followup(target_label, login_switch=True),
-            )
-        except BaseException as e:
-            # A switch that failed, or was interrupted (Ctrl-C included),
-            # moves no session: the line goes back in.
-            if key:
-                self._restore_key(key, key_state, e, active=active_before)
-            raise
+        op = self._perform_switch(
+            target_account,
+            emit_output=emit_output,
+            force_activate=force,
+            shown_from=self.label(key, long=False) if key else None,
+            followup_override=display.key_leave_followup(target_label, login_switch=True),
+        )
+        switched.append(True)
         if from_ref is not None:
             op["from"] = from_ref
         return op
