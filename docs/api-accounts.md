@@ -1,6 +1,6 @@
 # API-key accounts: spend and budgets
 
-An API-key account has no 5-hour or weekly window, so qswap shows what it spent instead, today and this month. After this page you can add a Console API key, see its spend, give it a monthly budget that auto-switch respects, and read Anthropic's own figures with an organization's Admin key.
+An API-key account has no 5-hour or weekly window, so qswap shows what it spent instead, today and this month. After this page you can add a Console API key, move running Claude Code sessions onto it and back, see its spend, give it a monthly budget or a prepaid credit that auto-switch respects, and read Anthropic's own figures with an organization's Admin key.
 
 ## Add an API key
 
@@ -16,7 +16,7 @@ Added #6 build@example.com (from API key)
 - `--slot N` stores it in slot N; `--yes` replaces an account already in that slot without asking.
 - Adding makes no request to Anthropic. The key is stored like a saved login (see [../SECURITY.md](../SECURITY.md)).
 
-Claude Code sessions started after a switch to an API-key account use the key. Sessions that are already running do not: [Switch to an API key](#switch-to-an-api-key) explains why, and what qswap does about it. Auto-switch treats an API-key account differently, as [Set a budget](#set-a-budget) explains.
+A switch to an API-key account moves every Claude Code session onto the key within a few seconds, running ones included: [Switch to an API key](#switch-to-an-api-key). Auto-switch treats an API-key account differently, as [Set a budget](#set-a-budget) explains.
 
 ### Setup-tokens
 
@@ -39,14 +39,68 @@ With `usage.headerProbe` on, qswap reads the 5-hour, weekly and Fable windows fr
 
 ## Switch to an API key
 
-Claude Code looks up a saved API key once, when it starts, and keeps that answer for as long as it runs. A session that started on a subscription login therefore never moves to a key. When the switch takes the login away, every such session answers `Not logged in · Please run /login` about 30 seconds later, until you switch back or restart it. Sessions started after the switch use the key.
+```text
+$ qswap switch 5
+Switched #1 personal → #5 ci (API key)
+Running Claude Code sessions move to the key within a few seconds. #1 personal
+stays logged in underneath. claude.ai connectors are unavailable while a key is
+in use.
+```
 
-So while Claude Code sessions are running on the shared login, `qswap switch` refuses an API-key account and changes nothing:
+The switch adds one line to Claude Code's user settings, `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`):
+
+```json
+"apiKeyHelper": "/Users/you/.local/bin/qswap key-helper 5"
+```
+
+Claude Code watches that file. Within a few seconds every session that reads it, running or new, sends its requests with the key that `qswap key-helper 5` prints, instead of the claude.ai login. Nothing else changes: not the login, not the saved key, not `~/.claude.json`. Running sessions keep their conversation. Two things do change for them: Claude Code turns its claude.ai connectors (the MCP servers that come with the claude.ai login) off while a key is in use, and the first request on the key rebuilds the prompt cache, which is paid at the key's price.
+
+### The account underneath
+
+The subscription that was active stays logged in. `qswap list` and `qswap status` show both:
+
+```text
+  #1 personal (maya@example.com) · underneath · Max 20x
+     ├ 5h     46%  resets 16:55 · in 2h 35m
+     └ 7d     38%  resets Nov 13 20:20 · in 3d 6h
+  #5 ci · active · API key · over #1 personal
+     $2.06 today · $25.16 this month · estimate
+```
+
+The key is the active account; the subscription is *underneath* it and is not active. Its windows still read as usual. Under `--json`, the key's row has `"active": true` and `"how": "helper"`, and the subscription's row has `"underneath": true` ([json-output.md](json-output.md)).
+
+### Leaving the key
+
+```text
+$ qswap switch 1
+Switched #5 ci → #1 personal (maya@example.com)
+Running Claude Code sessions are back on #1 personal within a few seconds.
+```
+
+Switching to the account underneath removes the line, and that is all. Switching to another subscription removes the line and then switches the login as usual; sessions are on it within about 30 seconds. Switching from one key to another replaces the line, and sessions move to the new key within a few seconds. `qswap switch` with no account, and its strategies, never land on a key; on a key they go back to the account underneath (`--strategy best` to a subscription with more room, if there is one). An API-key account is entered by naming it, or by auto-switch ([Set a budget](#set-a-budget)).
+
+If qswap created `~/.claude/settings.json` for the line, it removes the file again when the key is left and nothing else was added to it. Otherwise it changes that one key and keeps everything else as it was: the other keys and their order, the indentation, the file mode, a symbolic link to your dotfiles. It never writes a file it cannot parse.
+
+### Removing the line by hand
+
+If qswap is gone, or you want the subscription back without it, delete the `apiKeyHelper` line from `~/.claude/settings.json`. Sessions are back on the subscription within a few seconds. Then run `qswap doctor`: it puts nothing back by itself, but it names what is left over (below).
+
+### Sessions started with qswap run
+
+A `qswap run` session has its own profile, which shares `~/.claude/settings.json` through a link. While the line is in, each such profile gets a copy of the settings without it instead, so those sessions stay on their own account; when the line is removed the link comes back. Settings changed inside a run session in the meantime stay in its copy. A profile created while a key is active gets the copy too.
+
+`qswap run 5` runs one session on the key, and nothing else moves: [sessions.md](sessions.md#run-on-an-api-key).
+
+### When the line cannot be added
+
+qswap adds nothing when the settings file already has an `apiKeyHelper` of someone else's, or cannot be parsed or written, and says why:
 
 ```text
 $ qswap switch 5
-Error: not switched. #5 ci is an API-key account, and 6 Claude Code sessions
-are running on the shared login. A running session cannot move to an API key:
+Error: not switched. qswap cannot add the key helper for #5 ci to the Claude
+Code settings: ~/.claude/settings.json already sets another apiKeyHelper.
+Without it, the key can only be saved for Claude Code, which a running session
+does not pick up. 6 Claude Code sessions are running on the shared login:
 about 30 seconds after the switch each one stops with "Not logged in" until
 you switch back or restart it.
 Sessions started after the switch use the key.
@@ -54,25 +108,21 @@ To switch anyway:
   qswap switch 5 --log-out-sessions
 ```
 
-The count is the "Running instances" `qswap list` shows. Sessions inside a `qswap run` profile have their own login and are not counted. When qswap cannot read Claude Code's session records (a record half written, or in a shape it does not know), it cannot tell whether sessions are running, and refuses the same way; `--log-out-sessions` still goes ahead. Under `--json` the refusal is the error envelope, with the count in `error.sessions` and the records it could not read in `error.unreadable`.
+`--log-out-sessions` takes the older way: the key is saved where Claude Code reads it once, at start (the macOS Keychain item `Claude Code`, or `primaryApiKey` in `~/.claude.json` elsewhere), and the login is taken out of Claude Code's login item. A running session cannot pick a saved key up, so each one started on a subscription answers `Not logged in · Please run /login` about 30 seconds later, until you switch back or restart it. The login item itself stays, with your MCP server sign-ins in it. When qswap cannot read Claude Code's session records it says it cannot tell whether sessions are running. Under `--json` the refusal is the error envelope (`KeyHelperUnavailableError`), with the reason in `error.keyHelper` and the count in `error.sessions`.
 
-`--log-out-sessions` switches anyway and says what happens next:
+The menu bar and the dashboard ask nothing when the line can be added. When it cannot, they ask *Use the saved key instead?*, with Cancel as the default and *Switch and log out sessions* to go ahead.
 
-```text
-$ qswap switch 5 --log-out-sessions
-Switched #1 personal → #5 ci (API key)
-...
-6 running sessions will stop with "Not logged in" within about 30 seconds.
-Restart a session to put it on the key. Sessions started from now on use it.
-```
+Leaving a saved key is safe: qswap never rewrites an API-key account's saved key when it leaves it, sessions started on the key move back to the subscription within about 30 seconds, and from one saved key to another the sessions started on the first keep it until you restart them (the switch lists them).
 
-With no session running there is nothing to refuse, and the switch ends with `Claude Code sessions started from now on use the key.` A rotation (`qswap switch` with no account, and its strategies) skips an API-key account while sessions are running (`Skipped #5 ci: an API-key account, and 6 Claude Code sessions are running.`), and auto-switch never lands on one then ([auto-switch.md](auto-switch.md#api-key-accounts-and-budgets)). The menu bar asks first, with Cancel as the default and *Switch and log out sessions* to go ahead; the dashboard offers the same choice. From one API key to another no one is logged out, so the question is *Switch keys with 6 sessions running?* and its button *Switch anyway*.
+### What qswap doctor checks
 
-What the switch changes: the key is saved where Claude Code reads it (the macOS Keychain item `Claude Code`, or `primaryApiKey` in `~/.claude.json` elsewhere), and the login is taken out of Claude Code's login item (`Claude Code-credentials`, or `~/.claude/.credentials.json`). The item itself stays, with your MCP server sign-ins in it, so Slack, Figma and other MCP servers stay signed in.
+- qswap's own line for an API-key account is reported as the active key, not as a warning.
+- A line for an account that no longer exists, or is not an API-key account, fails: every session on it would get no key ("apiKeyHelper script is failing"). The fix is `qswap switch N` to the account underneath, which removes the line.
+- A line that runs a qswap that is no longer there (a reinstall moved it) fails, and `qswap switch 5` points the line at this qswap again.
+- Run profiles left with a settings copy after the line is gone (qswap stopped between the two steps) fail, and `qswap switch N` restores the links.
+- Another `apiKeyHelper`, and `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` exported in your shell, warn: each makes Claude Code ignore the active account. `qswap switch` warns about those variables too.
 
-Switching back is safe. qswap never rewrites an API-key account's saved key when it leaves it, and the account you switch to gets its own login together with the MCP sign-ins of the moment. Sessions started while the key was active move back on their own: `Sessions started while #5 ci was active move to #1 personal within about 30 seconds.` Sessions that stopped with "Not logged in" pick the login up again and continue their conversation. From one key to another it is different: sessions started on the first key keep using it until you restart them, and the switch lists them by process id and directory.
-
-`qswap doctor` warns when an API-key account is active while sessions that started on a subscription are still running, and when something makes Claude Code ignore the active account altogether: an `apiKeyHelper` in `~/.claude/settings.json`, or `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` exported in your shell. `qswap switch` warns about those variables too.
+`qswap list`, `qswap status`, the dashboard and the menu bar say the same about a line for no key, with the same command.
 
 ## See what it spent
 
@@ -125,15 +175,17 @@ The account can be a number, email or alias. The amount is US dollars per UTC mo
 
 What auto-switch (`qswap auto`, the menu bar, the dashboard's auto view) does with an API-key account; [auto-switch.md](auto-switch.md) has the rest of its rules:
 
-- It never ranks one against subscriptions. It lands on one only as a last resort, when it must move and no subscription has room, and only with `--include-api-key-accounts` (`autoswitch.includeApiKeyAccounts`).
-- An active API-key account under its budget, or without one, is left alone (`#5 ci is an API key · no quota to watch`). With `--include-api-key-accounts`, auto-switch instead counts its missing usage as unreadable and fails over to another account after `autoswitch.unhealthyTicks` checks (3 by default): `#5 ci is an API key · failover in 2 more checks`.
+- It never ranks one against subscriptions. It moves to one only as a last resort, when it must move and no subscription has room, and only with `--include-api-key-accounts` (`autoswitch.includeApiKeyAccounts`). Running sessions follow the move, so they do not hold it. Where the line cannot be added, auto-switch does not take the `--log-out-sessions` way by itself: it stays and says so once.
+- A key auto-switch moved to is left as soon as a subscription has room again (`Switched #5 ci → #1 personal · a subscription has room again`).
+- A key you switched to yourself is never left because a subscription has room: only at its budget, when its credit is spent or expired, or when you switch (`on the API key you chose`).
+- An active API-key account that is not on the key helper (a `--log-out-sessions` switch) under its budget, or without one, is left alone (`#5 ci is an API key · no quota to watch`); with `--include-api-key-accounts` auto-switch counts its missing usage as unreadable and fails over after `autoswitch.unhealthyTicks` checks (3 by default).
 - At 80% of the budget it logs one warning per account per month, which the menu bar also shows as a notification:
 
   ```text
   14:20:00  #5 ci has spent $25.16 of its $30.00 monthly budget (84%) (estimate)
   ```
 
-- At or over the budget the account is never a target. If it is the active account, auto-switch treats it as at its limit and moves to an account with room, without waiting for the cooldown.
+- At or over the budget the account is never a target. If it is the active account, auto-switch treats it as at its limit and moves to the subscription with the most room, without waiting for the cooldown, and when none has room, back to the account underneath (`· monthly budget reached; no subscription has room, so back to the account underneath`).
 - With no budget, or no figure to hold it against, nothing changes.
 
 ### What a budget is not
@@ -141,6 +193,28 @@ What auto-switch (`qswap auto`, the menu bar, the dashboard's auto view) does wi
 A budget is a brake inside qswap, not a cap at Anthropic. It changes only what auto-switch does. Claude Code keeps working on the account if you switch to it by hand, and anything else that uses the same key is not affected. For a hard cap, set a spend limit on the key's workspace in the Claude Console.
 
 Figures also arrive late: Anthropic's by about five minutes, the local estimate only when `qswap usage` runs. An account can go past its budget before qswap notices.
+
+## Record a prepaid credit
+
+A Console organization can hold a prepaid balance. No API key can read it, but qswap can count it down for you:
+
+```text
+$ qswap credit 5 1187 --expires 2026-12-31
+Recorded $1,187 of credit for #5 ci as of now, usable until 2026-12-31.
+  A credit is the count qswap keeps of what you recorded, less the spend it
+  measures from then on. It is not the balance at Anthropic, which no key can
+  read.
+```
+
+From then on the account's row counts down: `API key · $1,150 of $1,187 credit left`. The spend is Anthropic's figure when the account is linked to a registered organization, the local estimate otherwise (`· estimate`). Anthropic's figures come in whole UTC days, so the day you record the credit counts in full; the estimate counts from the hour.
+
+- `qswap credit 5 off` removes it, and `qswap credit` lists every credit (`--json` too). Recording a credit again starts the count again from now.
+- `--expires DATE` is the last UTC day the credit can be used. After it the row reads `credit expired Dec 31`.
+- At zero (`credit spent ($0 of $1,187 left)`), or after the expiry date, auto-switch treats the account as at its budget: it leaves it, and will not move to it.
+- A monthly budget and a credit can both be set; whichever is reached first applies. The row then shows both: `API key · $400 of $1,000 credit left · $600.00 of $500 this month (120%, over budget)`.
+- Under `--json`, `apiSpend.credit` carries `amount`, `used`, `left`, `since`, `expires`, `expired`, `spent` and `source`, and the account row a `credit` field with what you recorded ([json-output.md](json-output.md)).
+
+Like a budget, a credit is a brake inside qswap, not a cap at Anthropic.
 
 ## Register an organization's Admin key
 
@@ -197,6 +271,8 @@ When Anthropic's report cannot be read (the key was rejected, the Admin API is r
 Change one with `qswap config set usage.headerProbe true`. The full list is in [settings.md](settings.md).
 
 ## Limits
+
+- The live switch has been checked on one Claude Code process at a time, on a watched settings file; the first switch on your own `~/.claude/settings.json` with interactive sessions is the real test. Claude Code 2.1.322 or later.
 
 - A budget is enforced by qswap's auto-switch only, and only once a spend figure exists.
 - Anthropic's figure needs an Admin key, which can do far more than read reports.

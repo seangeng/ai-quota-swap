@@ -252,8 +252,8 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "autoswitch", "includeApiKeyAccounts", "include_api_key_accounts", "bool",
             help=(
-                "Allow rotating onto managed API-key accounts (bill per token); "
-                "never while Claude Code sessions are running"
+                "Allow moving onto a managed API-key account (billed per token) "
+                "when no subscription has room; left again once one has"
             ),
         ),
         SettingSpec(

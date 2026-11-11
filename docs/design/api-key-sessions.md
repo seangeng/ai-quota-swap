@@ -59,10 +59,11 @@ the previous-copy slot.
 
 ## Part 2: use a key without logging anyone out
 
-Status: accepted, 2026-11-10. Checked on one process: started on a claude.ai login, it moved
-to the key on its next request after an `apiKeyHelper` appeared in a settings file it
-watches (about one second), and back to the login after the setting was removed. Not yet
-run on the user settings file with interactive sessions; the first such run is the test.
+Status: accepted, 2026-11-10; implemented 2026-11-10 (see [As built](#as-built)). Checked on
+one process: started on a claude.ai login, it moved to the key on its next request after an
+`apiKeyHelper` appeared in a settings file it watches (about one second), and back to the
+login after the setting was removed. Not yet run on the user settings file with interactive
+sessions; the first such run is the test.
 
 ### What Claude Code does with `apiKeyHelper`
 
@@ -142,3 +143,35 @@ the helper every session changes over within seconds, so attributing usage by ti
 For a saved-key period only sessions started after the activation used the key; usage in
 such a period is attributed to the key only for sessions whose first event is after the
 activation, and the report says the split is approximate.
+
+### As built
+
+What the code does where this part leaves room, or where it had to differ:
+
+- **Who entered the key** (the user or the engine) and whether qswap created the settings
+  file are kept in `<data dir>/key_helper.json`. A line qswap has no record of counts as the
+  user's: it is only left at its budget or credit, or by the user.
+- **`activeAccountNumber`** in `sequence.json` is set to the key on entering and to the
+  account underneath on leaving, as for any switch. It still decides nothing.
+- **The repair command** for a line naming an account that cannot give a key, and for stale
+  run-profile copies, is `qswap switch N` to the account underneath: every `switch` repairs
+  both first. A line that runs a qswap no longer there (a reinstall moved it) is read as
+  qswap's, reported, and pointed at the current qswap by `qswap switch N` to the key.
+- **Order of the two steps.** Entering a key gives run profiles their copies first and then
+  writes the line (a failure in between puts the profiles back); leaving removes the line and
+  then restores the profiles. Either crash leaves copies with no line, which doctor reports.
+- **`qswap run N` for the subscription underneath an active key** is refused: plain `claude`
+  on that login would follow the line onto the key.
+- **`--log-out-sessions`** always takes the saved-key path, also when the helper could be
+  installed; with qswap's line installed it removes the line first. The part 1 session guard
+  is not consulted any more: where the helper cannot be installed the switch is always
+  refused, and the refusal still counts the running sessions.
+- **Rotation** skips API-key accounts without a "Skipped" line (they are never in rotation).
+  `--strategy best` on a key may pick a subscription with more room than the account
+  underneath; the other rotations go back to it.
+- **Credit and Anthropic's figures.** The usage report has daily buckets, so the day a credit
+  is recorded counts in full against it; the ledger counts from the hour. A credit recorded
+  before this month widens the report back to its day.
+- **Swap and move** refuse to renumber the account the line names; **add** refuses to save a
+  login into its slot (**add-token** may replace its key); **remove** takes the line out first
+  and names `qswap run N` sessions on that key, which qswap records at launch.

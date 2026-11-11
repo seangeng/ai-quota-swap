@@ -59,8 +59,9 @@ MEANINGS: dict[str, str] = {
     ),
     "autoswitch.includeApiKeyAccounts": (
         "Let auto-switch move to an API-key account when no subscription account "
-        "has room. API keys are billed per token. Never while Claude Code sessions "
-        "are running: a running session cannot move to a key."
+        "has room. API keys are billed per token. Running Claude Code sessions "
+        "follow the move through the key helper, and the engine leaves the key as "
+        "soon as a subscription has room."
     ),
     "autoswitch.unhealthyTicks": (
         "Checks in a row on which the active account's usage cannot be read "

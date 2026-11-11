@@ -148,6 +148,12 @@ Design: [docs/design/api-accounts.md](docs/design/api-accounts.md). Guide:
   never switches to an account at its budget, and leaves an active one that reaches it.
 - `qswap usage --billed`: an organization's usage and billed cost as Anthropic reports them,
   by day, model, key or workspace.
+- [x] A live switch to an API key: qswap's `apiKeyHelper` line in Claude Code's user settings
+  moves running sessions onto the key and back without logging anyone out; `qswap run N` on a
+  key for one session; `qswap credit` for a prepaid balance
+  ([docs/design/api-key-sessions.md](docs/design/api-key-sessions.md)).
+- [ ] The first switch on a real `~/.claude/settings.json` with interactive sessions, by hand:
+  the design was checked on one print-mode process at a time.
 - [ ] Later: OpenAI organization usage; refreshing the local estimate from the engine without a
   `qswap usage` run.
 
