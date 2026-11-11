@@ -7162,11 +7162,12 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             pass
         try:
             # Decision DS13: the notes status prints (only with an account
-            # managed), and the latch on the row of the active key, the one
-            # row it prints that can carry one.
+            # managed), and the latch on the row it prints: the key active
+            # through the line, else the live login's account (a key made
+            # active the older way is that one).
             if self.managed_count():
-                key = self.active_view()[0]
-                notes = self.key_notes_json(rows=(key,) if key is not None else ())
+                row = self.active_view()[0] or self.current_account_number()
+                notes = self.key_notes_json(rows=(str(row),) if row is not None else ())
                 if notes:
                     extra["keyNotes"] = notes
         except Exception as e:

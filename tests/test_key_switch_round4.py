@@ -104,3 +104,28 @@ class TestDoctorsLineForAnotherQswap:
         for line in lines:
             if not line.strip().startswith(("~", "/", "qswap ")) and ":\\" not in line:
                 assert len(line) <= 80, line
+
+
+# == DS13: keyNotes for a key active the older way =============================================
+
+
+class TestStatusJsonForAKeyActiveTheOlderWay:
+    def test_the_latched_row_status_prints_has_its_entry(self, temp_home, monkeypatch, capsys):
+        """#2 ci (latched budget) made active with --log-out-sessions: status
+        prints its row with the latch note, so status --json carries the
+        entry, as list --json does."""
+        from tests.test_engine_money import EXHAUSTED, _fleet as _engine_fleet, _reading
+        from tests.test_round3_wiring import _flat, _stored
+
+        h = _engine_fleet(temp_home)
+        reading = _reading(h, used=300.0)
+        reading["latched"] = {"reason": "budget", "account": "2"}
+        _stored(h, monkeypatch, EXHAUSTED, {"2": reading})
+        h.switcher.switch_to("2", json_output=True, log_out_sessions=True)
+        assert h.switcher.helper_account() is None
+        assert h.switcher.current_account_number() == "2"
+        capsys.readouterr()
+        h.switcher.status()
+        assert "qswap budget 2 AMOUNT" in _flat(capsys.readouterr().out)
+        entry = {"code": "limit-latched", "account": 2, "fix": "qswap budget 2 AMOUNT"}
+        assert entry in h.switcher.status(json_output=True).get("keyNotes", [])
