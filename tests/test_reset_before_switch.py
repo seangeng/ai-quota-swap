@@ -156,6 +156,39 @@ class TestItHoldsTheSwitch:
         assert outcome is TickOutcome.SWITCHED and not _held(h)
 
 
+class TestOnlyTheActiveAccountsOwnResetHolds:
+    def test_another_accounts_reset_does_not_hold_under_on_limit(self, temp_home):
+        """#1, active at 7d 98.5, holds only a five-hour reset; #3, at 7d 99,
+        holds a weekly one. Under on-limit the planner would spend #3's once
+        it reaches resets.threshold, but that reset is not #1's own: #1
+        moves at its line, to #4."""
+        h = _fleet(temp_home, threshold=98.0)
+        h.seed(4, "d@example.com")
+        _settings(h, auto="on-limit")
+        usage = {
+            **_usage(98.5, grants=[_five_hour()]),
+            "3": _rusage(h5=10, d7=99, reset_in=3 * 86400, grants=[_week()]),
+            "4": _rusage(h5=10, d7=20),
+        }
+        outcome, claims = _tick_resets(h, usage)
+        assert outcome is TickOutcome.SWITCHED and claims == []
+        assert h.switcher.current_account_number() == "4" and not _held(h)
+
+    def test_a_reset_justified_by_another_window_does_not_hold(self, temp_home):
+        """A weekly line of 90 under a switch line of 98: 7d at 97 binds
+        (the furthest past its line), and 5h is at 98.5 with 3 hours left,
+        over resets.minHoursLeft 1. #1's full reset clears both, but the
+        planner would spend it for 5h, the fuller window, not for the 7d
+        window the hold would name: #1 moves at its line."""
+        h = _fleet(temp_home, threshold=98.0, weekly_threshold=90.0)
+        _settings(h)
+        set_setting(h.switcher.backup_dir, "resets.minHoursLeft", "1")
+        full = _grant("g-full", clears=("five_hour", "seven_day"))
+        outcome, claims = _tick_resets(h, _usage(97.0, h5=98.5, grants=[full]))
+        assert outcome is TickOutcome.SWITCHED and claims == []
+        assert h.switcher.current_account_number() == "3" and not _held(h)
+
+
 class TestTheWordsQuoteTheResetLine:
     """The reset line is printed with the decimals it has, and the reading on
     a held check never reads as that line or above it: it has not reached it
