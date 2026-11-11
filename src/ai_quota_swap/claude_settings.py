@@ -27,9 +27,10 @@ Reading gives a :class:`HelperState`:
     command may carry a key.
 ``other-qswap``
     ``apiKeyHelper`` is a qswap line for another data directory (decision
-    SS4): its ``--data-dir`` names another one, or it names none (the default
-    data directory, as on macOS and Windows) while this qswap runs with
-    another. It is another program's line, as ``foreign`` is: never repaired,
+    SS4): its ``--data-dir`` names another one, or, on macOS and Windows, it
+    names none (the default data directory) while this qswap runs with
+    another. On Linux a line that names none is this qswap's own (decision
+    R4-4). It is another program's line, as ``foreign`` is: never repaired,
     removed or counted as this qswap's active key; ``data_dir`` names it.
 ``invalid``
     The file is not a JSON object (a parse error, or another JSON value).
@@ -265,15 +266,18 @@ def parse_line(value: object) -> str | None:
 # -- whose line it is (decision SS4) --------------------------------------------------
 #
 # A line names the data directory its key is read from: the one after
-# --data-dir (every line on Linux), else the default data directory, the one
-# ``qswap key-helper`` finds by itself on macOS and Windows. A line for
-# another data directory than this qswap's belongs to another qswap.
+# --data-dir (every line qswap writes on Linux), else the default data
+# directory, the one ``qswap key-helper`` finds by itself on macOS and
+# Windows. A line for another data directory than this qswap's belongs to
+# another qswap. On Linux a line without --data-dir is this qswap's own
+# (decision R4-4): written by hand or synced from a Mac, and written again
+# with --data-dir by ``qswap switch N`` to it (:func:`line_answers`).
 
 
 def default_data_dir() -> Path:
-    """The data directory a line without ``--data-dir`` belongs to: qswap's
-    default on this platform (``paths.get_backup_root`` with no
-    ``XDG_DATA_HOME``)."""
+    """qswap's default data directory on this platform
+    (``paths.get_backup_root`` with no ``XDG_DATA_HOME``): the one a line
+    without ``--data-dir`` belongs to on macOS and Windows."""
     from ai_quota_swap.models import Platform
     from ai_quota_swap.paths import LEGACY_BACKUP_DIRNAME
 
@@ -287,6 +291,24 @@ def line_data_dir(line: HelperLine, default: Path | None = None) -> Path:
     if line.data_dir:
         return Path(line.data_dir)
     return default_data_dir() if default is None else Path(default)
+
+
+def _names_data_dir_here() -> bool:
+    """Whether every line qswap writes here names its data directory
+    (``--data-dir``): on Linux (:func:`key_helper.pinned_data_dir`)."""
+    from ai_quota_swap import key_helper
+
+    return key_helper.pinned_data_dir() is not None
+
+
+def bare_line_dir(data_dir: Path | str | None = None) -> Path:
+    """The data directory a line without ``--data-dir`` belongs to, for the
+    qswap whose data directory is ``data_dir`` (the one in use when None):
+    on Linux that qswap's own (decision R4-4), elsewhere the default data
+    directory (:func:`default_data_dir`)."""
+    if _names_data_dir_here():
+        return _this_data_dir(data_dir)
+    return default_data_dir()
 
 
 def same_dir(a: Path | str, b: Path | str) -> bool:
@@ -439,6 +461,11 @@ def line_answers(state: HelperState) -> str | None:
     active calls this and writes the line again when it does not answer."""
     if not state.ours:
         return "is not a key line of qswap's"
+    line = read_line(state.command)
+    if line is not None and not line.data_dir and _names_data_dir_here():
+        # Decision R4-4: this qswap's own, written again with --data-dir so
+        # a session with another XDG_DATA_HOME still finds the key.
+        return "names no data directory"
     return check_command(state.command)
 
 
@@ -528,8 +555,9 @@ def state_of_text(
     """The :class:`HelperState` of a file's text (None: no file). A qswap
     line is ``ours`` only when it reads its key from ``data_dir`` (this
     qswap's data directory; the one in use when None), a line without
-    ``--data-dir`` from ``default_dir`` (:func:`default_data_dir` when None);
-    else it is another qswap's (``other-qswap``, decision SS4)."""
+    ``--data-dir`` from ``default_dir`` (:func:`bare_line_dir` when None:
+    this qswap's own on Linux, decision R4-4); else it is another qswap's
+    (``other-qswap``, decision SS4)."""
     if text is None:
         return HelperState(NO_FILE, path)
     _bom, text = _split_bom(text)
@@ -543,7 +571,9 @@ def state_of_text(
     line = read_line(obj[HELPER_KEY])
     if line is None:
         return HelperState(FOREIGN, path)
-    theirs = line_data_dir(line, None if default_dir is None else Path(default_dir))
+    theirs = line_data_dir(
+        line, bare_line_dir(data_dir) if default_dir is None else Path(default_dir),
+    )
     if not same_dir(theirs, _this_data_dir(data_dir)):
         return HelperState(
             OTHER, path, number=line.number, command=obj[HELPER_KEY], data_dir=str(theirs),
@@ -927,7 +957,7 @@ def install(number: str | int, *, path: Path | None = None,
     line = read_line(value)
     if (
         line is None or line.number != str(int(number))
-        or not same_dir(line_data_dir(line), _this_data_dir(data_dir))
+        or not same_dir(line_data_dir(line, bare_line_dir(data_dir)), _this_data_dir(data_dir))
     ):
         # qswap could neither recognise nor remove a line it cannot read back.
         raise SettingsError(

@@ -290,11 +290,14 @@ What the code does where this part leaves room, or where it had to differ:
   findings without repairing. When `sequence.json` or the settings cannot be read the state
   is unknown, not missing: nothing is repaired or removed.
 - **Another qswap's line.** A line reads its key from the data directory after its
-  `--data-dir`, or, without one, from the default data directory (`~/.ai-quota-swap`;
-  `~/.local/share/ai-quota-swap` on Linux). A line for another data directory than this
-  qswap's is another program's line, as another helper is: not repaired, not removed, not
-  counted as the active key, and reported (by list, status, the dashboard, the menu bar and
-  doctor) with that data directory named. A switch to a key is refused in the words of the
+  `--data-dir`, or, without one, from the default data directory (`~/.ai-quota-swap`) on
+  macOS and Windows. On Linux every line qswap writes names its data directory, so a line
+  without one (written by hand, or copied from a Mac) is this qswap's own: it counts as the
+  active key, the engine watches its limit, and `qswap switch N` to it writes it again with
+  `--data-dir` (`line_answers`: "names no data directory"). A line for another data
+  directory than this qswap's is another program's line, as another helper is: not
+  repaired, not removed, not counted as the active key, and reported (by list, status, the
+  dashboard, the menu bar and doctor) with that data directory named. A switch to a key is refused in the words of the
   refusal for another helper, plus the data directory; a switch to a subscription leaves the
   line and says that sessions stay on the other qswap's key until the line is removed. A
   qswap whose own data directory is not the default always names it in its line, on every

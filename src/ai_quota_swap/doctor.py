@@ -1150,12 +1150,13 @@ def _line_program(command: str | None, home: Path | None) -> str:
 
 def _default_data_dir(f: _Facts) -> Path | None:
     """The data directory a key line without ``--data-dir`` belongs to on
-    this machine (decision SS4): ``~/.local/share/ai-quota-swap`` on Linux,
-    ``~/.ai-quota-swap`` elsewhere."""
+    this machine: on Linux this qswap's own (decision R4-4: every line
+    qswap writes there names it), ``~/.ai-quota-swap`` elsewhere (decision
+    SS4)."""
+    if f.platform in (Platform.LINUX, Platform.WSL):
+        return f.data_dir
     if f.home is None:
         return None
-    if f.platform in (Platform.LINUX, Platform.WSL):
-        return f.home / ".local" / "share" / "ai-quota-swap"
     return f.home / paths.LEGACY_BACKUP_DIRNAME
 
 

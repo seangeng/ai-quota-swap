@@ -230,6 +230,8 @@ class TestAnotherDataDirectorysLine:
     def test_with_another_data_directory_a_line_naming_none_is_the_defaults(
         self, temp_home, monkeypatch, rules
     ):
+        if rules == "linux":
+            pytest.skip("on Linux a line naming none is this qswap's own (decision R4-4)")
         s, mine, default = _on(monkeypatch, temp_home, rules, data_dir="other")
         _put(temp_home, _other_line(5, None))
         assert s.helper_account() is None
@@ -379,6 +381,8 @@ class TestAnotherQswapsLineComesThroughEveryCommand:
         line names none, so it is the default directory's qswap's, for an
         account number this qswap does not have. The engine took it for its
         own (a line with no --data-dir) and removed it."""
+        if rules == "linux":
+            pytest.skip("on Linux a line naming none is this qswap's own (decision R4-4)")
         from ai_quota_swap.autoswitch import AutoSwitchEngine, AutoSwitchSettings
 
         s, _mine, _default = _on(monkeypatch, temp_home, rules, data_dir="other")

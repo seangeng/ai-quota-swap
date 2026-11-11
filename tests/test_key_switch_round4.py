@@ -375,3 +375,98 @@ class TestTheRefusalsForACredential:
             "#5 ci."
         ) in text
         assert "billed" not in text
+
+
+# == R4-4: on Linux a key line with no --data-dir is this qswap's own =========================
+
+
+class TestALinuxLineWithNoDataDirectory:
+    """Decision R4-4: qswap writes --data-dir in every line on Linux, so a
+    line without one (written by hand, or synced from a Mac) is this
+    qswap's own, whatever XDG_DATA_HOME says: it counts as the active key,
+    the engine watches its limit, and qswap switch N to it writes the line
+    again with --data-dir. Only a line that names another data directory is
+    another qswap's."""
+
+    def _linux(self, temp_home, monkeypatch):
+        s, mine, default = _on(monkeypatch, temp_home, "linux", data_dir="other")
+        assert mine != default  # XDG_DATA_HOME moves this qswap's data directory
+        _put(temp_home, _other_line(5, None))
+        return s, mine
+
+    def test_it_counts_as_the_active_key(self, temp_home, monkeypatch):
+        s, _mine = self._linux(temp_home, monkeypatch)
+        assert s.helper_account() == "5"
+        assert s.active_view()[0] == "5"
+        f = s.key_findings()
+        assert (f.key, f.other_dir) == ("5", None)
+        assert not [n for n in s.key_notes() if n["code"] == "other-data-dir"]
+
+    def test_the_switch_to_it_writes_the_line_again_with_the_data_directory(
+        self, temp_home, monkeypatch, run
+    ):
+        s, mine = self._linux(temp_home, monkeypatch)
+        code, out, err = run(s, "switch", "5")
+        assert code == 0, err
+        assert "Wrote the key line for #5 ci again: it names no data directory." in " ".join(
+            out.split()
+        )
+        line = claude_settings.read_line(_r3.json.loads(
+            _r3._settings(temp_home).read_text(encoding="utf-8")
+        )["apiKeyHelper"])
+        assert (line.number, line.data_dir) == ("5", str(mine))
+        assert s.helper_account() == "5"
+
+    def test_the_engine_watches_its_limit(self, temp_home, monkeypatch):
+        from unittest.mock import patch
+
+        from ai_quota_swap import api_spend
+        from ai_quota_swap.autoswitch import (
+            AutoSwitchEngine,
+            AutoSwitchSettings,
+            SwitchEvent,
+            TickOutcome,
+        )
+        from ai_quota_swap.ledger import usage as ledger_usage
+        from ai_quota_swap.usage_store import UsageEntry
+        from tests.test_autoswitch import _entry_for, _usage
+
+        s, _mine = self._linux(temp_home, monkeypatch)
+        now = time.time()
+        api_spend.set_budget(s, "5", 500)
+        monkeypatch.setattr(ledger_usage, "scan_recent",
+                            lambda *a, **k: type("Stats", (), {"missing": 0})())
+        month = time.strftime("%Y-%m", time.gmtime(now))
+        over = {
+            "spend": {"used": 600.0, "limit": 500.0, "pct": 120.0, "currency": "USD"},
+            "today": 0.0, "source": "ledger", "month": month, "as_of": now,
+            "unpriced_tokens": 0,
+        }
+        entries = {
+            "1": _entry_for(_usage(10), now), "7": _entry_for(_usage(10), now),
+            "5": UsageEntry(sentinel="api key", api_spend=over),
+            "6": UsageEntry(sentinel="api key", api_spend=None),
+        }
+        events: list = []
+        engine = AutoSwitchEngine(s, AutoSwitchSettings(), events.append, clock=lambda: now)
+        with patch.object(s, "usage_entries_by_account", return_value=entries):
+            assert engine.tick() is TickOutcome.SWITCHED
+        switch = [e for e in events if isinstance(e, SwitchEvent)][-1]
+        assert (switch.from_ref["number"], switch.limit_reason) == (5, "budget")
+        assert s.helper_account() is None
+
+    def test_a_line_naming_another_data_directory_is_still_another_qswaps(
+        self, temp_home, monkeypatch
+    ):
+        s, _mine, _default = _on(monkeypatch, temp_home, "linux", data_dir="other")
+        other = temp_home / "other qswap" / "ai-quota-swap"
+        _put(temp_home, _other_line(5, other))
+        assert s.helper_account() is None
+        assert s.key_findings().other_dir == str(other)
+
+    def test_doctor_does_not_call_it_another_qswaps(self, temp_home, monkeypatch):
+        from ai_quota_swap import doctor
+
+        self._linux(temp_home, monkeypatch)
+        text = " ".join(c.summary for c in doctor.run_checks())
+        assert "another qswap" not in text
