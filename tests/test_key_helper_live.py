@@ -1921,6 +1921,15 @@ class TestRunProfiles:
         for p in (d, other):
             assert (p / "settings.json").is_symlink()
             assert not (p / SETTINGS_COPY_MARKER).exists()
+        # The re-check: the refusal names the profile, on a line of its own,
+        # and a fix before the override that logs sessions out.
+        lines = str(caught.value).splitlines()
+        shown = claude_settings.shown_path(Path(os.path.realpath(d)))
+        assert f"  {shown}" in lines, lines
+        assert "Make that profile writable, then: qswap switch 5" in lines
+        assert lines.index("Make that profile writable, then: qswap switch 5") < lines.index(
+            "To switch anyway:"
+        )
 
     def test_isolation_that_raises_stops_the_switch(self, temp_home, monkeypatch):
         from ai_quota_swap.session import SessionManager

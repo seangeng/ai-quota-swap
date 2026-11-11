@@ -631,6 +631,16 @@ class KeyActivationMixin:
             self._logger.warning(f"Could not give run profiles a settings copy: {e!r}")
             return None
 
+    def _unisolated(self, shared: list[Path] | None) -> list[Path]:
+        """The profiles a failed isolation left linked (asked again when the
+        isolation itself raised); ``[]`` when they cannot be told."""
+        if shared:
+            return list(shared)
+        try:
+            return self._session_manager().settings_still_shared()
+        except Exception:
+            return []
+
     @staticmethod
     def _profiles_unisolated_reason(shared: list[Path] | None) -> str:
         if not shared:
@@ -676,6 +686,7 @@ class KeyActivationMixin:
     def _key_unavailable(
         self, number: str, reason: str, *, kind: str | None = None,
         names: tuple[str, ...] = (), log_out_sessions: bool = False,
+        profiles: list[Path] | None = None,
     ) -> KeyHelperUnavailableError:
         """The refusal of a switch to the key ``number`` (decision B6):
         ``kind`` is what stopped it. Another helper (``foreign``) and a
@@ -696,7 +707,19 @@ class KeyActivationMixin:
                 text, number=number, reason=reason, log_out_sessions=False,
             )
         fix = None
-        if kind == claude_settings.INVALID:
+        paths: list[str] = []
+        if kind == "profiles":
+            # The run profiles that could not be given their copy, by name,
+            # and the fix before the override (the re-check, F47's rule).
+            paths = [claude_settings.shown_path(p) for p in (profiles or [])]
+            if not paths:
+                paths = [claude_settings.shown_path(Path(self.backup_dir) / "sessions")]
+                fix = "Make the qswap run profiles there writable"
+            else:
+                fix = "Make that profile writable" if len(paths) == 1 else (
+                    "Make those profiles writable"
+                )
+        elif kind == claude_settings.INVALID:
             fix = f"Fix the JSON in {path}"
         elif kind == "unreadable":
             fix = f"Make {path} readable"
@@ -714,7 +737,7 @@ class KeyActivationMixin:
             display.key_helper_refusal(
                 label, number, reason,
                 display.blocking_sessions(len(sessions), unreadable), from_key=from_key,
-                records=records, fix=fix,
+                records=records, fix=fix, paths=paths,
             ),
             number=number, reason=reason, sessions=len(sessions), unreadable=unreadable,
             from_key=from_key is not None, records=records,
@@ -797,7 +820,10 @@ class KeyActivationMixin:
                 # Fail closed: a profile still linked would follow the line.
                 if previous_key is None:
                     self.restore_run_profiles(force=True)
-                raise self._key_unavailable(number, self._profiles_unisolated_reason(shared))
+                raise self._key_unavailable(
+                    number, self._profiles_unisolated_reason(shared), kind="profiles",
+                    profiles=self._unisolated(shared),
+                )
             old = self._key_state()
             blank = claude_settings.blank_text(state.path) if previous_key is None else None
             if previous_key is not None and isinstance(old.get("blankSettings"), str):
@@ -853,7 +879,10 @@ class KeyActivationMixin:
             if shared is None or shared:
                 self._undo_install(previous_key, created_now, blank, lead)
                 self._write_key_state(old or None)
-                raise self._key_unavailable(number, self._profiles_unisolated_reason(shared))
+                raise self._key_unavailable(
+                    number, self._profiles_unisolated_reason(shared), kind="profiles",
+                    profiles=self._unisolated(shared),
+                )
             self._record_active_number(number)
         self._logger.info(
             f"Activated account {number} through the key helper "

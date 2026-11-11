@@ -1220,7 +1220,7 @@ def key_still_active(key: str, number: str | int) -> list[str]:
 def key_helper_refusal(
     target: str, number: str | int, reason: str, sessions: int = 0, *,
     from_key: str | None = None, prefix: str = "Error: ", records: Sequence[str] = (),
-    fix: str | None = None,
+    fix: str | None = None, paths: Sequence[str] = (),
 ) -> str:
     """Why a switch to the API-key account ``target`` was refused when qswap
     cannot add its key line (``reason``: the settings file's path and what
@@ -1229,7 +1229,8 @@ def key_helper_refusal(
     Claude Code sessions run on the shared login (:data:`SESSIONS_UNKNOWN`
     when the records could not be read); ``from_key`` names the active account
     when it is a saved key too; ``records`` are the session records qswap
-    could not read (:func:`unreadable_records_lines`)."""
+    could not read (:func:`unreadable_records_lines`); ``paths``, what the
+    ``fix`` is about (run profiles), each whole on a line of its own."""
     head = (
         f"not switched. qswap cannot add the key line for {target} to the "
         f"Claude Code settings: {reason}. Without it, the key can only be saved "
@@ -1262,6 +1263,7 @@ def key_helper_refusal(
         *lines,
         _STARTED_AFTER,
         *unreadable_records_lines(records, WIDTH - 2),
+        *(f"  {path}" for path in paths),
         # The fix that keeps everyone logged in comes before the override
         # (F47): "Fix the JSON in ~/.claude/settings.json, then: ...".
         *(wrap(f"{fix}, then: qswap switch {number}") if fix else []),
