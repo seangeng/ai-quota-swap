@@ -148,8 +148,16 @@ def settings_path() -> Path:
 # a double-quoted word, so neither does qswap (a UNC path keeps its leading
 # backslashes, and a backslash before $ stays).
 
-_POSIX_WORD = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)"""
-_WINDOWS_WORD = r"""(?:"[^"]*"|\S+)"""
+# A bare word holds only what _quote leaves bare: the complement of the
+# characters it quotes. Anything else (; $( ) a backtick | & > ...) must be
+# quoted to read as qswap's, so a line the shell would run as two commands is
+# never taken for qswap's own, shown as active, or run by doctor's --check.
+# On POSIX a backslash, which only escapes the next character and cannot end a
+# command, is let through, so a line a Windows qswap wrote still reads as one.
+_POSIX_BARE = r"""[^\s"'$`!*?&;|<>()\[\]{}#~=]+"""
+_WINDOWS_BARE = r"""[^\s"'$`!*?&;|<>()^%,=]+"""
+_POSIX_WORD = rf"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|{_POSIX_BARE})"""
+_WINDOWS_WORD = rf"""(?:"[^"]*"|{_WINDOWS_BARE})"""
 
 
 def _line_re() -> re.Pattern:

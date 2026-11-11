@@ -977,6 +977,28 @@ class TestTheLineReadsBack:
             else:
                 assert done.returncode != 0 and (project / "ran").exists()
 
+    @pytest.mark.parametrize("line", [
+        "/opt/qswap/bin/qswap key-helper 5 --data-dir /x;touch${IFS}/tmp/marker;:",
+        "/opt/qswap/bin/qswap key-helper 5 --data-dir /x$(touch${IFS}/tmp/m)",
+        "/opt/qswap/bin/qswap key-helper 5 --data-dir /x`touch${IFS}/tmp/m`",
+        "/opt/qswap/bin/qswap key-helper 5 --data-dir /x&&id",
+        "/opt/qswap/bin/qswap key-helper 5 --data-dir /x|id",
+        "/x;id;/opt/qswap/bin/qswap key-helper 5",
+        "/opt/$(id)/qswap key-helper 5",
+        "/opt/qswap/bin/qswap key-helper 5 --data-dir /x>/tmp/out",
+    ])
+    def test_a_line_the_shell_reads_as_more_than_one_command_is_not_qswaps(
+        self, monkeypatch, line
+    ):
+        """The re-check's case: the bare word took ; $( ) and backticks, so
+        doctor and an already-active switch ran such a line with --check,
+        and its second command with it. Only what _quote leaves bare reads
+        as a bare word; anything else must be quoted to be qswap's."""
+        for platform in ("linux", "win32"):
+            monkeypatch.setattr(sys, "platform", platform)
+            assert claude_settings.read_line(line) is None, (platform, line)
+            assert claude_settings.parse_line(line) is None
+
     def test_a_line_qswap_could_not_read_back_is_never_written(self, monkeypatch, tmp_path):
         """A command that would not read as qswap's line for that account is
         refused before the write (F19): qswap could never remove it."""
