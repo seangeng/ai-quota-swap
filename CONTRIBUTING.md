@@ -65,6 +65,14 @@ The suite never touches your real accounts or the network. `tests/conftest.py` s
 - Codex processes are faked: no test sees your running Codex or runs `codex`.
 - A fake home does not isolate launchd, which keeps one set of services per user: a `launchctl bootout` from a test would stop your real menu bar. So no test reaches launchctl: `ai_quota_swap.launch_agent._launchctl` and doctor's `launchctl print` answer "not loaded", a call that would change launchd's state fails the test, and an audit hook refuses to start `launchctl` at all.
 
+These guards live in the pytest process. A child process the suite starts (`python -m ai_quota_swap ...`, as `tests/test_cli.py` runs it) inherits the temporary `HOME` and `CODEX_HOME`, and finds the suite's stand-in `launchctl` first on `PATH`. The stand-in answers a read "not loaded" and refuses any other call, and the test that started the child fails on a refusal. Nothing else in the list reaches a child:
+
+- It has the real Keychain, the network and the real `/Applications`, where `qswap menubar --uninstall-service` and `qswap purge` delete the menu bar's app.
+- Doctor runs `/bin/launchctl print` by its full path, so in a child it reads your real launchd. It only reads.
+- A child given a `PATH` of its own (`os.defpath`, say) finds the real `launchctl`.
+
+So a child runs qswap in an empty home of its own (`_subprocess_env` in `tests/test_cli.py`), and never installs, removes or starts the menu bar service.
+
 A test that needs HTTP fakes the transport. Patch `urlopen` in the module under test, as `tests/test_codex_usage.py` does with `patch.object(codex_usage.urllib.request, "urlopen", fake)`, or patch the fetch function one level up (`ai_quota_swap.oauth.try_fetch_usage_for_account`, `ai_quota_swap.update_check.check_for_update`). `tests/admin_fakes.py` has a recording transport for the Admin API. `@pytest.mark.allow_network` lifts the block, but a test that needs the internet will fail in CI sooner or later, so treat it as a last resort.
 
 A test that needs the Keychain asks for the `block_real_keychain` fixture by name. It returns the in-memory store, so the test can seed items and inspect what was written (`tests/test_api_key_accounts.py` has examples). Tests that drive the real `security` CLI are marked `no_keychain_fake`, use the `tmp_keychain` fixture in `tests/test_macos_keychain_contract.py`, and run only on GitHub Actions macOS, against a throwaway keychain.

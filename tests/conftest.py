@@ -9,6 +9,7 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -599,8 +600,8 @@ urllib.request.getproxies = _guarded_getproxies
 # A fake HOME protects files, not launchd. launchd keeps one set of services
 # per user, whatever $HOME says, so a `launchctl bootout` from inside the suite
 # stops the developer's real menu bar: a throwaway test that ran `qswap purge
-# --yes` in the fake home did exactly that. Two layers keep launchd out of
-# reach, both underneath any fake a test sets up:
+# --yes` in the fake home did exactly that. Three layers keep launchd out of
+# reach, all underneath any fake a test sets up:
 #
 # * The autouse `launchctl_guard` fixture replaces `launch_agent._launchctl`,
 #   the one function the package drives launchctl through, and doctor's own
@@ -612,9 +613,20 @@ urllib.request.getproxies = _guarded_getproxies
 #   what stands under the tests that fake `subprocess.run` itself, the layer
 #   `_launchctl` calls (marked `launchctl_subprocess_fake`), and under a
 #   thread that outlives its test.
+# * Neither reaches a child process the suite starts (`python -m
+#   ai_quota_swap ...`, as tests/test_cli.py runs it): it has no fixture and
+#   no audit hook. For it, a stand-in named launchctl goes first on this
+#   process's PATH at import, which every child inherits, so the bare
+#   `launchctl` that `launch_agent._launchctl` starts is the stand-in. It
+#   answers a read-only call "not loaded", refuses any other, and records both
+#   in a log this process reads after each test.
 #
-# Every refusal is recorded, and a test that leaves one behind fails, even when
-# the code under test swallowed the error.
+# Every refusal is recorded, in this process or by the stand-in, and a test
+# that leaves one behind fails, even when the code under test swallowed the
+# error. What a child still reaches: a `launchctl` given by its full path
+# (doctor's `/bin/launchctl print`, read-only), the real one when a test gives
+# the child a PATH of its own, and `/Applications`, which only this process
+# has moved (`_isolate_real_home`).
 
 #: launchctl subcommands that only read launchd's state. Every other one, and
 #: one this list does not know, is taken to change it.
@@ -633,6 +645,26 @@ class LaunchctlBlocked(AssertionError):
 _LAUNCHCTL_TOKEN = re.compile(r"[\s;&|()<>`'\"=]+")
 
 
+_CHILD_KINDS = ("answered", "refused")
+
+
+def _child_records(text: str) -> list[tuple[str, str, str]]:
+    """``(kind, test, arguments)`` for each call the stand-in logged. A line
+    that starts no record continues the one before it (an argument with a
+    newline in it); with none before it, it counts as a refusal."""
+    records: list[list[str]] = []
+    for line in text.split("\n")[:-1]:
+        kind, sep, rest = line.partition("\t")
+        if sep and kind in _CHILD_KINDS:
+            test, _sep, arguments = rest.partition("\t")
+            records.append([kind, test, arguments])
+        elif records:
+            records[-1][2] += "\n" + line
+        else:
+            records.append(["refused", "", line])
+    return [(kind, test, arguments) for kind, test, arguments in records]
+
+
 class _LaunchdGuard:
     """What the guard answered and refused, for the running test."""
 
@@ -642,17 +674,72 @@ class _LaunchdGuard:
         #: The read-only calls answered "not loaded" during the running test.
         self.answered: list[tuple[str, ...]] = []
         #: ``(message, test)`` for every refusal not yet reported.
-        self.refused: list[tuple[str, str | None]] = []
+        self._refused: list[tuple[str, str | None]] = []
+        #: The stand-in child processes find first on PATH, and its log.
+        self.child_launchctl: Path | None = None
+        self._child_log: Path | None = None
+        self._child_read = 0
+        self._children: list[tuple[str, tuple[str, ...]]] = []
+
+    @property
+    def refused(self) -> list[tuple[str, str | None]]:
+        self._read_children()
+        return self._refused
+
+    @property
+    def children(self) -> list[tuple[str, tuple[str, ...]]]:
+        """``(kind, arguments)`` for each call the stand-in took from a child
+        process during the running test: ``answered`` or ``refused``."""
+        self._read_children()
+        return self._children
+
+    def start(self, test: str) -> None:
+        self._read_children()  # what earlier tests' children left goes to them
+        with self.lock:
+            self.answered = []
+            self._children = []
+            self.current = test
 
     def refuse(self, message: str) -> LaunchctlBlocked:
         with self.lock:
-            self.refused.append((message, self.current))
+            self._refused.append((message, self.current))
         return LaunchctlBlocked(message)
 
     def drain(self) -> list[tuple[str, str | None]]:
+        self._read_children()
         with self.lock:
-            refused, self.refused = self.refused, []
+            refused, self._refused = self._refused, []
         return refused
+
+    def _read_children(self) -> None:
+        """Take in the calls the stand-in logged since the last look."""
+        log = self._child_log
+        if log is None:
+            return
+        with self.lock:
+            try:
+                with open(log, "rb") as f:
+                    f.seek(self._child_read)
+                    data = f.read()
+            except OSError:
+                return
+            end = data.rfind(b"\n") + 1
+            self._child_read += end
+            for kind, test, arguments in _child_records(
+                data[:end].decode("utf-8", "replace")
+            ):
+                self._children.append((kind, tuple(arguments.split(" "))))
+                if kind == "answered":
+                    continue
+                during = test.rsplit(" (", 1)[0] or self.current
+                self._refused.append((
+                    f"a child process of the test ran launchctl {arguments} "
+                    f"(the suite's stand-in {self.child_launchctl} refused it). A "
+                    "fake HOME does not isolate launchd: the real launchctl would "
+                    "change this machine's services. Run that code in the test's "
+                    "own process, where launch_agent._launchctl is faked.",
+                    during,
+                ))
 
     def launchctl(self, *args: str) -> subprocess.CompletedProcess:
         """Stands in for ``launch_agent._launchctl``."""
@@ -718,6 +805,55 @@ def _launchctl_spawn_audit_hook(event: str, args: tuple) -> None:
 sys.addaudithook(_launchctl_spawn_audit_hook)
 
 
+#: The stand-in's script. Shell builtins only, so it runs whatever PATH the
+#: child has after it. It never starts the real launchctl.
+_CHILD_LAUNCHCTL = """\
+#!/bin/sh
+# The test suite's launchctl (tests/conftest.py, "launchd"). It is first on
+# PATH for every process the suite starts, so a child that runs launchctl by
+# name gets this, never the real one. A read-only call answers "not loaded";
+# any other is refused. Both are logged for the suite, which fails the test
+# on a refusal.
+case "${{1-}}" in
+  {read_only}) kind=answered ;;
+  *) kind=refused ;;
+esac
+printf '%s\\t%s\\t%s\\n' "$kind" "${{PYTEST_CURRENT_TEST-}}" "$*" >> {log}
+if [ "$kind" = answered ]; then
+  printf 'launchctl %s: not loaded (answered by tests/conftest.py; nothing ran)\\n' "$1" >&2
+  exit 113
+fi
+printf 'launchctl %s refused by tests/conftest.py: a fake HOME does not isolate launchd\\n' "${{1-}}" >&2
+exit 1
+"""
+
+
+def _install_child_launchctl() -> None:
+    """Put the stand-in first on PATH for every child process (see the block
+    above). POSIX only: launchd is macOS's, and Windows would not run it."""
+    if os.name != "posix":
+        return
+    folder = Path(tempfile.mkdtemp(prefix="qswap-tests-launchctl-"))
+    atexit.register(shutil.rmtree, folder, True)
+    log = folder / "calls.log"
+    log.touch()
+    script = folder / "launchctl"
+    script.write_text(
+        _CHILD_LAUNCHCTL.format(
+            read_only="|".join(sorted(LAUNCHCTL_READ_ONLY)), log=shlex.quote(str(log))
+        ),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    _LAUNCHD.child_launchctl = script
+    _LAUNCHD._child_log = log
+    rest = os.environ.get("PATH")
+    os.environ["PATH"] = os.pathsep.join([str(folder), rest or os.defpath])
+
+
+_install_child_launchctl()
+
+
 def _launchd_failure_message(refused: list[tuple[str, str | None]]) -> str:
     lines = []
     for message, during in refused:
@@ -734,14 +870,14 @@ def launchctl_guard(request, monkeypatch):
     """Safety net: no test reaches the real launchd (see the block above).
 
     Yields the guard, whose ``answered`` lists the read-only calls it answered
-    in this test. A test that triggers a refusal on purpose takes it back with
-    ``launchctl_guard.drain()``; any other refusal fails the test at teardown.
+    in this test and ``children`` the calls the stand-in took from the test's
+    child processes. A test that triggers a refusal on purpose takes it back
+    with ``launchctl_guard.drain()``; any other refusal fails the test at
+    teardown.
     """
     from ai_quota_swap import doctor, launch_agent
 
-    with _LAUNCHD.lock:
-        _LAUNCHD.answered = []
-        _LAUNCHD.current = request.node.nodeid
+    _LAUNCHD.start(request.node.nodeid)
     if request.node.get_closest_marker("launchctl_subprocess_fake") is None:
         monkeypatch.setattr(launch_agent, "_launchctl", _LAUNCHD.launchctl)
     monkeypatch.setattr(doctor, "_launchctl_print", _LAUNCHD.doctor_print)

@@ -9,7 +9,10 @@ raises, and no process named launchctl is ever started.
 
 Every test here spies on ``subprocess.run`` and ``subprocess.Popen`` with
 stand-ins that record the argv and start nothing, so even a broken guard
-cannot reach the real launchctl from this file.
+cannot reach the real launchctl from this file. The exceptions are the tests
+of child processes, which start a Python child, never launchctl, and only
+after checking that the launchctl the child would find on its PATH is the
+suite's stand-in (``_child_env``).
 """
 
 from __future__ import annotations
@@ -263,15 +266,14 @@ def test_read_only(ran):
 '''
 
 
-def test_a_refusal_fails_its_test_even_when_the_code_swallows_it(tmp_path):
-    """End to end, in a child pytest running this same conftest (as
-    test_network_block.py does): catching the refusal does not save the test.
-    The child's tests replace subprocess with recorders, so nothing runs."""
+def _run_inner(tmp_path: Path, tests: str) -> str:
+    """Run ``tests`` in a child pytest under a copy of this conftest (as
+    test_network_block.py does); its output."""
     inner = tmp_path / "inner"
     inner.mkdir()
     (inner / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     shutil.copy(conftest.__file__, inner / "conftest.py")
-    (inner / "test_inner.py").write_text(textwrap.dedent(_INNER_TESTS), encoding="utf-8")
+    (inner / "test_inner.py").write_text(textwrap.dedent(tests), encoding="utf-8")
 
     src = str(Path(__file__).resolve().parent.parent / "src")
     env = {
@@ -289,12 +291,169 @@ def test_a_refusal_fails_its_test_even_when_the_code_swallows_it(tmp_path):
         ],
         capture_output=True, text=True, env=env, cwd=inner, timeout=120,
     )
-    out = result.stdout + result.stderr
+    return result.stdout + result.stderr
+
+
+def test_a_refusal_fails_its_test_even_when_the_code_swallows_it(tmp_path):
+    """End to end: catching the refusal does not save the test. The child's
+    tests replace subprocess with recorders, so nothing runs."""
+    out = _run_inner(tmp_path, _INNER_TESTS)
 
     assert "1 failed, 1 passed" in out, out
     assert "FAILED test_inner.py::test_swallowed" in out, out
     assert "A test reached launchctl, which the suite refuses" in out, out
     assert "reached launchctl bootout unfaked" in out, out
+
+
+_INNER_CHILD_TESTS = '''
+import shutil
+import subprocess
+import sys
+
+PROBE = "gui/501/com.example.qswap-launchd-guard-probe"
+
+
+def _child(launchctl_guard, tmp_path, verb):
+    # Nothing starts unless the child would find the stand-in.
+    assert shutil.which("launchctl") == str(launchctl_guard.child_launchctl)
+    code = (
+        "from ai_quota_swap import launch_agent as agent; "
+        f"agent._launchctl({verb!r}, {PROBE!r})"
+    )
+    return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, cwd=tmp_path, timeout=120)
+
+
+def test_child_boots_out(launchctl_guard, tmp_path):
+    assert _child(launchctl_guard, tmp_path, "bootout").returncode == 0
+
+
+def test_child_reads(launchctl_guard, tmp_path):
+    assert _child(launchctl_guard, tmp_path, "print").returncode == 0
+'''
+
+
+@POSIX_ONLY
+def test_a_child_process_that_reaches_launchctl_fails_its_test(tmp_path):
+    """End to end: a test whose child process runs `launchctl bootout` fails,
+    though the child exits 0 and the test asserts nothing else. A child's
+    read passes, answered "not loaded"."""
+    out = _run_inner(tmp_path, _INNER_CHILD_TESTS)
+
+    assert "1 failed, 1 passed" in out, out
+    assert "FAILED test_inner.py::test_child_boots_out" in out, out
+    assert "A test reached launchctl, which the suite refuses" in out, out
+    assert "a child process of the test ran launchctl bootout gui/501/" in out, out
+
+
+# -- child processes --------------------------------------------------------------
+#
+# A child process has none of this process's fakes and no audit hook. What
+# stands under it is the stand-in conftest puts first on PATH: the bare
+# `launchctl` launch_agent._launchctl starts. Each child here is a Python
+# process, started only once the launchctl its PATH leads to is the stand-in.
+
+SRC = str(Path(__file__).resolve().parent.parent / "src")
+# The child takes the darwin path on every runner, as `on_macos` does here.
+# No word in it is `launchctl` alone, so this process's audit hook lets it start.
+_AS_ON_MACOS = "import sys; sys.platform = 'darwin'; "
+
+
+def _child_env(launchctl_guard, home: Path, bin_dir: Path | None = None) -> dict[str, str]:
+    """An environment for a child qswap: an empty home of its own, and the
+    suite's PATH, which must lead to the stand-in; the test stops here, before
+    starting anything, when it does not."""
+    from ai_quota_swap import paths
+    from ai_quota_swap.settings import set_setting
+
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    with patch("pathlib.Path.home", return_value=home):
+        root = paths.get_backup_root()
+    root.mkdir(parents=True, exist_ok=True)
+    # Every non-JSON command ends in the PyPI check, and a child is outside
+    # the suite's network block.
+    set_setting(root, "updates.check", "false")
+    env = {k: v for k, v in os.environ.items() if k not in ("XDG_DATA_HOME", "PYTEST_ADDOPTS")}
+    env.update(HOME=str(home), USERPROFILE=str(home), CLAUDE_CONFIG_DIR=str(home / ".claude"))
+    env["PYTHONPATH"] = SRC + os.pathsep + env.get("PYTHONPATH", "")
+    if bin_dir is not None:
+        env["PATH"] = str(bin_dir) + os.pathsep + env["PATH"]
+    found = shutil.which("launchctl", path=env["PATH"])
+    stand_in = launchctl_guard.child_launchctl
+    if stand_in is None or found != str(stand_in):
+        pytest.fail(f"a child would start {found}, not the suite's stand-in {stand_in}")
+    return env
+
+
+def _python(code: str, env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, env=env, cwd=cwd, timeout=120,
+    )
+
+
+@POSIX_ONLY
+def test_child_processes_find_the_stand_in_first_on_path(launchctl_guard):
+    stand_in = launchctl_guard.child_launchctl
+    assert stand_in is not None and os.access(stand_in, os.X_OK)
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(stand_in.parent)
+    assert shutil.which("launchctl") == str(stand_in)
+
+
+@POSIX_ONLY
+def test_service_status_in_a_child_is_answered_by_the_stand_in(tmp_path, launchctl_guard):
+    """The review's case: `qswap menubar --service-status` in a child process,
+    nothing faked in it. Both of its launchd reads reach the stand-in, which
+    answers "not loaded", and nothing is refused."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # Login Items are read with sfltool, slowly and from the real machine:
+    # a stand-in that cannot read them ("not switched off").
+    sfltool = bin_dir / "sfltool"
+    sfltool.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    sfltool.chmod(0o755)
+    env = _child_env(launchctl_guard, tmp_path / "home", bin_dir)
+    code = _AS_ON_MACOS + (
+        "sys.argv = ['qswap', 'menubar', '--service-status']; "
+        "from ai_quota_swap.cli import main; main()"
+    )
+
+    result = _python(code, env, tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Menu bar service is not installed." in result.stdout
+    uid = os.getuid()
+    assert launchctl_guard.children == [
+        ("answered", ("print", f"gui/{uid}/com.aiquotaswap.menubar")),
+        ("answered", ("print-disabled", f"gui/{uid}")),
+    ]
+    assert not launchctl_guard.refused
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("verb", ["bootout", "bootstrap", "kickstart", "a-verb-it-does-not-know"])
+def test_a_child_that_would_change_launchd_is_refused_and_recorded(
+    verb, tmp_path, launchctl_guard
+):
+    env = _child_env(launchctl_guard, tmp_path / "home")
+    code = (
+        "from ai_quota_swap import launch_agent as agent; "
+        f"done = agent._launchctl('{verb}', 'gui/501/com.example.qswap-guard-probe'); "
+        "print(done.returncode); print(done.stderr, end='')"
+    )
+
+    result = _python(code, env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    code_line, message = result.stdout.split("\n", 1)
+    assert code_line == "1"
+    assert f"launchctl {verb} refused by tests/conftest.py" in message
+    assert launchctl_guard.children == [
+        ("refused", (verb, "gui/501/com.example.qswap-guard-probe")),
+    ]
+    (refusal,) = launchctl_guard.drain()
+    assert f"a child process of the test ran launchctl {verb} gui/501/" in refusal[0]
+    assert refusal[1].endswith(f"test_a_child_that_would_change_launchd_is_refused_and_recorded[{verb}]")
 
 
 @pytest.mark.parametrize(
