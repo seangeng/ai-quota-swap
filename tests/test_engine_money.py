@@ -631,6 +631,42 @@ class TestFreeBeforePaid:
         assert outcome is not TickOutcome.SWITCHED
         assert h.switcher.current_account_number() == "1"
 
+    def test_a_reset_not_yet_re_read_holds_the_key_back(self, temp_home):
+        """The re-check's case: the claim on #1 succeeded, but #1's usage has
+        not been read since (the endpoint does not answer), so its stored
+        100% is from before the claim. The next tick waits for the refill
+        to be read instead of entering the key."""
+        h = _fleet(temp_home)
+        usage = {"1": _rusage(d7=100, grants=[_week()]), "2": "api key", "3": _rusage(d7=100)}
+        outcome, claims = _tick_resets(h, usage)
+        assert claims == ["1"] and outcome is not TickOutcome.SWITCHED
+        claimed_at = h.state()["resetClaims"]["1"]["at"]
+        h.clock.advance(60)
+        before_claim = claimed_at - 5
+
+        def entries(fetch=None, scheduled=False):
+            return {
+                "1": UsageEntry(last_good=_rusage(d7=100, grants=[_week(left=0)]),
+                                fetched_at=before_claim, age_s=h.clock.now - before_claim),
+                "2": _key(_reading(h)),
+                "3": _entry_for(_rusage(d7=100), h.clock.now),
+            }
+
+        with patch.object(h.switcher, "usage_entries_by_account", side_effect=entries):
+            assert h.engine.tick() is not TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "1"
+        assert _settings_line(temp_home) is None
+        assert _holds(h)[-1].reason == "reset-pending"
+        # Read again after the claim and still full: the reset did not refill
+        # it, so the key is the way out.
+        h.clock.advance(60)
+        with patch.object(h.switcher, "usage_entries_by_account", return_value={
+            "1": _entry_for(_rusage(d7=100, grants=[_week(left=0)]), h.clock.now),
+            "2": _key(_reading(h)), "3": _entry_for(_rusage(d7=100), h.clock.now),
+        }):
+            assert h.engine.tick() is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "2"
+
     @pytest.mark.parametrize("auto", ["last-resort", "active"])
     def test_on_a_key_it_entered_a_reset_underneath_is_claimed_and_it_returns(
         self, temp_home, auto

@@ -1161,6 +1161,22 @@ def reset_claim_in_flight(record: object, fetched_at: float | None, now: float) 
     return not reset_claim_settled(record, fetched_at, now)
 
 
+def reset_refill_unread(record: object, fetched_at: float | None, now: float) -> bool:
+    """Whether an account's last claim spent a reset that no reading has
+    shown yet: answered ``reset``, and the account's usage was last read
+    before the claim. The stored reading is then the full one from before
+    the refill. Bounded by :data:`RESET_SUCCESS_GAP_S`, so an account whose
+    usage stays unreadable does not hold an API key back for ever."""
+    if not isinstance(record, dict) or record.get("result") != "reset":
+        return False
+    at = record.get("at")
+    if not isinstance(at, (int, float)) or isinstance(at, bool):
+        return False
+    if fetched_at is not None and fetched_at > at:
+        return False
+    return 0 <= now - at < RESET_SUCCESS_GAP_S
+
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
@@ -1700,16 +1716,19 @@ class AutoSwitchEngine:
         return under if under is not None and under in rotation else current
 
     def _reset_in_flight(self, state: dict, entries: Mapping[str, object]) -> bool:
-        """Whether a usage reset claim on any account may still be on its way."""
+        """Whether a usage reset claim on any account may still be on its
+        way, or answered with a reset whose refill has not been read yet
+        (:func:`reset_refill_unread`): either may give a subscription room,
+        so the engine does not enter an API key on the reading before it."""
         claims = state.get("resetClaims")
         if not isinstance(claims, dict):
             return False
         now = self.clock()
         return any(
-            reset_claim_in_flight(
-                record, getattr(entries.get(str(num)), "fetched_at", None), now
-            )
+            reset_claim_in_flight(record, fetched, now)
+            or reset_refill_unread(record, fetched, now)
             for num, record in claims.items()
+            for fetched in (getattr(entries.get(str(num)), "fetched_at", None),)
         )
 
     def _unspent_reset_note(self, usage: Mapping[str, object], quarantined: set[str]) -> str | None:
