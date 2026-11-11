@@ -63,9 +63,12 @@ EMAIL_5 = "api-key-5@token.local"
 EMAIL_6 = "api-key-6@token.local"
 QSWAP = "/opt/qswap/bin/qswap"
 
-#: The real functions, before the autouse fixture below replaces them.
+#: The real functions, before the autouse fixtures below (and conftest's
+#: _no_key_line_runs) replace them.
 _REAL_COMMAND_MISSING = claude_settings.command_missing
 _REAL_EXECUTABLE = claude_settings.qswap_executable
+_REAL_CHECK_COMMAND = claude_settings.check_command
+_REAL_RUN_CHECK = claude_settings._run_check
 
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
 
@@ -108,9 +111,11 @@ def _fleet(platform: Platform = Platform.MACOS) -> ClaudeAccountSwitcher:
 @pytest.fixture(autouse=True)
 def _fixed_command(monkeypatch):
     """The installed command every helper line names, fixed for the tests
-    (and taken to exist: TestMovedQswap is about one that does not)."""
+    (and taken to exist and to answer: TestMovedQswap is about one that does
+    not exist, TestTheLineAnswers about one that does not answer)."""
     monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [QSWAP])
     monkeypatch.setattr(claude_settings, "command_missing", lambda command: False)
+    monkeypatch.setattr(claude_settings, "check_command", lambda command, **kw: None)
 
 
 @pytest.fixture
@@ -2609,6 +2614,163 @@ class TestMovedQswap:
         assert command_missing(f"{exe} key-helper 5") is False
         assert command_missing(f"{tmp_path / 'nope' / 'qswap'} key-helper 5") is True
         assert command_missing("qswap key-helper 5") is False  # found on PATH
+
+
+@POSIX_ONLY
+class TestTheLineAnswers:
+    """Decision B2 (F18): doctor runs the line's own command with --check,
+    as Claude Code runs it (through the shell), and reports a line that
+    cannot answer: a bare name, a path that is not an executable program,
+    an interpreter that cannot import the package, a bare -m, a failure or
+    no answer in time. Only a line parse_line reads as qswap's is run, and
+    nothing it prints is shown but the helper's own one-line message."""
+
+    @pytest.fixture(autouse=True)
+    def _real(self, monkeypatch):
+        monkeypatch.setattr(claude_settings, "command_missing", _REAL_COMMAND_MISSING)
+        monkeypatch.setattr(claude_settings, "check_command", _REAL_CHECK_COMMAND)
+        monkeypatch.setattr(claude_settings, "_run_check", _REAL_RUN_CHECK)
+
+    def _program(self, tmp_path, body: str, name: str = "qswap", mode: int = 0o755) -> Path:
+        exe = tmp_path / "bin" / name
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        exe.chmod(mode)
+        return exe
+
+    def _line(self, home: Path, command: str) -> None:
+        _settings(home).write_text(json.dumps({"apiKeyHelper": command}), encoding="utf-8")
+
+    def _check(self):
+        return {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
+
+    def test_a_line_that_answers_passes_and_names_its_command(self, temp_home, tmp_path):
+        # $1 key-helper, $2 the number, $3 --check: only that answers.
+        exe = self._program(tmp_path, 'test "$3" = --check && exit 0\nexit 9\n')
+        s = _fleet()
+        self._line(temp_home, f"{exe} key-helper 5")
+        check = self._check()
+        assert check.status == "pass"
+        assert check.summary.endswith(f", which runs {exe}")
+        assert claude_settings.line_answers(s.key_helper_state()) is None
+
+    def test_a_failure_is_said_in_the_helpers_own_words(self, temp_home, tmp_path):
+        exe = self._program(tmp_path, (
+            'echo "qswap key-helper: #5 has no saved key; save one: '
+            'qswap add-token KEY --slot 5" >&2\nexit 1\n'
+        ))
+        s = _fleet()
+        self._line(temp_home, f"{exe} key-helper 5")
+        check = self._check()
+        assert check.status == "fail"
+        assert "but its line fails (#5 has no saved key; save one:" in check.summary
+        assert check.fix == "qswap add-token KEY --slot 5"  # the helper's own next step
+        assert "running ones keep the key they have" in check.summary
+        assert claude_settings.line_answers(s.key_helper_state()).startswith("fails (#5")
+
+    def test_a_failure_without_a_command_is_repaired_by_the_switch(self, temp_home, tmp_path):
+        exe = self._program(
+            tmp_path, 'echo "qswap key-helper: qswap manages no accounts on this machine" >&2\n'
+                      "exit 1\n",
+        )
+        _fleet()
+        self._line(temp_home, f"{exe} key-helper 5")
+        check = self._check()
+        assert "fails (qswap manages no accounts on this machine)" in check.summary
+        assert check.fix == "qswap switch 5"
+
+    def test_what_the_program_prints_is_never_shown(self, temp_home, tmp_path):
+        exe = self._program(tmp_path, f'echo {KEY_5}\necho "{KEY_6}" >&2\nexit 2\n')
+        _fleet()
+        self._line(temp_home, f"{exe} key-helper 5")
+        check = self._check()
+        assert check.status == "fail" and "fails (exit 2)" in check.summary
+        for text in (check.summary, check.hint or "", json.dumps(doctor.to_json(
+            doctor.run_checks(), online=False))):
+            assert KEY_5 not in text and KEY_6 not in text
+
+    @pytest.mark.parametrize("case, words", [
+        ("bare-name", "runs qswap by name only"),
+        ("not-executable", "is not executable"),
+        ("directory", "is not a program"),
+    ])
+    def test_a_line_that_cannot_run_is_reported(self, temp_home, tmp_path, monkeypatch,
+                                                 case, words):
+        ran: list[str] = []
+        monkeypatch.setattr(claude_settings, "_run_check",
+                            lambda command, **kw: ran.append(command) or (0, ""))
+        if case == "bare-name":
+            command = "qswap key-helper 5"
+        elif case == "not-executable":
+            command = f"{self._program(tmp_path, 'exit 0\n', mode=0o644)} key-helper 5"
+        else:
+            (tmp_path / "qswap").mkdir()
+            command = f"{tmp_path / 'qswap'} key-helper 5"
+        s = _fleet()
+        self._line(temp_home, command)
+        check = self._check()
+        assert check.status == "fail" and check.fix == "qswap switch 5"
+        assert words in check.summary
+        assert words in claude_settings.line_answers(s.key_helper_state())
+        assert ran == []
+
+    def test_an_interpreter_that_cannot_import_the_package(self, temp_home, tmp_path):
+        python = self._program(
+            tmp_path, 'echo "python3: No module named ai_quota_swap" >&2\nexit 1\n',
+            name="python3",
+        )
+        _fleet()
+        self._line(temp_home, f"{python} -P -m ai_quota_swap key-helper 5")
+        check = self._check()
+        assert check.status == "fail" and "its line fails (exit 1)" in check.summary
+
+    def test_a_bare_dash_m_line_is_reported_without_running_it(
+        self, temp_home, monkeypatch
+    ):
+        ran: list[str] = []
+        monkeypatch.setattr(claude_settings, "_run_check",
+                            lambda command, **kw: ran.append(command) or (0, ""))
+        _fleet()
+        self._line(temp_home, f"{sys.executable} -m ai_quota_swap key-helper 5")
+        check = self._check()
+        assert check.status == "fail" and "Python with -m" in check.summary
+        assert ran == []
+
+    def test_a_line_that_does_not_answer_in_time(self, tmp_path):
+        exe = self._program(tmp_path, "sleep 30\n")
+        started = time.monotonic()
+        reason = claude_settings.check_command(f"{exe} key-helper 5", timeout=0.3)
+        assert reason == "did not answer within 0.3 seconds"
+        assert time.monotonic() - started < 10  # the program and its children are gone
+
+    def test_only_qswaps_own_line_is_run(self, temp_home, monkeypatch):
+        ran: list[str] = []
+        monkeypatch.setattr(claude_settings, "_run_check",
+                            lambda command, **kw: ran.append(command) or (0, ""))
+        _fleet()
+        self._line(temp_home, "/opt/vault/print-key")
+        checks = {c.id: c for c in doctor.run_checks()}
+        assert "claude.key_helper" not in checks
+        assert ran == []
+        state = claude_settings.read_state(_settings(temp_home))
+        assert claude_settings.line_answers(state) == "is not a key line of qswap's"
+
+    def test_this_installs_own_line_answers(self, temp_home, tmp_path, monkeypatch):
+        """End to end with this install's console script: the line qswap
+        writes, run the way doctor runs it. It names the data directory, so
+        the child reads only the key file there (never a Keychain)."""
+        from ai_quota_swap import installed
+
+        if not installed.own_scripts():
+            pytest.skip("this environment has no qswap console script")
+        monkeypatch.setattr(claude_settings, "qswap_executable", _REAL_EXECUTABLE)
+        root = tmp_path / "data"
+        _seed_data(root, {"5": {"email": EMAIL_5, "kind": "api_key"}},
+                   {f".creds-5-{EMAIL_5}.enc": KEY_5})
+        monkeypatch.setattr(key_helper, "pinned_data_dir", lambda: root)
+        assert claude_settings.check_command(claude_settings.helper_command(5)) is None
+        reason = claude_settings.check_command(claude_settings.helper_command(9))
+        assert reason == "fails (#9 does not exist; qswap list shows the accounts)"
 
 
 class TestProblemEverywhere:

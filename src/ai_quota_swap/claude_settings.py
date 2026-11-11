@@ -242,6 +242,120 @@ def command_missing(command: str | None) -> bool:
     return not os.path.exists(line.program)
 
 
+# -- whether the line answers -------------------------------------------------------
+
+#: How long a check of the line waits for its command. Claude Code 2.1.322
+#: says "apiKeyHelper is taking a while" after 10 seconds.
+CHECK_TIMEOUT = 10.0
+_HELPER_PREFIX = "qswap key-helper: "
+
+
+def command_problem(command: str | None) -> str | None:
+    """Why qswap's line cannot answer, from the line and the file it runs
+    alone (no process is started); None when nothing there is wrong. The
+    reason follows "the line" in a sentence."""
+    line = read_line(command)
+    if line is None:
+        return "is not a key line of qswap's"
+    if not _is_absolute(line.program):
+        return (
+            "runs qswap by name only, which a session without it on its PATH "
+            "cannot find"
+        )
+    if command_missing(command):
+        return "runs a qswap that is no longer there"
+    if not os.path.isfile(line.program):
+        return f"runs {line.program}, which is not a program"
+    if sys.platform != "win32" and not os.access(line.program, os.X_OK):
+        return f"runs {line.program}, which is not executable"
+    if line.module == "-m":
+        return (
+            "runs Python with -m, which can import files from the project "
+            "directory of each session in place of qswap"
+        )
+    return None
+
+
+def _check_dir() -> str:
+    """Where the check runs: qswap's own data directory (a directory of
+    nobody's project), else the home directory."""
+    from ai_quota_swap import key_helper
+
+    for candidate in (key_helper.data_dir(), Path.home()):
+        if candidate.is_dir():
+            return str(candidate)
+    return os.getcwd()
+
+
+def _run_check(command: str, *, cwd: str, timeout: float) -> tuple[int, str]:
+    """Run qswap's line with ``--check`` added, the way Claude Code runs the
+    line (through the shell). Returns the exit status and standard error;
+    standard output is never read. On a timeout the command and everything
+    it started are stopped and ``subprocess.TimeoutExpired`` is raised."""
+    import signal
+    import subprocess
+
+    text = command + " --check"
+    if sys.platform == "win32":
+        argv: str | list[str] = text
+        options: dict = {"shell": True}
+    else:
+        argv = ["/bin/sh", "-c", text]
+        options = {"start_new_session": True}
+    proc = subprocess.Popen(
+        argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE, **options,
+    )
+    try:
+        _out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            if sys.platform == "win32":
+                proc.kill()
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        raise
+    return proc.returncode, (err or b"").decode("utf-8", "replace")
+
+
+def check_command(command: str | None, *, timeout: float = CHECK_TIMEOUT,
+                  cwd: str | None = None) -> str | None:
+    """Whether qswap's line can give Claude Code the key: None when its
+    command, run with ``--check`` the way Claude Code runs it, answers; else
+    why not, in words that follow "the line" ("fails (#5 has no saved key;
+    save one: qswap add-token KEY --slot 5)"). Of what the command prints
+    only the helper's own one-line message is ever shown. Never raises."""
+    import subprocess
+
+    problem = command_problem(command)
+    if problem is not None:
+        return problem
+    try:
+        code, err = _run_check(command or "", cwd=cwd or _check_dir(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return f"did not answer within {timeout:g} seconds"
+    except Exception as e:
+        return f"could not be run ({getattr(e, 'strerror', None) or type(e).__name__})"
+    if code == 0:
+        return None
+    first = (err.strip().splitlines() or [""])[0]
+    if first.startswith(_HELPER_PREFIX):
+        return f"fails ({first[len(_HELPER_PREFIX):]})"
+    return f"fails (exit {code})"
+
+
+def line_answers(state: HelperState) -> str | None:
+    """Whether qswap's line in ``state`` answers (:func:`check_command`):
+    None when it does, else the reason. A switch to the key that is already
+    active calls this and writes the line again when it does not answer."""
+    if not state.ours:
+        return "is not a key line of qswap's"
+    return check_command(state.command)
+
+
 def _quote(path: str) -> str:
     """``path`` as one word for the shell Claude Code runs the helper in.
     :func:`read_line` reads back every word this writes. On Windows (cmd.exe)

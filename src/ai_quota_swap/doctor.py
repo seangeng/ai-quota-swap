@@ -275,6 +275,14 @@ def _claude_unreadable_sessions() -> list:
     return unreadable_session_records()
 
 
+def _key_line_answers(command: str) -> str | None:
+    """Whether qswap's key line answers: None, or why not (it runs the line's
+    command with ``--check``, which prints nothing)."""
+    from ai_quota_swap import claude_settings
+
+    return claude_settings.check_command(command)
+
+
 def _now() -> float:
     return time.time()
 
@@ -352,6 +360,8 @@ class Probes:
     list_dir: Callable[[Path], list[Path]] = _list_dir
     #: The session records on the shared login that could not be read.
     claude_unreadable_sessions: Callable[[], list] = _claude_unreadable_sessions
+    #: Whether qswap's key line answers: None, or why not.
+    key_line_answers: Callable[[str], str | None] = _key_line_answers
 
 
 def default_probes() -> Probes:
@@ -383,6 +393,7 @@ def default_probes() -> Probes:
         claude_sessions=_claude_sessions,
         list_dir=_list_dir,
         claude_unreadable_sessions=_claude_unreadable_sessions,
+        key_line_answers=_key_line_answers,
     )
 
 
@@ -732,12 +743,7 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
                 fix=f"qswap switch {state.number}",
             ))
         else:
-            email = record.get("email") if isinstance(record.get("email"), str) else ""
-            checks.append(Check(
-                "claude.key_helper", "claude", PASS,
-                f"active API key: {_label(state.number, record, email)}, through "
-                f"qswap's apiKeyHelper line in {where}",
-            ))
+            checks.append(_key_line_check(p, f, state, record, where))
     stale = _stale_profile_copies(p, f, state)
     if stale:
         noun = "profile keeps" if stale == 1 else "profiles keep"
@@ -748,6 +754,56 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
             fix=fix,
         ))
     return checks
+
+
+def _key_line_check(p: Probes, f: _Facts, state, record: dict, where: str) -> Check:
+    """qswap's line for an API-key account: run with ``--check`` the way
+    Claude Code runs it (decision B2). It passes naming the command it runs,
+    or fails with why it cannot answer and ``qswap switch N``, which writes
+    the line again for this install."""
+    from ai_quota_swap import claude_settings
+
+    why, err = _try(p.key_line_answers, state.command)
+    if err is not None:
+        why = f"could not be checked ({_reason(err)})"
+    if why is not None:
+        line = claude_settings.read_line(state.command)
+        then = ""
+        if line is None or line.module != "-m":
+            then = (
+                "; new Claude Code sessions fail to get a key from it, and running "
+                "ones keep the key they have until the settings change"
+            )
+        # The helper names its own fix when it has one ("save one: qswap
+        # add-token KEY --slot 5"); else the switch writes the line again.
+        named = re.search(r": (qswap [^;()]+)\)$", why)
+        return Check(
+            "claude.key_helper", "claude", FAIL,
+            f"{where} makes #{state.number} the active API key, but its line {why}{then}",
+            fix=named.group(1) if named else f"qswap switch {state.number}",
+        )
+    email = record.get("email") if isinstance(record.get("email"), str) else ""
+    return Check(
+        "claude.key_helper", "claude", PASS,
+        f"active API key: {_label(state.number, record, email)}, through "
+        f"qswap's apiKeyHelper line in {where}, which runs "
+        f"{_line_program(state.command, f.home)}",
+    )
+
+
+def _line_program(command: str | None, home: Path | None) -> str:
+    """What qswap's line runs, for a message: the program (``~`` for the home
+    directory, in quotes when it has a space) and, for an interpreter, its
+    ``-m`` flags."""
+    from ai_quota_swap import claude_settings
+
+    line = claude_settings.read_line(command)
+    if line is None:
+        return "an unknown command"
+    shown = _abbr(line.program, home)
+    if any(c.isspace() for c in shown):
+        shown = f'"{shown}"'
+    return f"{shown} {line.module} ai_quota_swap" if line.module else shown
 
 
 def _key_repair_command(p: Probes, f: _Facts, registry: dict | None) -> str:
