@@ -637,27 +637,36 @@ class TestAFileDeletedDuringTheScan:
             e.reason for e in h.events if isinstance(e, NoSwitchEvent)
         ]
 
-    @pytest.mark.parametrize("how", ["broken-link", "mode-000"])
+    @pytest.mark.parametrize("how", ["broken-link", "mode-000", "unsearchable-dir"])
     def test_a_broken_link_or_a_file_it_may_not_read_still_does(
         self, temp_home, monkeypatch, how
     ):
         from tests.ledger_fixtures import claude_line, write_lines
 
-        if how == "mode-000" and (
+        if how != "broken-link" and (
             os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0
         ):
-            pytest.skip("mode 000 keeps only a POSIX non-root reader out")
+            pytest.skip("permission bits keep only a POSIX non-root reader out")
         h, project = self._world(temp_home, monkeypatch)
         entry = project / "other.jsonl"
+        restore = None
         if how == "broken-link":
             entry.symlink_to(temp_home / "unmounted-volume" / "other.jsonl")
-        else:
+        elif how == "mode-000":
             write_lines(entry, [claude_line(mid="m-2", ts=h.clock.now - 30)]).chmod(0)
+            restore = (entry, 0o600)
+        else:
+            # Another project that can be listed but not entered (mode 0600,
+            # as after a recursive chmod 600): its file is there, unreadable.
+            other = project.parent / "-work-other"
+            write_lines(other / "s.jsonl", [claude_line(mid="m-2", ts=h.clock.now - 30)])
+            other.chmod(0o600)
+            restore = (other, 0o700)
         try:
             assert self._tick(h) is TickOutcome.BLOCKED
         finally:
-            if how == "mode-000":
-                entry.chmod(0o600)
+            if restore is not None:
+                restore[0].chmod(restore[1])
         assert h.switcher.current_account_number() == "1"
         assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)][-1] == (
             "spend-unknown"

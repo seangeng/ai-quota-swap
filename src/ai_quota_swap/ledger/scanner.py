@@ -381,10 +381,17 @@ class Scanner:
         """Count an entry that could not be read, keeping the first few. One
         that no longer exists at all, not even as a link, was deleted after
         the listing: it counts as vanished instead (decision R4-2). A broken
-        link, a permission error or any other read error stays missing."""
-        if not os.path.lexists(path):
+        link, a permission error or any other read error stays missing. Only
+        an lstat that says "no such entry" counts as gone: ``lexists`` is also
+        false when a directory on the path cannot be entered, and those files
+        are still there."""
+        try:
+            os.lstat(path)
+        except (FileNotFoundError, NotADirectoryError):
             self.stats.vanished += 1
             return
+        except OSError:
+            pass
         self.stats.missing += 1
         if len(self.stats.missing_paths) < MISSING_PATHS_KEPT:
             self.stats.missing_paths.append(path)

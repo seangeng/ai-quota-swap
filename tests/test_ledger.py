@@ -539,6 +539,27 @@ class TestCodex:
             locked.chmod(0o600)
         assert (stats.missing, stats.vanished) == (1, 0)
 
+    @pytest.mark.skipif(
+        os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+        reason="a directory's search bit keeps only a POSIX non-root reader out",
+    )
+    def test_a_file_in_a_directory_it_may_not_enter_is_missing_not_vanished(self, env):
+        """Decision R4-2: a permission error stays missing. A directory the
+        scan can list but not enter (mode 0600, as after a recursive chmod
+        600) still holds its files: they are unreadable, not deleted."""
+        write_lines(env.transcript("kept.jsonl"), [claude_line(mid="m-1", ts=T0)])
+        held = write_lines(
+            env.transcript("held.jsonl", slug="-work-other"), [claude_line(mid="m-2", ts=T0)]
+        )
+        held.parent.chmod(0o600)
+        try:
+            stats = env.scan(("claude",))
+        finally:
+            held.parent.chmod(0o700)
+        assert (stats.missing, stats.vanished) == (1, 0)
+        assert stats.missing_paths == [str(held)]
+        assert env.sums("claude")["requests"] == 1
+
     def test_symlinked_rollouts_are_read(self, env):
         real = write_lines(env.home / "archive" / rollout_name(THREAD_A), [
             codex_meta(T0, THREAD_A), codex_turn(T0), codex_record(T0, THREAD_A, "resp-1"),
