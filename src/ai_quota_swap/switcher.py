@@ -24,10 +24,11 @@ from ai_quota_swap.exceptions import (
     CredentialReadError,
     LockError,
     SessionError,
+    SessionsRunningError,
     SwitchError,
     ValidationError,
 )
-from ai_quota_swap import clis, oauth, pace, prompts, subscription
+from ai_quota_swap import clis, display, oauth, pace, prompts, subscription
 from ai_quota_swap.claude_locks import claude_config_lock, claude_credentials_lock
 from ai_quota_swap.json_output import (
     SCHEMA_VERSION,
@@ -50,6 +51,7 @@ from ai_quota_swap.credentials import (  # noqa: F401  (constants re-exported fo
     SECURITY_SERVICE,
     ActiveCredentials,
     CredentialStore,
+    holds_no_login,
     looks_like_api_key,
     merge_shared_credential_fields,
     shared_credential_fields,
@@ -916,11 +918,19 @@ class ClaudeAccountSwitcher:
         account-bound state such as ``trustedDeviceToken`` — and any field
         qswap does not recognize — must not leak across an account switch.
 
-        When there is no live JSON credential object to take shared fields
-        from (fresh machine, or a managed API key is active), the stored
-        blob activates unchanged, exactly as before.
+        While a managed API key is active the live credential is the key,
+        and the MCP sign-ins sit in the OAuth store beside it (the login item
+        without its login); they are taken from there. When there is no live
+        JSON credential object at all (fresh machine), the stored blob
+        activates unchanged.
         """
         live_shared = shared_credential_fields(live_credentials)
+        if live_shared is None and looks_like_api_key(live_credentials):
+            try:
+                live_shared = shared_credential_fields(self._store._read_oauth_store())
+            except Exception as e:  # composition is best effort; never fail a switch
+                self._logger.debug(f"Could not read the login item's MCP sign-ins: {e!r}")
+                live_shared = None
         if live_shared is None:
             return target_credentials
         return merge_shared_credential_fields(target_credentials, live_shared)
@@ -975,9 +985,12 @@ class ClaudeAccountSwitcher:
         return self._store._read_account_credentials(account_num, email, cached=cached)
 
     def _write_account_credentials(
-        self, account_num: str, email: str, credentials: str
+        self, account_num: str, email: str, credentials: str, *, retain: bool = True
     ) -> None:
         """Write account credentials to backup, then invalidate the slot's session.
+
+        ``retain`` is passed to the store: False keeps the previous copy as it
+        is (see ``CredentialStore._write_account_credentials``).
 
         The store performs the pure write and raises on failure *before* returning,
         so ``_post_backup_write`` (the session-invalidation chokepoint) runs exactly
@@ -1008,7 +1021,9 @@ class ClaudeAccountSwitcher:
         ``Exception`` disarmed exactly that guard for every write routing
         through here.
         """
-        self._store._write_account_credentials(account_num, email, credentials)
+        self._store._write_account_credentials(
+            account_num, email, credentials, retain=retain
+        )
         try:
             self._post_backup_write(account_num, email)
         except OSError:
@@ -1310,6 +1325,11 @@ class ClaudeAccountSwitcher:
         org_b = record_b.get("organizationUuid", "") or ""
         self._adopt_before_relocation(num_a, email_a, org_a, "--swap-accounts")
         self._adopt_before_relocation(num_b, email_b, org_b, "--swap-accounts")
+        # Only the main backup moves, and each old slot key's previous copy
+        # is deleted: an API-key account whose key an older qswap pushed into
+        # that copy gets the key back first, or it is lost.
+        self._heal_api_key_backup(num_a, email_a)
+        self._heal_api_key_backup(num_b, email_b)
 
         # Read both slots' backup material up front so a read failure aborts
         # before anything has been moved. Missing material reads as "" (an
@@ -1767,6 +1787,9 @@ class ClaudeAccountSwitcher:
         # past its backup advances the backup first.
         org_uuid = record.get("organizationUuid", "") or ""
         self._adopt_before_relocation(num_src, email, org_uuid, "--move-account")
+        # As in swap: the previous copy does not move, so a key that only it
+        # holds is put back first.
+        self._heal_api_key_backup(num_src, email)
 
         # Read backup material up front so a read failure aborts before any
         # move. Missing material reads as "" (api-key or never-backed-up
@@ -4110,6 +4133,19 @@ class ClaudeAccountSwitcher:
                 "Active login is an API-key account. Add it with "
                 "'qswap add-token sk-ant-...' instead of 'qswap add'."
             )
+        if holds_no_login(creds):
+            # What activating an API-key account leaves in the login item
+            # (MCP server sign-ins only, or {}). The CLAUDE_CONFIG_DIR and
+            # CLAUDE_SECURESTORAGE_CONFIG_DIR branches of the capture read
+            # that store directly, so it arrives here in place of the key.
+            # It is no account's login and is never saved over one.
+            raise ValidationError(
+                "The active login holds no Claude login, only MCP server "
+                "sign-ins (what an active API-key account leaves there). "
+                "Nothing was changed. Log in with /login in Claude Code and "
+                "re-run qswap add, or add an API key with: "
+                "qswap add-token sk-ant-..."
+            )
 
     def _reject_cross_kind_collision(self, email: str, is_api_key: bool) -> None:
         """Reject registering a token whose (email, personal-org) already exists as
@@ -4643,17 +4679,21 @@ class ClaudeAccountSwitcher:
                 raise ConfigError(
                     f"Existing account metadata for {email} is inconsistent"
                 )
-            self._write_account_credentials(account_num, email, credentials)
-            self._write_account_config(account_num, email, config)
-            # A refreshed credential invalidates any dead-token quarantine on this
-            # slot (mirrors ``add_account``); otherwise the stale strike row keeps
-            # the account stuck at "re-login needed" and it never fetches the new
-            # token. Token accounts are always personal, so org is "".
-            self._usage_store.clear_dead_token(
-                [account_num], {account_num: (email, "")}
-            )
-            seq["lastUpdated"] = get_timestamp()
-            self._write_json(self.sequence_file, seq)
+            # The account lock, like every other writer of a slot: the API-key
+            # heal re-reads under it, so it can never put an old key back over
+            # this one.
+            with FileLock(self.lock_file):
+                self._write_account_credentials(account_num, email, credentials)
+                self._write_account_config(account_num, email, config)
+                # A refreshed credential invalidates any dead-token quarantine on this
+                # slot (mirrors ``add_account``); otherwise the stale strike row keeps
+                # the account stuck at "re-login needed" and it never fetches the new
+                # token. Token accounts are always personal, so org is "".
+                self._usage_store.clear_dead_token(
+                    [account_num], {account_num: (email, "")}
+                )
+                seq["lastUpdated"] = get_timestamp()
+                self._write_json(self.sequence_file, seq)
             kind_label = "API key" if is_api_key else "token"
             self._logger.info(f"Updated {kind_label} for account {account_num}: {email}")
             print(f"{accent('Updated')} the {kind_label} of {self.label(account_num)}")
@@ -4732,8 +4772,10 @@ class ClaudeAccountSwitcher:
             del data["accounts"][migrate_from]
             self._write_json(self.sequence_file, data)
 
-        self._write_account_credentials(account_num, email, credentials)
-        self._write_account_config(account_num, email, config)
+        # Under the account lock, as above.
+        with FileLock(self.lock_file):
+            self._write_account_credentials(account_num, email, credentials)
+            self._write_account_config(account_num, email, config)
         # Reusing/overwriting a slot with a fresh credential lifts any dead-token
         # quarantine carried by that slot's prior lineage (mirrors ``add_account``).
         self._usage_store.clear_dead_token(
@@ -6861,6 +6903,9 @@ class ClaudeAccountSwitcher:
             "reason": reason,
             "message": message,
             "warnings": (extra_warnings or []) + op["warnings"],
+            # Only after a switch with an API-key account on either side: what
+            # the running sessions do now, in the words text output prints.
+            **({"followup": list(op["followup"])} if op.get("followup") else {}),
         }
 
     def _switch_noop(
@@ -6959,11 +7004,14 @@ class ClaudeAccountSwitcher:
 
             target = str(preferred)
             relogin = self.relogin_reasons()
+            key_blocked = self._api_key_rotation_check()
             target_disabled = self._disabled_from_data(data, target)
+            target_running = key_blocked(target)
             if (
                 target_disabled
                 or not self._account_is_switchable(target)
                 or target in relogin
+                or target_running
             ):
                 if target_disabled:
                     self._skip_line(warnings, json_output, target, "(disabled)", "disabled")
@@ -6972,15 +7020,22 @@ class ClaudeAccountSwitcher:
                         warnings, json_output, target, "(no stored credentials/config)",
                         f"no saved login; re-add it with: qswap add --slot {target}",
                     )
-                else:
+                elif target in relogin:
                     self._skip_line(warnings, json_output, target, "(needs re-login)",
                                     "needs re-login")
+                else:
+                    self._skip_line(
+                        warnings, json_output, target,
+                        display.api_key_skip_detail(target_running),
+                        display.api_key_skip_reason(target_running),
+                    )
                 fallback = next(
                     (str(num) for num in sequence
                      if str(num) != target
                      and not self._disabled_from_data(data, str(num))
                      and self._account_is_switchable(str(num))
-                     and str(num) not in relogin),
+                     and str(num) not in relogin
+                     and not key_blocked(str(num))),
                     None,
                 )
                 if not fallback:
@@ -6988,6 +7043,18 @@ class ClaudeAccountSwitcher:
                         str(num) for num in sequence
                         if self._account_is_switchable(str(num)) and str(num) not in relogin
                     ]
+                    blocked = [
+                        num for num in usable
+                        if not self._disabled_from_data(data, num) and key_blocked(num)
+                    ]
+                    if blocked:
+                        raise ConfigError(
+                            "No account can take over without logging Claude Code "
+                            "sessions out: the rest are API-key accounts, disabled, "
+                            "or need re-login. To switch to an API-key account "
+                            "anyway:\n"
+                            f"  qswap switch {blocked[0]} {display.LOG_OUT_SESSIONS_FLAG}"
+                        )
                     if usable:
                         raise ConfigError(
                             "No accounts remain in rotation. Re-enable one with: "
@@ -7192,7 +7259,10 @@ class ClaudeAccountSwitcher:
 
         next_account: str | None = None
         skipped_exhausted: list[str] = []
-        skipped: dict[str, list[str]] = {"relogin": [], "disabled": [], "broken": []}
+        skipped: dict[str, list[str]] = {
+            "relogin": [], "disabled": [], "broken": [], "api_key": [],
+        }
+        key_blocked = self._api_key_rotation_check()
         for offset in range(1, len(sequence)):
             candidate = str(sequence[(current_index + offset) % len(sequence)])
             if self._disabled_from_data(data, candidate):
@@ -7211,6 +7281,16 @@ class ClaudeAccountSwitcher:
                 skipped["relogin"].append(candidate)
                 self._skip_line(warnings, json_output, candidate, "(needs re-login)",
                                 "needs re-login")
+                continue
+            running = key_blocked(candidate)
+            if running:
+                # Landing on it would log every running session out.
+                skipped["api_key"].append(candidate)
+                self._skip_line(
+                    warnings, json_output, candidate,
+                    display.api_key_skip_detail(running),
+                    display.api_key_skip_reason(running),
+                )
                 continue
             if strategy == "next-available":
                 headroom = oauth.account_headroom(usage.get(candidate), models)
@@ -7257,6 +7337,19 @@ class ClaudeAccountSwitcher:
             return None
 
         if next_account is None:
+            if json_output and skipped["api_key"]:
+                # The keys are valid; the sessions running on the shared
+                # login are what keeps the rotation off them.
+                return self._switch_noop(
+                    strategy=strategy_label, reason="api-key-sessions",
+                    to_ref=current_ref, warnings=warnings,
+                    message=(
+                        "No other account can take over without logging Claude Code "
+                        f"sessions out, so you stay on Account-{current_num}. To "
+                        "switch to an API-key account and log the sessions out, run: "
+                        f"qswap switch {skipped['api_key'][0]} {display.LOG_OUT_SESSIONS_FLAG}"
+                    ),
+                )
             if json_output:
                 return self._switch_noop(
                     strategy=strategy_label, reason="no-valid-target",
@@ -7273,6 +7366,11 @@ class ClaudeAccountSwitcher:
                 steps.append(f"bring a disabled one back: qswap enable {skipped['disabled'][0]}")
             if skipped["broken"]:
                 steps.append(f"re-add one: qswap add --slot {skipped['broken'][0]}")
+            if skipped["api_key"]:
+                steps.append(
+                    "switch to an API-key account and log the sessions out: "
+                    f"qswap switch {skipped['api_key'][0]} {display.LOG_OUT_SESSIONS_FLAG}"
+                )
             say(dimmed(
                 f"No other account can take over, so you stay on "
                 f"{self.label(current_num, long=False)}."
@@ -7316,14 +7414,199 @@ class ClaudeAccountSwitcher:
             if json_output else None
         )
 
+    # -- API-key accounts and running sessions (docs/design/api-key-sessions.md) --
+
+    def shared_login_scan(self) -> tuple[list, int]:
+        """The Claude Code sessions running on the shared login, and how many
+        session records could not be read (``process_detection.scan_sessions``,
+        the reader behind ``qswap list``'s "Running instances" block). A
+        record whose process is gone, or whose pid now belongs to another
+        process, is not counted; sessions inside a ``qswap run`` profile keep
+        their records in that profile and are not counted either. For the
+        guards: "could not tell" is never "nobody there", so a read that
+        fails outright counts as one unreadable record. Never raises."""
+        from ai_quota_swap.process_detection import scan_sessions
+
+        try:
+            return scan_sessions()
+        except Exception as e:
+            self._logger.debug(f"Could not read running sessions: {e!r}")
+            return [], 1
+
+    def shared_login_sessions(self) -> list:
+        """The readable live sessions only, for wording and lists. Anything
+        that decides whether a switch is safe reads :meth:`shared_login_scan`
+        (or :meth:`shared_login_blocking`). Never raises."""
+        return self.shared_login_scan()[0]
+
+    def shared_login_blocking(self) -> int:
+        """What bars landing on an API-key account: the number of readable
+        live sessions, else ``display.SESSIONS_UNKNOWN`` when session records
+        could not be read, else 0. Never raises."""
+        from ai_quota_swap import display
+
+        sessions, unreadable = self.shared_login_scan()
+        return display.blocking_sessions(len(sessions), unreadable)
+
+    def api_key_blockers(self, number: str | int) -> tuple[list, int]:
+        """What bars a switch to ``number``: the sessions on the shared login
+        and the count of unreadable session records when ``number`` is an
+        API-key account; ``([], 0)`` otherwise."""
+        if self._account_kind(str(number)) != "api_key":
+            return [], 0
+        return self.shared_login_scan()
+
+    def _key_active_since(self, number: str | int | None) -> float | None:
+        """When ``number`` became the active account (epoch seconds), from the
+        activation log: the start of the log's last run of lines naming it.
+        None when the log's last line is another account or there is none."""
+        if number is None:
+            return None
+        from ai_quota_swap.ledger.activations import ActivationLog, identity_key
+
+        record = ((self._get_sequence_data() or {}).get("accounts") or {}).get(str(number))
+        if not record:
+            return None
+        key = identity_key(record.get("email", ""), record.get("organizationUuid", "") or "")
+        try:
+            log = ActivationLog.load(self.backup_dir)
+        except Exception:
+            return None
+        since = None
+        for activation in reversed(log.activations):
+            if activation.account != key:
+                break
+            since = activation.ts
+        return since
+
+    @staticmethod
+    def _started_since(sessions: list, since: float | None) -> list:
+        """The sessions whose process started at or after ``since``: Claude
+        Code's own start stamp in the record (renewed by ``/restart``, which
+        starts a new process image), else the process start time."""
+        if since is None:
+            return []
+        from ai_quota_swap.process_detection import process_started_at
+
+        out = []
+        for session in sessions:
+            started = (session.started_at or 0) / 1000.0
+            if not started:
+                started = process_started_at(session.pid) or 0
+            if started and started >= since:
+                out.append(session)
+        return out
+
+    def _api_key_rotation_check(self):
+        """For a rotation: a function giving, for an account, how many
+        running sessions bar landing on it (0 unless it is an API-key account
+        and sessions run on the shared login; ``display.SESSIONS_UNKNOWN``,
+        which is truthy, when they could not be counted). The sessions are read once,
+        and only when an API-key account is asked about."""
+        blocking: int | None = None
+
+        def running(number: str) -> int:
+            nonlocal blocking
+            if self._account_kind(str(number)) != "api_key":
+                return 0
+            if blocking is None:
+                blocking = self.shared_login_blocking()
+            return blocking
+
+        return running
+
+    def shared_login_unreadable(self) -> list[str]:
+        """The paths of the session records on the shared login that could
+        not be read (``process_detection.unreadable_session_records``), for a
+        message that names them; ``[]`` when there are none or the scan
+        fails. Wording only. Never raises."""
+        from ai_quota_swap.process_detection import unreadable_session_records
+
+        try:
+            return [str(path) for path in unreadable_session_records()]
+        except Exception as e:
+            self._logger.debug(f"Could not list unreadable session records: {e!r}")
+            return []
+
+    def _login_item_holds_no_login(self) -> bool:
+        """Whether the live login item (or ``.credentials.json``) has no
+        Claude login in it: a JSON object without ``claudeAiOauth``, as
+        activating an API-key account leaves it. False when it is absent or
+        cannot be read, since then qswap cannot tell."""
+        try:
+            live = self._store._read_oauth_store()
+        except Exception as e:
+            self._logger.debug(f"Could not read the login item: {e!r}")
+            return False
+        return holds_no_login(live)
+
+    def _no_login_file_to_strip(self) -> bool:
+        """Off macOS, whether ``.credentials.json`` is absent: activating a key
+        then writes nothing to the login store (``_strip_oauth_login`` only
+        rewrites a file that exists), so no session can lose a login. On macOS
+        an absent item is written as ``{}``, which does log sessions out."""
+        if self.platform == Platform.MACOS:
+            return False
+        try:
+            get_credentials_path().stat()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
+
+    def _refuse_api_key_switch(self, number: str) -> None:
+        """Refuse a switch to the API-key account ``number`` while Claude Code
+        sessions run on the shared login (``--log-out-sessions`` goes ahead)."""
+        from ai_quota_swap import display
+
+        sessions, unreadable = self.api_key_blockers(number)
+        if not sessions and not unreadable:
+            return
+        current = self.current_account_number()
+        if current == str(number) and (
+            self._login_item_holds_no_login() or self._no_login_file_to_strip()
+        ):
+            # The key is already active (``--force``, or a self-switch that
+            # reconciles): the login store has no login left to take away, so
+            # writing the key again logs no one out.
+            return
+        from_key = (
+            self.label(current, long=False)
+            if current and current != str(number) and self._account_kind(current) == "api_key"
+            else None
+        )
+        records = self.shared_login_unreadable() if unreadable else []
+        raise SessionsRunningError(
+            display.api_key_refusal(
+                self.label(number, long=False), number,
+                display.blocking_sessions(len(sessions), unreadable), from_key=from_key,
+                records=records,
+            ),
+            number=str(number),
+            sessions=len(sessions),
+            unreadable=unreadable,
+            from_key=from_key is not None,
+            records=records,
+        )
+
     def switch_to(
-        self, identifier: str, json_output: bool = False, force: bool = False
+        self,
+        identifier: str,
+        json_output: bool = False,
+        force: bool = False,
+        log_out_sessions: bool = False,
     ) -> dict | None:
         """Switch to specific account.
 
         ``force`` activates the target's stored credentials directly, skipping
         both the already-active no-op guard and the backup-current step —
         the recovery path for a live login gone stale (e.g. after --import).
+
+        A switch to an API-key account while Claude Code sessions run on the
+        shared login raises :class:`SessionsRunningError` and changes nothing,
+        unless ``log_out_sessions`` (``--log-out-sessions``): a running
+        session cannot move to a key and stops with "Not logged in".
         """
         if not self.sequence_file.exists():
             raise self._nothing_managed_error()
@@ -7422,6 +7705,9 @@ class ClaudeAccountSwitcher:
                         to_ref=ref,
                         message=f"Already on Account-{target_account} ({email})",
                     )
+
+        if not log_out_sessions:
+            self._refuse_api_key_switch(target_account)
 
         op = self._perform_switch(
             target_account,
@@ -7712,6 +7998,24 @@ class ClaudeAccountSwitcher:
           ``"unresolved"`` and the fail-open backup copied the empty tokens
           over the slot's only surviving refresh token. Never written into
           any slot; nothing worth preserving either.
+        - ``"oauth-absent"``   — the live store carries no ``claudeAiOauth``
+          section at all while the slot's backup does: an API key in the
+          live position, or a credentials item left holding only
+          ``mcpOAuth`` after one. The same loss as ``"wiped"`` one step
+          earlier: ``extract_oauth_data`` answers ``None`` rather than an
+          empty-token dict, so the ``"wiped"`` check misses it and the
+          fail-open backup would destroy the slot's refresh token. Never
+          written into any slot.
+        - ``"api-key-mismatch"`` — the outgoing slot is an API-key account and
+          the verdict would have copied the live bytes into it
+          (``"own-family"``, ``"own-rotated"``, ``"unresolved"``). A Console
+          key never rotates and Claude Code never rewrites it, so the live
+          bytes are never its new generation: an item holding only MCP
+          sign-ins (the ordinary state while a key is active), a login that
+          outlived the switch onto the key, or another key. Never written into
+          the slot; a login or another key among them is preserved in a
+          safety copy. Verdicts that already leave the slot untouched
+          (``"foreign"``, ``"alien"``, …) stand, safety copy included.
         - ``"alien"``          — a *structurally complete* identity (uuid +
           email + organization) that matches no managed slot (unmanaged
           login, recycled email wearing a managed address, or an email+org
@@ -7735,6 +8039,28 @@ class ClaudeAccountSwitcher:
           endpoint state must never change switch behavior beyond skipping
           the extra safety.
         """
+        kind, foreign_slot = self._attribute_live_credential(
+            current_account, current_email, original_creds, provenance, data,
+        )
+        if (
+            kind in ("own-family", "own-rotated", "unresolved")
+            and data.get("accounts", {}).get(current_account, {}).get("kind")
+            == "api_key"
+        ):
+            return ("api-key-mismatch", None)
+        return (kind, foreign_slot)
+
+    def _attribute_live_credential(
+        self,
+        current_account: str,
+        current_email: str,
+        original_creds: str,
+        provenance: dict,
+        data: dict,
+    ) -> tuple[str, str | None]:
+        """The ownership half of :meth:`_classify_outgoing_credential`: whose
+        bytes the live credential holds, before the outgoing slot's kind has
+        its say."""
         backup = self._read_account_credentials(current_account, current_email)
         if backup and backup == original_creds:
             return ("own-bytes", None)
@@ -7748,6 +8074,10 @@ class ClaudeAccountSwitcher:
             live_oauth.get("accessToken") or live_oauth.get("refreshToken")
         ):
             return ("wiped", None)
+        if live_oauth is None and backup and oauth.extract_oauth_data(backup):
+            # Only the asymmetry (nothing to preserve on the live side, a
+            # refresh token to lose on the slot's) is the destruction case.
+            return ("oauth-absent", None)
         resolved = provenance.get("resolved")
         if resolved is None or provenance.get("live") != original_creds:
             if self._probe_verdicts.get(
@@ -7875,6 +8205,48 @@ class ClaudeAccountSwitcher:
         )
         return entry_id
 
+    def _heal_api_key_backup(self, account_num: str, email: str) -> bool:
+        """Put an API-key account's key back from its previous copy when its
+        saved credential is not a key and the previous copy is.
+
+        That is the state an older qswap left behind: switching away from an
+        API-key account backed up the login item (MCP sign-ins only) over the
+        key and pushed the key into the previous copy. True when it restored
+        the key. Never raises; a read that fails changes nothing, and a write
+        that fails leaves the key in the previous copy for the next try.
+        """
+        try:
+            record = (self._get_sequence_data() or {}).get("accounts", {}).get(
+                str(account_num)
+            ) or {}
+            if record.get("kind") != "api_key":
+                return False
+            stored = self._read_account_credentials(account_num, email)
+            if not stored or looks_like_api_key(stored):
+                return False
+            previous = self._store._read_previous_backup(account_num, email)
+            if not looks_like_api_key(previous):
+                return False
+            # Only over the value read above: another qswap can have saved a
+            # credential here since (an add-token), and the old key must not
+            # replace it. Callers hold self.lock_file, as every writer does.
+            if self._read_account_credentials(account_num, email) != stored:
+                return False
+            # retain=False: the previous copy IS the key. Retaining first
+            # would put the non-key there before the key reaches the main
+            # item, and a failed or interrupted write would then lose it.
+            self._write_account_credentials(
+                account_num, email, previous.strip(), retain=False
+            )
+        except Exception as e:
+            self._logger.debug(f"API-key backup check failed for {account_num}: {e!r}")
+            return False
+        self._logger.warning(
+            f"Restored account {account_num}'s API key from its previous copy "
+            "(the saved credential was not a key)"
+        )
+        return True
+
     def _read_target_credentials(self, account_num: str, email: str) -> str:
         """The switch target's stored credential, or a SwitchError naming why.
 
@@ -7886,6 +8258,7 @@ class ClaudeAccountSwitcher:
         which burns the stored grant of a slot whose backup is merely behind
         a locked Keychain. `session.py`'s `_bootstrap` carried a third copy.
         """
+        self._heal_api_key_backup(account_num, email)
         creds, unreadable = self._read_account_credentials_ex(
             account_num, email
         )
@@ -8046,6 +8419,11 @@ class ClaudeAccountSwitcher:
                         f"('qswap run {target_account}', then /login) so its "
                         "identity is rewritten, or switch to another account."
                     )
+
+        # An API-key account on either side: what the running sessions will do
+        # after the switch, read now, before anything changes (the activation
+        # log gains the target's line once the switch lands).
+        key_context = self._api_key_switch_context(target_account)
 
         # Pre-lock identity resolution (may hit the network — must happen
         # before the locks). Callers that already resolved (self-switch
@@ -8264,6 +8642,7 @@ class ClaudeAccountSwitcher:
                 self._record_activation(
                     target_account, target_email, target_oauth.get("organizationUuid") or ""
                 )
+                followup = self._api_key_followup(key_context, target_account, from_ref)
                 if emit_output:
                     if from_ref and str(from_ref.get("number")) == str(target_account):
                         print(
@@ -8276,14 +8655,14 @@ class ClaudeAccountSwitcher:
                             if from_ref and from_ref.get("number") is not None else "to "
                         )
                         print(f"{accent('Switched')} {source}"
-                              f"{self.label(target_account, target_email)}")
-                    self._print_switch_followup()
+                              f"{self._landed_label(target_account, target_email)}")
+                    self._print_switch_followup(followup)
                 self._replan_new_active(
                     target_account,
                     target_email,
                     data["accounts"][target_account].get("organizationUuid", ""),
                 )
-                return {"from": from_ref, "to": to_ref, "warnings": warnings_out}
+                return self._op_result(from_ref, to_ref, warnings_out, followup)
 
             current_email, _ = current_identity
             from_ref = account_ref(int(current_account), current_email)
@@ -8325,10 +8704,26 @@ class ClaudeAccountSwitcher:
                 # identity oracle is strictly advisory — "unresolved" falls
                 # back to the exact pre-fix backup, so endpoint state never
                 # decides whether a switch completes.
+                self._heal_api_key_backup(current_account, current_email)
                 kind, foreign_slot = self._classify_outgoing_credential(
                     current_account, current_email, original_creds,
                     provenance, data,
                 )
+                outgoing_is_key = (
+                    data.get("accounts", {}).get(current_account, {}).get("kind")
+                    == "api_key"
+                )
+
+                def _backup_config() -> None:
+                    # An API-key account's config backup is the placeholder
+                    # identity it was added with. The live ~/.claude.json is
+                    # the machine's whole Claude Code state, not that
+                    # account's, and is never written over it.
+                    if not outgoing_is_key:
+                        self._write_account_config(
+                            current_account, current_email, original_config
+                        )
+
                 if kind in ("foreign", "alien", "known-foreign"):
                     # Positively not this slot's bytes: never into a slot;
                     # never silently destroyed. The safety copy (which raises
@@ -8380,21 +8775,69 @@ class ClaudeAccountSwitcher:
                         warning(msg)
                     else:
                         warnings_out.append(msg)
-                elif kind == "wiped":
-                    # Claude Code emptied the live token fields in place
-                    # (its invalid_grant reaction). The blob carries nothing
-                    # to preserve and writing it would replace the slot's
-                    # only surviving refresh token with empty strings — the
-                    # exact destruction chain observed in the field. Config
-                    # backup only; the slot's credential backup is the
-                    # recovery path.
-                    self._write_account_config(
-                        current_account, current_email, original_config
+                elif kind == "api-key-mismatch":
+                    # The slot stores a Console key and the live bytes are not
+                    # that key, so they are never its backup. An item holding
+                    # only MCP sign-ins is the ordinary state while a key is
+                    # active and carries nothing to keep: log only. A login
+                    # (one can survive the best-effort clear) or another key
+                    # is preserved like any other displaced credential before
+                    # the switch replaces it.
+                    live_login = oauth.extract_oauth_data(original_creds) or {}
+                    msg = None
+                    if looks_like_api_key(original_creds):
+                        self._stash_live_credential(
+                            original_creds, kind, current_account,
+                            provenance.get("resolved"),
+                        )
+                        msg = (
+                            "The live store holds a different API key from "
+                            f"{_nm(current_account)}'s. The saved key was kept "
+                            "and the live one was preserved, not written into "
+                            f"{_nm(current_account)}. To save a new key for it, "
+                            f"run: qswap add-token KEY --slot {current_account}"
+                        )
+                    elif live_login.get("accessToken") or live_login.get(
+                        "refreshToken"
+                    ):
+                        self._stash_live_credential(
+                            original_creds, kind, current_account,
+                            provenance.get("resolved"),
+                        )
+                        msg = (
+                            "The live store holds a Claude login instead of "
+                            f"{_nm(current_account)}'s API key. The saved key "
+                            "was kept and the login was preserved, not written "
+                            f"into {_nm(current_account)}. If you need that "
+                            "account, log in as it and run: qswap add"
+                        )
+                    if msg:
+                        if emit_output:
+                            warning(msg)
+                        else:
+                            warnings_out.append(msg)
+                    self._logger.info(
+                        f"Backed up account {current_account}: nothing written "
+                        "(an API-key account; the live credentials are not its key)"
                     )
+                elif kind in ("wiped", "oauth-absent"):
+                    # Nothing to preserve on the live side, and writing it
+                    # would replace the slot's only surviving refresh token:
+                    # "wiped" is Claude Code emptying the token fields in
+                    # place (its invalid_grant reaction), "oauth-absent" an
+                    # API key or MCP-only leftover in the live position.
+                    # Config backup only; the slot's credential backup is the
+                    # recovery path.
+                    _backup_config()
+                    cause = {
+                        "wiped": "The live credential's tokens were wiped "
+                        "(Claude Code clears them when a refresh is "
+                        "rejected).",
+                        "oauth-absent": "The live credential holds no Claude "
+                        "login (an API key, or an emptied credentials store).",
+                    }[kind]
                     msg = (
-                        "The live credential's tokens were wiped (Claude "
-                        "Code clears them when a refresh is rejected). "
-                        f"{_nm(current_account)}'s stored backup was "
+                        f"{cause} {_nm(current_account)}'s stored backup was "
                         "kept. If the account cannot authenticate after "
                         "switching back, log in with Claude Code and run: "
                         "qswap add"
@@ -8430,12 +8873,13 @@ class ClaudeAccountSwitcher:
                     # #145: activation composes live shared MCP state into the
                     # written credential, so live bytes match the slot's only
                     # when nothing was composed in.)
-                    self._write_account_config(
-                        current_account, current_email, original_config
-                    )
+                    _backup_config()
                     self._logger.info(
                         f"Backed up account {current_account} (config only; "
                         "credentials unchanged)"
+                        if not outgoing_is_key else
+                        f"Backed up account {current_account}: nothing written "
+                        "(an API-key account; its saved key is unchanged)"
                     )
                 else:  # own-family / own-rotated
                     self._write_account_credentials(
@@ -8537,12 +8981,16 @@ class ClaudeAccountSwitcher:
         # re-acquire the lock from inside list_accounts(). All of this is display
         # only — suppressed in JSON mode (the nested list_accounts() would
         # otherwise leak human output onto the JSON stdout).
+        followup = self._api_key_followup(key_context, target_account, from_ref)
         if emit_output:
             source = (
                 f"{self.label(from_ref.get('number'), long=False)} → "
                 if from_ref and from_ref.get("number") is not None else "to "
             )
-            print(f"{accent('Switched')} {source}{self.label(target_account, target_email)}")
+            print(
+                f"{accent('Switched')} {source}"
+                f"{self._landed_label(target_account, target_email)}"
+            )
             # The whole list, not only the target: reading it also refreshes
             # the account just left while no lock is held (the persist path
             # test_switch_persists_rotated_refresh_token_to_backup guards).
@@ -8551,15 +8999,162 @@ class ClaudeAccountSwitcher:
             except Exception as e:
                 self._logger.warning(f"Post-switch usage display failed: {e!r}")
                 print(dimmed("  Usage could not be shown; qswap list shows it."))
-            self._print_switch_followup()
+            self._print_switch_followup(followup)
         self._replan_new_active(
             target_account,
             target_email,
             data["accounts"][target_account].get("organizationUuid", ""),
         )
-        return {"from": from_ref, "to": to_ref, "warnings": warnings_out}
+        return self._op_result(from_ref, to_ref, warnings_out, followup)
 
-    def _print_switch_followup(self) -> None:
+    def _api_key_switch_context(self, target_account: str) -> dict | None:
+        """What the post-switch message needs when an API-key account is on
+        either side of the switch, read before anything changes; None
+        otherwise. ``sessions``: running on the shared login now;
+        ``started_on_key``: those started while the API-key account being
+        left was active (Claude Code's own start stamp against the
+        activation log). When the target is a key: ``on_keys``, the running
+        sessions by the API-key account that was active when each started,
+        and ``key_changed``, whether the target is the active account and its
+        saved key differs from the live one."""
+        try:
+            # The registry's active account, not a fresh read of ~/.claude.json:
+            # the switch reads that file itself, and the follow-up only uses
+            # this when it agrees with the account the switch really left.
+            active = (self._get_sequence_data() or {}).get("activeAccountNumber")
+            source = str(active) if active is not None else None
+            target_is_key = self._account_kind(target_account) == "api_key"
+            source_is_key = source is not None and self._account_kind(source) == "api_key"
+            if not (target_is_key or source_is_key):
+                return None
+            sessions = self.shared_login_sessions()
+            started = sorted(
+                self._started_since(sessions, self._key_active_since(source))
+                if source_is_key and source != str(target_account) else [],
+                key=lambda s: (s.started_at or 0, s.pid),
+            )
+            on_keys = self._sessions_by_key(sessions) if target_is_key else {}
+            key_changed = (
+                target_is_key and source == str(target_account)
+                and self._saved_key_differs_from_live(target_account)
+            )
+        except Exception as e:  # wording only; never fail a switch on it
+            self._logger.debug(f"API-key switch context failed: {e!r}")
+            return None
+        return {
+            "source": source,
+            "source_is_key": source_is_key,
+            "target_is_key": target_is_key,
+            "sessions": sessions,
+            "started_on_key": started,
+            "on_keys": on_keys,
+            "key_changed": key_changed,
+        }
+
+    @staticmethod
+    def _session_start_s(session) -> float:
+        """When a session's process started (epoch seconds): Claude Code's own
+        stamp in the record, else the process start time; 0 when unknown."""
+        from ai_quota_swap.process_detection import process_started_at
+
+        started = (session.started_at or 0) / 1000.0
+        return started or float(process_started_at(session.pid) or 0)
+
+    def _sessions_by_key(self, sessions: list) -> dict[str, list]:
+        """The running ``sessions`` that started while an API-key account was
+        active, by that account's number: each one keeps that key until it
+        restarts. Matched against the activation log the way doctor's check
+        does; a session started on a subscription, or before the log's first
+        line, is in none."""
+        from ai_quota_swap.ledger.activations import ActivationLog, identity_key
+
+        accounts = (self._get_sequence_data() or {}).get("accounts") or {}
+        keys = {
+            identity_key(r.get("email", ""), r.get("organizationUuid", "") or ""): str(num)
+            for num, r in accounts.items()
+            if isinstance(r, dict) and r.get("kind") == "api_key"
+        }
+        if not keys or not sessions:
+            return {}
+        log = ActivationLog.load(self.backup_dir)
+        out: dict[str, list] = {}
+        for session in sorted(sessions, key=lambda s: (s.started_at or 0, s.pid)):
+            started = self._session_start_s(session)
+            number = keys.get(log.account_at(started)) if started else None
+            if number is not None:
+                out.setdefault(number, []).append(session)
+        return out
+
+    def _saved_key_differs_from_live(self, number: str) -> bool:
+        """Whether the API-key account ``number``'s saved key is not the key
+        Claude Code holds now (an import replaced it): both must read as
+        keys."""
+        record = ((self._get_sequence_data() or {}).get("accounts") or {}).get(str(number))
+        if not record:
+            return False
+        saved = self._read_account_credentials(str(number), record.get("email", ""))
+        live = self._read_credentials()
+        return (
+            looks_like_api_key(saved) and looks_like_api_key(live)
+            and saved.strip() != (live or "").strip()
+        )
+
+    def _api_key_followup(
+        self, context: dict | None, target_account: str, from_ref: dict | None
+    ) -> list[str]:
+        """The lines after "Switched …" for a switch with an API-key account on
+        either side (display.api_key_followup); ``[]`` for any other switch,
+        which gets the usual follow-up."""
+        if not context:
+            return []
+        source = context["source"]
+        if from_ref is None or str(from_ref.get("number")) != str(source):
+            source = None
+        reactivated = source is not None and str(source) == str(target_account)
+        if reactivated and not (context["target_is_key"] and context.get("key_changed")):
+            return (
+                ["Claude Code sessions started from now on use the key."]
+                if context["target_is_key"] else []
+            )
+        # Every session started on an API key keeps that key, whichever key
+        # it was; one started on the target's own key keeps it unless the
+        # target's saved key just changed.
+        on_keys = context.get("on_keys") or {}
+        order = sorted(
+            on_keys, key=lambda num: (num != str(source), int(num) if num.isdigit() else 0)
+        )
+        kept = [
+            (self.label(num, long=False), [(s.pid, s.cwd) for s in on_keys[num]])
+            for num in order
+            if reactivated or num != str(target_account)
+        ]
+        return display.api_key_followup(
+            target=self.label(target_account, long=False),
+            target_is_key=context["target_is_key"],
+            source=self.label(source, long=False) if source is not None else None,
+            source_is_key=bool(source is not None and context["source_is_key"]),
+            running=len(context["sessions"]),
+            started_on_key=[(s.pid, s.cwd) for s in context["started_on_key"]],
+            kept=kept,
+            reactivated=reactivated,
+        )
+
+    def _landed_label(self, number: str, email: str) -> str:
+        """The account a switch landed on, in "Switched …": its long label, or
+        for an API-key account ``#5 ci (API key)`` (its email is only the
+        placeholder it was added with)."""
+        if self._account_kind(str(number)) == "api_key":
+            return f"{self.label(number, long=False)} (API key)"
+        return self.label(number, email)
+
+    @staticmethod
+    def _op_result(from_ref, to_ref, warnings_out: list[str], followup: list[str]) -> dict:
+        op = {"from": from_ref, "to": to_ref, "warnings": warnings_out}
+        if followup:
+            op["followup"] = list(followup)
+        return op
+
+    def _print_switch_followup(self, lines: list[str] | None = None) -> None:
         """Print the note after a successful switch, keyed to where the active
         credential write actually landed.
 
@@ -8569,7 +9164,15 @@ class ClaudeAccountSwitcher:
         hints, not warnings; the Keychain line adds that a restart skips the wait.
         The file line also covers macOS when the Keychain was unavailable and the
         switch fell back to the file.
+
+        None of that holds for an API key, which a running session never picks
+        up: a switch with an API-key account on either side passes its own
+        ``lines`` (:meth:`_api_key_followup`) and they are printed instead.
         """
+        if lines:
+            for line in lines:
+                print(line)
+            return
         backend = self._last_active_credentials_backend
         if backend is None:
             # No write happened this run; fall back to the routing hint.

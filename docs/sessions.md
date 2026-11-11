@@ -57,6 +57,8 @@ Error: #5 ci is an API-key account; qswap run does not support API-key accounts
 Make it the active login instead: qswap switch 5
 ```
 
+Claude Code sessions started after that switch use the key; sessions already running cannot, and `qswap switch` refuses while there are any ([api-accounts.md](api-accounts.md#switch-to-an-api-key)).
+
 ## Pick the account per directory
 
 `qswap map` binds a directory to an account. A bare `qswap run` there starts that account.

@@ -58,7 +58,7 @@ Switched #1 personal → #2 work (maya@northwind.example.com)
 Claude Code picks up the new account within 30 seconds; restart it to apply now.
 ```
 
-A running Claude Code session keeps working and moves to the new account on its own: within about 30 seconds on macOS, where the login is in the Keychain, and from its next message on Linux and Windows.
+A running Claude Code session keeps working and moves to the new account on its own: within about 30 seconds on macOS, where the login is in the Keychain, and from its next message on Linux and Windows. That holds for subscription accounts only. A running session cannot move to an API key, so while Claude Code sessions are running `qswap switch` refuses an API-key account and says what would happen to them ([switching to an API key](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#switch-to-an-api-key)).
 
 When something looks wrong, run `qswap doctor` first. It checks Claude Code, Codex, the data directory, the menu bar and auto-switch, and prints the command that fixes each problem. The [quick start guide](https://github.com/seangeng/ai-quota-swap/blob/main/docs/quickstart.md) walks through all of this in more detail.
 

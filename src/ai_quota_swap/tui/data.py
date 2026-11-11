@@ -48,6 +48,8 @@ class ActionResult:
     output: str  # captured stdout+stderr, ANSI-colored (render with Text.from_ansi)
     payload: dict | None = None  # structured result for json-capable actions
     error: str | None = None  # the provider error's text, as `Error: …` would show it
+    error_type: str | None = None  # that error's class name (SessionsRunningError, ...)
+    error_fields: dict | None = None  # its facts beyond the text (error.envelope_fields)
 
     @property
     def lines(self) -> list[str]:
@@ -90,7 +92,11 @@ def run_action(fn: Callable[[], dict | None]) -> ActionResult:
                 payload = fn()
             except ProviderError as e:
                 print(f"Error: {e}")
-                return ActionResult(False, buf.getvalue(), error=str(e))
+                fields = getattr(e, "envelope_fields", None)
+                return ActionResult(
+                    False, buf.getvalue(), error=str(e), error_type=type(e).__name__,
+                    error_fields=dict(fields) if isinstance(fields, dict) else None,
+                )
             except EOFError:
                 print("Error: interactive input is not available here.")
                 return ActionResult(

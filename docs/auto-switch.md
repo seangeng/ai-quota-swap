@@ -31,7 +31,7 @@ qswap auto --threshold 85 --weekly-threshold 97
 
 Flags override the [settings](#settings) for that run only. A value out of range is clamped, with a warning such as `Warning: --interval 5 is out of range; using 15s`.
 
-After a switch, a running Claude Code picks up the new login within about 30 seconds on macOS (its Keychain cache) and from its next message where the login is kept in a file. The default line is 90 rather than 95 to cover that delay and a heavy turn that keeps spending meanwhile. Switches take the same credential locks Claude Code uses, so a switch never lands in the middle of Claude Code refreshing its token.
+After a switch to a subscription account, a running Claude Code picks up the new login within about 30 seconds on macOS (its Keychain cache) and from its next message where the login is kept in a file. A running Claude Code never picks up an API key, which is why the engine does not switch to one while sessions are running ([below](#api-key-accounts-and-budgets)). The default line is 90 rather than 95 to cover that delay and a heavy turn that keeps spending meanwhile. Switches take the same credential locks Claude Code uses, so a switch never lands in the middle of Claude Code refreshing its token.
 
 ## How it picks the next account
 
@@ -92,6 +92,8 @@ Auto-switch also skips an account that a running `qswap run` session is using ([
 An API-key account has no usage windows, so auto-switch never ranks it against subscriptions, and the log lists it as `API key, not used`. By default, when an API-key account is active, the engine leaves it there: `#5 ci is an API key · no quota to watch`.
 
 `--include-api-key-accounts` (or `autoswitch.includeApiKeyAccounts true`) makes API-key accounts a last resort: the engine lands on one only when it must leave the active account and no subscription has room. With this on, the engine does not stay on an active API-key account either. It counts the account's usage as unreadable (`#5 ci is an API key · failover in 2 more checks`) and, after `autoswitch.unhealthyTicks` checks, moves to another account with room, a subscription first, giving `usage unreadable` as the reason.
+
+Whatever this setting says, the engine never lands on an API-key account while Claude Code sessions are running on the shared login. A running session cannot move to a key and would stop with "Not logged in" ([api-accounts.md](api-accounts.md#switch-to-an-api-key)). The engine stays where it is instead, logs `not moving to an API key, 6 sessions running`, and the menu bar notifies once: `Not switching to #5 ci: it is an API-key account and 6 running sessions could not follow`. When qswap cannot read Claude Code's session records it cannot tell whether sessions are running, and stays the same way (`running sessions could not be counted`). In JSON the reason is `api-key-sessions`. With no session running, the last resort works as described above.
 
 A monthly budget (`qswap budget 5 500`) changes this for that account. From 80% of the budget the log prints one budget warning a month (`budget-warning` in JSON), for example `#5 ci has spent $25.16 of its $30.00 monthly budget (84%) (estimate)`. At or over the budget the account is never a target, and if it is active the engine leaves it as it leaves an account at its limit, without waiting for the cooldown. Here `#5 ci` is active with $25.16 spent against a $20 budget:
 

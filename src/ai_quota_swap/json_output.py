@@ -488,8 +488,13 @@ def account_row(
 
 
 def error_envelope(exc: Exception) -> dict:
-    """The structured error payload emitted on a handled ClaudeSwitchError."""
-    return {
-        "schemaVersion": SCHEMA_VERSION,
-        "error": {"type": type(exc).__name__, "message": str(exc)},
-    }
+    """The structured error payload emitted on a handled ClaudeSwitchError.
+
+    An error that carries facts beyond its message adds them inside
+    ``error`` (``envelope_fields``: a refused API-key switch adds
+    ``sessions``); ``type`` and ``message`` are always there."""
+    error: dict = {"type": type(exc).__name__, "message": str(exc)}
+    extra = getattr(exc, "envelope_fields", None)
+    if isinstance(extra, dict):
+        error.update({k: v for k, v in extra.items() if k not in error})
+    return {"schemaVersion": SCHEMA_VERSION, "error": error}

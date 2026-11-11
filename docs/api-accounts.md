@@ -16,7 +16,7 @@ Added #6 build@example.com (from API key)
 - `--slot N` stores it in slot N; `--yes` replaces an account already in that slot without asking.
 - Adding makes no request to Anthropic. The key is stored like a saved login (see [../SECURITY.md](../SECURITY.md)).
 
-An API-key account switches like any other (`qswap switch 6`), and Claude Code then uses the key. Auto-switch treats it differently, as [Set a budget](#set-a-budget) explains.
+Claude Code sessions started after a switch to an API-key account use the key. Sessions that are already running do not: [Switch to an API key](#switch-to-an-api-key) explains why, and what qswap does about it. Auto-switch treats an API-key account differently, as [Set a budget](#set-a-budget) explains.
 
 ### Setup-tokens
 
@@ -36,6 +36,51 @@ The usage endpoint does not answer setup-tokens, so by default their row reads:
 ```
 
 With `usage.headerProbe` on, qswap reads the 5-hour, weekly and Fable windows from the rate-limit headers of a request for one Haiku output token, sent at the normal polling pace. Each probe is a real request that counts against that account's quota, which is why it is off by default.
+
+## Switch to an API key
+
+Claude Code looks up a saved API key once, when it starts, and keeps that answer for as long as it runs. A session that started on a subscription login therefore never moves to a key. When the switch takes the login away, every such session answers `Not logged in · Please run /login` about 30 seconds later, until you switch back or restart it. Sessions started after the switch use the key.
+
+So while Claude Code sessions are running on the shared login, `qswap switch` refuses an API-key account and changes nothing:
+
+```text
+$ qswap switch 5
+Error: not switched. #5 ci is an API-key account, and 6 Claude Code sessions
+are running on the shared login. A running session cannot move to an API key:
+about 30 seconds after the switch each one stops with "Not logged in" until
+you switch back or restart it.
+Sessions started after the switch use the key.
+To switch anyway:
+  qswap switch 5 --log-out-sessions
+```
+
+The count is the "Running instances" `qswap list` shows. Sessions inside a `qswap run` profile have their own login and are not counted, and neither is a process that has exited. When qswap cannot read Claude Code's session records (a record half written, or in a shape it does not know), it cannot tell whether sessions are running, and refuses the same way; `--log-out-sessions` still goes ahead. Claude Code names each record after its process id, so a record qswap cannot read is ignored when that process is no longer running. Otherwise the refusal names the file and what to do:
+
+```text
+This session record could not be read:
+  /Users/maya/.claude/sessions/4101.json
+If Claude Code process 4101 is gone, delete the file.
+```
+
+`qswap doctor` lists such records too. Under `--json` the refusal is the error envelope, with the count in `error.sessions`, the records it could not read counted in `error.unreadable` and listed in `error.unreadableRecords`.
+
+`--log-out-sessions` switches anyway and says what happens next:
+
+```text
+$ qswap switch 5 --log-out-sessions
+Switched #1 personal → #5 ci (API key)
+...
+6 running sessions will stop with "Not logged in" within about 30 seconds.
+Restart a session to put it on the key. Sessions started from now on use it.
+```
+
+With no session running there is nothing to refuse, and the switch ends with `Claude Code sessions started from now on use the key.` A rotation (`qswap switch` with no account, and its strategies) skips an API-key account while sessions are running (`Skipped #5 ci: an API-key account, and 6 Claude Code sessions are running.`), and auto-switch never lands on one then ([auto-switch.md](auto-switch.md#api-key-accounts-and-budgets)). The menu bar asks first, with Cancel as the default and *Switch and log out sessions* to go ahead; the dashboard offers the same choice. From one API key to another no one is logged out, so the question is *Switch keys with 6 sessions running?* and its button *Switch anyway*.
+
+What the switch changes: the key is saved where Claude Code reads it (the macOS Keychain item `Claude Code`, or `primaryApiKey` in `~/.claude.json` elsewhere), and the login is taken out of Claude Code's login item (`Claude Code-credentials`, or `~/.claude/.credentials.json`). The item itself stays, with your MCP server sign-ins in it, so Slack, Figma and other MCP servers stay signed in.
+
+Switching back is safe. qswap never rewrites an API-key account's saved key when it leaves it, and the account you switch to gets its own login together with the MCP sign-ins of the moment. Sessions started while the key was active move back on their own: `Sessions started while #5 ci was active move to #1 personal within about 30 seconds.` Sessions that stopped with "Not logged in" pick the login up again and continue their conversation. From one key to another it is different: a session started on a key keeps using that key until you restart it, and the switch lists every such session under the key it keeps, by process id and directory. Loading a changed key for the account already active (`qswap switch 5 --force` after an import) lists the sessions that keep the previous key the same way.
+
+`qswap doctor` warns when an API-key account is active while sessions that started on a subscription are still running, and when something makes Claude Code ignore the active account altogether: an `apiKeyHelper` in `~/.claude/settings.json`, or `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` exported in your shell. `qswap switch` warns about those variables too.
 
 ## See what it spent
 

@@ -150,10 +150,12 @@ class Notifier:
     - an API-key budget warning: once per provider, account and month;
     - a configuration warning: once per message, whichever engine said it;
     - an engine error: once per message an hour, whichever engine said it;
+    - not moving onto an API-key account because Claude Code sessions are
+      running: once per episode (until a switch or another decision);
     - an engine that stopped or did not start: every time.
 
-    Dry-run events never notify; anything else (polls, sleeps, no-switch
-    decisions) is the log's.
+    Dry-run events never notify; anything else (polls, sleeps, other
+    no-switch decisions) is the log's.
     """
 
     def __init__(self) -> None:
@@ -179,7 +181,20 @@ class Notifier:
         context = getattr(event, "context", None)
         if kind == "switch":
             self.forget(provider, "exhausted")
+            self.forget(provider, "api-key-sessions")
             return Notification(switch_text(provider, event, both=both))
+        if kind == "no-switch":
+            if getattr(event, "reason", "") != "api-key-sessions":
+                # The engine decided something else: that episode is over.
+                self.forget(provider, "api-key-sessions")
+                return None
+            from ai_quota_swap.autolog import number_label
+
+            number = getattr(event, "account", None)
+            if not self._once(("api-key-sessions", provider, str(number))):
+                return None
+            label = number_label(number, "", context) if number else ""
+            return Notification(_prefix(event.human(), label, provider, both))
         if kind == "limit-reset":
             label = _ref_label(getattr(event, "account", None), context)
             text = _prefix(event.human(), label, provider, both)

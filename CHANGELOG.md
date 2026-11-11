@@ -69,6 +69,7 @@ The package is `ai-quota-swap` and the command `qswap`. It keeps its own data di
 - `qswap api org add`, `list` and `remove` register an organization's Admin key. It is stored like a saved login, and qswap sends only GET requests with it.
 - `qswap budget` sets a monthly budget per API-key account. The engine warns at 80%, never switches to an account at its budget, and leaves an active one that reaches it.
 - `qswap usage --billed` shows an organization's usage and cost as Anthropic reports them.
+- Switching to an API-key account no longer logs running Claude Code sessions out unasked: `qswap switch` refuses while sessions are running unless `--log-out-sessions`, rotation and auto-switch skip the account then, and the menu bar and dashboard ask first. The switch keeps MCP server sign-ins, an API-key account's saved key is never overwritten when you leave it (one already overwritten is restored from its previous copy before any switch, move, swap or export), session records qswap cannot read count as sessions running, `qswap add` never saves the login item an API-key account leaves behind, and `qswap doctor` reports an `apiKeyHelper` or an exported `ANTHROPIC_API_KEY` that overrides the active account.
 
 ### Docs
 

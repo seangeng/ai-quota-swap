@@ -55,11 +55,14 @@ wherever they are listed.
 - Cancelling changes nothing.
 - A command that would leave the user worse off says so first: switching to an account that
   needs re-login is refused unless `--anyway`; switching to one whose usage is unreadable or
-  stale goes ahead with a one-line warning. A rotation (`switch` with no account, its
-  strategies, `qswap codex switch`) skips an account that needs re-login, as it skips a
-  disabled one, with one line each ("Skipped #2 work: needs re-login."), and when nothing is
-  left it stays put and says the next step.
-- One flag, one meaning. `--anyway` only overrides the needs-re-login refusal. `--force` keeps
+  stale goes ahead with a one-line warning; switching to an API-key account while Claude
+  Code sessions are running (or qswap cannot tell) is refused unless `--log-out-sessions`,
+  since a session started on a subscription would stop with "Not logged in". A rotation (`switch` with no account, its strategies,
+  `qswap codex switch`) skips an account that needs re-login, as it skips a disabled one, with
+  one line each ("Skipped #2 work: needs re-login."), and when nothing is left it stays put and
+  says the next step. It skips an API-key account while sessions are running the same way.
+- One flag, one meaning. `--anyway` only overrides the needs-re-login refusal, and
+  `--log-out-sessions` only the API-key one. `--force` keeps
   its own meaning per provider (Claude Code: write the saved login without saving the current
   one first; Codex: replace a live login qswap does not manage) and never overrides a refusal
   by itself. A message that tells the user to override something names the flag that does

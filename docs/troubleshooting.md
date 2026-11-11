@@ -129,7 +129,7 @@ With pipx: `pipx install --force 'ai-quota-swap[menubar] @ git+https://github.co
 
 ## A running session still uses the old account
 
-A switch changes the login on disk. A program that is already running reads it again on its own schedule, and qswap's message after the switch says when.
+A switch changes the login on disk. A program that is already running reads it again on its own schedule, and qswap's message after the switch says when. The two lines below are for subscription accounts; a running session never moves to an API key ([below](#not-logged-in-after-switching-to-an-api-key)).
 
 - **Claude Code on macOS**: `Claude Code picks up the new account within 30 seconds; restart it to apply now.` Claude Code caches the Keychain item for about that long.
 - **Claude Code on Linux and Windows**, or on macOS when the Keychain could not be used: `Claude Code uses the new account from its next message.` Claude Code reads `.credentials.json` again when it changes.
@@ -137,11 +137,39 @@ A switch changes the login on disk. A program that is already running reads it a
 
 Continuing a conversation on another account starts without the old account's prompt cache, so its first message may use more quota than usual.
 
-A switch has no effect at all while `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` is set in your shell: Claude Code uses that instead of its login. `qswap run` ignores them for its session and says so (`Ignoring ANTHROPIC_API_KEY for this session ...`); `qswap switch` cannot. Remove them from your shell and its startup files:
+A switch has no effect at all while `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` is set in your shell: Claude Code uses that instead of its login. `qswap run` ignores them for its session and says so (`Ignoring ANTHROPIC_API_KEY for this session ...`); `qswap switch` cannot. `qswap switch` warns when one of them is set (`Warning: ANTHROPIC_API_KEY is set; claude started here ignores the switch.`), and `qswap doctor` lists them, by name only. Remove them from your shell and its startup files:
 
 ```bash
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
 ```
+
+## Not logged in after switching to an API key
+
+Claude Code sessions answer `Not logged in · Please run /login` about 30 seconds after a switch to an API-key account. A running Claude Code looks up a saved API key once, when it starts, so a session that started on a subscription cannot use the key, and the switch took its login away. qswap refuses this switch while sessions are running unless you pass `--log-out-sessions`, and the menu bar asks first; older versions did not.
+
+Do not run `/login` in those sessions. Either:
+
+- switch back to a subscription account, and the sessions pick its login up again within about 30 seconds and carry on with their conversation:
+
+  ```bash
+  qswap switch 1
+  ```
+
+- or restart the sessions you want on the key (`/restart`, or quit and run `claude --continue`): a session that starts while the key is active uses it, and resumes its conversation.
+
+`qswap doctor` lists this state as `#5 ci (API key) is active and 6 Claude Code sessions that started on a subscription are running`. After a switch from one API key to another, sessions started on an earlier key keep using it until you restart them.
+
+## An API-key switch is refused, but no session is running
+
+`qswap switch 5` stops with `qswap could not read Claude Code's session records, so it cannot tell whether sessions are running`, and auto-switch never moves onto the key. A Claude Code that was killed while writing can leave a record half written, and qswap cannot tell whether its process still runs. The refusal and `qswap doctor` name the file:
+
+```text
+This session record could not be read:
+  /Users/maya/.claude/sessions/4101.json
+If Claude Code process 4101 is gone, delete the file.
+```
+
+Check with `ps -p 4101` (or Task Manager on Windows) and delete the file when no Claude Code runs as that process. A record whose process has already exited is ignored without asking.
 
 ## Codex keeps its login in the OS keyring
 

@@ -62,6 +62,9 @@ class Machine:
         self.reach_errors: dict[str, Exception] = {}
         self.install_paths = [str(self.home / ".local" / "share" / "uv" / "tools" / "aqs")]
         self.now = NOW
+        self.environ: dict[str, str] = {}
+        self.sessions: list = []
+        self.unreadable_sessions: list = []
 
     # -- setup ------------------------------------------------------------------
 
@@ -185,6 +188,10 @@ class Machine:
                 "identity": {"version": "1.2.0", "source": None}, "editable": False,
             },
             reach=self._reach,
+            environ=lambda: dict(self.environ),
+            claude_settings_path=lambda: self.home / ".claude" / "settings.json",
+            claude_sessions=lambda: list(self.sessions),
+            claude_unreadable_sessions=lambda: list(self.unreadable_sessions),
         )
 
     # -- running ------------------------------------------------------------------
@@ -847,3 +854,218 @@ def test_the_cli_dispatches_to_doctor(monkeypatch):
 
     cli.main()
     assert seen == [["--json"]]
+
+
+# -- API-key accounts and what overrides the active account -------------------------
+
+
+class TestOverrides:
+    """docs/design/api-key-sessions.md: three read-only checks, each with a fix."""
+
+    def test_none_of_them_appear_on_a_plain_machine(self, machine):
+        machine.install("claude").claude_login().claude_managed()
+        ids = set(machine.checks())
+        assert not ids & {"claude.api_key_helper", "claude.env", "claude.api_key_sessions"}
+
+    def test_api_key_helper_in_user_settings(self, machine, capsys):
+        machine.install("claude").claude_login().claude_managed()
+        settings = machine.home / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({"apiKeyHelper": "/usr/local/bin/key"}))
+        check = machine.checks()["claude.api_key_helper"]
+        assert check.status == "warn"
+        assert "Claude Code uses it instead of the active account" in check.summary
+        assert check.fix == f"remove apiKeyHelper from {tilde('.claude', 'settings.json')}"
+        _code, out = machine.run(capsys)
+        assert all(len(line) <= 80 for line in out.splitlines())
+
+    def test_exported_variables_by_name_only(self, machine, capsys):
+        machine.install("claude").claude_login().claude_managed()
+        secret = "sk-ant-api03-" + "q" * 40
+        machine.environ = {"ANTHROPIC_API_KEY": secret, "CLAUDE_CODE_OAUTH_TOKEN": "x" * 30,
+                           "ANTHROPIC_AUTH_TOKEN": ""}
+        check = machine.checks()["claude.env"]
+        assert check.status == "warn"
+        assert check.summary.startswith(
+            "ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are set in this shell"
+        )
+        assert check.fix == "unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN"
+        code, out = machine.run(capsys)
+        assert secret not in out and "x" * 30 not in out
+        payload = json.loads(machine.run(capsys, "--json")[1])
+        assert secret not in json.dumps(payload)
+        assert code == 0  # a warning, not a failure
+
+    def _key_active(self, machine, *, activated_at: float):
+        from types import SimpleNamespace
+
+        machine.install("claude")
+        (machine.home / ".claude.json").write_text(json.dumps({"oauthAccount": {
+            "emailAddress": "api-key-5@token.local", "accountUuid": "",
+            "organizationUuid": None,
+        }}))
+        machine.data.mkdir(parents=True, exist_ok=True)
+        (machine.data / "sequence.json").write_text(json.dumps({
+            "activeAccountNumber": 5, "sequence": [1, 5], "accounts": {
+                "1": {"email": "maya@example.com", "uuid": "u1", "organizationUuid": "",
+                      "alias": "personal"},
+                "5": {"email": "api-key-5@token.local", "uuid": "", "organizationUuid": "",
+                      "alias": "ci", "kind": "api_key"},
+            },
+        }))
+        from datetime import datetime, timezone
+
+        def iso(ts):
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+        (machine.data / "activations.jsonl").write_text(
+            json.dumps({"ts": iso(activated_at - 3600), "number": 1,
+                        "email": "maya@example.com", "org": "", "source": "switch"}) + "\n"
+            + json.dumps({"ts": iso(activated_at), "number": 5,
+                          "email": "api-key-5@token.local", "org": "", "source": "switch"}) + "\n"
+        )
+        machine.sessions = [
+            SimpleNamespace(pid=11, cwd="/a", started_at=int((activated_at - 600) * 1000)),
+            SimpleNamespace(pid=12, cwd="/b", started_at=int((activated_at - 60) * 1000)),
+            SimpleNamespace(pid=13, cwd="/c", started_at=int((activated_at + 60) * 1000)),
+        ]
+
+    def test_api_key_active_with_older_sessions(self, machine, capsys):
+        self._key_active(machine, activated_at=NOW - 300)
+        check = machine.checks()["claude.api_key_sessions"]
+        assert check.status == "warn"
+        assert check.summary.startswith(
+            "#5 ci (API key) is active and 2 Claude Code sessions that started on a "
+            "subscription"
+        )
+        assert check.fix == "restart them to use the key, or switch back: qswap switch 1"
+        _code, out = machine.run(capsys)
+        assert all(len(line) <= 80 for line in out.splitlines())
+
+    def test_sessions_started_on_an_earlier_key_are_not_logged_out(self, machine):
+        """Key to key: #5 ci, then #6 ops. Sessions started while #5 was
+        active keep using its key; only the one started on #1 personal is
+        logged out, and the way back is #1, not the earlier key (which the
+        guard would refuse while sessions run)."""
+        from datetime import datetime, timezone
+
+        def iso(ts):
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+        self._key_active(machine, activated_at=NOW - 300)
+        (machine.home / ".claude.json").write_text(json.dumps({"oauthAccount": {
+            "emailAddress": "api-key-6@token.local", "accountUuid": "",
+            "organizationUuid": None,
+        }}))
+        registry = json.loads((machine.data / "sequence.json").read_text())
+        registry["activeAccountNumber"] = 6
+        registry["sequence"] = [1, 5, 6]
+        registry["accounts"]["6"] = {
+            "email": "api-key-6@token.local", "uuid": "", "organizationUuid": "",
+            "alias": "ops", "kind": "api_key",
+        }
+        (machine.data / "sequence.json").write_text(json.dumps(registry))
+        with (machine.data / "activations.jsonl").open("a") as log:
+            log.write(json.dumps({"ts": iso(NOW - 100), "number": 6,
+                                  "email": "api-key-6@token.local", "org": "",
+                                  "source": "switch"}) + "\n")
+        # 11 and 12 started on #1, 13 on #5; add one more on #5.
+        from types import SimpleNamespace
+
+        machine.sessions.append(
+            SimpleNamespace(pid=14, cwd="/d", started_at=int((NOW - 200) * 1000))
+        )
+        check = machine.checks()["claude.api_key_sessions"]
+        assert check.summary.startswith(
+            "#6 ops (API key) is active and 2 Claude Code sessions that started on a "
+            "subscription"
+        )
+        assert check.fix == "restart them to use the key, or switch back: qswap switch 1"
+
+    def test_only_sessions_started_on_an_earlier_key_is_fine(self, machine):
+        from datetime import datetime, timezone
+
+        def iso(ts):
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+        self._key_active(machine, activated_at=NOW - 300)
+        (machine.home / ".claude.json").write_text(json.dumps({"oauthAccount": {
+            "emailAddress": "api-key-6@token.local", "accountUuid": "",
+            "organizationUuid": None,
+        }}))
+        registry = json.loads((machine.data / "sequence.json").read_text())
+        registry["accounts"]["6"] = {
+            "email": "api-key-6@token.local", "uuid": "", "organizationUuid": "",
+            "alias": "ops", "kind": "api_key",
+        }
+        (machine.data / "sequence.json").write_text(json.dumps(registry))
+        with (machine.data / "activations.jsonl").open("a") as log:
+            log.write(json.dumps({"ts": iso(NOW - 100), "number": 6,
+                                  "email": "api-key-6@token.local", "org": "",
+                                  "source": "switch"}) + "\n")
+        machine.sessions = machine.sessions[2:]  # pid 13: started while #5 was active
+        assert "claude.api_key_sessions" not in machine.checks()
+
+    def test_api_key_active_with_only_newer_sessions_is_fine(self, machine):
+        self._key_active(machine, activated_at=NOW - 300)
+        machine.sessions = machine.sessions[2:]
+        assert "claude.api_key_sessions" not in machine.checks()
+
+    def test_it_writes_nothing(self, machine, capsys):
+        self._key_active(machine, activated_at=NOW - 300)
+        before = snapshot(machine.root)
+        machine.run(capsys)
+        assert snapshot(machine.root) == before
+
+    def test_an_unreadable_session_record_is_named_with_its_fix(self, machine, capsys):
+        """While qswap cannot read a record it refuses every switch to an
+        API-key account; doctor names the file and says when to delete it."""
+        machine.install("claude").claude_login().claude_managed()
+        assert "claude.session_records" not in machine.checks()
+        machine.unreadable_sessions = [machine.home / ".claude" / "sessions" / "4242.json"]
+        shown = tilde(".claude", "sessions", "4242.json")
+
+        check = machine.checks()["claude.session_records"]
+
+        assert check.status == "warn"
+        assert check.summary == (
+            "1 Claude Code session record could not be read, so qswap cannot tell "
+            "whether sessions are running and will not switch to an API-key account: "
+            f"{shown}"
+        )
+        assert check.fix == f"if Claude Code process 4242 is gone, delete {shown}"
+        code, out = machine.run(capsys)
+        assert code == 0
+        assert all(len(line) <= 80 for line in out.splitlines())
+        payload = json.loads(machine.run(capsys, "--json")[1])
+        assert "claude.session_records" in {c["id"] for c in payload["checks"]}
+
+    def test_several_records_and_an_unlistable_folder(self, machine):
+        machine.install("claude").claude_login().claude_managed()
+        sessions = machine.home / ".claude" / "sessions"
+        machine.unreadable_sessions = [sessions / "4242.json", sessions / "4243.json"]
+        check = machine.checks()["claude.session_records"]
+        assert check.summary.startswith("2 Claude Code session records could not be read")
+        assert check.summary.endswith(
+            f"{tilde('.claude', 'sessions', '4242.json')}, "
+            f"{tilde('.claude', 'sessions', '4243.json')}"
+        )
+        assert check.fix == (
+            "each is named after its Claude Code process; if that process is gone, "
+            "delete the file"
+        )
+        machine.unreadable_sessions = [sessions]
+        check = machine.checks()["claude.session_records"]
+        assert "session records folder" in check.summary
+        assert check.fix == f"check that you can open {tilde('.claude', 'sessions')}"
+
+    def test_a_probe_that_fails_adds_nothing(self, machine):
+        machine.install("claude").claude_login().claude_managed()
+
+        def refuse():
+            raise Refused("refused")
+
+        probes = replace(machine.probes(), claude_unreadable_sessions=refuse)
+        checks = {c.id: c for c in doctor.run_checks(probes)}
+        assert "claude.session_records" not in checks
+        assert not [c for c in checks.values() if c.id.endswith(".error")]

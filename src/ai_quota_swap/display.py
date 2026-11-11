@@ -825,3 +825,288 @@ def block_from_entry(
 def provider_heading(provider: str, *, both: bool) -> str:
     """The heading over one provider's blocks in ``list``."""
     return f"{provider_name(provider)} accounts"
+
+
+# -- API-key accounts and running sessions (docs/design/api-key-sessions.md) -------
+#
+# A running Claude Code session never picks up an API key: it looks the saved
+# key up once, when it starts. Once the switch takes the login out of the
+# login item, every session that started on a subscription answers "Not
+# logged in" within about 30 seconds. These are the words for that, in every
+# surface.
+
+#: The flag that switches to an API-key account while sessions are running.
+LOG_OUT_SESSIONS_FLAG = "--log-out-sessions"
+
+
+#: A session count for "qswap could not tell": the sessions directory or
+#: every live record in it could not be read. Never "nobody there".
+SESSIONS_UNKNOWN = -1
+
+
+def blocking_sessions(sessions: int, unreadable: int) -> int:
+    """What bars a switch to an API-key account: the readable live sessions,
+    else :data:`SESSIONS_UNKNOWN` when records could not be read, else 0."""
+    if sessions:
+        return sessions
+    return SESSIONS_UNKNOWN if unreadable else 0
+
+
+def _sessions(n: int) -> str:
+    return f"{n} Claude Code session{'' if n == 1 else 's'}"
+
+
+def unreadable_records_lines(records: Sequence[str], width: int = WIDTH) -> list[str]:
+    """The session records qswap could not read, each path on a line of its
+    own (never wrapped), and what to do about them, wrapped to ``width``;
+    ``[]`` when there are none. A record is named after its process id, so
+    one whose process is gone can be deleted. A path that is not a record is
+    the sessions directory, which could not be listed."""
+    files = [str(r) for r in records if str(r).lower().endswith(".json")]
+    folders = [str(r) for r in records if not str(r).lower().endswith(".json")]
+    lines: list[str] = []
+    if files:
+        lines.append(
+            "This session record could not be read:" if len(files) == 1
+            else "These session records could not be read:"
+        )
+        lines.extend(f"  {path}" for path in files)
+        stem = files[0].replace("\\", "/").rsplit("/", 1)[-1][: -len(".json")]
+        if len(files) == 1 and stem.isascii() and stem.isdigit():
+            lines.append(f"If Claude Code process {stem} is gone, delete the file.")
+        else:
+            lines.extend(wrap(
+                "Each is named after its Claude Code process. If that process is "
+                "gone, delete the file.", width,
+            ))
+    if folders:
+        lines.append("The session records folder could not be read:")
+        lines.extend(f"  {path}" for path in folders)
+        lines.append("Check that you can open it, then try again.")
+    return lines
+
+
+def api_key_refusal(
+    target: str, number: str | int, sessions: int, *, from_key: str | None = None,
+    prefix: str = "Error: ", records: Sequence[str] = (),
+) -> str:
+    """Why a switch to the API-key account ``target`` was refused while
+    ``sessions`` Claude Code sessions run on the shared login, and the command
+    that goes ahead. ``sessions`` is :data:`SESSIONS_UNKNOWN` (or 0) when the
+    session records could not be read. ``from_key`` names the active account
+    when it is an API key too. ``records`` are the session records qswap
+    could not read (:func:`unreadable_records_lines`). Wrapped to 80 columns with ``prefix`` (how the command line
+    starts the first line) counted in; the text itself excludes it."""
+    are = "is" if sessions == 1 else "are"
+    head = (
+        f"not switched. {target} is an API-key account, and {_sessions(sessions)} "
+        f"{are} running on the shared login. "
+    )
+    if sessions <= 0:
+        head = (
+            f"not switched. {target} is an API-key account, and qswap could not "
+            "read Claude Code's session records, so it cannot tell whether "
+            "sessions are running on the shared login. "
+        )
+    if from_key:
+        body = (
+            "A running session cannot move to another key: the ones started "
+            f"while {from_key} was active keep using its key until you restart them."
+        )
+    else:
+        each = "it stops" if sessions == 1 else "each one stops"
+        body = (
+            "A running session cannot move to an API key: about 30 seconds after "
+            f'the switch {each} with "Not logged in" until you switch back or '
+            "restart it."
+        )
+    # Two columns of margin: the refusal is also shown in dialogs.
+    lines = wrap(prefix + head + body, WIDTH - 2)
+    lines[0] = lines[0][len(prefix):]
+    return "\n".join([
+        *lines,
+        _STARTED_AFTER,
+        *unreadable_records_lines(records, WIDTH - 2),
+        "To switch anyway:",
+        f"  qswap switch {number} {LOG_OUT_SESSIONS_FLAG}",
+    ])
+
+
+_STARTED_AFTER = "Sessions started after the switch use the key."
+
+#: The button (menu bar, dashboard) that goes ahead with such a switch.
+API_KEY_SWITCH_BUTTON = "Switch and log out sessions"
+
+
+def api_key_question(refusal: str) -> str:
+    """:func:`api_key_refusal` as the body of a question whose button goes
+    ahead: the explanation, without "not switched." and without the
+    ``--log-out-sessions`` lines the button stands for; one paragraph, then
+    the unreadable session records, if any, each path on its own line."""
+    lines = refusal.splitlines()
+    end = lines.index(_STARTED_AFTER) + 1 if _STARTED_AFTER in lines else len(lines)
+    kept = [
+        line.strip() for line in lines[:end]
+        if line.strip() and not line.startswith("To switch anyway")
+        and not line.strip().startswith("qswap switch")
+    ]
+    text = " ".join(kept).replace("not switched. ", "", 1)
+    records = []
+    for line in lines[end:]:
+        if line.startswith("To switch anyway"):
+            break
+        records.append(line)
+    return "\n".join([text[:1].upper() + text[1:], *records])
+
+
+def api_key_question_title(sessions: int, *, from_key: bool = False) -> str:
+    """``Log out 6 running sessions?``; a key-to-key switch logs no one out
+    (``Switch keys with 6 sessions running?``), and a count qswap could not
+    read asks without one."""
+    if sessions <= 0:
+        return "Could not count the running sessions"
+    plural = "" if sessions == 1 else "s"
+    if from_key:
+        return f"Switch keys with {sessions} session{plural} running?"
+    return f"Log out {sessions} running session{plural}?"
+
+
+#: The button on a key-to-key question: that switch logs no one out.
+API_KEY_TO_KEY_BUTTON = "Switch anyway"
+
+
+def api_key_question_button(*, from_key: bool = False) -> str:
+    """The button that goes ahead: :data:`API_KEY_SWITCH_BUTTON`, or
+    :data:`API_KEY_TO_KEY_BUTTON` when the active account is a key too."""
+    return API_KEY_TO_KEY_BUTTON if from_key else API_KEY_SWITCH_BUTTON
+
+
+def api_key_skip_reason(sessions: int) -> str:
+    """Why a rotation passed over an API-key account (``Skipped #5 ci: …``)."""
+    if sessions <= 0:
+        return "an API-key account, and running sessions could not be counted"
+    are = "is" if sessions == 1 else "are"
+    return f"an API-key account, and {_sessions(sessions)} {are} running"
+
+
+def api_key_skip_detail(sessions: int) -> str:
+    """The same in a JSON rotation warning: ``(API-key account, 6 sessions
+    running)``."""
+    if sessions <= 0:
+        return "(API-key account, running sessions could not be counted)"
+    return f"(API-key account, {sessions} sessions running)"
+
+
+def api_key_engine_sentence(target: str, sessions: int, records: Sequence[str] = ()) -> str:
+    """Why the auto-switch engine did not move onto the API-key account
+    ``target``; then, on lines of their own, the session records that could
+    not be read and what to do (:func:`unreadable_records_lines`)."""
+    if sessions <= 0:
+        text = (
+            f"Not switching to {target}: it is an API-key account and running "
+            "sessions could not be counted"
+        )
+    else:
+        noun = "running session" if sessions == 1 else "running sessions"
+        text = (
+            f"Not switching to {target}: it is an API-key account and {sessions} "
+            f"{noun} could not follow"
+        )
+    return "\n".join([text, *unreadable_records_lines(records)])
+
+
+def session_place(pid: int, cwd: str) -> str:
+    """One session in a list: ``pid 4242 · app`` (the directory's name)."""
+    name = cwd.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] if cwd else ""
+    return f"pid {pid} · {name}" if name else f"pid {pid}"
+
+
+def _kept_key_lines(key: str, its: str, sessions: Sequence[tuple[int, str]]) -> list[str]:
+    """The sessions started while the API-key account ``key`` was active,
+    which keep ``its`` key until they restart."""
+    if not sessions:
+        return []
+    return [
+        *wrap(
+            f"These sessions were started while {key} was active and keep using "
+            f"{its} until you restart them:"
+        ),
+        *(f"  {session_place(pid, cwd)}" for pid, cwd in sessions),
+    ]
+
+
+def api_key_followup(
+    *,
+    target: str,
+    target_is_key: bool,
+    source: str | None,
+    source_is_key: bool,
+    running: int,
+    started_on_key: Sequence[tuple[int, str]] = (),
+    kept: Sequence[tuple[str, Sequence[tuple[int, str]]]] = (),
+    reactivated: bool = False,
+) -> list[str]:
+    """What follows "Switched …" when either side is an API-key account; ``[]``
+    otherwise (the usual follow-up applies).
+
+    ``running`` is how many Claude Code sessions ran on the shared login at the
+    switch; ``started_on_key`` the ``(pid, cwd)`` of those started while the
+    API-key account being left was active. ``kept`` lists, per API-key
+    account (its label), the sessions started while it was active, which keep
+    its key; a key-to-key switch lists them all (``started_on_key`` under
+    ``source`` when ``kept`` is empty). ``reactivated``: ``target`` was
+    already active and now has a different saved key, which running sessions
+    do not pick up."""
+    if target_is_key:
+        lines: list[str] = []
+        if reactivated:
+            for key, sessions in kept:
+                its = "its previous key" if key == target else "its key"
+                lines.extend(_kept_key_lines(key, its, sessions))
+            if running and not kept:
+                lines.extend(wrap(
+                    "Running sessions keep the previous key until you restart them."
+                ))
+            lines.append("Claude Code sessions started from now on use the key.")
+            return lines
+        if source_is_key and source:
+            groups = list(kept) or ([(source, started_on_key)] if started_on_key else [])
+            for key, sessions in groups:
+                lines.extend(_kept_key_lines(key, "its key", sessions))
+            lines.append("Claude Code sessions started from now on use the key.")
+            return lines
+        if running:
+            noun = "running session" if running == 1 else "running sessions"
+            lines.extend(wrap(
+                f'{running} {noun} will stop with "Not logged in" within about 30 seconds.'
+            ))
+            lines.extend(wrap(
+                "Restart a session to put it on the key. Sessions started from "
+                "now on use it."
+            ))
+            return lines
+        return ["Claude Code sessions started from now on use the key."]
+    if source_is_key and source and started_on_key:
+        return wrap(
+            f"Sessions started while {source} was active move to {target} "
+            "within about 30 seconds."
+        )
+    return []
+
+
+#: The variables that make Claude Code ignore the active account.
+OVERRIDE_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+def exported_overrides(environ) -> list[str]:
+    """Which of :data:`OVERRIDE_ENV_VARS` are set (names only, never values)."""
+    return [name for name in OVERRIDE_ENV_VARS if (environ.get(name) or "").strip()]
+
+
+def override_warning(names: Sequence[str]) -> str:
+    """The one line ``qswap switch`` prints when such a variable is set."""
+    if len(names) == 1:
+        subject = f"{names[0]} is set"
+    else:
+        subject = f"{', '.join(names[:-1])} and {names[-1]} are set"
+    return f"Warning: {subject}; claude started here ignores the switch."

@@ -305,6 +305,21 @@ def merge_shared_credential_fields(
     return json.dumps(composed)
 
 
+def holds_no_login(credentials: str | None) -> bool:
+    """Whether a credential object read from the OAuth store has no Claude
+    login in it: a JSON object without ``claudeAiOauth``, such as the item
+    Claude Code keeps for MCP server sign-ins while an API key is active."""
+    data = _credential_object(credentials)
+    return data is not None and not data.get("claudeAiOauth")
+
+
+def without_login(credentials: str | None) -> dict:
+    """The credential object with ``claudeAiOauth`` removed and every other
+    key (``mcpOAuth`` and the rest) kept; ``{}`` when it is not an object."""
+    data = _credential_object(credentials) or {}
+    return {key: value for key, value in data.items() if key != "claudeAiOauth"}
+
+
 def approved_form(api_key: str) -> str:
     """The value Claude Code stores in ``customApiKeyResponses.approved``.
 
@@ -692,6 +707,12 @@ class CredentialStore:
         nothing else covered it, so the display layer can say "keychain unavailable"
         rather than "no credentials" for a merely-unreadable slot — which would
         otherwise nudge the user into an unnecessary re-login.
+
+        An OAuth value with no ``claudeAiOauth`` in it (the item Claude Code
+        keeps for MCP server sign-ins while an API key is active) is not the
+        active credential when a saved key exists: Claude Code then uses the
+        key, so the key is returned. Without a saved key the value is returned
+        as before.
         """
         keychain_failed = False
         # 1. OAuth Keychain (macOS, when usable), with a bounded retry.
@@ -723,6 +744,16 @@ class CredentialStore:
             # which is what makes it self-heal without being erasable.
             self._active_read_failed = keychain_failed
             if val:
+                if holds_no_login(val):
+                    key, key_failed = self._read_managed_key_ex()
+                    if key:
+                        return ActiveCredentials(key, False)
+                    if key_failed:
+                        # The item holds only MCP sign-ins and the saved key
+                        # could not be read: Claude Code may well be on a key
+                        # qswap cannot see, so this is a failed read, never
+                        # the item standing in as the credential.
+                        return ActiveCredentials(None, True, True)
                 return ActiveCredentials(val, False)
         elif self._residual_verdict is False or (
             self._active_read_failed or self._keychain_unreadable
@@ -751,6 +782,13 @@ class CredentialStore:
                 # and sent the user to a re-login that cannot help.
                 return ActiveCredentials(None, keychain_failed, keychain_failed)
             if text.strip():
+                if holds_no_login(text):
+                    key, key_failed = self._read_managed_key_ex()
+                    if key:
+                        return ActiveCredentials(key, False, keychain_failed)
+                    if key_failed:
+                        # As above: a failed read, not the file's MCP sign-ins.
+                        return ActiveCredentials(None, keychain_failed, True)
                 return ActiveCredentials(text, False, keychain_failed)
 
         # 3. Managed API key (Keychain "Claude Code" on macOS, then primaryApiKey).
@@ -785,6 +823,15 @@ class CredentialStore:
         ``primaryApiKey`` below is read from the active profile's own config and
         stays, so a custom profile with a managed key is still found.
         """
+        return self._read_managed_key_ex()[0]
+
+    def _read_managed_key_ex(self) -> tuple[str, bool]:
+        """:meth:`_read_managed_key` with a verdict: ``(key, failed)``.
+        ``failed`` is True when no key was found and a place it could be
+        could not be read (the Keychain item raised, or ``~/.claude.json``
+        exists but could not be read or parsed): "not found" is then not
+        "there is none"."""
+        failed = False
         if _active_profile_is_default() and self._use_keychain():
             try:
                 val = self._kc_call(
@@ -795,13 +842,37 @@ class CredentialStore:
             except macos_keychain.KEYCHAIN_ERRORS as e:
                 self._host._logger.warning(f"Managed-key Keychain read failed: {e}")
                 val = None
+                failed = True
             if val:
-                return val
+                return val, False
         cfg = self._read_global_config()
         if cfg:
             key = cfg.get("primaryApiKey")
             if isinstance(key, str) and key:
-                return key
+                return key, False
+        elif cfg is None:
+            try:
+                failed = failed or get_global_config_path().exists()
+            except OSError:
+                failed = True
+        return "", failed
+
+    def _read_oauth_store(self) -> str:
+        """The raw value of the OAuth store (the ``Claude Code-credentials``
+        item when the Keychain is in use, else ``.credentials.json``), or
+        ``""``. Unlike :meth:`_read_active_credentials` it never answers with
+        the saved key: while a key is active this is where Claude Code keeps
+        the MCP server sign-ins the next account must receive. Non-mutating."""
+        if self._use_keychain():
+            val, _failed = self._read_active_oauth_keychain()
+            if val:
+                return val
+        cred_file = get_credentials_path()
+        try:
+            if cred_file.exists():
+                return cred_file.read_text(encoding="utf-8")
+        except OSError as e:
+            self._host._logger.warning(f"Failed to read credentials file: {e}")
         return ""
 
     def _read_global_config(self) -> dict | None:
@@ -899,13 +970,17 @@ class CredentialStore:
             self._clear_managed_key()
 
     def _write_managed_credentials(self, api_key: str) -> None:
-        """Activate a managed API key, then clear OAuth (mutual exclusion).
+        """Activate a managed API key, then remove the Claude login.
 
-        Always records ``key[-20:]`` in ``customApiKeyResponses.approved`` (Claude
-        Code does this on every platform, even on Keychain success — otherwise it
-        re-prompts to approve the key). Stores the key in the macOS Keychain when
-        usable, else ``~/.claude.json`` ``primaryApiKey`` (matching ``saveApiKey``'s
-        keychain-then-config fallback). Finally clears the OAuth credential.
+        Stores the key in the macOS Keychain when usable, else ``~/.claude.json``
+        ``primaryApiKey`` (matching ``saveApiKey``'s keychain-then-config
+        fallback). Then removes ``claudeAiOauth`` from the OAuth store and keeps
+        everything else in it (:meth:`_strip_oauth_login`).
+
+        ``customApiKeyResponses.approved`` is left alone: Claude Code consults
+        it only for a key in ``ANTHROPIC_API_KEY``, never for the saved key, so
+        an entry there does nothing for this switch and would later approve
+        the same key exported in a shell without asking.
 
         Raises:
             CredentialWriteError: If persisting the key fails.
@@ -927,35 +1002,27 @@ class CredentialStore:
             else:
                 wrote_to_keychain = True
 
-        approved = approved_form(api_key)
-
         def _mutate(cfg: dict) -> None:
-            responses = cfg.get("customApiKeyResponses")
-            if not isinstance(responses, dict):
-                responses = {}
-            approved_list = responses.get("approved")
-            if not isinstance(approved_list, list):
-                approved_list = []
-            if approved not in approved_list:
-                approved_list.append(approved)
-            responses["approved"] = approved_list
-            responses.setdefault("rejected", [])
-            cfg["customApiKeyResponses"] = responses
             if wrote_to_keychain:
                 # Keychain holds the key; keep it out of plaintext config.
                 cfg.pop("primaryApiKey", None)
             else:
                 cfg["primaryApiKey"] = api_key
 
-        try:
-            self._update_global_config(_mutate)
-        except CredentialWriteError:
-            raise
-        except Exception as e:
-            raise CredentialWriteError(f"Failed to write managed API key: {e}")
+        current = self._read_global_config() if wrote_to_keychain else None
+        if not wrote_to_keychain or current is None or "primaryApiKey" in current:
+            # With the key in the Keychain and no plaintext copy to drop there is
+            # nothing to change in ~/.claude.json, so it is not rewritten.
+            try:
+                self._update_global_config(_mutate)
+            except CredentialWriteError:
+                raise
+            except Exception as e:
+                raise CredentialWriteError(f"Failed to write managed API key: {e}")
 
-        # Mutual exclusion: drop the OAuth credential so it can't shadow the key.
-        self._clear_oauth_credential()
+        # A login in the OAuth store wins over a saved key in Claude Code, so it
+        # is removed; the MCP sign-ins beside it stay.
+        self._strip_oauth_login()
         if self._host.platform == Platform.MACOS and not wrote_to_keychain:
             # Same stale-Keychain resurrection guard as the OAuth path: the key
             # fell back to plaintext ``primaryApiKey`` while a stale "Claude Code"
@@ -1017,6 +1084,72 @@ class CredentialStore:
                 self._update_global_config(_drop)
             except Exception as e:
                 self._host._logger.warning(f"Failed to clear primaryApiKey: {e}")
+
+    def _strip_oauth_login(self) -> None:
+        """Remove ``claudeAiOauth`` from the OAuth store, keeping everything else.
+
+        The ``Claude Code-credentials`` item (macOS, Keychain in use) and an
+        existing ``.credentials.json`` (every platform) are rewritten without
+        the login. ``mcpOAuth`` and every other key stay, so MCP server
+        sign-ins survive the switch.
+
+        The Keychain item is never left missing: a running Claude Code keeps
+        its cached login while the item is absent, and the next MCP sign-in
+        any session saves then creates the item holding only ``mcpOAuth``,
+        which logs every running session out at a moment nobody chose. An item
+        that is present without a login does the same within about 30 seconds
+        of the switch, which is what the switch says will happen. An absent
+        item is therefore written as ``{}``.
+
+        Best effort, like the delete it replaces: a Keychain that cannot be
+        read or written falls back to deleting the item, and a file that
+        cannot be rewritten is removed.
+        """
+        with self._pin_lock:
+            # As in _clear_oauth_credential: the file's state after this says
+            # nothing about Claude Code having moved the login anywhere.
+            self._pinned_to_oauth_file = False
+        if self._use_keychain():
+            account = macos_keychain.keychain_account_name()
+            try:
+                current = self._kc_call(
+                    macos_keychain.get_password, CLAUDE_CODE_KEYCHAIN_SERVICE, account
+                )
+                self._kc_call(
+                    macos_keychain.set_password,
+                    CLAUDE_CODE_KEYCHAIN_SERVICE,
+                    account,
+                    json.dumps(without_login(current)),
+                )
+            except macos_keychain.KEYCHAIN_ERRORS as e:
+                self._host._logger.warning(
+                    f"Could not rewrite the login item without its login ({e}); "
+                    "deleting it instead"
+                )
+                self._delete_active_keychain_entry()
+        else:
+            # No usable Keychain: nothing can be rewritten there, and a stale
+            # item must still not shadow the key (best effort, macOS only).
+            self._delete_active_keychain_entry()
+        cred_file = get_credentials_path()
+        try:
+            if not cred_file.exists():
+                return
+            text = cred_file.read_text(encoding="utf-8")
+        except OSError as e:
+            self._host._logger.warning(f"Failed to read credentials file: {e}")
+            text = None
+        try:
+            if text is None:
+                cred_file.unlink()
+            else:
+                self._write_active_credentials_file(json.dumps(without_login(text)))
+        except Exception as e:
+            self._host._logger.warning(f"Failed to rewrite credentials file: {e}")
+            try:
+                cred_file.unlink()
+            except OSError:
+                pass
 
     def _clear_oauth_credential(self) -> None:
         """Clear the active OAuth credential — Keychain item and plaintext file.
@@ -1496,7 +1629,7 @@ class CredentialStore:
         return "", bool(failed)
 
     def _write_account_credentials(
-        self, account_num: str, email: str, credentials: str
+        self, account_num: str, email: str, credentials: str, *, retain: bool = True
     ) -> None:
         """Write account credentials to backup (pure I/O — no session invalidation).
 
@@ -1512,9 +1645,12 @@ class CredentialStore:
         Before overwriting, the current generation is retained as a ``.prev`` file
         (one generation, best-effort): a refresh token exists in exactly one place,
         giving a misclassified overwrite a best-effort chance of recovery without
-        a /login.
+        a /login. ``retain=False`` skips that step, for a write whose value
+        comes from the previous copy itself (the API-key heal): retaining
+        first would overwrite the only copy before the main write lands.
         """
-        self._retain_previous_backup(account_num, email, credentials)
+        if retain:
+            self._retain_previous_backup(account_num, email, credentials)
         if self._use_keychain():
             try:
                 self._kc_write_backup(account_num, email, credentials)

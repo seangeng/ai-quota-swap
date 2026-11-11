@@ -7,6 +7,12 @@ colour only together with a word). ``--json`` prints the same checks as data,
 ``--online`` adds two reachability checks; without it nothing touches the
 network. Exit status 0 when no check fails, 1 when one does.
 
+Four Claude Code checks appear only when they apply: an ``apiKeyHelper`` in
+Claude Code's user settings, a variable in qswap's environment that overrides
+the active account (names only, never values), an API-key account that is
+active while sessions older than its activation are running, and session
+records qswap cannot read (which stop every switch to an API-key account).
+
 Doctor never changes anything and never asks a question. In particular it
 builds no switcher (constructing one creates the data directory and runs
 migrations); it reads the files a switcher would read, directly. Everything
@@ -238,6 +244,26 @@ def _platform_now() -> Platform:
     return Platform.detect()
 
 
+def _environ() -> Mapping[str, str]:
+    return os.environ
+
+
+def _claude_settings_path() -> Path:
+    return paths.get_claude_config_home() / "settings.json"
+
+
+def _claude_sessions() -> list:
+    from ai_quota_swap.process_detection import list_sessions
+
+    return list_sessions()
+
+
+def _claude_unreadable_sessions() -> list:
+    from ai_quota_swap.process_detection import unreadable_session_records
+
+    return unreadable_session_records()
+
+
 def _now() -> float:
     return time.time()
 
@@ -305,6 +331,14 @@ class Probes:
     install_paths: Callable[[], list[str]]
     install_info: Callable[[], dict]
     reach: Callable[[str], str]
+    #: The environment qswap runs in (only names are ever reported).
+    environ: Callable[[], Mapping[str, str]] = _environ
+    #: Claude Code's user settings file (``~/.claude/settings.json``).
+    claude_settings_path: Callable[[], Path] = _claude_settings_path
+    #: The Claude Code sessions running on the shared login.
+    claude_sessions: Callable[[], list] = _claude_sessions
+    #: The session records on the shared login that could not be read.
+    claude_unreadable_sessions: Callable[[], list] = _claude_unreadable_sessions
 
 
 def default_probes() -> Probes:
@@ -331,6 +365,10 @@ def default_probes() -> Probes:
         install_paths=_install_paths,
         install_info=_install_info,
         reach=_reach,
+        environ=_environ,
+        claude_settings_path=_claude_settings_path,
+        claude_sessions=_claude_sessions,
+        claude_unreadable_sessions=_claude_unreadable_sessions,
     )
 
 
@@ -587,6 +625,178 @@ def _claude_checks(p: Probes, f: _Facts) -> list[Check]:
             f"managed by qswap as {_label(slot, record, email)}",
         ))
     return checks
+
+
+def _claude_override_checks(p: Probes, f: _Facts) -> list[Check]:
+    """What makes Claude Code ignore the active account, or what the active
+    account does to running sessions (docs/design/api-key-sessions.md). Each
+    appears only when it applies."""
+    from ai_quota_swap import display
+
+    checks: list[Check] = []
+    settings_path, err = _try(p.claude_settings_path)
+    settings, read_err = (None, err) if err is not None else _read_json(p, settings_path)
+    helper = (settings or {}).get("apiKeyHelper")
+    if isinstance(helper, str) and helper.strip():
+        where = _abbr(settings_path, f.home)
+        checks.append(Check(
+            "claude.api_key_helper", "claude", WARN,
+            f"{where} sets apiKeyHelper; Claude Code uses it instead of the "
+            "active account",
+            fix=f"remove apiKeyHelper from {where}",
+        ))
+
+    environ, _ = _try(p.environ, default={})
+    names = display.exported_overrides(environ or {})
+    if names:
+        verb = "is" if len(names) == 1 else "are"
+        checks.append(Check(
+            "claude.env", "claude", WARN,
+            f"{' and '.join(names)} {verb} set in this shell; Claude Code started "
+            "from it uses that instead of the active account",
+            fix=f"unset {' '.join(names)}",
+        ))
+
+    stale = _api_key_session_check(p, f)
+    if stale is not None:
+        checks.append(stale)
+    records = _session_records_check(p, f)
+    if records is not None:
+        checks.append(records)
+    return checks
+
+
+def _session_records_check(p: Probes, f: _Facts) -> Check | None:
+    """Claude Code session records qswap cannot read. While one is there
+    qswap cannot tell whether sessions are running, so it refuses every
+    switch to an API-key account. Claude Code names each record after its
+    process id, so a record whose process is gone can be deleted."""
+    records, _ = _try(p.claude_unreadable_sessions, default=[])
+    paths = [str(r) for r in records or []]
+    if not paths:
+        return None
+    shown = [_abbr(path, f.home) for path in paths]
+    files = [s for s, path in zip(shown, paths) if path.lower().endswith(".json")]
+    if not files:
+        return Check(
+            "claude.session_records", "claude", WARN,
+            f"Claude Code's session records folder {shown[0]} could not be read, so "
+            "qswap cannot tell whether sessions are running and will not switch to "
+            "an API-key account",
+            fix=f"check that you can open {shown[0]}",
+        )
+    n = len(files)
+    noun = "record" if n == 1 else "records"
+    stem = files[0].replace("\\", "/").rsplit("/", 1)[-1][: -len(".json")]
+    if n == 1 and stem.isascii() and stem.isdigit():
+        fix = f"if Claude Code process {stem} is gone, delete {files[0]}"
+    else:
+        fix = (
+            "each is named after its Claude Code process; if that process is gone, "
+            "delete the file"
+        )
+    return Check(
+        "claude.session_records", "claude", WARN,
+        f"{n} Claude Code session {noun} could not be read, so qswap cannot tell "
+        "whether sessions are running and will not switch to an API-key account: "
+        + ", ".join(files),
+        fix=fix,
+    )
+
+
+def _api_key_session_check(p: Probes, f: _Facts) -> Check | None:
+    """An API-key account is active while sessions that started on a
+    subscription are running: those cannot use the key and are logged out.
+    A session that started while another API key was active keeps using
+    that key and is not counted."""
+    if f.data_dir is None:
+        return None
+    config_path, err = _try(p.claude_config_path)
+    if err is not None:
+        return None
+    data, _ = _read_json(p, config_path)
+    oauth = (data or {}).get("oauthAccount")
+    if not isinstance(oauth, dict) or not isinstance(oauth.get("emailAddress"), str):
+        return None
+    email, org = oauth["emailAddress"], oauth.get("organizationUuid", "") or ""
+    registry, _ = _read_json(p, f.data_dir / "sequence.json")
+    slot = claude_slot(registry, email, org)
+    record = _accounts(registry).get(slot) if slot else None
+    if not isinstance(record, dict) or record.get("kind") != "api_key":
+        return None
+    rows = _activations(p, f.data_dir)
+    since = _active_since(rows, email, org)
+    if since is None:
+        return None
+
+    def is_key(row_email: str, row_org: str) -> bool:
+        row_slot = claude_slot(registry, row_email, row_org)
+        row = _accounts(registry).get(row_slot) if row_slot else None
+        return isinstance(row, dict) and row.get("kind") == "api_key"
+
+    sessions, _ = _try(p.claude_sessions, default=[])
+    older = []
+    for session in sessions or []:
+        started = (getattr(session, "started_at", 0) or 0) / 1000.0
+        if not 0 < started < since:
+            continue
+        # The account active when it started; unknown (before the log)
+        # counts as a subscription, the safe reading for a warning.
+        at = next((r for r in reversed(rows) if r[0] <= started), None)
+        if at is not None and is_key(at[1], at[2]):
+            continue
+        older.append(session)
+    if not older:
+        return None
+    previous = next(
+        (str(r[3]) for r in reversed(rows)
+         if r[0] < since and isinstance(r[3], int) and not is_key(r[1], r[2])),
+        None,
+    )
+    n = len(older)
+    noun = "session" if n == 1 else "sessions"
+    are, they = ("is", "it is") if n == 1 else ("are", "they are")
+    back = f"qswap switch {previous}" if previous else "qswap switch N"
+    return Check(
+        "claude.api_key_sessions", "claude", WARN,
+        f"{_label(slot, record, email)} (API key) is active and {n} Claude Code "
+        f"{noun} that started on a subscription {are} running; a running "
+        f"session cannot use a key, so {they} logged out",
+        fix=f"restart them to use the key, or switch back: {back}",
+    )
+
+
+def _activations(p: Probes, data_dir: Path) -> list[tuple[float, str, str, object]]:
+    """The activation log as ``(ts, email, org, number)`` rows, oldest first;
+    ``[]`` when it cannot be read."""
+    from ai_quota_swap.ledger.activations import FILENAME, parse_ts
+
+    raw, err = _try(p.read_bytes, data_dir / FILENAME)
+    if err is not None or not raw:
+        return []
+    rows = []
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("email"), str):
+            ts = parse_ts(obj.get("ts"))
+            if ts is not None:
+                rows.append((ts, obj["email"], obj.get("org") or "", obj.get("number")))
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+
+def _active_since(rows, email: str, org: str) -> float | None:
+    """When the account ``(email, org)`` became active: the start of the
+    log's last run of rows naming it; None when the last row is another."""
+    since = None
+    for ts, row_email, row_org, _number in reversed(rows):
+        if (row_email, row_org) != (email, org):
+            break
+        since = ts
+    return since
 
 
 def _codex_store_mode(p: Probes, config: Path) -> tuple[str, BaseException | None]:
@@ -1040,6 +1250,7 @@ def _gather_facts(p: Probes) -> _Facts:
 
 _SECTIONS: tuple[tuple[str, Callable[[Probes, _Facts], list[Check]]], ...] = (
     ("claude", _claude_checks),
+    ("claude", _claude_override_checks),
     ("codex", _codex_checks),
     ("data", _data_checks),
     ("menubar", _menubar_checks),
