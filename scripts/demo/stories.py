@@ -45,6 +45,9 @@ class Story:
     # A page the harness writes and plays instead: "typing" or "menubar".
     page: str | None = None
     args: tuple[str, ...] = ()  # "typing": the qswap commands, "++" between
+    # Video cut from the start of the GIF: a dashboard still drawing its
+    # footer is not a first frame.
+    trim_ms: int = 0
 
     @property
     def ready(self) -> str:
@@ -61,13 +64,13 @@ AUTOSWITCH = Story(
         "the most headroom."
     ),
     steps=(
-        ("pause", 2500),
+        ("pause", 2000),
         ("type", "g"),  # auto-switch view (opens in dry-run)
-        ("pause", 2200),
+        ("pause", 2000),
         ("type", "l"),  # go live...
-        ("pause", 1400),
-        ("type", "y"),  # ...confirmed
-        ("pause", 7500),
+        ("pause", 1200),
+        ("type", "y"),  # ...confirmed; the switch comes about 3 s later
+        ("pause", 6000),
     ),
 )
 
@@ -80,16 +83,17 @@ RESET = Story(
         "Fable weekly window and holds a usage reset; the auto engine goes live and spends "
         "it, and the window refills to 0%."
     ),
+    trim_ms=1000,  # the footer's keys appear once the fleet is read
     steps=(
-        ("pause", 2500),
+        ("pause", 2400),
         ("type", "g"),
-        ("pause", 2200),
+        ("pause", 1800),
         ("type", "l"),
-        ("pause", 1400),
-        ("type", "y"),
-        ("pause", 7000),
+        ("pause", 1000),
+        ("type", "y"),  # the first live check spends the reset
+        ("pause", 4500),
         ("key", "Escape"),  # back to the dashboard, window refilled
-        ("pause", 3500),
+        ("pause", 2200),
     ),
 )
 
@@ -104,20 +108,25 @@ DASHBOARD = Story(
     ),
     # 40 rows: the watch page shows every account of the showcase at once.
     cells=(100, 40),
+    # The footer's s / w / g keys appear once the showcase is read.
+    trim_ms=1000,
+    # LittleDemo adds 500 ms after each typed key and 1.3 s after each
+    # pressed one: each view stays about 2.9 s, the main view 1.3 s between.
+    # Kept short: the dashboard's clock runs in real time while the recorder
+    # plays at a third of it, and past a minute the readings would age into
+    # "as of 3m ago".
     steps=(
-        ("pause", 2600),
+        ("pause", 2400),
         ("type", "w"),  # watch: every account's windows
-        ("pause", 3000),
+        ("pause", 2400),
         ("key", "Escape"),
-        ("pause", 500),
         ("type", "g"),  # the auto-switch view, in dry run
-        ("pause", 3000),
+        ("pause", 2400),
         ("key", "Escape"),
-        ("pause", 500),
         ("type", "u"),  # the usage report
-        ("pause", 3000),
+        ("pause", 2400),
         ("key", "Escape"),  # back on the main view
-        ("pause", 1800),
+        ("pause", 300),
     ),
 )
 

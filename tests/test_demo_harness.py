@@ -705,6 +705,202 @@ class TestMenuBarDrawing:
             assert closed.status == titles[i].removeprefix("title: ")
 
 
+QUICKSTART = ["add", "--alias", "work", "++", "list", "++", "switch", "1", "++", "status"]
+
+
+class _Typed(HTMLParser):
+    """A typing page read back: each command's text and its output's text."""
+
+    def __init__(self, page: str) -> None:
+        super().__init__()
+        self.commands: dict[str, str] = {}
+        self.outputs: dict[str, str] = {}
+        self.sources: list[str] = []
+        self.scripts: list[dict] = []
+        self._into: tuple[dict, str] | None = None
+        self._depth = 0
+        self._script: dict | None = None
+        self.feed(page)
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        for key in ("src", "href"):
+            if a.get(key):
+                self.sources.append(a[key])
+        if tag == "script":
+            self._script = {"type": a.get("type"), "id": a.get("id"), "text": ""}
+            self.scripts.append(self._script)
+            return
+        ident = a.get("id") or ""
+        if self._into is not None:
+            self._depth += 1
+        elif ident.startswith("cmd"):
+            self._into, self._depth = (self.commands, ident[3:]), 1
+            self.commands[ident[3:]] = ""
+        elif ident.startswith("out"):
+            self._into, self._depth = (self.outputs, ident[3:]), 1
+            self.outputs[ident[3:]] = ""
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self._script = None
+        elif self._into is not None:
+            self._depth -= 1
+            if not self._depth:
+                self._into = None
+
+    def handle_data(self, data):
+        if self._script is not None:
+            self._script["text"] += data
+        elif self._into is not None:
+            store, key = self._into
+            store[key] += data
+
+
+@pytest.fixture(scope="module")
+def typed(tmp_path_factory) -> dict:
+    """The quick start's typing page, written twice, and the same commands'
+    plain output on the same scenario."""
+    out = tmp_path_factory.mktemp("typing")
+    pages = []
+    for name in ("a.html", "b.html"):
+        r = _run(["quickstart", "--width", "80", "--height", "22", "--typing", "--zoom", "1.8",
+                  "--html", str(out / name), "--", *QUICKSTART])
+        assert r.returncode == 0, r.stderr
+        assert "crossed the sandbox" not in r.stderr
+        pages.append((out / name).read_text(encoding="utf-8"))
+    plain = _run(["quickstart", "--width", "80", "--", *QUICKSTART])
+    assert plain.returncode == 0, plain.stderr
+    return {"pages": pages, "plain": plain.stdout}
+
+
+class TestTypingPage:
+    """``run.py --typing``: the commands typed one after another, each
+    answered with what it really printed (``typing_page.py``)."""
+
+    def test_the_same_state_writes_the_same_page(self, typed):
+        a, b = typed["pages"]
+        assert a == b
+
+    def test_each_command_shows_its_real_output(self, typed):
+        page = _Typed(typed["pages"][0])
+        assert list(page.commands.values()) == [
+            "qswap add --alias work", "qswap list", "qswap switch 1", "qswap status",
+        ]
+        # The text of every output, in order, is what the commands print
+        # without a terminal (colour aside).
+        shown = "".join(page.outputs[str(i)].rstrip("\n") + "\n" for i in range(4))
+        assert shown == typed["plain"]
+        assert page.outputs["0"] == "Added #2 work (maya@northwind.example.com)"
+        assert page.outputs["2"].startswith("Switched #2 work → #1 personal (maya@example.com)\n")
+        assert "#1 personal (maya@example.com) · active · Max 20x" in page.outputs["3"]
+
+    def test_the_timeline_types_every_command_in_order(self, typed):
+        page = _Typed(typed["pages"][0])
+        data = {s["id"]: s for s in page.scripts if s["type"] == "application/json"}
+        commands = json.loads(data["commands"]["text"])
+        events = json.loads(data["timeline"]["text"])
+        assert [e["at"] for e in events] == sorted(e["at"] for e in events)
+        assert events[0]["kind"] == "clear" and events[-1]["kind"] == "end"
+        for b, command in enumerate(commands):
+            typed_chars = [e["chars"] for e in events if e["kind"] == "type" and e["block"] == b]
+            assert typed_chars == list(range(1, len(command) + 1))
+        kinds = [(e["kind"], e["block"]) for e in events if e["kind"] in ("enter", "output")]
+        assert kinds == [(k, b) for b in range(4) for k in ("enter", "output")]
+        assert 10_000 <= events[-1]["at"] <= 16_000  # a README recording's length
+
+    def test_the_page_references_nothing_outside_itself(self, typed):
+        page = typed["pages"][0]
+        assert "http://" not in page and "https://" not in page
+        assert "<link" not in page and "@import" not in page and "url(" not in page
+        parsed = _Typed(page)
+        assert parsed.sources == []  # every script is inline
+        assert str(_real_home()) not in page
+
+
+@pytest.fixture(scope="module")
+def played(tmp_path_factory) -> dict:
+    """The menu bar after two engine checks, drawn at one size, and the
+    player page built from those drawings twice."""
+    sys.path.insert(0, str(DEMO))
+    try:
+        import player_page
+    finally:
+        sys.path.remove(str(DEMO))
+    frames = tmp_path_factory.mktemp("menubar-frames")
+    r = _run(["autoswitch", "--menubar", "--auto-switch", "--ticks", "2", "--size", "760x480",
+              "--frames", str(frames)])
+    assert r.returncode == 0, r.stderr
+    drawings = [(frames / name).read_text(encoding="utf-8")
+                for name in ("frame-00.html", "frame-00-closed.html", "frame-01-closed.html")]
+    shots = [
+        player_page.Shot(drawings[0], hold_ms=2000),
+        player_page.Shot(drawings[1], hold_ms=1500, fade_ms=200, zoom=True),
+        player_page.Shot(drawings[2], hold_ms=1500, fade_ms=120, zoom=True),
+    ]
+    pages = [player_page.page(shots, width=760, height=480, scale=1.5) for _ in range(2)]
+    return {"drawings": drawings, "pages": pages, "shots": shots,
+            "duration": player_page.duration_ms(shots)}
+
+
+class _Played(HTMLParser):
+    def __init__(self, page: str) -> None:
+        super().__init__()
+        self.frames: list[dict] = []
+        self.sources: list[str] = []
+        self.timeline = ""
+        self._json = False
+        self.feed(page)
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "iframe":
+            self.frames.append(a)
+        elif a.get("src") or a.get("href"):
+            self.sources.append(a.get("src") or a.get("href"))
+        self._json = tag == "script" and a.get("id") == "timeline"
+
+    def handle_endtag(self, tag):
+        self._json = False
+
+    def handle_data(self, data):
+        if self._json:
+            self.timeline += data
+
+
+class TestPlayerPage:
+    """``player_page.py`` plays menu bar drawings (``--frames``) in order:
+    each shot is a drawing as the renderer made it, and nothing else."""
+
+    def test_the_same_drawings_make_the_same_page(self, played):
+        a, b = played["pages"]
+        assert a == b
+
+    def test_every_shot_is_a_drawing_unchanged(self, played):
+        page = _Played(played["pages"][0])
+        assert [f["srcdoc"] for f in page.frames] == played["drawings"]
+        titles = [_Drawing(f["srcdoc"]).status for f in page.frames]
+        assert titles == ["⇄ personal · 86% · 38%"] * 2 + ["⇄ personal · 88% · 38%"]
+        assert ["zoomed" in f["class"] for f in page.frames] == [False, True, True]
+        assert "on" in page.frames[0]["class"].split()  # the first frame shows before the play
+
+    def test_the_timeline_shows_each_shot_in_turn(self, played):
+        events = json.loads(_Played(played["pages"][0]).timeline)
+        assert events == [
+            {"at": 2000, "kind": "show", "shot": 1, "ms": 200},
+            {"at": 3500, "kind": "show", "shot": 2, "ms": 120},
+            {"at": 5000, "kind": "end"},
+        ]
+        assert played["duration"] == 5000
+
+    def test_the_page_references_nothing_outside_itself(self, played):
+        page = played["pages"][0]
+        assert "http://" not in page and "https://" not in page
+        assert "<link" not in page and "@import" not in page and "url(" not in page
+        assert _Played(page).sources == []
+        assert str(_real_home()) not in page
+
+
 class TestHarnessPieces:
     @pytest.fixture(autouse=True)
     def _demo_path(self, monkeypatch):

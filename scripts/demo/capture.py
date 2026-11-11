@@ -351,13 +351,15 @@ def _last_frame_at(gif: Path) -> float:
 
 
 def mp4_to_gif(mp4: Path, gif: Path, *, width: int = GIF_WIDTH, fps: int = 12,
-               crop: str | None = None) -> None:
+               crop: str | None = None, trim_ms: int = 0) -> None:
+    """``trim_ms`` of video are cut from the start."""
     graph = f"fps={fps},{DECIMATE},{gif_filters(width=width, crop=crop)}"
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(mp4), "-vf", graph, "-fps_mode", "vfr"]
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{trim_ms / 1000:g}", "-i", str(mp4),
+           "-vf", graph, "-fps_mode", "vfr"]
     subprocess.run([*cmd, str(gif)], check=True)
     # The last frame is held to the video's end (dropping its repeats left it
     # nothing to measure its delay by).
-    hold = _duration(mp4) - _last_frame_at(gif)
+    hold = _duration(mp4) - trim_ms / 1000 - _last_frame_at(gif)
     if hold > 0.1:
         subprocess.run([*cmd, "-final_delay", str(round(hold * 100)), str(gif)], check=True)
 
@@ -583,7 +585,7 @@ def record(name: str, *, mode: str, upload: bool) -> dict:
                 log(f"       | {line}")
             if r.returncode != 0 or not mp4.exists():
                 raise SystemExit(f"littledemo record failed ({r.returncode}):\n{r.stderr[-2000:]}")
-            mp4_to_gif(mp4, gif, crop=crop)
+            mp4_to_gif(mp4, gif, crop=crop, trim_ms=story.trim_ms)
             kept = DEMOS_DIR / f"{name}.mp4"
             shutil.copyfile(mp4, kept)
             result["video"] = str(kept.relative_to(REPO))
@@ -648,7 +650,11 @@ def save_recordings(results: list[dict]) -> None:
     existing = json.loads(path.read_text()) if path.exists() else {}
     for r in results:
         r.pop("record", None)  # the raw recorder log stays out of the repo
-        existing[r["name"]] = {**existing.get(r["name"], {}), **r}
+        before = existing.get(r["name"], {})
+        if "gif" in r and "upload" not in r:
+            # A new recording: a copy hosted earlier shows the old one.
+            before.pop("upload", None)
+        existing[r["name"]] = {**before, **r}
     path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 
 

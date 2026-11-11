@@ -25,13 +25,13 @@ from dataclasses import dataclass
 import render
 
 # Milliseconds. Typing varies a little per character, the same way every time.
-START_HOLD = 1200  # the last screen, before it clears
+START_HOLD = 800  # the last screen, before it clears
 CLEARED = 500  # an empty prompt before the first key
-KEY_BASE, KEY_SPREAD = 34, 30
-BEFORE_ENTER = 320
+KEY_BASE, KEY_SPREAD = 28, 30
+BEFORE_ENTER = 260
 AFTER_ENTER = 140  # the command's start-up, before its output appears
 HOLD_BASE, HOLD_PER_LINE, HOLD_MIN, HOLD_MAX = 900, 150, 1400, 3200
-END_HOLD = 2600
+END_HOLD = 2200
 
 LINE_HEIGHT = 1.5  # em, as render.py's screen
 
