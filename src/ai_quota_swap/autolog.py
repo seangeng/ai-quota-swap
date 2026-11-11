@@ -633,7 +633,7 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
     if reason == "no-subscription-room":
         return "on the API key until a subscription has room", "routine"
     if reason == "key-helper-unavailable":
-        return "not moving to an API key, its helper cannot be added", "wait"
+        return "not moving to an API key, its key line cannot be added", "wait"
     if reason == "reset-pending":
         return "a usage reset comes before an API key", "wait"
     # key-no-limit, spend-unknown, key-unusable and stuck-on-key need the
@@ -716,8 +716,8 @@ def no_switch_sentence(event: object) -> str:
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "an API-key account"
         return (
-            f"Not switching to {who}: qswap cannot add its key helper to Claude "
-            "Code's settings. qswap doctor says why"
+            f"Not switching to {who}: qswap cannot add its key line to Claude "
+            "Code's settings; see why with: qswap doctor"
         )
     if reason == "reset-pending":
         return (
@@ -728,6 +728,9 @@ def no_switch_sentence(event: object) -> str:
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "an API-key account"
         return f"Not switching to {who}: {detail}" if detail else f"Not switching to {who}"
+    if reason == "settings-unreadable":
+        # The sentence every surface shows for this state (decision B5).
+        return detail or "No switch: Claude Code's settings cannot be read; fix the file"
     if reason == "stuck-on-key":
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "the API key"
@@ -1152,7 +1155,7 @@ class AutoLog:
             if blocked:
                 style = _style("yellow")
             elif tone == "sentence" and getattr(decision, "reason", "") in (
-                "no-active-account", "unmanaged-active-account",
+                "no-active-account", "unmanaged-active-account", "settings-unreadable",
             ):
                 style = _style("yellow")
             elif tone == "routine" and level == "ok":

@@ -31,11 +31,12 @@ NOTIFY_TITLE = "ai-quota-swap"
 ENGINE_ERROR_REPEAT_S = 3600.0
 
 #: The engine holds that a notification says once per episode: it will not
-#: move onto an API key because sessions could not follow (no key helper) or
-#: because the key helper cannot be added (docs/design/api-key-sessions.md).
+#: move onto an API key because sessions could not follow (no key line) or
+#: because the key line cannot be added (docs/design/api-key-sessions.md), or
+#: it cannot read the settings that hold the line of a key it made active.
 _KEY_HOLDS = (
     "api-key-sessions", "key-helper-unavailable", "key-no-limit", "spend-unknown",
-    "key-unusable", "stuck-on-key",
+    "key-unusable", "stuck-on-key", "settings-unreadable",
 )
 
 

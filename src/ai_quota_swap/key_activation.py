@@ -1070,14 +1070,19 @@ class KeyActivationMixin:
                 )
             elif f.lost is not None:
                 with FileLock(self.lock_file):
-                    self._write_key_state(self._left_record(self._key_state(), None))
-                done.append(
-                    f"Cleared the record of #{f.lost} as the active API key: its key "
-                    "line is no longer in Claude Code's settings."
-                )
+                    # Read again under the lock: a switch writes its record
+                    # and then its line while holding it, and a record caught
+                    # in between is not lost.
+                    if self.key_findings().lost == f.lost:
+                        self._write_key_state(self._left_record(self._key_state(), None))
+                        done.append(
+                            f"Cleared the record of #{f.lost} as the active API key: its "
+                            "key line is no longer in Claude Code's settings."
+                        )
             if f.stale_active is not None:
                 with FileLock(self.lock_file):
-                    self._active_number_back(f.stale_active)
+                    if self.key_findings().stale_active == f.stale_active:
+                        self._active_number_back(f.stale_active)
             if f.linked:
                 with FileLock(self.lock_file):
                     still = self.isolate_run_profiles()
@@ -1089,7 +1094,11 @@ class KeyActivationMixin:
                     )
             stale = self.stale_profile_copies() if f.problem is not None else f.copies
             if stale:
-                restored = self.restore_run_profiles()
+                # Under the lock: an entry gives profiles their copies and then
+                # writes the line while holding it (restore_settings checks for
+                # the line itself).
+                with FileLock(self.lock_file):
+                    restored = self.restore_run_profiles()
                 if restored:
                     noun = "profile" if restored == 1 else "profiles"
                     done.append(f"Restored the shared settings in {restored} qswap run {noun}.")

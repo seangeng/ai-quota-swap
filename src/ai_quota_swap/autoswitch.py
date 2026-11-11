@@ -2073,6 +2073,11 @@ class AutoSwitchEngine:
             else {}
         )
 
+        held = self._key_line_unreadable_hold(settings)
+        if held is not None:
+            return held
+        self._reconcile_key_line()
+
         current = self.switcher.current_account_number()
         # A tick with no managed active account keeps the current context;
         # a different account reseeds from the state file so its counts are
@@ -2542,7 +2547,7 @@ class AutoSwitchEngine:
                     reason="key-helper-unavailable",
                     detail=(
                         f"account {api_key_candidates[0]} is an API-key account and "
-                        "qswap cannot add its key helper to Claude Code's settings"
+                        "qswap cannot add its key line to Claude Code's settings"
                     ),
                     account=api_key_candidates[0],
                 ))
@@ -3628,7 +3633,7 @@ class AutoSwitchEngine:
             except KeyHelperUnavailableError as e:
                 self._emit(NoSwitchEvent(
                     reason="key-helper-unavailable",
-                    detail=f"qswap cannot add the key helper: {e.reason}",
+                    detail=f"qswap cannot add the key line: {e.reason}",
                     account=number,
                 ))
                 return TickOutcome.BLOCKED
@@ -4237,6 +4242,60 @@ class AutoSwitchEngine:
             _logger.debug("Could not re-read API-key spend after a scan: %r", e)
             return entries
         return {**entries, **{n: fresh[n] for n in nums if n in fresh}}
+
+    # -- the key line and the one reconcile (decision B5) ----------------------
+    #
+    # Every tick reads what switch, list, status and doctor read
+    # (key_activation.KeyFindings): while the user settings cannot be parsed
+    # and qswap's record names a key, nobody can tell which account sessions
+    # use or what a switch would do to the line, so the engine holds and says
+    # what every surface says. Otherwise it runs the repair every switch runs
+    # first (a run profile linked under the line gets its copy, a record whose
+    # line is gone becomes a tombstone, ...), never in a dry run.
+
+    def _key_line_unreadable_hold(self, settings: AutoSwitchSettings) -> TickOutcome | None:
+        reader = getattr(self.switcher, "key_line_unreadable", None)
+        if not callable(reader):
+            return None
+        try:
+            lines = reader()
+        except Exception:
+            return None
+        if not lines:
+            return None
+        self._emit(PollEvent(
+            active=None, headroom={}, threshold=settings.threshold,
+            weekly_threshold=settings.weekly_threshold,
+        ))
+        self._emit(NoSwitchEvent(reason="settings-unreadable", detail=" ".join(lines)))
+        return TickOutcome.BLOCKED
+
+    def _reconcile_key_line(self) -> None:
+        repair = getattr(self.switcher, "reconcile_key_helper", None)
+        if self.dry_run or not callable(repair) or not self._line_is_this_data_dirs():
+            return
+        try:
+            done = repair()
+        except Exception as e:  # it never raises; a tick never breaks on it
+            _logger.warning("Could not repair the key line: %r", e)
+            return
+        for what in done:
+            _logger.info("Key line repaired: %s", what)
+
+    def _line_is_this_data_dirs(self) -> bool:
+        """Whether qswap's line (if any) is for this engine's data directory:
+        a line naming another one (``--data-dir``, Linux) belongs to another
+        qswap, whose accounts these are not, so it is not judged here."""
+        from ai_quota_swap import claude_settings
+
+        try:
+            state = self.switcher.key_helper_state()
+            line = claude_settings.read_line(state.command) if state.ours else None
+            if line is None or not line.data_dir:
+                return True
+            return Path(line.data_dir).resolve() == Path(self.switcher.backup_dir).resolve()
+        except Exception:
+            return False
 
     def _key_helper_ready(self) -> bool | None:
         """Whether the provider can move onto an API key through the key

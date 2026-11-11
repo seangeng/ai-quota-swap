@@ -801,8 +801,8 @@ class TestEngine:
         assert len(held) == 3
         assert held[0].to_json()["reason"] == "key-helper-unavailable"
         assert held[0].human() == (
-            "Not switching to #2 ci: qswap cannot add its key helper to Claude "
-            "Code's settings. qswap doctor says why"
+            "Not switching to #2 ci: qswap cannot add its key line to Claude "
+            "Code's settings; see why with: qswap doctor"
         )
         for event in h.events:
             note = notifier.event("claude", event, both=False, now=0.0)
