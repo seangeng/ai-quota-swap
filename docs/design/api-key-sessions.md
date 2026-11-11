@@ -1,7 +1,7 @@
 # Design: API-key accounts and running sessions
 
-Status: accepted, 2026-11-10. Written after the first real switch to an API-key account logged out every running
-Claude Code session on the machine.
+Status: accepted, 2026-11-10. Written after the first real switch to an API-key account
+logged out every running Claude Code session on the machine.
 
 ## What Claude Code does
 
