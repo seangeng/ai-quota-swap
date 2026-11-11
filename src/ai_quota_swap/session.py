@@ -814,16 +814,24 @@ class SessionManager:
         else:
             current = self.switcher._get_current_account()
         if current is not None and current == (email, org_uuid):
-            key = self.switcher.helper_account() if not config_dir_preset else None
+            # The fast path drops CLAUDE_CONFIG_DIR, so the claude it starts
+            # reads the default profile's settings whatever the variable
+            # says: that is the file whose key line matters.
+            from ai_quota_swap import claude_settings
+
+            key = self.switcher._helper_verdict(
+                claude_settings.read_state(Path.home() / ".claude" / "settings.json")
+            )[0]
             if key is not None:
                 # Plain claude on the default login would follow the key
                 # helper line onto the key, not run this account.
+                where = " from a normal shell" if config_dir_preset else ""
                 raise SessionError(
                     f"{self.switcher.label(account_num, email)} is logged in underneath "
                     f"{self.switcher.label(key, long=False)}, the active API key, so "
                     "claude started on the default login uses the key. To run "
                     f"{self.switcher.label(account_num, long=False)}, switch to it "
-                    f"first: qswap switch {account_num}"
+                    f"first{where}: qswap switch {account_num}"
                 )
             if require_session:
                 raise SessionError(

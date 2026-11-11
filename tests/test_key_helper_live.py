@@ -735,6 +735,65 @@ class TestWhoIsActive:
         assert "underneath #5 ci, the active API key" in str(caught.value)
         assert "qswap switch 1" in str(caught.value)
 
+    @pytest.mark.parametrize("where", ["run-profile", "other-home", "default-profile"])
+    def test_run_of_the_account_underneath_refuses_with_config_dir_preset(
+        self, temp_home, tmp_path, monkeypatch, where
+    ):
+        """The fast path drops CLAUDE_CONFIG_DIR, so the claude it starts
+        reads ~/.claude/settings.json: the refusal reads that file too."""
+        from ai_quota_swap import clis
+        from ai_quota_swap.session import SessionManager, session_dir_for
+
+        s = _fleet()
+        _activate(s)
+        if where == "run-profile":
+            preset = session_dir_for(s.backup_dir, "7", SAM)
+            preset.mkdir(parents=True, exist_ok=True)
+            (preset / "settings.json").write_text("{}", encoding="utf-8")
+        elif where == "other-home":
+            preset = tmp_path / "other-home"
+            preset.mkdir()
+        else:
+            preset = temp_home / ".claude"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(preset))
+        monkeypatch.setattr(clis, "find_cli", lambda name: "/fake/claude")
+        mgr = SessionManager(s)
+        monkeypatch.setattr(mgr, "_exec", lambda *a, **k: pytest.fail("exec"))
+        with pytest.raises(SessionError) as caught:
+            mgr.run("1", [], share=True)
+        text = " ".join(str(caught.value).split())
+        assert "underneath #5 ci, the active API key" in text
+        assert "from a normal shell: qswap switch 1" in text
+
+    def test_a_key_line_in_the_preset_directory_does_not_refuse(
+        self, temp_home, tmp_path, monkeypatch
+    ):
+        """No key is active: a line in CLAUDE_CONFIG_DIR's own settings is not
+        the one the launched claude reads, so the fast path goes ahead."""
+        from ai_quota_swap import clis
+        from ai_quota_swap.session import SessionManager
+
+        s = _fleet()
+        preset = tmp_path / "other-home"
+        preset.mkdir()
+        (preset / "settings.json").write_text(
+            json.dumps({"apiKeyHelper": "/opt/qswap/bin/qswap key-helper 5"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(preset))
+        monkeypatch.setattr(clis, "find_cli", lambda name: "/fake/claude")
+        mgr = SessionManager(s)
+        seen = {}
+
+        def fake_exec(claude_bin, claude_args, env):
+            seen["env"] = env
+            raise SystemExit(0)
+
+        monkeypatch.setattr(mgr, "_exec", fake_exec)
+        with pytest.raises(SystemExit):
+            mgr.run("1", [], share=True)
+        assert "CLAUDE_CONFIG_DIR" not in seen["env"]
+
     def test_doctor_reports_the_active_key(self, temp_home):
         s = _fleet()
         _activate(s)
