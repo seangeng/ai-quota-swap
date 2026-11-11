@@ -63,6 +63,7 @@ The suite never touches your real accounts or the network. `tests/conftest.py` s
 - `ai_quota_swap.macos_keychain` is replaced with an in-memory store.
 - Outbound connections fail, and a test that attempts one fails, even when the code under test swallows the error. Loopback stays open.
 - Codex processes are faked: no test sees your running Codex or runs `codex`.
+- A fake home does not isolate launchd, which keeps one set of services per user: a `launchctl bootout` from a test would stop your real menu bar. So no test reaches launchctl: `ai_quota_swap.launch_agent._launchctl` and doctor's `launchctl print` answer "not loaded", a call that would change launchd's state fails the test, and an audit hook refuses to start `launchctl` at all.
 
 A test that needs HTTP fakes the transport. Patch `urlopen` in the module under test, as `tests/test_codex_usage.py` does with `patch.object(codex_usage.urllib.request, "urlopen", fake)`, or patch the fetch function one level up (`ai_quota_swap.oauth.try_fetch_usage_for_account`, `ai_quota_swap.update_check.check_for_update`). `tests/admin_fakes.py` has a recording transport for the Admin API. `@pytest.mark.allow_network` lifts the block, but a test that needs the internet will fail in CI sooner or later, so treat it as a last resort.
 

@@ -8,8 +8,10 @@ import gc
 import ipaddress
 import json
 import os
+import re
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -592,16 +594,183 @@ socket.create_connection = _guarded_create_connection
 urllib.request.getproxies = _guarded_getproxies
 
 
+# -- launchd ------------------------------------------------------------------------
+#
+# A fake HOME protects files, not launchd. launchd keeps one set of services
+# per user, whatever $HOME says, so a `launchctl bootout` from inside the suite
+# stops the developer's real menu bar: a throwaway test that ran `qswap purge
+# --yes` in the fake home did exactly that. Two layers keep launchd out of
+# reach, both underneath any fake a test sets up:
+#
+# * The autouse `launchctl_guard` fixture replaces `launch_agent._launchctl`,
+#   the one function the package drives launchctl through, and doctor's own
+#   `_launchctl_print`. A read-only call answers "not loaded" and runs nothing;
+#   any other call raises. A test that fakes `_launchctl`, or a launch_agent
+#   function above it, puts its fake on top of the guard.
+# * An audit hook, installed once and never removed (like the real-store
+#   guard), refuses to start a process named launchctl by any route. It is
+#   what stands under the tests that fake `subprocess.run` itself, the layer
+#   `_launchctl` calls (marked `launchctl_subprocess_fake`), and under a
+#   thread that outlives its test.
+#
+# Every refusal is recorded, and a test that leaves one behind fails, even when
+# the code under test swallowed the error.
+
+#: launchctl subcommands that only read launchd's state. Every other one, and
+#: one this list does not know, is taken to change it.
+LAUNCHCTL_READ_ONLY = frozenset({"print", "print-disabled", "list"})
+
+
+class LaunchctlBlocked(AssertionError):
+    """A test reached launchctl unfaked.
+
+    An ``AssertionError``, not an ``OSError``: ``launch_agent`` and its callers
+    catch ``OSError`` and ``SubprocessError`` to degrade gracefully, and a
+    refusal must not be absorbed as "launchctl is not there".
+    """
+
+
+_LAUNCHCTL_TOKEN = re.compile(r"[\s;&|()<>`'\"=]+")
+
+
+class _LaunchdGuard:
+    """What the guard answered and refused, for the running test."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.current: str | None = None
+        #: The read-only calls answered "not loaded" during the running test.
+        self.answered: list[tuple[str, ...]] = []
+        #: ``(message, test)`` for every refusal not yet reported.
+        self.refused: list[tuple[str, str | None]] = []
+
+    def refuse(self, message: str) -> LaunchctlBlocked:
+        with self.lock:
+            self.refused.append((message, self.current))
+        return LaunchctlBlocked(message)
+
+    def drain(self) -> list[tuple[str, str | None]]:
+        with self.lock:
+            refused, self.refused = self.refused, []
+        return refused
+
+    def launchctl(self, *args: str) -> subprocess.CompletedProcess:
+        """Stands in for ``launch_agent._launchctl``."""
+        verb = args[0] if args else ""
+        if verb in LAUNCHCTL_READ_ONLY:
+            with self.lock:
+                self.answered.append(tuple(args))
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 113, stdout="",
+                stderr=f"launchctl {verb}: not loaded (answered by tests/conftest.py; "
+                       "nothing ran)\n",
+            )
+        raise self.refuse(
+            f"a test reached launchctl {verb or '(no verb)'} unfaked "
+            f"(launchctl {' '.join(args)}). A fake HOME does not isolate launchd: "
+            "this would change this machine's real services. Fake "
+            "launch_agent._launchctl, or the launch_agent function above it, the "
+            "way tests/test_launch_agent.py and tests/test_cli.py do."
+        )
+
+    def doctor_print(self) -> tuple[int, str]:
+        """Stands in for ``doctor._launchctl_print``: the job is not loaded."""
+        with self.lock:
+            self.answered.append(("print",))
+        return 113, ""
+
+
+_LAUNCHD = _LaunchdGuard()
+
+
+def _names_launchctl(value: object) -> bool:
+    """Whether an argv, a shell command or an executable path starts launchctl."""
+    if isinstance(value, (list, tuple)):
+        return any(_names_launchctl(item) for item in value)
+    try:
+        text = os.fsdecode(value)
+    except TypeError:
+        return False
+    return any(
+        re.split(r"[\\/]", token)[-1] == "launchctl"
+        for token in _LAUNCHCTL_TOKEN.split(text) if token
+    )
+
+
+def _launchctl_spawn_audit_hook(event: str, args: tuple) -> None:
+    if event == "subprocess.Popen":  # (executable, args, cwd, env)
+        candidates = args[:2]
+    elif event in ("os.posix_spawn", "os.exec"):  # (path, argv, env)
+        candidates = args[:2]
+    elif event == "os.spawn":  # (mode, path, args, env)
+        candidates = args[1:3]
+    elif event in ("os.system", "pty.spawn"):  # (command,) / (argv,)
+        candidates = args[:1]
+    else:
+        return
+    if any(_names_launchctl(candidate) for candidate in candidates if candidate is not None):
+        raise _LAUNCHD.refuse(
+            f"{event} refused: a test started launchctl ({candidates!r}). A fake "
+            "HOME does not isolate launchd; nothing in the suite may run launchctl."
+        )
+
+
+sys.addaudithook(_launchctl_spawn_audit_hook)
+
+
+def _launchd_failure_message(refused: list[tuple[str, str | None]]) -> str:
+    lines = []
+    for message, during in refused:
+        where = during or "between tests (a thread left behind by an earlier test?)"
+        lines.append(f"  during {where}: {message}")
+    return (
+        "A test reached launchctl, which the suite refuses, even where the code "
+        "under test swallowed the refusal:\n" + "\n".join(lines)
+    )
+
+
+@pytest.fixture(autouse=True)
+def launchctl_guard(request, monkeypatch):
+    """Safety net: no test reaches the real launchd (see the block above).
+
+    Yields the guard, whose ``answered`` lists the read-only calls it answered
+    in this test. A test that triggers a refusal on purpose takes it back with
+    ``launchctl_guard.drain()``; any other refusal fails the test at teardown.
+    """
+    from ai_quota_swap import doctor, launch_agent
+
+    with _LAUNCHD.lock:
+        _LAUNCHD.answered = []
+        _LAUNCHD.current = request.node.nodeid
+    if request.node.get_closest_marker("launchctl_subprocess_fake") is None:
+        monkeypatch.setattr(launch_agent, "_launchctl", _LAUNCHD.launchctl)
+    monkeypatch.setattr(doctor, "_launchctl_print", _LAUNCHD.doctor_print)
+    try:
+        yield _LAUNCHD
+    finally:
+        with _LAUNCHD.lock:
+            _LAUNCHD.current = None
+    refused = _LAUNCHD.drain()
+    if refused:
+        pytest.fail(_launchd_failure_message(refused), pytrace=False)
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item):
-    """Fail the test itself when its body made a blocked network attempt,
-    even if the code under test swallowed the ``NetworkAccessBlocked``."""
+    """Fail the test itself when its body made a blocked network attempt or
+    reached launchctl, even if the code under test swallowed the refusal."""
     try:
         return (yield)
     finally:
+        failures = []
         attempts = _NETWORK.drain()
         if attempts:
-            pytest.fail(_network_failure_message(attempts), pytrace=False)
+            failures.append(_network_failure_message(attempts))
+        refused = _LAUNCHD.drain()
+        if refused:
+            failures.append(_launchd_failure_message(refused))
+        if failures:
+            pytest.fail("\n\n".join(failures), pytrace=False)
 
 
 class _KeychainStore:
