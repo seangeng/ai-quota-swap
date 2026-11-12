@@ -86,9 +86,10 @@ class TestCheckForUpdate:
         assert cache["data"] is None
 
     def test_pypi_404_is_silent_and_cached(self, tmp_path, monkeypatch, capsys):
-        """The project is not on PyPI yet: its JSON endpoint answers 404. That
-        must read as "no update" with nothing printed, and be cached as a
-        failure so the next command does not ask again."""
+        """PyPI's JSON endpoint answers 404 for a name it does not know, as it
+        did for this one before 0.1.0. That must read as "no update" with
+        nothing printed, and be cached as a failure so the next command does
+        not ask again."""
         cache_path = tmp_path / "cache.json"
         monkeypatch.setattr("ai_quota_swap.update_check.CACHE_PATH", cache_path)
         monkeypatch.setattr("ai_quota_swap.update_check._detect_install_method", lambda: None)
@@ -751,7 +752,7 @@ class TestRunSelfUpgrade:
         err = capsys.readouterr().err
         assert "uv tool upgrade ai-quota-swap" in err
         assert "pipx upgrade ai-quota-swap" in err
-        assert "pip install --upgrade 'git+https://github.com/seangeng/ai-quota-swap'" in err
+        assert "-m pip install --upgrade ai-quota-swap\n" in err
 
     @patch(
         "ai_quota_swap.update_check.subprocess.run", side_effect=FileNotFoundError
@@ -900,7 +901,7 @@ class TestRunSelfUpgradeWindows:
         err = capsys.readouterr().err
         assert "uv tool upgrade ai-quota-swap" in err
         assert "pipx upgrade ai-quota-swap" in err
-        assert "pip install --upgrade 'git+https://github.com/seangeng/ai-quota-swap'" in err
+        assert "-m pip install --upgrade ai-quota-swap\n" in err
 
 
 # --- build identity + the menu bar restart after an upgrade ------------------
@@ -916,6 +917,15 @@ class _Dist:
 
 
 class TestInstallIdentity:
+    @pytest.fixture(autouse=True)
+    def _version_already_read(self):
+        # The package looks its version up once, through importlib.metadata,
+        # which these tests replace: read it before they do, so each passes
+        # when run alone.
+        import ai_quota_swap
+
+        assert ai_quota_swap.__version__
+
     def test_git_install_carries_its_commit(self):
         from ai_quota_swap import update_check
 
@@ -1106,3 +1116,95 @@ class TestUpgradeRestartsARunningMenuBar:
         out = capsys.readouterr().out
         assert "ai-quota-swap upgraded: 0.27.2 -> 0.28.0" in out
         assert "Menu bar restarted" in out
+
+
+# --- the install commands qswap prints ----------------------------------------
+
+
+class TestPrintedInstallCommands:
+    """Every install command qswap prints names the package on PyPI and is one
+    a shell can run as printed: the extra quoted once, for zsh, and nothing
+    left over when the shell takes the quotes off."""
+
+    SPEC = "ai-quota-swap[menubar]"
+
+    def _argv(self, command: str) -> list[str]:
+        import shlex
+
+        argv = shlex.split(command)
+        assert not any(quote in arg for arg in argv for quote in "'\""), argv
+        assert not any("git+" in arg or "@" in arg for arg in argv), argv
+        return argv
+
+    def test_the_constants_name_the_released_package(self):
+        from ai_quota_swap import update_check
+
+        assert update_check.INSTALL_SOURCE == "ai-quota-swap"
+        assert update_check.MENUBAR_INSTALL_SPEC == f"'{self.SPEC}'"
+
+    @pytest.mark.parametrize(
+        ("method", "command"),
+        [
+            ("uv", ["uv", "tool", "install", "--force", SPEC]),
+            ("pipx", ["pipx", "install", "--force", SPEC]),
+            (None, ["pip", "install", SPEC]),
+        ],
+        ids=["uv", "pipx", "unknown"],
+    )
+    def test_the_menubar_extra_remedy(self, monkeypatch, method, command):
+        import importlib.util
+
+        from ai_quota_swap import cli
+
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+        monkeypatch.setattr("ai_quota_swap.update_check._detect_install_method", lambda: method)
+        _, remedy = cli._menubar_extra_missing().split("Install it with: ")
+        assert self._argv(remedy) == command
+
+    @pytest.mark.parametrize(
+        ("method", "command"),
+        [
+            ("uv", ["uv", "tool", "install", "--managed-python", "--force", SPEC]),
+            ("pipx", ["pipx", "install", "--force", "--python", "<that", "python>", SPEC]),
+        ],
+        ids=["uv", "pipx"],
+    )
+    def test_the_framework_build_remedy(self, method, command):
+        from ai_quota_swap import menubar
+
+        text = menubar.framework_build_warning(
+            framework="Python", install_method=method, mac_ver="26.1"
+        )
+        last = text.splitlines()[-1]
+        assert self._argv(last) == command
+
+    @patch("ai_quota_swap.update_check.subprocess.run")
+    @patch("ai_quota_swap.update_check._detect_install_method", return_value=None)
+    def test_the_upgrade_fallback(self, mock_detect, mock_run, monkeypatch, capsys):
+        import shlex
+
+        # A space in the interpreter's path must not split it in two. Either
+        # quoting (POSIX, or cmd.exe's on Windows) reads back the same here.
+        python = "/opt/my tools/venv/bin/python"
+        monkeypatch.setattr("ai_quota_swap.update_check.sys.executable", python)
+        assert run_self_upgrade() == 1
+        lines = [line.strip() for line in capsys.readouterr().err.splitlines()]
+        pip = next(line for line in lines if " -m pip " in line)
+        assert shlex.split(pip) == [python, "-m", "pip", "install", "--upgrade", "ai-quota-swap"]
+
+    @pytest.mark.parametrize(
+        ("platform", "path", "word"),
+        [
+            ("darwin", "/opt/my tools/venv/bin/python", "'/opt/my tools/venv/bin/python'"),
+            ("linux", "/usr/bin/python3", "/usr/bin/python3"),
+            ("win32", r"C:\Users\Maya Lee\venv\Scripts\python.exe",
+             r'"C:\Users\Maya Lee\venv\Scripts\python.exe"'),
+            ("win32", r"C:\Python312\python.exe", r"C:\Python312\python.exe"),
+        ],
+        ids=["posix-space", "posix-plain", "windows-space", "windows-plain"],
+    )
+    def test_the_interpreter_is_one_shell_word(self, monkeypatch, platform, path, word):
+        from ai_quota_swap import update_check
+
+        monkeypatch.setattr("ai_quota_swap.update_check.sys.platform", platform)
+        assert update_check._shell_word(path) == word

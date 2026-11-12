@@ -378,10 +378,10 @@ class TestMenuBarLocation:
         assert check.status == "fail"
         assert f"~/{folder}" in check.summary
         assert f"macOS keeps background services out of ~/{folder}" in check.summary
-        assert check.fix == "uv tool install git+https://github.com/seangeng/ai-quota-swap"
+        assert check.fix == "uv tool install --force 'ai-quota-swap[menubar]'"
         code, out = machine.run(capsys)
         assert code == 1
-        assert "fix: uv tool install git+https://github.com/seangeng/ai-quota-swap" in out
+        assert "fix: uv tool install --force 'ai-quota-swap[menubar]'" in out
 
     def test_with_the_menu_bar_set_up_the_fix_restarts_it(self, machine):
         machine.platform = Platform.MACOS

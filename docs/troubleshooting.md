@@ -121,11 +121,24 @@ macOS keeps background services out of these folders, so the copy of qswap that 
 Install qswap as a tool, so it lives in uv's or pipx's own directory, with the `menubar` extra the menu bar needs, then start the menu bar again so its LaunchAgent points at the new copy:
 
 ```bash
-uv tool install --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
+uv tool install --force 'ai-quota-swap[menubar]'
 qswap menubar
 ```
 
-With pipx: `pipx install --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'`. If you run qswap from a source checkout, move the checkout out of those folders instead. Doctor's own fix line, `uv tool install git+https://github.com/seangeng/ai-quota-swap`, leaves out the extra; without it `qswap menubar` stops with `The menu bar needs the 'menubar' extra.` The menu bar's own logs are in `~/Library/Logs/` ([below](#where-the-log-file-is)).
+With pipx: `pipx install --force 'ai-quota-swap[menubar]'`. If you run qswap from a source checkout, move the checkout out of those folders instead. Doctor's fix line is the same uv command. Leave out the extra and `qswap menubar` stops with `The menu bar needs the 'menubar' extra.` The menu bar's own logs are in `~/Library/Logs/` ([below](#where-the-log-file-is)).
+
+## Upgrades, and an install from GitHub
+
+`qswap upgrade` runs `uv tool upgrade ai-quota-swap` or `pipx upgrade ai-quota-swap`, whichever installed qswap, then says what landed (`ai-quota-swap upgraded: 0.1.0 -> 0.1.1`, or `ai-quota-swap is still at 0.1.0.`). On a Mac it restarts a running menu bar when the build changed. On Windows it prints the command for you to run instead, because the running `qswap.exe` cannot be replaced.
+
+Before 0.1.0 reached PyPI, qswap was installed from GitHub. Such an install keeps that source: `qswap upgrade` reinstalls from the source the install recorded, so it keeps following `main`, and its report names the commit (`ai-quota-swap upgraded: 0.1.0 (ad03d17) -> 0.1.0 (fdeb279)`). To move to the released package, install over it, then run `qswap menubar` on a Mac so the menu bar restarts on the new build:
+
+```bash
+uv tool install --force 'ai-quota-swap[menubar]'
+qswap menubar
+```
+
+With pipx: `pipx install --force 'ai-quota-swap[menubar]'`. On Linux or Windows, leave out the extra and the second line: `uv tool install --force ai-quota-swap`. With pip, run `python -m pip install --force-reinstall 'ai-quota-swap[menubar]'` with the Python qswap runs on; `pip install --upgrade` leaves a GitHub install where it is, since the version is the same. A reinstall leaves your accounts, saved logins and settings where they are. Afterwards `qswap --version` prints `qswap 0.1.0`, with no commit in brackets, and `qswap upgrade` takes new releases from PyPI.
 
 ## A running session still uses the old account
 

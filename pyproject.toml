@@ -58,7 +58,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-menubar = ["rumps>=0.4.0"]
+# rumps needs PyObjC, which builds only on macOS. The marker lets one install
+# line with the extra work on Linux and Windows too; there it adds nothing.
+menubar = ["rumps>=0.4.0; sys_platform == 'darwin'"]
 
 [project.urls]
 Homepage = "https://github.com/seangeng/ai-quota-swap"
@@ -81,6 +83,8 @@ packages = ["src/ai_quota_swap"]
 # The sdist carries the source, the tests and what they need (the demo
 # harness's code, scripts/settings_doc.py, the Markdown docs), not the
 # screenshots, recordings and rendered pages the harness made, nor CI files.
+# The one exception is the dashboard screenshot that the menu bar drawing
+# tests in tests/test_demo_harness.py draw the menu in front of.
 [tool.hatch.build.targets.sdist]
 exclude = [
     "/assets",
@@ -88,6 +92,9 @@ exclude = [
     "/.github",
     "/.python-version",
 ]
+
+[tool.hatch.build.targets.sdist.force-include]
+"assets/screenshots/raw/dashboard.png" = "assets/screenshots/raw/dashboard.png"
 
 [dependency-groups]
 dev = [

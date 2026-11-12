@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -18,12 +19,14 @@ CACHE_PATH = CACHE_DIR / "update_check.json"
 CACHE_TTL = 24 * 3600  # A successful lookup is kept for a day.
 FAILURE_TTL = 3600  # A failed one is retried after an hour.
 PYPI_URL = "https://pypi.org/pypi/ai-quota-swap/json"
-# Not on PyPI yet, so a fresh install or a reinstall with an extra comes from
-# the repository. Upgrades by tool name (`uv tool upgrade ai-quota-swap`,
-# `pipx upgrade ai-quota-swap`) reuse the source the install recorded, and
-# the PyPI lookup above answers 404, which _pypi_latest_version reports as None.
-INSTALL_SOURCE = "git+https://github.com/seangeng/ai-quota-swap"
-MENUBAR_INSTALL_SPEC = f"'ai-quota-swap[menubar] @ {INSTALL_SOURCE}'"
+# The package on PyPI, as the install commands qswap prints name it: doctor's
+# reinstall, the menu bar extra's remedy and the upgrade fallback. The extra
+# is quoted for zsh, which would read the brackets as a glob. Upgrades by tool
+# name (`uv tool upgrade ai-quota-swap`, `pipx upgrade ai-quota-swap`) reuse
+# the source the install recorded, so an install made from git before 0.1.0
+# keeps following the repository until it is reinstalled from PyPI.
+INSTALL_SOURCE = "ai-quota-swap"
+MENUBAR_INSTALL_SPEC = f"'{INSTALL_SOURCE}[menubar]'"
 
 _VERSION_RE = re.compile(
     r"(\d+(?:\.\d+)*)(?:[-_.]?(alpha|beta|preview|pre|rc|a|b|c)[-_.]?(\d+)?)?",
@@ -421,6 +424,15 @@ def _restart_menubar_if_rebuilt(before: dict, after: dict | None) -> None:
     print(f"Menu bar restarted onto {describe_identity(after)} (was pid {pid}).")
 
 
+def _shell_word(word: str) -> str:
+    """``word`` quoted so a shell reads it back as one argument: POSIX quoting,
+    or cmd.exe's double quotes on Windows. An interpreter path can hold a
+    space (``/opt/my tools/venv/bin/python``, a Windows profile folder)."""
+    if sys.platform == "win32":
+        return subprocess.list2cmdline([word])
+    return shlex.quote(word)
+
+
 def run_self_upgrade(current_version: str | None = None) -> int:
     """Run the appropriate upgrade command for the current install method.
 
@@ -455,7 +467,7 @@ def run_self_upgrade(current_version: str | None = None) -> int:
             "Upgrade it the way you installed it:\n"
             "  uv tool upgrade ai-quota-swap\n"
             "  pipx upgrade ai-quota-swap\n"
-            f"  {sys.executable} -m pip install --upgrade '{INSTALL_SOURCE}'\n"
+            f"  {_shell_word(sys.executable)} -m pip install --upgrade {INSTALL_SOURCE}\n"
             "  git pull                      # a source checkout"
         )
         return 1

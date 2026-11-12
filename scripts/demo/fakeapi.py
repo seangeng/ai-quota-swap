@@ -8,8 +8,8 @@ token (each seeded account gets its own invented token).
 
 Routes: Anthropic's usage, profile, token and reset-claim endpoints; Codex's
 ``chatgpt.com/backend-api/wham`` usage, reset-credit list and credit consume;
-and PyPI's project JSON, which answers 404 as it does today (the package is
-not on PyPI), so the passive update check behaves as it does for a user.
+and PyPI's project JSON, which answers 404, so the passive update check finds
+nothing newer and stays quiet.
 
 A request this module has no answer for is a guard violation, not a 404: it
 means the code wanted to reach somewhere new, and the run should fail loudly

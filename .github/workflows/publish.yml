@@ -27,13 +27,22 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Check the release tag matches the package version
+      # pyproject.toml can carry the version before the tree is ready (it said
+      # 0.1.0 long before 0.1.0 was prepared), so the version check alone can
+      # pass on a tree that still says the package is unreleased. Preparing a
+      # release renames `## Unreleased` in CHANGELOG.md to the version
+      # (CONTRIBUTING.md), so that heading must be there too.
+      - name: Check the release tag matches the package version and changelog
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           if [ "${TAG#v}" != "$version" ]; then
             echo "::error::Release tag $TAG does not match version $version in pyproject.toml"
+            exit 1
+          fi
+          if ! grep -qx "## $version" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## $version' section"
             exit 1
           fi
 

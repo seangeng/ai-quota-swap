@@ -1083,12 +1083,16 @@ class TestCLI:
 
         monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
         monkeypatch.setattr("ai_quota_swap.update_check._detect_install_method", lambda: "uv")
-        assert (
-            "uv tool install --force "
-            "'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'"
-        ) in cli._menubar_extra_missing()
+        assert cli._menubar_extra_missing() == (
+            "The menu bar needs the 'menubar' extra. Install it with: "
+            "uv tool install --force 'ai-quota-swap[menubar]'"
+        )
         monkeypatch.setattr("ai_quota_swap.update_check._detect_install_method", lambda: "pipx")
-        assert "pipx install --force" in cli._menubar_extra_missing()
+        assert cli._menubar_extra_missing().endswith(
+            "pipx install --force 'ai-quota-swap[menubar]'"
+        )
+        monkeypatch.setattr("ai_quota_swap.update_check._detect_install_method", lambda: None)
+        assert cli._menubar_extra_missing().endswith("pip install 'ai-quota-swap[menubar]'")
         monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
         assert cli._menubar_extra_missing() is None
 

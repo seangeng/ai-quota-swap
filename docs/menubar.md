@@ -11,11 +11,11 @@ The pictures on this page are drawings of the menu, not screenshots of the app: 
 
 ## Install and start
 
-The menu bar needs the `menubar` extra (it adds `rumps`). The package is not on PyPI yet, so install from the repository, then start it:
+The menu bar needs the `menubar` extra (it adds `rumps`). Install qswap with it, then start it:
 
 ```bash
-uv tool install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
-# or: pipx install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'
+uv tool install 'ai-quota-swap[menubar]'
+# or: pipx install 'ai-quota-swap[menubar]'
 qswap menubar
 ```
 
@@ -23,7 +23,7 @@ qswap menubar
 
 Each start also says whether it will switch accounts. Auto-switch is off until you [turn it on](#turn-on-auto-switch), and until then the start warns `auto-switch: off -- the menu bar shows usage but will not switch accounts; turn it on from the menu, or re-run with --auto-switch`.
 
-If qswap is already installed without the extra, `qswap menubar` stops with `The menu bar needs the 'menubar' extra. Install it with: uv tool install --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'` (the pipx form when you installed with pipx).
+If qswap is already installed without the extra, `qswap menubar` stops with `The menu bar needs the 'menubar' extra. Install it with: uv tool install --force 'ai-quota-swap[menubar]'` (the pipx form when you installed with pipx).
 
 Keep the install out of `~/Documents`, `~/Desktop` and `~/Downloads`. The uv and pipx defaults already are. See [Limits](#limits).
 
@@ -278,7 +278,7 @@ The wrapper app gives the process the bundle identifier `com.ai-quota-swap.menub
 
 - Codex account switching has been tested against fakes and with one real account, not yet with two real Codex accounts ([codex.md](codex.md)).
 - macOS only. Elsewhere `qswap menubar` prints `The menu bar is only available on macOS.` and exits 1. `qswap auto` switches accounts on every platform.
-- Install location: macOS privacy rules keep launchd agents out of `~/Documents`, `~/Desktop` and `~/Downloads`, so the service cannot start when qswap runs from there (an editable install from a checkout in `~/Documents`, for example). `qswap menubar` does not notice. `qswap doctor` reports it as `qswap runs from ~/Documents/…; macOS keeps background services out of ~/Documents`. Reinstall outside those folders with `uv tool install --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'`, then run `qswap menubar` ([troubleshooting.md](troubleshooting.md)).
-- On macOS 26, a framework build of Python (Homebrew's, python.org's) has been seen not to draw the icon: the process runs and logs nothing. `qswap menubar` warns about it. With uv, reinstall on uv's own Python: `uv tool install --managed-python --force 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'`.
+- Install location: macOS privacy rules keep launchd agents out of `~/Documents`, `~/Desktop` and `~/Downloads`, so the service cannot start when qswap runs from there (an editable install from a checkout in `~/Documents`, for example). `qswap menubar` does not notice. `qswap doctor` reports it as `qswap runs from ~/Documents/…; macOS keeps background services out of ~/Documents`. Reinstall outside those folders with `uv tool install --force 'ai-quota-swap[menubar]'`, then run `qswap menubar` ([troubleshooting.md](troubleshooting.md)).
+- On macOS 26, a framework build of Python (Homebrew's, python.org's) has been seen not to draw the icon: the process runs and logs nothing. `qswap menubar` warns about it. With uv, reinstall on uv's own Python: `uv tool install --managed-python --force 'ai-quota-swap[menubar]'`.
 - If you switched it off under System Settings → General → Login Items & Extensions → Allow in the Background, `qswap menubar` still starts it when you ask, but macOS will not start it at login.
 - When `/Applications` is not writable, the wrapper app goes in the data directory, and a menu bar manager that hides anything hides this icon too.

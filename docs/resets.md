@@ -44,7 +44,7 @@ Each reset shows its kind, what it clears, whether it can be spent now, its use-
 Other views show the same holding in fewer words:
 
 - `qswap list` and the dashboard print a line under the account: `Holds 1 Fable reset and 1 weekly reset · use by Nov 30`.
-- The menu bar ends the account's row with the count, `1 Fable reset`, or `2 Fable · 1 weekly resets` once kinds differ.
+- The menu bar ends the account's row with the count, `1 Fable reset`, or `resets: 2 Fable, 1 weekly` once kinds differ.
 
 `qswap reset --json` gives the same data for scripts; see [json-output.md](json-output.md).
 
