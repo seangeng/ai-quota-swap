@@ -6,7 +6,7 @@
     stock page so nothing loads from outside this server (the stock page
     pulls Roboto Mono from Google Fonts; here it comes from textual-serve's
     own static files). Query: ?fontsize=18&w=1176&h=620&theme=dark&stage=1
-    stage=1 centres the window on a dark backdrop, for video recordings.
+    stage=1 centres the window on a backdrop, for video recordings.
   -->
   <head>
     <meta charset="utf-8" />
@@ -19,20 +19,27 @@
         font-weight: 100 700;
         font-style: normal;
       }
+      /* qswap's palette, copied from src/ai_quota_swap/tui/theme.py, as
+         render.py draws the CLI's window: --bg BACKGROUND, --chrome SURFACE,
+         --chrome-fg MUTED, --border PANEL, and the same names with _LIGHT
+         in light. The stage: dark runs from SURFACE in the middle to
+         BACKGROUND at the edges, light from BACKGROUND_LIGHT to
+         SURFACE_LIGHT. */
       :root {
         --bg: #0f1117; --chrome: #161922; --chrome-fg: #8a8fa3; --border: #1f2330;
+        --stage-mid: #161922; --stage-edge: #0f1117;
       }
       :root.light {
         --bg: #f7f8fc; --chrome: #eceef5; --chrome-fg: #565c70; --border: #dde1ec;
+        --stage-mid: #f7f8fc; --stage-edge: #eceef5;
       }
       html, body { margin: 0; padding: 0; background: transparent; }
       body { display: flex; justify-content: center; }
       :root.stage, :root.stage body { height: 100%; }
       :root.stage body {
         align-items: center;
-        background: radial-gradient(ellipse at 50% 40%, #26211d 0%, #0d0d0e 70%);
+        background: radial-gradient(ellipse at 50% 40%, var(--stage-mid) 0%, var(--stage-edge) 70%);
       }
-      :root.stage.light body { background: radial-gradient(ellipse at 50% 40%, #fffaf2 0%, #e9e3d8 75%); }
       :root.stage .window { box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3); }
       /* Recordings are keyboard-only: LittleDemo's pointer overlay would sit
          idle mid-frame, and its key overlay shows only some keys (Escape,

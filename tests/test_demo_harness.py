@@ -1083,8 +1083,17 @@ class TestPlayerPage:
     def test_the_page_references_nothing_outside_itself(self, played):
         page = played["pages"][0]
         assert "http://" not in page and "https://" not in page
-        assert "<link" not in page and "@import" not in page and "url(" not in page
-        assert _Played(page).sources == []
+        assert "<link" not in page and "@import" not in page
+        parsed = _Played(page)
+        assert parsed.sources == []
+        # The only url() is a drawing's own: its chart's clip paths, named by
+        # their ids in that drawing, which is embedded whole in its srcdoc.
+        assert "url(" not in re.sub(r'srcdoc="[^"]*"', "", page)
+        for frame in parsed.frames:
+            drawing = frame["srcdoc"]
+            ids = set(re.findall(r'id="([^"]+)"', drawing))
+            refs = re.findall(r"url\(([^)]*)\)", drawing)
+            assert all(r.startswith("#") and r[1:] in ids for r in refs)
         assert str(_real_home()) not in page
 
 
@@ -1178,6 +1187,49 @@ class TestHarnessPieces:
             assert {s["action"] for s in config["steps"]} <= allowed
             assert not any(s["action"] == "click" for s in config["steps"])
             assert all("selector" not in s for s in config["steps"] if s["action"] == "type")
+
+    def test_the_social_preview_is_cut_2_to_1_between_two_lines_of_the_menu(self):
+        import capture
+
+        # The hero's layout in CSS px, as the page lays it out.
+        layout = {
+            "width": 1066, "height": 728,
+            "window": {"left": 32, "top": 110, "right": 792, "bottom": 643},
+            "menu": {"left": 596, "top": 26, "right": 1058, "bottom": 694},
+            "rows": [31, 64, 86, 403, 425, 480, 502, 524, 546, 568],
+        }
+        x, y, w, h = capture.social_crop(layout)
+        assert (y, w) == (0, 2 * h)
+        assert h + 2 in layout["rows"]  # 2 px above a row's top: between two lines of text
+        assert 0 < x <= layout["window"]["left"]  # the window is whole across
+        assert x + w >= layout["menu"]["right"]  # and so is the menu
+        assert x + w <= layout["width"]
+        # No row top in reach: half the stage's width.
+        x, y, w, h = capture.social_crop({**layout, "rows": [31, 64]})
+        assert (x, y, w, h) == (0, 0, 1066, 533)
+
+    def test_the_heros_window_sits_midway_between_the_bar_and_the_bottom(self):
+        import struct
+
+        import menubar_page
+
+        # A 2x screenshot 1520 x 1066 px, drawn 760 CSS px wide: 533 tall.
+        window = menubar_page.Backdrop(b"\0" * 16 + struct.pack(">II", 1520, 1066), width=760)
+        assert window.height == 533
+        # Under a taller menu (the hero's: 704 px under the bar) the
+        # wallpaper above and below the window is even.
+        top = menubar_page.window_top(window, 704)
+        assert (top, 704 - top - window.height) == (86, 85)
+        # Never closer to the bar than its own top.
+        assert menubar_page.window_top(window, 560) == window.top == 40
+
+    def test_the_chart_pair_is_a_registered_shot(self):
+        import scenarios
+        import shots
+
+        assert [s.name for s in shots.CHART_SHOTS] == ["menubar-chart"]
+        for shot in shots.CHART_SHOTS:
+            assert scenarios.get(shot.scenario).ledger is not None, shot
 
     def test_html_page_is_self_contained(self, tmp_path):
         out = tmp_path / "list.html"

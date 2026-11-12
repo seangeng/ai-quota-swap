@@ -23,6 +23,8 @@ import html
 import json
 from dataclasses import dataclass
 
+import render
+
 MAX_ZOOM = 2.4
 ZOOM_MARGIN = 14  # CSS px of bar left of the widest title while magnified
 PAD = 8  # backdrop around the drawing, as the dashboard recordings have
@@ -129,8 +131,7 @@ def page(shots: list[Shot], *, width: int, height: int, scale: float = 1.0,
         f'srcdoc="{html.escape(s.page, quote=True)}"></iframe>'
         for i, s in enumerate(shots)
     )
-    backdrop = ("radial-gradient(ellipse at 50% 40%, #26211d 0%, #0d0d0e 70%)" if theme == "dark"
-                else "radial-gradient(ellipse at 50% 40%, #fffaf2 0%, #e9e3d8 75%)")
+    backdrop = render.STAGE[theme]
     script = SCRIPT % {"width": width, "max_zoom": f"{MAX_ZOOM:g}", "margin": ZOOM_MARGIN}
     events = json.dumps(timeline(shots), separators=(",", ":")).replace("</", "<\\/")
     return f"""<!DOCTYPE html>

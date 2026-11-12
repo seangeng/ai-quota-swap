@@ -4,7 +4,8 @@ CLI shots render to HTML (``docs/shots/<name>.html`` and ``<name>-light.html``)
 and are screenshotted from there; TUI shots are screenshotted from the served
 dashboard; menu bar shots are drawings of the menu's rows
 (``docs/shots/<name>.html``, see ``menubar_page.py``), taken after the TUI
-shots because the hero puts one behind the menu. ``columns`` is the
+shots because the hero puts one behind the menu; chart shots are the menu's
+chart alone, drawn by the app's AppKit view (``menubar_chart.py``). ``columns`` is the
 terminal's column count: a CLI window is as wide as its columns at one font
 size, and a TUI shot is sized in cells (columns x rows), so text keeps one
 scale across the README. Everything is captured at 2x.
@@ -101,7 +102,7 @@ class MenubarShot:
 MENUBAR_SHOTS = (
     MenubarShot("menubar", "showcase",
                 "The menu bar: both providers' accounts with their usage, the active ones "
-                "checked, held resets, today's cost, auto-switch running"),
+                "checked, held resets, the seven-day cost chart, auto-switch running"),
     MenubarShot("menubar-light", "showcase", "The menu bar in the light theme", theme="light"),
     MenubarShot("menubar-resets", "showcase",
                 "Use a reset: each held usage reset and Codex reset credit, and whether "
@@ -109,8 +110,9 @@ MENUBAR_SHOTS = (
                 open="Use a reset", highlight="Codex #2 work"),
     # One submenu level each, so the menus stay at a readable size on the page.
     MenubarShot("menubar-settings", "showcase",
-                "Settings: the title, the auto-switch toggle for each provider and its "
-                "threshold, automatic resets, and Start at login",
+                "Settings: the title, Show usage chart and Refresh interval, the "
+                "auto-switch toggle for each provider and its threshold, automatic resets, "
+                "and Start at login",
                 open="Settings"),
     MenubarShot("menubar-auto-resets", "showcase",
                 "Use resets automatically: when the engines spend a usage reset by "
@@ -122,11 +124,28 @@ MENUBAR_SHOTS = (
                 args=("switch", "5")),
     MenubarShot("hero", "showcase",
                 "The qswap menu bar open over the dashboard: every Claude Code and Codex "
-                "account with its usage, held resets and today's cost",
+                "account with its usage, held resets and the seven-day cost chart",
                 beside="dashboard"),
     MenubarShot("hero-light", "showcase",
                 "The qswap menu bar open over the dashboard, light theme",
                 theme="light", beside="dashboard-light"),
+)
+
+
+@dataclass(frozen=True)
+class ChartShot:
+    """The menu bar's usage chart alone, drawn by the app's own AppKit view
+    off screen (``menubar_chart.py``) from a scenario's ledger: ``<name>.png``
+    (dark) and ``<name>-light.png``. macOS only; a pair for a ``<picture>``."""
+
+    name: str
+    scenario: str
+    caption: str
+
+
+CHART_SHOTS = (
+    ChartShot("menubar-chart", "usage",
+              "The cost row's chart: the last seven days of estimated cost, by account"),
 )
 
 

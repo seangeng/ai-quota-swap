@@ -130,7 +130,7 @@ def page(blocks: list[render.Block], *, title: str, theme: str, columns: int, ro
          zoom: float = 1.0, stage: bool = True) -> str:
     """The page: ``blocks`` are the commands and what they printed (ANSI),
     ``rows`` the screen's height in lines. ``zoom`` scales the window for a
-    recording; ``stage`` puts it on a dark backdrop, as the dashboard's
+    recording; ``stage`` puts it on a backdrop, as the dashboard's
     recording page does."""
     parts = []
     for b, block in enumerate(blocks):
@@ -148,10 +148,7 @@ def page(blocks: list[render.Block], *, title: str, theme: str, columns: int, ro
                  '<span class="cur" id="curend"></span></div>')
     c = render._CHROME[theme]
     events = [e.__dict__ for e in timeline(blocks)]
-    backdrop = (
-        "radial-gradient(ellipse at 50% 40%, #26211d 0%, #0d0d0e 70%)" if theme == "dark"
-        else "radial-gradient(ellipse at 50% 40%, #fffaf2 0%, #e9e3d8 75%)"
-    ) if stage else "transparent"
+    backdrop = render.STAGE[theme] if stage else "transparent"
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>

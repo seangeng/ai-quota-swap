@@ -10,11 +10,11 @@
   body { display: flex; justify-content: center; }
   .window {
     width: fit-content; box-sizing: border-box; overflow: hidden;
-    background: #fbfaf7; border: 1px solid #d9d7d1; border-radius: 12px;
+    background: #f7f8fc; border: 1px solid #dde1ec; border-radius: 12px;
   }
   .titlebar {
     position: relative; height: 40px; display: flex; align-items: center;
-    background: #ecebe7; border-bottom: 1px solid #d9d7d1;
+    background: #eceef5; border-bottom: 1px solid #dde1ec;
   }
   .dots { display: flex; gap: 8px; padding-left: 16px; }
   .dots i { display: block; width: 12px; height: 12px; border-radius: 50%; }
@@ -24,10 +24,10 @@
   .title {
     position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
     font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    color: #6d6c68;
+    color: #565c70;
   }
   .screen {
-    margin: 0; padding: 20px 28px 24px; color: #242422;
+    margin: 0; padding: 20px 28px 24px; color: #1c2030;
     width: 80ch;
     font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
       "DejaVu Sans Mono", "Liberation Mono", monospace;
@@ -35,7 +35,7 @@
     font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
     tab-size: 8;
   }
-  .prompt { color: #8a8984; }
+  .prompt { color: #565c70; }
   .cmd { font-weight: 600; }
 </style>
 </head>
@@ -44,14 +44,14 @@
   <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
     <div class="title">qswap auto</div></div>
 <pre class="screen"><span class="prompt">$</span> <span class="cmd">qswap auto</span>
-<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">Auto-switch running: switch at 90% · checks every 60s · Ctrl-C to stop</span>
-<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">14:20:00</span>  <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">#1 personal at 5h 86% (switch at 90%) · no switch needed</span>
-            <span style="color: #635d55; text-decoration-color: #635d55">#2 work       </span>  <span style="color: #635d55; text-decoration-color: #635d55">5h 12% · 7d 21%</span>
-            <span style="color: #635d55; text-decoration-color: #635d55">#3 night-shift</span>  <span style="color: #795911; text-decoration-color: #795911">5h 93% · 7d 81% · over its switch line</span>
-<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">14:21:00</span>  <span style="color: #8f8f8c; text-decoration-color: #8f8f8c">#1 personal at 5h 88% (switch at 90%) · no switch needed</span>
-<span style="color: #8f8f8c; text-decoration-color: #8f8f8c">14:22:00</span>  <span style="color: #954c2a; text-decoration-color: #954c2a">Switched #1 personal → #2 work · 5h reached 91%</span>
-            <span style="color: #635d55; text-decoration-color: #635d55">#2 work       </span>  <span style="color: #635d55; text-decoration-color: #635d55">5h 12% · 7d 21%</span>
-            <span style="color: #635d55; text-decoration-color: #635d55">#3 night-shift</span>  <span style="color: #795911; text-decoration-color: #795911">5h 93% · 7d 81% · over its switch line</span></pre>
+<span style="color: #898c96; text-decoration-color: #898c96">Auto-switch running: switch at 90% · checks every 60s · Ctrl-C to stop</span>
+<span style="color: #898c96; text-decoration-color: #898c96">14:20:00</span>  <span style="color: #898c96; text-decoration-color: #898c96">#1 personal at 5h 86% (switch at 90%) · no switch needed</span>
+            <span style="color: #565c70; text-decoration-color: #565c70">#2 work       </span>  <span style="color: #565c70; text-decoration-color: #565c70">5h 12% · 7d 21%</span>
+            <span style="color: #565c70; text-decoration-color: #565c70">#3 night-shift</span>  <span style="color: #7a5200; text-decoration-color: #7a5200">5h 93% · 7d 81% · over its switch line</span>
+<span style="color: #898c96; text-decoration-color: #898c96">14:21:00</span>  <span style="color: #898c96; text-decoration-color: #898c96">#1 personal at 5h 88% (switch at 90%) · no switch needed</span>
+<span style="color: #898c96; text-decoration-color: #898c96">14:22:00</span>  <span style="color: #5b3fd1; text-decoration-color: #5b3fd1">Switched #1 personal → #2 work · 5h reached 91%</span>
+            <span style="color: #565c70; text-decoration-color: #565c70">#2 work       </span>  <span style="color: #565c70; text-decoration-color: #565c70">5h 12% · 7d 21%</span>
+            <span style="color: #565c70; text-decoration-color: #565c70">#3 night-shift</span>  <span style="color: #7a5200; text-decoration-color: #7a5200">5h 93% · 7d 81% · over its switch line</span></pre>
 </div>
 </body>
 </html>

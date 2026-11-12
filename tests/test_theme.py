@@ -1,6 +1,7 @@
 """Tests for the Palette value object and the light/dark themes."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -56,14 +57,31 @@ _UPSTREAM = {
 }
 
 
+# The demo harness's own warm colours from before qswap had its palette: the
+# CLI window's light frame (render.py), the recordings' stage backdrop
+# (web/app_index.html and the played pages) and the shots index.
+_OLD_HARNESS = {
+    "#fbfaf7", "#ecebe7", "#d9d7d1", "#6d6c68", "#8a8984", "#242422",
+    "#26211d", "#0d0d0e", "#fffaf2", "#e9e3d8", "#e2dfd8",
+}
+
+
 def test_palette_is_qswaps_own():
     assert {name: getattr(theme, name) for name in _PALETTE} == _PALETTE
-    assert not set(_PALETTE.values()) & _UPSTREAM
+    assert not set(_PALETTE.values()) & (_UPSTREAM | _OLD_HARNESS)
+
+
+def _spellings(value: str) -> list[re.Pattern]:
+    """``#rrggbb`` as a hex string, and as the ``(r, g, b)`` tuple a demo
+    script may write it as (render.py's terminal tables do)."""
+    r, g, b = (int(value[i:i + 2], 16) for i in (1, 3, 5))
+    return [re.compile(re.escape(value)), re.compile(rf"\(\s*{r}\s*,\s*{g}\s*,\s*{b}\s*\)")]
 
 
 def test_no_upstream_colour_in_the_code_or_the_demo_scripts():
     # The constants above are the one source of truth: no widget, stylesheet
-    # or demo script may draw with an upstream value of its own.
+    # or demo script may draw with an upstream value, or an old harness one,
+    # of its own.
     root = Path(__file__).resolve().parents[1]
     files = [
         path
@@ -72,13 +90,40 @@ def test_no_upstream_colour_in_the_code_or_the_demo_scripts():
         if path.suffix in {".py", ".tcss", ".html", ".css", ".js"}
     ]
     assert files
+    texts = {path: path.read_text(encoding="utf-8").lower() for path in files}
     found = [
         f"{path.relative_to(root)}: {value}"
-        for path in files
-        for value in _UPSTREAM
-        if value in path.read_text(encoding="utf-8").lower()
+        for path, text in texts.items()
+        for value in sorted(_UPSTREAM | _OLD_HARNESS)
+        if any(p.search(text) for p in _spellings(value))
     ]
     assert found == []
+    # The guard reads a tuple as well as a hex string.
+    assert _spellings("#242422")[1].search("(36, 36, 34)")
+
+
+def test_the_dashboard_page_copies_the_palette():
+    # The served dashboard's page (demo harness) cannot import theme.py, so it
+    # holds copies; its comment names the constant each one is. They must
+    # still equal those constants.
+    page = Path(__file__).resolve().parents[1] / "scripts" / "demo" / "web" / "app_index.html"
+    blocks = dict(re.findall(r"(:root(?:\.light)?) \{([^}]*)\}", page.read_text(encoding="utf-8")))
+    copied = {
+        selector: dict(re.findall(r"--([\w-]+):\s*(#[0-9a-fA-F]{6})", blocks[selector]))
+        for selector in (":root", ":root.light")
+    }
+    expected = {
+        ":root": {
+            "bg": theme.BACKGROUND, "chrome": theme.SURFACE, "chrome-fg": theme.MUTED,
+            "border": theme.PANEL, "stage-mid": theme.SURFACE, "stage-edge": theme.BACKGROUND,
+        },
+        ":root.light": {
+            "bg": theme.BACKGROUND_LIGHT, "chrome": theme.SURFACE_LIGHT,
+            "chrome-fg": theme.MUTED_LIGHT, "border": theme.PANEL_LIGHT,
+            "stage-mid": theme.BACKGROUND_LIGHT, "stage-edge": theme.SURFACE_LIGHT,
+        },
+    }
+    assert {k: {n: v.lower() for n, v in d.items()} for k, d in copied.items()} == expected
 
 
 def test_from_theme_reads_theme_object_including_track():

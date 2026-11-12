@@ -14,8 +14,10 @@ then ``build_menu``; only the chart's description comes back, as JSON.
 
 The picture is the real view (``ai_quota_swap.menubar_chart_view``) drawn
 into a bitmap, for the light and the dark appearance, on the window
-background colour. Nothing is shown on screen: no window, no status item, no
-menu, and no application object.
+background colour. Nothing is shown on screen: before AppKit measures or
+draws anything, the process takes the Prohibited activation policy (no Dock
+icon, no menu bar, never active, no window can show), and it makes no
+window, status item or menu.
 """
 
 from __future__ import annotations
@@ -267,9 +269,20 @@ def scenario_chart(name: str):
 MENU_PADDING, CHECK_COLUMN, SUBMENU_ARROW = 32.0, 14.0, 31.0
 
 
+def appkit():
+    """AppKit, once this process is barred from the screen: the Prohibited
+    activation policy, set before anything is measured or drawn."""
+    import AppKit
+
+    app = AppKit.NSApplication.sharedApplication()
+    if app.activationPolicy() != AppKit.NSApplicationActivationPolicyProhibited:
+        app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyProhibited)
+    return AppKit
+
+
 def menu_width(rows: list[dict]) -> float:
     """The width NSMenu gives these rows: its widest title and what it adds."""
-    import AppKit
+    AppKit = appkit()
 
     font = AppKit.NSFont.menuFontOfSize_(0)
 
@@ -292,7 +305,7 @@ MARGIN = 5.0
 
 def render(chart, out: Path, *, width: float, dark: bool, scale: float = 2.0) -> Path:
     """Draw ``chart`` with the real view into a ``scale``x PNG at ``out``."""
-    import AppKit
+    AppKit = appkit()
 
     from ai_quota_swap import menubar_chart_view
 
@@ -328,7 +341,7 @@ def _backdrop_class():
     while drawing so it follows the appearance. Defined once."""
     global _BACKDROP
     if _BACKDROP is None:
-        import AppKit
+        AppKit = appkit()
 
         class QswapChartBackdrop(AppKit.NSView):
             def isFlipped(self):
