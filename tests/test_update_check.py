@@ -1136,11 +1136,12 @@ class TestPrintedInstallCommands:
         assert not any("git+" in arg or "@" in arg for arg in argv), argv
         return argv
 
-    def test_the_constants_name_the_released_package(self):
+    def test_the_constants_name_the_released_package(self, monkeypatch):
         from ai_quota_swap import update_check
 
+        monkeypatch.setattr("ai_quota_swap.update_check.sys.prefix", "/home/me/venv")
         assert update_check.INSTALL_SOURCE == "ai-quota-swap"
-        assert update_check.MENUBAR_INSTALL_SPEC == f"'{self.SPEC}'"
+        assert update_check.menubar_install_spec() == f"'{self.SPEC}'"
 
     @pytest.mark.parametrize(
         ("method", "command"),
@@ -1208,3 +1209,242 @@ class TestPrintedInstallCommands:
 
         monkeypatch.setattr("ai_quota_swap.update_check.sys.platform", platform)
         assert update_check._shell_word(path) == word
+
+
+# --- the install's own name: ai-quota-swap, or the qswap alias ----------------
+
+
+_UV_TOOL = "/home/maya/.local/share/uv/tools/"
+_PIPX_VENV = "/home/maya/.local/pipx/venvs/"
+
+
+class TestInstallName:
+    """`uv tool install qswap` makes a uv tool named qswap (packaging/qswap
+    depends on ai-quota-swap). Every command qswap runs or prints names the
+    tool by the last folder of sys.prefix; an install that is not a uv tool or
+    a pipx venv keeps the package's own name."""
+
+    @pytest.fixture(autouse=True)
+    def _install(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+        monkeypatch.delenv("PIPX_HOME", raising=False)
+        monkeypatch.delenv("UV_EXCLUDE_NEWER", raising=False)
+        monkeypatch.setattr("ai_quota_swap.update_check.sys.platform", "linux")
+        monkeypatch.setattr("ai_quota_swap.update_check.CACHE_PATH", tmp_path / "cache.json")
+
+    def _prefix(self, monkeypatch, prefix: str) -> None:
+        monkeypatch.setattr("ai_quota_swap.update_check.sys.prefix", prefix)
+
+    def _upgrade(self, monkeypatch, before="0.1.0", after="0.1.1"):
+        """run_self_upgrade with the package manager and the build on disk faked."""
+        from ai_quota_swap import update_check
+
+        monkeypatch.setattr(
+            update_check, "install_identity", lambda: {"version": before, "source": None}
+        )
+        monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: _on_disk(after))
+        with patch("ai_quota_swap.update_check.subprocess.run",
+                   return_value=MagicMock(returncode=0)) as run:
+            code = run_self_upgrade(before)
+        return code, run
+
+    @pytest.mark.parametrize(
+        ("prefix", "name"),
+        [
+            (_UV_TOOL + "qswap", "qswap"),
+            (_UV_TOOL + "ai-quota-swap", "ai-quota-swap"),
+            (_PIPX_VENV + "qswap", "qswap"),
+            (_PIPX_VENV + "ai-quota-swap", "ai-quota-swap"),
+            ("/home/maya/code/ai-quota-swap/.venv", "ai-quota-swap"),
+            ("/home/maya/venv", "ai-quota-swap"),
+        ],
+        ids=["uv-alias", "uv", "pipx-alias", "pipx", "checkout", "plain-venv"],
+    )
+    def test_the_name_comes_from_the_install(self, monkeypatch, prefix, name):
+        from ai_quota_swap import update_check
+
+        self._prefix(monkeypatch, prefix)
+        assert update_check.install_name() == name
+        assert update_check.menubar_install_spec() == f"'{name}[menubar]'"
+
+    @pytest.mark.parametrize(
+        ("prefix", "tool_dir"),
+        [
+            (r"C:\Users\maya\.local\share\uv\tools\qswap", None),
+            (r"D:\tools\qswap", r"D:\tools"),
+        ],
+        ids=["uv-tools-path", "UV_TOOL_DIR"],
+    )
+    def test_a_windows_path(self, monkeypatch, capsys, prefix, tool_dir):
+        from ai_quota_swap import update_check
+
+        monkeypatch.setattr("ai_quota_swap.update_check.sys.platform", "win32")
+        self._prefix(monkeypatch, prefix)
+        if tool_dir:
+            monkeypatch.setenv("UV_TOOL_DIR", tool_dir)
+        assert update_check._detect_install_method() == "uv"
+        assert update_check.install_name() == "qswap"
+
+        code, run = self._upgrade(monkeypatch)
+        assert code == 1
+        run.assert_not_called()
+        assert capsys.readouterr().out == (
+            "To upgrade ai-quota-swap on Windows, run:\n  uv tool upgrade qswap\n"
+        )
+
+    def test_a_uv_alias_upgrades_the_tool_it_is(self, monkeypatch, capsys):
+        self._prefix(monkeypatch, _UV_TOOL + "qswap")
+        code, run = self._upgrade(monkeypatch)
+        assert code == 0
+        run.assert_called_once_with(["uv", "tool", "upgrade", "qswap"], check=False)
+        # The versions are ai-quota-swap's, never the alias's.
+        assert capsys.readouterr().out == "ai-quota-swap upgraded: 0.1.0 -> 0.1.1\n"
+
+    def test_an_ai_quota_swap_uv_tool_is_unchanged(self, monkeypatch, capsys):
+        self._prefix(monkeypatch, _UV_TOOL + "ai-quota-swap")
+        code, run = self._upgrade(monkeypatch)
+        assert code == 0
+        run.assert_called_once_with(["uv", "tool", "upgrade", "ai-quota-swap"], check=False)
+        assert capsys.readouterr().out == "ai-quota-swap upgraded: 0.1.0 -> 0.1.1\n"
+
+    def test_a_git_install_named_ai_quota_swap_is_unchanged(self, monkeypatch, capsys):
+        from ai_quota_swap import update_check
+
+        self._prefix(monkeypatch, _UV_TOOL + "ai-quota-swap")
+        monkeypatch.setattr(update_check, "install_identity", lambda: dict(_GIT_AD03D17))
+        monkeypatch.setattr(
+            update_check, "_installed_identity_on_disk", lambda: dict(_GIT_FDEB279)
+        )
+        with patch("ai_quota_swap.update_check.subprocess.run",
+                   return_value=MagicMock(returncode=0)) as run:
+            assert run_self_upgrade("0.1.0") == 0
+        run.assert_called_once_with(["uv", "tool", "upgrade", "ai-quota-swap"], check=False)
+        assert capsys.readouterr().out == (
+            "ai-quota-swap upgraded: 0.1.0 (ad03d17) -> 0.1.0 (fdeb279)\n"
+        )
+
+    @pytest.mark.parametrize(
+        ("folder", "command"),
+        [
+            ("ai-quota-swap", ["pipx", "upgrade", "ai-quota-swap"]),
+            # pipx upgrade qswap would upgrade only the alias, which stays at
+            # 0.1.0: runpip upgrades ai-quota-swap inside the qswap venv.
+            ("qswap", ["pipx", "runpip", "qswap", "install", "--upgrade", "ai-quota-swap"]),
+        ],
+        ids=["pipx", "pipx-alias"],
+    )
+    def test_pipx_under_either_name(self, monkeypatch, capsys, folder, command):
+        self._prefix(monkeypatch, _PIPX_VENV + folder)
+        code, run = self._upgrade(monkeypatch)
+        assert code == 0
+        run.assert_called_once_with(command, check=False)
+        assert capsys.readouterr().out == "ai-quota-swap upgraded: 0.1.0 -> 0.1.1\n"
+
+    @pytest.mark.parametrize(
+        ("prefix", "direct"),
+        [
+            (_UV_TOOL + "qswap", "uv tool upgrade qswap"),
+            (_UV_TOOL + "ai-quota-swap", "uv tool upgrade ai-quota-swap"),
+            (_PIPX_VENV + "qswap", "pipx runpip qswap install --upgrade ai-quota-swap"),
+            (_PIPX_VENV + "ai-quota-swap", "pipx upgrade ai-quota-swap"),
+        ],
+        ids=["uv-alias", "uv", "pipx-alias", "pipx"],
+    )
+    @patch("ai_quota_swap.update_check.urllib.request.urlopen")
+    @patch("ai_quota_swap.update_check.subprocess.run")
+    def test_the_windows_update_notice(self, mock_run, mock_urlopen, monkeypatch, prefix, direct):
+        monkeypatch.setattr("ai_quota_swap.update_check.sys.platform", "win32")
+        self._prefix(monkeypatch, prefix.replace("/", "\\"))
+        mock_run.return_value = _uv_pip_list(
+            [{"name": "ai-quota-swap", "version": "0.1.0", "latest_version": "0.1.1"}]
+        )
+        mock_urlopen.return_value = _make_pypi_response("0.1.1")
+        assert check_for_update("0.1.0") == (
+            "A newer version of ai-quota-swap is available (0.1.1). "
+            f"You are using 0.1.0. Run `{direct}` to update."
+        )
+
+    @patch("ai_quota_swap.update_check.subprocess.run")
+    def test_the_cooldown_remedy_names_the_alias(self, mock_run, monkeypatch, tmp_path):
+        prefix = tmp_path / "uv" / "tools" / "qswap"
+        prefix.mkdir(parents=True)
+        _UvInstall._write_receipt(prefix, 'exclude-newer-span = "P14D"', '{ name = "qswap" }')
+        self._prefix(monkeypatch, str(prefix))
+        mock_run.return_value = _uv_pip_list(
+            [{"name": "ai-quota-swap", "version": "0.1.0", "latest_version": "0.1.1"}]
+        )
+        lines = held_back_release_notice("0.1.0").splitlines()
+        assert lines[0].startswith("ai-quota-swap 0.1.1 is on PyPI")
+        assert lines[2:] == [
+            '  To take it now:          uv tool upgrade qswap --exclude-newer "0 days"',
+            "  To restore the cooldown: uv tool upgrade qswap --exclude-newer P14D",
+        ]
+
+    def test_a_checkout_prints_todays_instructions(self, monkeypatch, capsys):
+        python = "/home/maya/code/ai-quota-swap/.venv/bin/python"
+        self._prefix(monkeypatch, "/home/maya/code/ai-quota-swap/.venv")
+        monkeypatch.setattr("ai_quota_swap.update_check.sys.executable", python)
+        code, run = self._upgrade(monkeypatch)
+        assert code == 1
+        run.assert_not_called()
+        assert capsys.readouterr().err.splitlines()[-5:] == [
+            "Upgrade it the way you installed it:",
+            "  uv tool upgrade ai-quota-swap",
+            "  pipx upgrade ai-quota-swap",
+            f"  {python} -m pip install --upgrade ai-quota-swap",
+            "  git pull                      # a source checkout",
+        ]
+
+    @pytest.mark.parametrize(
+        ("folder", "remedy"),
+        [
+            (_UV_TOOL + "qswap", "uv tool install --force 'qswap[menubar]'"),
+            (_UV_TOOL + "ai-quota-swap", "uv tool install --force 'ai-quota-swap[menubar]'"),
+            (_PIPX_VENV + "qswap", "pipx install --force 'qswap[menubar]'"),
+            (_PIPX_VENV + "ai-quota-swap", "pipx install --force 'ai-quota-swap[menubar]'"),
+            ("/home/maya/venv", "pip install 'ai-quota-swap[menubar]'"),
+        ],
+        ids=["uv-alias", "uv", "pipx-alias", "pipx", "plain-venv"],
+    )
+    def test_the_menubar_extra_remedy_reinstalls_the_same_tool(
+        self, monkeypatch, folder, remedy
+    ):
+        import importlib.util
+
+        from ai_quota_swap import cli
+
+        self._prefix(monkeypatch, folder)
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+        assert cli._menubar_extra_missing() == (
+            f"The menu bar needs the 'menubar' extra. Install it with: {remedy}"
+        )
+
+    @pytest.mark.parametrize(
+        ("folder", "remedy"),
+        [
+            (_UV_TOOL + "qswap", "  uv tool install --managed-python --force 'qswap[menubar]'"),
+            (_PIPX_VENV + "qswap",
+             "  pipx install --force --python <that python> 'qswap[menubar]'"),
+        ],
+        ids=["uv-alias", "pipx-alias"],
+    )
+    def test_the_framework_build_remedy_names_the_alias(self, monkeypatch, folder, remedy):
+        from ai_quota_swap import menubar
+
+        self._prefix(monkeypatch, folder)
+        text = menubar.framework_build_warning(framework="Python", mac_ver="26.1")
+        assert text.splitlines()[-1] == remedy
+
+    def test_the_build_on_disk_is_ai_quota_swaps(self, tmp_path, monkeypatch):
+        """An alias venv holds both packages; the after-version is ai-quota-swap's."""
+        from ai_quota_swap import update_check
+
+        for name, dist, version in (("qswap", "qswap", "0.1.0"),
+                                    ("ai-quota-swap", "ai_quota_swap", "0.1.1")):
+            info = tmp_path / f"{dist}-{version}.dist-info"
+            info.mkdir()
+            (info / "METADATA").write_text(
+                f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding="utf-8"
+            )
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+        assert update_check._installed_identity_on_disk() == {"version": "0.1.1", "source": None}

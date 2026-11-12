@@ -1997,22 +1997,23 @@ def framework_build_warning(
     if major is None or major < MIN_AFFECTED_MACOS:
         return None
 
-    from ai_quota_swap.update_check import MENUBAR_INSTALL_SPEC
+    from ai_quota_swap.update_check import menubar_install_spec
 
     if install_method is None:
         from ai_quota_swap.update_check import _detect_install_method
 
         install_method = _detect_install_method()
 
+    spec = menubar_install_spec()
     if install_method == "uv":
         remedy = (
-            f"  uv tool install --managed-python --force {MENUBAR_INSTALL_SPEC}"
+            f"  uv tool install --managed-python --force {spec}"
         )
     elif install_method == "pipx":
         remedy = (
             "  Reinstall against a non-framework interpreter, e.g. one from "
             "`uv python install 3.13`:\n"
-            f"  pipx install --force --python <that python> {MENUBAR_INSTALL_SPEC}"
+            f"  pipx install --force --python <that python> {spec}"
         )
     else:
         remedy = (
@@ -2037,11 +2038,11 @@ def run(switcher) -> int:
         # guard around ``from ai_quota_swap.menubar import run`` can never see a
         # missing extra — the failure lands here at call time. Raise the
         # error type the CLI already renders cleanly instead of a traceback.
-        from ai_quota_swap.update_check import MENUBAR_INSTALL_SPEC
+        from ai_quota_swap.update_check import menubar_install_spec
 
         raise ClaudeSwitchError(
             "Menu bar mode requires 'rumps'. "
-            f"Install with: pip install {MENUBAR_INSTALL_SPEC}"
+            f"Install with: pip install {menubar_install_spec()}"
         ) from e
 
     from ai_quota_swap import app_bundle

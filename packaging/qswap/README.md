@@ -9,7 +9,7 @@ uv tool install 'qswap[menubar]'   # on macOS, with the menu bar app
 
 The project's own name is ai-quota-swap, and `uv tool install ai-quota-swap` installs it under that name.
 
-If you installed it as qswap, upgrade with `uv tool upgrade qswap`, which upgrades ai-quota-swap too. `qswap upgrade` in ai-quota-swap 0.1.0 looks for a uv tool named ai-quota-swap, so it fails on an install made under this name.
+If you installed it as qswap, `qswap upgrade` upgrades it from ai-quota-swap 0.1.1 on. In 0.1.0 it looks for a uv tool named ai-quota-swap and fails on an install made under this name, so there use `uv tool upgrade qswap`, which upgrades ai-quota-swap too.
 
 The documentation is in the repository at https://github.com/seangeng/ai-quota-swap, and the package page is https://pypi.org/project/ai-quota-swap/.
 
