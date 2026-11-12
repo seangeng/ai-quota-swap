@@ -76,7 +76,7 @@ sender's icon is a neutral placeholder.
 | `--open "Use a reset"` | opens that submenu beside the menu and selects its row. `"Settings > Use resets automatically"` opens one inside another. A title the menu does not have stops the run with exit status 2 and lists the submenus it has |
 | `--highlight TEXT` | puts the row of the innermost open menu that starts with TEXT under the pointer; a greyed row is refused |
 | `--closed` | draws the bar with the menu shut, at the size of the open picture |
-| `--beside PNG` | puts a 2x screenshot on the desktop as a window behind the menu; the hero uses the dashboard |
+| `--beside PNG` | puts a 2x screenshot on the desktop as a window behind the menu, midway between the bar and the bottom edge; the hero uses the dashboard |
 | `--size WxH` | fixes the picture's size in CSS px, so frames line up |
 | `--no-usage-chart` | turns *Show usage chart* off, so the cost row is the plain sentence |
 | `--auto-switch [claude\|codex\|both]` | turns the menu bar's auto-switch on and runs its engines (below); `both` when no value is given |

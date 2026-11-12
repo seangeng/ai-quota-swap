@@ -1194,7 +1194,7 @@ class TestHarnessPieces:
         # The hero's layout in CSS px, as the page lays it out.
         layout = {
             "width": 1066, "height": 728,
-            "window": {"left": 32, "top": 64, "right": 792, "bottom": 597},
+            "window": {"left": 32, "top": 110, "right": 792, "bottom": 643},
             "menu": {"left": 596, "top": 26, "right": 1058, "bottom": 694},
             "rows": [31, 64, 86, 403, 425, 480, 502, 524, 546, 568],
         }
@@ -1207,6 +1207,21 @@ class TestHarnessPieces:
         # No row top in reach: half the stage's width.
         x, y, w, h = capture.social_crop({**layout, "rows": [31, 64]})
         assert (x, y, w, h) == (0, 0, 1066, 533)
+
+    def test_the_heros_window_sits_midway_between_the_bar_and_the_bottom(self):
+        import struct
+
+        import menubar_page
+
+        # A 2x screenshot 1520 x 1066 px, drawn 760 CSS px wide: 533 tall.
+        window = menubar_page.Backdrop(b"\0" * 16 + struct.pack(">II", 1520, 1066), width=760)
+        assert window.height == 533
+        # Under a taller menu (the hero's: 704 px under the bar) the
+        # wallpaper above and below the window is even.
+        top = menubar_page.window_top(window, 704)
+        assert (top, 704 - top - window.height) == (86, 85)
+        # Never closer to the bar than its own top.
+        assert menubar_page.window_top(window, 560) == window.top == 40
 
     def test_the_chart_pair_is_a_registered_shot(self):
         import scenarios

@@ -102,7 +102,7 @@ class MenubarShot:
 MENUBAR_SHOTS = (
     MenubarShot("menubar", "showcase",
                 "The menu bar: both providers' accounts with their usage, the active ones "
-                "checked, held resets, today's cost, auto-switch running"),
+                "checked, held resets, the seven-day cost chart, auto-switch running"),
     MenubarShot("menubar-light", "showcase", "The menu bar in the light theme", theme="light"),
     MenubarShot("menubar-resets", "showcase",
                 "Use a reset: each held usage reset and Codex reset credit, and whether "
@@ -110,8 +110,9 @@ MENUBAR_SHOTS = (
                 open="Use a reset", highlight="Codex #2 work"),
     # One submenu level each, so the menus stay at a readable size on the page.
     MenubarShot("menubar-settings", "showcase",
-                "Settings: the title, the auto-switch toggle for each provider and its "
-                "threshold, automatic resets, and Start at login",
+                "Settings: the title, Show usage chart and Refresh interval, the "
+                "auto-switch toggle for each provider and its threshold, automatic resets, "
+                "and Start at login",
                 open="Settings"),
     MenubarShot("menubar-auto-resets", "showcase",
                 "Use resets automatically: when the engines spend a usage reset by "
@@ -123,7 +124,7 @@ MENUBAR_SHOTS = (
                 args=("switch", "5")),
     MenubarShot("hero", "showcase",
                 "The qswap menu bar open over the dashboard: every Claude Code and Codex "
-                "account with its usage, held resets and today's cost",
+                "account with its usage, held resets and the seven-day cost chart",
                 beside="dashboard"),
     MenubarShot("hero-light", "showcase",
                 "The qswap menu bar open over the dashboard, light theme",

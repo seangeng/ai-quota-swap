@@ -375,9 +375,13 @@ def social_preview(hero: Path = RAW_DIR / "hero.png", page: Path = SHOTS_DIR / "
     px = struct.unpack(">II", raw[16:24])[0] / layout["width"]  # the PNG's px per CSS px
     x, y, w, h = (round(v * px) for v in social_crop(layout))
     w, h = 2 * (w // 2), w // 2  # exactly 2:1
+    # The hero is paletted (pngquant). Without format=rgb24 ffmpeg would
+    # write the scaled picture paletted too, dithered onto its own fixed
+    # 256-colour palette, so no pixel would keep qswap's colours; pngquant
+    # then makes a palette from the true colours.
     subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error", "-i", str(hero), "-vf",
-         f"crop={w}:{h}:{x}:{y},scale={SOCIAL_SIZE[0]}:{SOCIAL_SIZE[1]}:flags=lanczos",
+         f"crop={w}:{h}:{x}:{y},scale={SOCIAL_SIZE[0]}:{SOCIAL_SIZE[1]}:flags=lanczos,format=rgb24",
          "-frames:v", "1", str(SOCIAL_PREVIEW)],
         check=True,
     )

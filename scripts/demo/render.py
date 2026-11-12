@@ -33,11 +33,13 @@ def _rgb(hex_colour: str) -> tuple[int, int, int]:
 # tui/theme.py), so dim text, which Rich blends from the two, is in the same
 # cool greys as the frame. The sixteen ANSI colours stand in for a terminal's
 # own: of them, the command line uses red and yellow, in its dark palette.
+# Those two are the palette's red and amber, so a CLI shot's warning is the
+# colour the dashboard's is; the light table's greys are the palette's too.
 DARK = TerminalTheme(
     _rgb(palette.BACKGROUND),
     _rgb(palette.FOREGROUND),
     [
-        (60, 62, 68), (232, 108, 108), (143, 196, 120), (226, 186, 106),
+        (60, 62, 68), _rgb(palette.SEV_CRIT), (143, 196, 120), _rgb(palette.SEV_WARN),
         (110, 166, 230), (196, 140, 220), (98, 190, 196), (212, 212, 208),
     ],
     [
@@ -49,12 +51,13 @@ LIGHT = TerminalTheme(
     _rgb(palette.BACKGROUND_LIGHT),
     _rgb(palette.FOREGROUND_LIGHT),
     [
-        (36, 36, 34), (179, 38, 58), (46, 118, 52), (122, 82, 0),
-        (36, 92, 170), (130, 60, 150), (24, 120, 128), (120, 118, 112),
+        _rgb(palette.FOREGROUND_LIGHT), _rgb(palette.SEV_CRIT_LIGHT), (46, 118, 52),
+        _rgb(palette.SEV_WARN_LIGHT), (36, 92, 170), (130, 60, 150), (24, 120, 128),
+        _rgb(palette.MUTED),
     ],
     [
-        (80, 80, 76), (200, 70, 60), (60, 140, 70), (150, 110, 30),
-        (60, 110, 190), (150, 80, 170), (40, 140, 150), (200, 198, 192),
+        _rgb(palette.MUTED_LIGHT), (200, 70, 60), (60, 140, 70), (150, 110, 30),
+        (60, 110, 190), (150, 80, 170), (40, 140, 150), _rgb(palette.TRACK_LIGHT),
     ],
 )
 
