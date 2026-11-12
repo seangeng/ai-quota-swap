@@ -72,7 +72,7 @@ qswap menubar                 # start the menu bar now and at every login
 qswap menubar --auto-switch   # let it switch Claude Code accounts for you
 ```
 
-On macOS 26 and later, the menu bar icon has been seen not to appear when qswap runs on Homebrew's or python.org's Python, and `qswap menubar` warns when that is the case. To avoid it, put qswap on uv's own Python: `uv tool install --managed-python 'ai-quota-swap[menubar]'`.
+On macOS 26 and later, the menu bar icon has been seen not to appear when qswap runs on Homebrew's or python.org's Python, and `qswap menubar` warns when that is the case. To avoid it, put qswap on uv's own Python: `uv tool install --managed-python --force 'ai-quota-swap[menubar]'`.
 
 On Linux (WSL included) or Windows:
 

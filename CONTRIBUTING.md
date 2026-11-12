@@ -136,7 +136,7 @@ Shots need a local Chrome (`CHROME_PATH` if it is not in `/Applications`), recor
 
 A release is published to PyPI by `.github/workflows/publish.yml` through trusted publishing. 0.1.0 was the first. For each release:
 
-1. Set the version in `pyproject.toml`, and rename `## Unreleased` in `CHANGELOG.md` to that version, with nothing above it but the title.
+1. Set the version in `pyproject.toml`, then run `uv lock` and commit `uv.lock` with it: the lock file carries the version too, and CI's `uv sync --locked` fails while the two differ. Rename `## Unreleased` in `CHANGELOG.md` to that version, with nothing above it but the title.
 2. Build the package and install the wheel into a scratch environment. `qswap --version` should print the new version with no commit in brackets, since the wheel is not a git install:
 
    ```bash
@@ -148,4 +148,4 @@ A release is published to PyPI by `.github/workflows/publish.yml` through truste
    HOME="$scratch/home" "$scratch/venv/bin/qswap" --version
    ```
 
-3. Merge, then publish a GitHub release whose tag is the version (`v0.1.0` for `0.1.0`). The workflow refuses a tag that does not match the version, and a tree whose `CHANGELOG.md` has no section for it.
+3. Merge, then publish a GitHub release whose tag is the version (`v0.1.0` for `0.1.0`). The workflow refuses a tag that does not match the version, and a tree whose `CHANGELOG.md` has no section for it. Name the repository in every `gh` command of the release, for example `gh release create v0.1.0 --target main -R seangeng/ai-quota-swap`: in a clone that also has the original project as a remote named `upstream`, `gh` picks that one when no default repository is set.

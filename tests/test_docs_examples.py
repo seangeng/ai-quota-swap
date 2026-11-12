@@ -1,5 +1,6 @@
-"""The documents quote what qswap prints about API keys; these pin the quotes
-to the code that prints them, so a change to either shows up here.
+"""The documents quote what qswap prints about API keys, and the reinstall
+command for macOS 26; these pin the quotes to the code that prints them, so a
+change to either shows up here.
 
 Each check builds the text the way the command does (the shared phrases in
 ``display`` and ``autolog``, with the documents' example accounts) and looks
@@ -167,6 +168,21 @@ def test_the_unwatched_key_words(tmp_path):
     assert "Auto-switch entered #5 ci and is not running, so nothing watches its li…" in (
         _page("docs/menubar.md")
     )
+
+
+@pytest.mark.parametrize("page", ["README.md", "docs/menubar.md"])
+def test_the_macos_26_reinstall_command(page):
+    """The command ``qswap menubar`` prints, with its ``--force``: without it,
+    uv keeps an existing install on the old Python and says it is already
+    installed."""
+    from ai_quota_swap import menubar
+
+    text = menubar.framework_build_warning(
+        framework="Python", install_method="uv", mac_ver="26.1"
+    )
+    command = text.splitlines()[-1].strip()
+    assert "--force" in command
+    assert f"`{command}`" in _page(page)
 
 
 def test_the_connectors_sentence_is_quoted_where_the_switch_is_described():
