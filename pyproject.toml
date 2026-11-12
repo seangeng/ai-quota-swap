@@ -82,15 +82,17 @@ packages = ["src/ai_quota_swap"]
 
 # The sdist carries the source, the tests and what they need (the demo
 # harness's code, scripts/settings_doc.py, the Markdown docs), not the
-# screenshots, recordings and rendered pages the harness made, nor CI files.
-# The one exception is the dashboard screenshot that the menu bar drawing
-# tests in tests/test_demo_harness.py draw the menu in front of.
+# screenshots, recordings and rendered pages the harness made, nor CI files,
+# nor the qswap alias package in packaging/ (it is built and uploaded on its
+# own). The one exception is the dashboard screenshot that the menu bar
+# drawing tests in tests/test_demo_harness.py draw the menu in front of.
 [tool.hatch.build.targets.sdist]
 exclude = [
     "/assets",
     "/docs/shots",
     "/.github",
     "/.python-version",
+    "/packaging",
 ]
 
 [tool.hatch.build.targets.sdist.force-include]

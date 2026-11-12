@@ -1,0 +1,54 @@
+# The qswap name on PyPI. This package holds no code: it depends on
+# ai-quota-swap, the project behind the qswap command, so that
+# `pip install qswap` and `uv tool install qswap` install it.
+# .github/workflows/publish-qswap.yml builds and uploads it.
+
+[project]
+name = "qswap"
+version = "0.1.0"
+description = "Installs ai-quota-swap, the Claude Code and Codex account switcher behind the qswap command"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["ai-quota-swap>=0.1.0"]
+authors = [{name = "seangeng"}]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: MacOS X",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Utilities",
+]
+
+[project.optional-dependencies]
+menubar = ["ai-quota-swap[menubar]>=0.1.0"]
+
+[project.urls]
+Homepage = "https://github.com/seangeng/ai-quota-swap"
+Documentation = "https://github.com/seangeng/ai-quota-swap/tree/main/docs"
+Repository = "https://github.com/seangeng/ai-quota-swap"
+Changelog = "https://github.com/seangeng/ai-quota-swap/blob/main/CHANGELOG.md"
+Issues = "https://github.com/seangeng/ai-quota-swap/issues"
+"ai-quota-swap on PyPI" = "https://pypi.org/project/ai-quota-swap/"
+
+# uv tool install and pipx install expose only the commands of the package
+# they are given, so the alias declares the same qswap entry point that
+# ai-quota-swap does.
+[project.scripts]
+qswap = "ai_quota_swap.entry:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# A wheel with metadata only: no modules of its own.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true

@@ -1,0 +1,42 @@
+name: Publish the qswap alias to PyPI
+
+# Builds packaging/qswap, the package that holds the qswap name on PyPI and
+# only installs ai-quota-swap, and uploads it. It runs by hand only. Its
+# dependency has no upper bound, so new ai-quota-swap releases need no new
+# qswap upload: the alias needs one only when its own metadata changes, and
+# then with a new version in packaging/qswap/pyproject.toml. PyPI trusts this
+# workflow through trusted publishing: the qswap project's publisher on PyPI
+# must name this repository, this file (publish-qswap.yml) and the `pypi`
+# environment.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/qswap
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: pip install build
+
+      - name: Build the alias package
+        run: python -m build packaging/qswap --outdir dist-qswap
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist-qswap
