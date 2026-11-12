@@ -120,12 +120,12 @@ def test_a_gap_shows_only_between_two_tall_segments():
 
 def test_the_legend_fits_the_view_whatever_its_width():
     # Whatever width the menu gives the view, which is never less than the
-    # view's own width and the check-mark column NSMenu adds to it.
+    # view's own width and what NSMenu adds to it beside a checked row.
     _caption, _day, legend_font = view_mod._fonts()
     for week in (SEVEN, LONG, {A1: (1,) * 7, A2: (2,) * 7}):
         chart = build_chart(_cost(week), both=True)
         view = view_mod.make_view(chart)
-        narrowest = view.frame().size.width + view_mod.STATE_COLUMN
+        narrowest = view.frame().size.width + view_mod.check_column_added()
         assert narrowest == pytest.approx(view_mod.menu_width(chart))
         for width in (narrowest, max(narrowest, 380.0), narrowest + 23.0, 520.0):
             inner = width - view_mod.TITLE_INSET - view_mod.STATE_COLUMN - view_mod.RIGHT_INSET
@@ -195,44 +195,185 @@ def test_a_failure_finding_the_check_marks_never_reaches_appkit(monkeypatch):
     assert any(_alpha(rep, left + dx, menubar_chart.CAPTION_BAND / 2) > 0 for dx in range(0, 40))
 
 
-def test_the_view_asks_for_its_width_without_the_check_mark_column():
-    # NSMenu adds the check-mark column to a view's width by itself once a
-    # row has a check mark, so the view's own width leaves it out: the
-    # insets, and the caption or the legend at its shortest forms.
+def test_the_view_asks_for_the_part_of_the_check_mark_column_nsmenu_does_not_add():
+    # Beside a checked row NSMenu widens the menu for a view by itself (14
+    # points on macOS 27, 7 on macOS 26), so the view asks for its insets,
+    # the caption or the legend at its shortest forms, and the rest of the
+    # column; with no check marks, none of it.
     caption_font, _day, legend_font = view_mod._fonts()
+    added = view_mod.check_column_added()
     for week in (SEVEN, SHOWCASE, LONG):
         chart = build_chart(_cost(week), both=True)
         shortest = chart.fit_legend(lambda _names: False)
         caption = view_mod._text(chart.caption, caption_font, AppKit.NSColor.labelColor()).size().width
         content = max(caption, view_mod._legend_width(chart, shortest, legend_font))
+        own = view_mod.TITLE_INSET + content + view_mod.RIGHT_INSET
         view = view_mod.make_view(chart)
-        assert view.frame().size.width == pytest.approx(view_mod.TITLE_INSET + content + view_mod.RIGHT_INSET)
-        assert view_mod.menu_width(chart) == pytest.approx(view.frame().size.width + view_mod.STATE_COLUMN)
-        assert view_mod.menu_width(chart, check_marks=False) == pytest.approx(view.frame().size.width)
+        assert view.frame().size.width == pytest.approx(own + max(0.0, view_mod.STATE_COLUMN - added))
+        assert view_mod.menu_width(chart) == pytest.approx(view.frame().size.width + added)
+        assert view_mod.make_view(chart, check_marks=False).frame().size.width == pytest.approx(own)
+        assert view_mod.menu_width(chart, check_marks=False) == pytest.approx(own)
+
+
+def _menu_beside(view, *, checked: bool = True):
+    """A menu of one short row, checked or not, and ``view``. Laid out off
+    screen by NSMenu.size, never opened."""
+    menu = AppKit.NSMenu.alloc().init()
+    row = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("#1 personal", None, "")
+    row.setState_(AppKit.NSControlStateValueOn if checked else AppKit.NSControlStateValueOff)
+    menu.addItem_(row)
+    item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(view.chart.caption, None, "")
+    item.setView_(view)
+    menu.addItem_(item)
+    return menu
 
 
 def test_a_menu_of_a_short_row_and_the_chart_is_as_wide_as_the_chart_needs():
-    # Measured, never shown: NSMenu.size lays the menu out without opening
-    # it. Without a check mark the menu is the view's width. With one,
-    # NSMenu adds room for the check-mark column to the view by itself:
-    # 14 points on macOS 27, 7 on macOS 26 (CI's runner). Either way the
-    # menu is never wider than the view and the column, as it was when the
-    # view counted the column itself.
+    # Measured, never shown. Without a check mark the menu is the view's
+    # width. With one, NSMenu adds what check_column_added measured with a
+    # plain view (14 points on macOS 27, 7 on macOS 26, CI's runner), and
+    # never more than the column.
     chart = build_chart(_cost(SEVEN), both=True)
-    view_width = view_mod.min_width(chart)
     for checked in (False, True):
-        menu = AppKit.NSMenu.alloc().init()
-        row = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("#1 personal", None, "")
-        row.setState_(AppKit.NSControlStateValueOn if checked else AppKit.NSControlStateValueOff)
-        menu.addItem_(row)
-        item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(chart.caption, None, "")
-        item.setView_(view_mod.make_view(chart))
-        menu.addItem_(item)
-        added = float(menu.size().width) - view_width
+        view = view_mod.make_view(chart)
+        view_width = float(view.frame().size.width)
+        added = float(_menu_beside(view, checked=checked).size().width) - view_width
         if checked:
             assert 0.5 < added <= view_mod.STATE_COLUMN + 0.5
+            assert added == pytest.approx(view_mod.check_column_added(), abs=0.5)
         else:
             assert added == pytest.approx(0.0, abs=0.5)
+
+
+#: Both providers with a #1 and a #2 in the legend.
+TWIN = {A1: SEVEN[A1], X1: SEVEN[A2], A2: SEVEN[X1], X2: SEVEN[A3], A3: SEVEN[A5]}
+WIDEST = pytest.mark.parametrize("week", [SEVEN, TWIN], ids=["seven-accounts", "twin-numbers"])
+
+
+def _legend_dots(view) -> list[bool]:
+    """Whether each legend entry's dot is drawn where the fitted line puts
+    it, in ``view`` at its width with the check-mark column."""
+    chart = view.chart
+    measure = _view_measure(chart)
+    _caption, _day, legend_font = view_mod._fonts()
+    left = view_mod.TITLE_INSET + view_mod.STATE_COLUMN
+    inner = float(view.frame().size.width) - left - view_mod.RIGHT_INSET
+    names = chart.fit_legend(lambda ns: measure(ns) <= inner)
+    rep = _bitmap(view, dark=False)
+    y = view_mod._frame().legend_top + view_mod._line_height(legend_font) / 2
+    x, out = left, []
+    for name, entry in zip(names, chart.legend):
+        out.append(_alpha(rep, x + menubar_chart.DOT / 2, y) > 0.5)
+        x += menubar_chart.DOT + menubar_chart.DOT_GAP
+        x += view_mod._entry_text(name, entry.amount_text, legend_font).size().width + menubar_chart.ENTRY_GAP
+    return out
+
+
+def _shortest_fits(view) -> bool:
+    """Whether the legend at its shortest forms fits ``view``'s content
+    area, to the half point the view allows itself."""
+    chart = view.chart
+    inner = float(view.frame().size.width) - INSETS
+    return _view_measure(chart)(chart.fit_legend(lambda _names: False)) <= inner + 0.5
+
+
+def _stretch(view, width: float) -> None:
+    """Give ``view`` the menu's width, as the menu does."""
+    view.setFrame_(((0, 0), (width, view.frame().size.height)))
+
+
+@WIDEST
+def test_beside_a_short_checked_row_every_legend_entry_is_drawn(week):
+    # The chart as the widest row of its menu, the only other row short and
+    # checked: NSMenu.size on this system (never shown) gives the menu's
+    # width, the menu gives the view that width, and the legend at its
+    # shortest forms fits inside the insets, every entry drawn. On macOS 26
+    # NSMenu adds 7 points, not 14; a view asking without the whole column
+    # had 7 points too few there and left the last entry out.
+    chart = build_chart(_cost(week), both=True)
+    shortest = chart.fit_legend(lambda _names: False)
+    own = view_mod._own_width(chart)
+    assert _view_measure(chart)(shortest) == pytest.approx(own - view_mod.TITLE_INSET - view_mod.RIGHT_INSET)
+    view = view_mod.make_view(chart)
+    width = float(_menu_beside(view).size().width)
+    assert width == pytest.approx(view_mod.menu_width(chart), abs=0.5)
+    _stretch(view, width)
+    assert _shortest_fits(view)
+    assert all(_legend_dots(view))
+
+
+@WIDEST
+@pytest.mark.parametrize("added", [7.0, 14.0], ids=["macOS-26", "macOS-27"])
+def test_the_legend_fits_whatever_nsmenu_adds_for_the_check_marks(monkeypatch, week, added):
+    # NSMenu as macOS 26 (7 points) and macOS 27 (14) lay it out, in place
+    # of this system's: the view measures the amount, asks for the rest of
+    # the column, and the menu (the view and what NSMenu adds) leaves the
+    # legend room for every entry. Asking without the whole column, as if
+    # NSMenu always added 14, leaves the last entry out where it adds 7.
+    monkeypatch.setattr(view_mod, "_check_column_added", None)
+    monkeypatch.setattr(view_mod, "_probe_menu_width", lambda width: width + added)
+    chart = build_chart(_cost(week), both=True)
+    view = view_mod.make_view(chart)
+    menu = view.frame().size.width + added
+    _stretch(view, menu)
+    assert _shortest_fits(view)
+    assert all(_legend_dots(view))
+    assert view_mod.check_column_added() == added
+    assert view_mod.menu_width(chart) == pytest.approx(menu)
+    own = view_mod._own_width(chart)  # no check marks: none of the column
+    assert view_mod.make_view(chart, check_marks=False).frame().size.width == pytest.approx(own)
+    assert view_mod.menu_width(chart, check_marks=False) == pytest.approx(own)
+    # A view asking for its insets and its content alone, and the menu
+    # that view and what NSMenu adds.
+    _stretch(view, own + added)
+    dots = _legend_dots(view)
+    if added < view_mod.STATE_COLUMN:
+        assert not _shortest_fits(view)
+        assert dots[:-1] == [True] * (len(dots) - 1) and dots[-1] is False  # the last entry left out
+    else:
+        assert _shortest_fits(view) and all(dots)
+
+
+def test_the_check_mark_column_is_measured_once_and_shows_nothing(monkeypatch):
+    monkeypatch.setattr(view_mod, "_check_column_added", None)
+    real, calls = view_mod._probe_menu_width, []
+    monkeypatch.setattr(view_mod, "_probe_menu_width", lambda width: calls.append(width) or real(width))
+    app = AppKit.NSApp()  # None unless something made one: the measurement makes none
+    windows = len(app.windows()) if app is not None else 0
+    for week in (SEVEN, TWIN, LONG):
+        chart = build_chart(_cost(week), both=True)
+        view_mod.make_view(chart)
+        view_mod.min_width(chart)
+        view_mod.menu_width(chart)
+    assert calls == [view_mod.PROBE_WIDTH]
+    assert 0.5 < view_mod.check_column_added() <= view_mod.STATE_COLUMN + 0.5
+    after = AppKit.NSApp()
+    assert (after is None) == (app is None)
+    assert (len(after.windows()) if after is not None else 0) == windows
+
+
+def test_a_failed_measurement_keeps_the_whole_column(monkeypatch):
+    # A menu a little wide is better than a legend entry left out.
+    chart = build_chart(_cost(SEVEN), both=True)
+    own = view_mod._own_width(chart)
+    calls = []
+
+    def broken(width):
+        calls.append(width)
+        raise RuntimeError("no menu today")
+
+    monkeypatch.setattr(view_mod, "_check_column_added", None)
+    monkeypatch.setattr(view_mod, "_probe_menu_width", broken)
+    assert view_mod.min_width(chart) == pytest.approx(own + view_mod.STATE_COLUMN)
+    assert view_mod.make_view(chart).frame().size.width == pytest.approx(own + view_mod.STATE_COLUMN)
+    assert view_mod.min_width(chart, check_marks=False) == pytest.approx(own)
+    assert view_mod.check_column_added() == 0.0
+    assert calls == [view_mod.PROBE_WIDTH]  # tried once, not on every rebuild
+    # An answer that is not a width is a failure too.
+    for wrong in (float("nan"), float("inf"), -3.0):
+        monkeypatch.setattr(view_mod, "_check_column_added", None)
+        monkeypatch.setattr(view_mod, "_probe_menu_width", lambda width, wrong=wrong: width + wrong)
+        assert view_mod.min_width(chart) == pytest.approx(own + view_mod.STATE_COLUMN), wrong
 
 
 def test_every_bar_has_the_same_corners():
@@ -290,9 +431,7 @@ def test_the_showcase_legend_with_the_views_own_fonts_from_360_to_600_points():
 
 
 def test_twin_numbers_read_apart_at_every_width():
-    # Both providers with a #1 and a #2 in the legend.
-    week = {A1: SEVEN[A1], X1: SEVEN[A2], A2: SEVEN[X1], X2: SEVEN[A3], A3: SEVEN[A5]}
-    chart = build_chart(_cost(week), both=True)
+    chart = build_chart(_cost(TWIN), both=True)
     assert [e.name[: e.head] for e in chart.legend[:4]] == ["#1", "Codex #1", "#2", "Codex #2"]
     shown = assert_legend_uses_its_room(chart, [w - INSETS for w in range(320, 601, 4)], _view_measure(chart))
     for names in shown:

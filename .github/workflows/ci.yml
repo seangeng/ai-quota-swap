@@ -108,8 +108,10 @@ jobs:
         # uv.lock (rumps and the AppKit bindings it brings), and
         # QSWAP_TEST_REQUIRE_APPKIT turns the test's skip into a plain
         # import, so a broken AppKit fails the step. The test draws into a
-        # bitmap: no window, no application, no run loop.
+        # bitmap: no window, no application, no run loop. `-v` names each
+        # test in the log: the width tests measure NSMenu on this runner's
+        # macOS, which is not the one they are written on.
         timeout-minutes: 5
         env:
           QSWAP_TEST_REQUIRE_APPKIT: "1"
-        run: uv run --locked --extra menubar pytest tests/test_menubar_chart_view.py -n0 -o faulthandler_timeout=120
+        run: uv run --locked --extra menubar pytest tests/test_menubar_chart_view.py -n0 -v -o faulthandler_timeout=120

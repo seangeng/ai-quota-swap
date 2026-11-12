@@ -298,8 +298,9 @@ def render(chart, out: Path, *, width: float, dark: bool, scale: float = 2.0) ->
 
     backdrop_cls = _backdrop_class()
     view = menubar_chart_view.make_view(chart)
-    # As wide as the menu: never narrower than the view with the check-mark
-    # column NSMenu adds to it (the view draws as in a menu with check marks).
+    # As wide as the menu: never narrower than the view and what NSMenu adds
+    # to it beside a checked row (the view draws as in a menu with check
+    # marks).
     w = max(float(width), menubar_chart_view.menu_width(chart))
     h = float(view.frame().size.height) + 2 * MARGIN
     backdrop = backdrop_cls.alloc().initWithFrame_(((0, 0), (w, h)))

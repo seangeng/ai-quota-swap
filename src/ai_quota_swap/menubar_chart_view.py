@@ -15,16 +15,19 @@ drawing of the menu uses too. Only the insets are this view's own.
 16 on each side, and adds a 14 point check-mark column before the titles
 once any row has a check mark. So the caption and the chart start 16 points
 in, 30 once the menu shows check marks (as it does while an account is
-active), to line up with the titles above. NSMenu adds that column to a
-view's width as well (a view W wide in a menu with a checked row makes the
-menu W + 14, measured off screen on macOS 27), so the width the view asks
-for leaves the column out (:func:`min_width`). None of these numbers is
-public API; they are measured, not promised, and only off screen.
+active), to line up with the titles above. Beside a checked row NSMenu
+also widens the menu for a view by itself, but not by the same amount
+everywhere: a view W wide makes the menu W + 14 on macOS 27 and W + 7 on
+macOS 26. So the view measures that amount once (:func:`check_column_added`)
+and asks for the rest of the column itself (:func:`min_width`). None of
+these numbers is public API; they are measured, not promised, and only off
+screen.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 
 import AppKit
 
@@ -52,6 +55,13 @@ LEGEND_FONT_SIZE = 11.0
 #: Set by a failure while drawing: from then on :func:`make_view` refuses,
 #: so the menu shows the plain text row until the app restarts.
 _failed = False
+
+#: The plain view :func:`check_column_added` measures with: wider than the
+#: short checked row beside it, so the view sets its menu's width.
+PROBE_WIDTH = 300.0
+#: What NSMenu adds to a view's width beside a checked row, once
+#: :func:`check_column_added` has measured it; None until then.
+_check_column_added: float | None = None
 
 
 def _fonts():
@@ -227,13 +237,50 @@ class QswapUsageChartView(AppKit.NSView):
                 pass
 
 
-def min_width(chart: UsageChart) -> float:
-    """The width the view asks its menu for: the insets, and room for the
-    caption and for the legend line at its shortest forms. It leaves out
-    the check-mark column: once a row has a check mark NSMenu adds those
-    :data:`STATE_COLUMN` points to the view's width by itself, and the view
-    then draws that much further in. The menu is at least this wide,
-    usually wider (its account rows)."""
+def _probe_menu_width(view_width: float) -> float:
+    """``NSMenu.size``'s width for a menu of one short checked row and a
+    plain view ``view_width`` wide. Laid out off screen: the menu is never
+    opened and no window is made."""
+    menu = AppKit.NSMenu.alloc().init()
+    row = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("A", None, "")
+    row.setState_(AppKit.NSControlStateValueOn)
+    menu.addItem_(row)
+    item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("", None, "")
+    item.setView_(AppKit.NSView.alloc().initWithFrame_(((0, 0), (view_width, 20.0))))
+    menu.addItem_(item)
+    return float(menu.size().width)
+
+
+def _measure_check_column() -> float:
+    """How much NSMenu adds to a view's width beside a checked row. Raises
+    when the answer is not a width."""
+    added = _probe_menu_width(PROBE_WIDTH) - PROBE_WIDTH
+    if not math.isfinite(added) or added < 0:
+        raise ValueError(f"NSMenu added {added!r} points to the view")
+    return added
+
+
+def check_column_added() -> float:
+    """How much of the check-mark column NSMenu adds to a view's width by
+    itself, beside a checked row: 14 points on macOS 27, 7 on macOS 26.
+    Measured off screen the first time it is asked, then kept for the
+    process. When the measurement fails, 0: the view then keeps the whole
+    column itself, and a menu a little wide is better than a legend entry
+    left out."""
+    global _check_column_added
+    if _check_column_added is None:
+        try:
+            added = _measure_check_column()
+        except Exception:
+            _logger.debug("menu bar: the check-mark column NSMenu adds could not be measured", exc_info=True)
+            added = 0.0
+        _check_column_added = added
+    return _check_column_added
+
+
+def _own_width(chart: UsageChart) -> float:
+    """The insets, and room for the caption and for the legend line at its
+    shortest forms."""
     caption_font, _day, legend_font = _fonts()
     caption = float(_text(chart.caption, caption_font, AppKit.NSColor.labelColor()).size().width)
     shortest = chart.fit_legend(lambda _names: False)
@@ -241,22 +288,36 @@ def min_width(chart: UsageChart) -> float:
     return TITLE_INSET + max(caption, legend) + RIGHT_INSET
 
 
+def min_width(chart: UsageChart, *, check_marks: bool = True) -> float:
+    """The width the view asks its menu for: the insets, room for the
+    caption and for the legend line at its shortest forms, and, when
+    ``check_marks``, the part of the :data:`STATE_COLUMN` points the view
+    draws further in that NSMenu does not add itself
+    (:func:`check_column_added`): none on macOS 27, 7 points on macOS 26.
+    The menu is at least this wide and what NSMenu adds, usually wider (its
+    account rows)."""
+    extra = max(0.0, STATE_COLUMN - check_column_added()) if check_marks else 0.0
+    return _own_width(chart) + extra
+
+
 def menu_width(chart: UsageChart, *, check_marks: bool = True) -> float:
-    """The narrowest the view is drawn: :func:`min_width`, and the
-    check-mark column NSMenu adds to it when ``check_marks``. For drawing
-    it off screen at a menu's width."""
-    return min_width(chart) + (STATE_COLUMN if check_marks else 0.0)
+    """The narrowest the view is drawn: :func:`min_width`, and what NSMenu
+    adds to it when ``check_marks``. For drawing it off screen at a menu's
+    width."""
+    if not check_marks:
+        return min_width(chart, check_marks=False)
+    return min_width(chart) + check_column_added()
 
 
 def make_view(chart: UsageChart, *, check_marks: bool = True) -> QswapUsageChartView:
     """A view drawing ``chart``, :func:`min_width` wide and stretched to the
     menu's width by the menu. ``check_marks``: whether the menu shows the
-    check-mark column, for a view that cannot ask its menu (off screen); in
-    a menu it asks. Raises after a drawing failure, so the caller shows the
-    text row."""
+    check-mark column, for the width it asks for and for a view that cannot
+    ask its menu (off screen); in a menu it draws as its menu says. Raises
+    after a drawing failure, so the caller shows the text row."""
     if _failed:
         raise RuntimeError("the usage chart failed to draw earlier")
-    width = min_width(chart)
+    width = min_width(chart, check_marks=check_marks)
     view = QswapUsageChartView.alloc().initWithFrame_(((0, 0), (width, height())))
     view.chart = chart
     view.check_marks = check_marks
