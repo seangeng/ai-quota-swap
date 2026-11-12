@@ -455,7 +455,8 @@ class AutoScreen(Screen):
         text = Text(no_wrap=True)
         if self.both:
             text.append(f"{PROVIDER_SHORT.get(provider, provider):<{TAG_WIDTH}}", style=palette.muted)
-        text.append(f"{data.clock_stamp()}  — {message} —", style=palette.muted)
+        # Stamped and spaced as the log's own lines are (``AutoLog``).
+        text.append(f"{data.clock_stamp()}  {message}", style=palette.muted)
         width = self._log_width() + (TAG_WIDTH if self.both else 0)
         if len(text.plain) > width:
             text.truncate(width, overflow="ellipsis")

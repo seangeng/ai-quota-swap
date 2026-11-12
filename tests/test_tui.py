@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import re
 import sys
 import threading
 import time
@@ -1759,6 +1760,11 @@ class TestAutoScreen:
             log = app.screen.query_one("#event-log", RichLog)
             assert log.lines
             assert not any(line.text.startswith("Claude") for line in log.lines)  # no tags
+            # The mode note reads as the log's own lines do: the time, two
+            # spaces, the sentence.
+            note = "Claude Code auto-switch dry run: watching only, switching nothing"
+            noted = [line.text.rstrip() for line in log.lines if note in line.text]
+            assert len(noted) == 1 and re.fullmatch(r"\d\d:\d\d:\d\d  " + note, noted[0])
 
     async def test_one_engine_per_provider_switched_with_tab(self, tmp_path, fake_engine):
         claude, codex = fleet_fakes(tmp_path)
