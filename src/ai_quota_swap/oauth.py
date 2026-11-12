@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -36,6 +37,22 @@ USAGE_PROBE_API_VERSION = "2023-06-01"
 USAGE_PROBE_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
 
 _logger = logging.getLogger("ai-quota-swap")
+
+
+@functools.cache
+def user_agent() -> str:
+    """``ai-quota-swap/<version>``, the agent qswap's own requests send.
+
+    Requests that must look like Claude Code's use ``resets.user_agent``
+    instead. The version comes from the package metadata, read once. When it
+    cannot be read (a source tree that was never installed), the agent is
+    plain ``ai-quota-swap``.
+    """
+    try:
+        from ai_quota_swap import __version__
+    except Exception:  # noqa: BLE001 - a header must never stop a request
+        return "ai-quota-swap"
+    return f"ai-quota-swap/{__version__}"
 
 
 def extract_access_token(credentials: str) -> str | None:
@@ -275,7 +292,7 @@ def try_refresh_oauth_credentials(
             data=body,
             headers={
                 "Content-Type": "application/json",
-                "User-Agent": "ai-quota-swap/1.0",
+                "User-Agent": user_agent(),
             },
             method="POST",
         )
@@ -380,7 +397,7 @@ def fetch_oauth_profile(access_token: str) -> dict | None:
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        "User-Agent": "ai-quota-swap/1.0",
+        "User-Agent": user_agent(),
     }
     req = urllib.request.Request(url, headers=headers)
     try:
@@ -502,7 +519,7 @@ def request_usage_data(access_token: str, *, resets: bool = False) -> dict:
     from ai_quota_swap import resets as resets_mod
 
     url = "https://api.anthropic.com/api/oauth/usage"
-    agent = "ai-quota-swap/1.0"
+    agent = user_agent()
     if resets:
         url += "?" + resets_mod.USAGE_QUERY
         agent = resets_mod.user_agent()
@@ -654,7 +671,7 @@ def request_usage_via_probe(access_token: str) -> dict:
         "anthropic-beta": OAUTH_BETA_HEADER,
         "anthropic-version": USAGE_PROBE_API_VERSION,
         "Content-Type": "application/json",
-        "User-Agent": "ai-quota-swap/1.0",
+        "User-Agent": user_agent(),
     }
     req = urllib.request.Request(
         USAGE_PROBE_URL, data=body, headers=headers, method="POST"

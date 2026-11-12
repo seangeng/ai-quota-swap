@@ -134,7 +134,7 @@ def fetch_plan(access_token: str, timeout: float = 5.0) -> PlanFetch:
         headers={
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
-            "User-Agent": "ai-quota-swap/1.0",
+            "User-Agent": oauth.user_agent(),
         },
     )
     try:

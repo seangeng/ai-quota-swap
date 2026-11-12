@@ -131,6 +131,8 @@ With pipx: `pipx install --force 'ai-quota-swap[menubar]'`. If you run qswap fro
 
 `qswap upgrade` runs `uv tool upgrade ai-quota-swap` or `pipx upgrade ai-quota-swap`, whichever installed qswap, then says what landed (`ai-quota-swap upgraded: 0.1.0 -> 0.1.1`, or `ai-quota-swap is still at 0.1.0.`). On a Mac it restarts a running menu bar when the build changed. On Windows it prints the command for you to run instead, because the running `qswap.exe` cannot be replaced.
 
+An install made under the qswap name (`uv tool install qswap`) is a tool named qswap. From 0.1.1 on, the commands qswap runs and prints use that name: `qswap upgrade` runs `uv tool upgrade qswap`, and the reinstall commands say `'qswap[menubar]'`. Use that name in the reinstall lines on this page too. With pipx, `pipx upgrade qswap` would upgrade only the qswap package, which holds no code, so `qswap upgrade` runs `pipx runpip qswap install --upgrade ai-quota-swap`. The versions it reports are ai-quota-swap's.
+
 Before 0.1.0 reached PyPI, qswap was installed from GitHub. Such an install keeps that source: `qswap upgrade` reinstalls from the source the install recorded, so it keeps following `main`, and its report names the commit (`ai-quota-swap upgraded: 0.1.0 (ad03d17) -> 0.1.0 (fdeb279)`). To move to the released package, install over it, then run `qswap menubar` on a Mac so the menu bar restarts on the new build:
 
 ```bash

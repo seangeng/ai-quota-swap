@@ -1874,3 +1874,57 @@ class TestLoginExpiresAtIso:
     ])
     def test_anything_but_a_positive_epoch_is_unknown(self, creds):
         assert oauth.login_expires_at_iso(creds) is None
+
+
+class TestUserAgent:
+    """qswap's own requests send ``ai-quota-swap/<version>``. The reset read,
+    which must look like Claude Code, keeps Claude Code's agent."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self):
+        oauth.user_agent.cache_clear()
+        yield
+        oauth.user_agent.cache_clear()
+
+    def test_it_carries_the_installed_version(self):
+        from importlib.metadata import version
+
+        assert oauth.user_agent() == f"ai-quota-swap/{version('ai-quota-swap')}"
+
+    def test_an_unreadable_version_falls_back_without_raising(self, monkeypatch):
+        import importlib.metadata
+
+        import ai_quota_swap
+
+        def missing(name):
+            raise importlib.metadata.PackageNotFoundError(name)
+
+        monkeypatch.delattr(ai_quota_swap, "__version__", raising=False)
+        monkeypatch.setattr(importlib.metadata, "version", missing)
+        assert oauth.user_agent() == "ai-quota-swap"
+
+    @pytest.mark.no_oauth_profile_fake  # urlopen is faked beneath both
+    def test_the_profile_and_plan_requests_send_it(self):
+        from ai_quota_swap import subscription
+
+        agents = []
+
+        def fake_urlopen(req, timeout=None):
+            agents.append(req.get_header("User-agent"))
+            raise urllib.error.URLError("offline")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            oauth.fetch_oauth_profile("tok")
+            subscription.fetch_plan("tok")
+        assert agents == [oauth.user_agent()] * 2
+
+    def test_no_fixed_version_is_left_in_the_source(self):
+        from pathlib import Path
+
+        src = Path(oauth.__file__).parent
+        hits = [
+            str(path.relative_to(src))
+            for path in src.rglob("*.py")
+            if "ai-quota-swap/1.0" in path.read_text(encoding="utf-8")
+        ]
+        assert hits == []

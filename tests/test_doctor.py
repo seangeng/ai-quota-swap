@@ -383,6 +383,18 @@ class TestMenuBarLocation:
         assert code == 1
         assert "fix: uv tool install --force 'ai-quota-swap[menubar]'" in out
 
+    def test_the_fix_reinstalls_an_alias_install_as_qswap(self, machine, monkeypatch):
+        # `uv tool install qswap` names the tool qswap; the package name would
+        # add a second tool that takes over the qswap command.
+        machine.platform = Platform.MACOS
+        machine.install_paths = [str(machine.home / "Documents" / "aqs" / ".venv")]
+        monkeypatch.setattr(
+            "ai_quota_swap.update_check.sys.prefix", "/Users/maya/.local/share/uv/tools/qswap"
+        )
+        assert machine.checks()["menubar.location"].fix == (
+            "uv tool install --force 'qswap[menubar]'"
+        )
+
     def test_with_the_menu_bar_set_up_the_fix_restarts_it(self, machine):
         machine.platform = Platform.MACOS
         machine.menubar_plist()

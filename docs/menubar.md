@@ -23,7 +23,7 @@ qswap menubar
 
 Each start also says whether it will switch accounts. Auto-switch is off until you [turn it on](#turn-on-auto-switch), and until then the start warns `auto-switch: off -- the menu bar shows usage but will not switch accounts; turn it on from the menu, or re-run with --auto-switch`.
 
-If qswap is already installed without the extra, `qswap menubar` stops with `The menu bar needs the 'menubar' extra. Install it with: uv tool install --force 'ai-quota-swap[menubar]'` (the pipx form when you installed with pipx).
+If qswap is already installed without the extra, `qswap menubar` stops with `The menu bar needs the 'menubar' extra. Install it with: uv tool install --force 'ai-quota-swap[menubar]'` (the pipx form when you installed with pipx, and `'qswap[menubar]'` when you installed it as qswap).
 
 Keep the install out of `~/Documents`, `~/Desktop` and `~/Downloads`. The uv and pipx defaults already are. See [Limits](#limits).
 

@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tomllib
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, NamedTuple
 
 from ai_quota_swap.cache import CACHE_DIR, MISSING, read_cache, write_cache
@@ -19,14 +19,15 @@ CACHE_PATH = CACHE_DIR / "update_check.json"
 CACHE_TTL = 24 * 3600  # A successful lookup is kept for a day.
 FAILURE_TTL = 3600  # A failed one is retried after an hour.
 PYPI_URL = "https://pypi.org/pypi/ai-quota-swap/json"
-# The package on PyPI, as the install commands qswap prints name it: doctor's
-# reinstall, the menu bar extra's remedy and the upgrade fallback. The extra
-# is quoted for zsh, which would read the brackets as a glob. Upgrades by tool
+# The package on PyPI. A uv tool or pipx venv made from it carries this name,
+# and the commands qswap runs and prints use it unless the install was made
+# under the qswap alias (packaging/qswap): see install_name. Upgrades by tool
 # name (`uv tool upgrade ai-quota-swap`, `pipx upgrade ai-quota-swap`) reuse
 # the source the install recorded, so an install made from git before 0.1.0
 # keeps following the repository until it is reinstalled from PyPI.
 INSTALL_SOURCE = "ai-quota-swap"
-MENUBAR_INSTALL_SPEC = f"'{INSTALL_SOURCE}[menubar]'"
+# The alias package's name, and the folder uv and pipx give an install of it.
+ALIAS_NAME = "qswap"
 
 _VERSION_RE = re.compile(
     r"(\d+(?:\.\d+)*)(?:[-_.]?(alpha|beta|preview|pre|rc|a|b|c)[-_.]?(\d+)?)?",
@@ -80,26 +81,78 @@ def _is_newer(latest: str, current: str) -> bool:
     return latest_version > current_version
 
 
-def _detect_install_method() -> str | None:
-    """Return 'uv', 'pipx', or None if we can't tell."""
-    prefix = Path(sys.prefix)
+def _tool_install() -> tuple[str, str] | None:
+    """``(method, folder)`` when this is a uv tool or a pipx venv, else None.
+
+    ``method`` is 'uv' or 'pipx'. ``folder`` is the last folder of sys.prefix,
+    which both name after the package the install was made from. The path is
+    read the Windows way on Windows.
+    """
+    prefix = PureWindowsPath(sys.prefix) if sys.platform == "win32" else Path(sys.prefix)
     parts = tuple(p.lower() for p in prefix.parts)
     pairs = list(zip(parts, parts[1:]))
 
     if ("uv", "tools") in pairs:
-        return "uv"
+        return "uv", prefix.name
     if ("pipx", "venvs") in pairs:
-        return "pipx"
+        return "pipx", prefix.name
 
     # Env-var override: only trust if sys.prefix is actually under it.
     for env_var, name in (("UV_TOOL_DIR", "uv"), ("PIPX_HOME", "pipx")):
         root = os.environ.get(env_var)
         if root:
             try:
-                if prefix.is_relative_to(Path(root)):
-                    return name
+                if prefix.is_relative_to(root):
+                    return name, prefix.name
             except (ValueError, OSError):
                 pass
+    return None
+
+
+def _detect_install_method() -> str | None:
+    """Return 'uv', 'pipx', or None if we can't tell."""
+    found = _tool_install()
+    return found[0] if found else None
+
+
+def install_name() -> str:
+    """The name uv or pipx knows this install by, for the commands qswap runs
+    and prints: ``qswap`` for an install made as ``uv tool install qswap``,
+    ai-quota-swap for everything else. Any other folder name (a pipx
+    ``--suffix`` venv, a venv that only sits under a uv/tools path) is not a
+    name on PyPI that qswap can vouch for, so it keeps the package's own name.
+    """
+    found = _tool_install()
+    if found and found[1] == ALIAS_NAME:
+        return ALIAS_NAME
+    return INSTALL_SOURCE
+
+
+def menubar_install_spec() -> str:
+    """This install's name with the menu bar extra, quoted for zsh, which
+    would read the brackets as a glob: ``'ai-quota-swap[menubar]'``. The qswap
+    alias has the same extra."""
+    return f"'{install_name()}[menubar]'"
+
+
+def _upgrade_command(method: str | None) -> list[str] | None:
+    """The command that upgrades ai-quota-swap in this install, or None when
+    the install method is unknown.
+
+    ``pipx upgrade qswap`` would upgrade only the alias, which stays at 0.1.0:
+    pipx runs ``pip install --upgrade qswap`` (or ``uv pip install
+    --upgrade-package qswap``), and both leave a dependency that is already
+    satisfied where it is. ``pipx runpip`` runs pip in the tool's own venv,
+    so it can upgrade ai-quota-swap there by name. ``uv tool upgrade qswap``
+    upgrades the whole tool environment, ai-quota-swap with it.
+    """
+    name = install_name()
+    if method == "uv":
+        return ["uv", "tool", "upgrade", name]
+    if method == "pipx" and name == INSTALL_SOURCE:
+        return ["pipx", "upgrade", name]
+    if method == "pipx":
+        return ["pipx", "runpip", name, "install", "--upgrade", INSTALL_SOURCE]
     return None
 
 
@@ -258,7 +311,8 @@ def held_back_release_notice(current_version: str) -> str | None:
             return None
     except (FileNotFoundError, ValueError):
         return None
-    take_now = 'uv tool upgrade ai-quota-swap --exclude-newer "0 days"'
+    upgrade = f"uv tool upgrade {install_name()}"
+    take_now = f'{upgrade} --exclude-newer "0 days"'
     lines = [
         f"ai-quota-swap {latest} is on PyPI, but this install has a release cooldown",
         f"  ({cooldown.source}) that hides it from uv tool upgrade.",
@@ -269,8 +323,7 @@ def held_back_release_notice(current_version: str) -> str | None:
         lines.append(f"  To take it now:          {take_now}")
         if _CUTOFF_RE.match(cooldown.value):
             lines.append(
-                "  To restore the cooldown: "
-                f"uv tool upgrade ai-quota-swap --exclude-newer {cooldown.value}"
+                f"  To restore the cooldown: {upgrade} --exclude-newer {cooldown.value}"
             )
     return "\n".join(lines)
 
@@ -295,10 +348,8 @@ def check_for_update(current_version: str) -> str | None:
                 write_cache(CACHE_PATH, latest_version)
 
         if latest_version and _is_newer(latest_version, current_version):
-            direct = {
-                "uv": "uv tool upgrade ai-quota-swap",
-                "pipx": "pipx upgrade ai-quota-swap",
-            }.get(method or "")
+            cmd = _upgrade_command(method)
+            direct = " ".join(cmd) if cmd else None
             if direct and sys.platform != "win32":
                 # qswap upgrade actually performs the upgrade here.
                 hint = "Run `qswap upgrade` to update."
@@ -456,17 +507,15 @@ def run_self_upgrade(current_version: str | None = None) -> int:
     before = {**install_identity(), "version": current_version}
 
     method = _detect_install_method()
-    commands = {
-        "uv": ["uv", "tool", "upgrade", "ai-quota-swap"],
-        "pipx": ["pipx", "upgrade", "ai-quota-swap"],
-    }
-    cmd = commands.get(method or "")
+    cmd = _upgrade_command(method)
     if cmd is None:
+        # No uv tool or pipx venv was found, so install_name() would be
+        # ai-quota-swap here anyway.
         error(
             "qswap could not tell how it was installed, so it cannot upgrade itself.\n"
             "Upgrade it the way you installed it:\n"
-            "  uv tool upgrade ai-quota-swap\n"
-            "  pipx upgrade ai-quota-swap\n"
+            f"  uv tool upgrade {INSTALL_SOURCE}\n"
+            f"  pipx upgrade {INSTALL_SOURCE}\n"
             f"  {_shell_word(sys.executable)} -m pip install --upgrade {INSTALL_SOURCE}\n"
             "  git pull                      # a source checkout"
         )

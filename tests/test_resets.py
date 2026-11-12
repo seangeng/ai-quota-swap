@@ -272,7 +272,8 @@ class TestUsageRequest:
     def test_plain_request_unchanged(self):
         seen = self._capture()
         assert seen["url"] == "https://api.anthropic.com/api/oauth/usage"
-        assert seen["agent"] == "ai-quota-swap/1.0"
+        assert seen["agent"] == oauth.user_agent()
+        assert seen["agent"].startswith("ai-quota-swap/")
 
     def test_resets_read_uses_cli_surface(self, monkeypatch):
         monkeypatch.setattr(resets, "_cli_version_cache", None)

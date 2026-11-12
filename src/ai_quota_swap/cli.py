@@ -1866,15 +1866,16 @@ def _menubar_extra_missing() -> str | None:
 
     if importlib.util.find_spec("rumps") is not None:
         return None
-    from ai_quota_swap.update_check import MENUBAR_INSTALL_SPEC, _detect_install_method
+    from ai_quota_swap.update_check import _detect_install_method, menubar_install_spec
 
     method = _detect_install_method()
+    spec = menubar_install_spec()
     if method == "uv":
-        remedy = f"uv tool install --force {MENUBAR_INSTALL_SPEC}"
+        remedy = f"uv tool install --force {spec}"
     elif method == "pipx":
-        remedy = f"pipx install --force {MENUBAR_INSTALL_SPEC}"
+        remedy = f"pipx install --force {spec}"
     else:
-        remedy = f"pip install {MENUBAR_INSTALL_SPEC}"
+        remedy = f"pip install {spec}"
     return f"The menu bar needs the 'menubar' extra. Install it with: {remedy}"
 
 
