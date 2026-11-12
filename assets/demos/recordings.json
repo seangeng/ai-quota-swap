@@ -5,7 +5,7 @@
     "mode": "littledemo",
     "video": "assets/demos/autoswitch.mp4",
     "gif": "assets/demos/autoswitch.gif",
-    "gifBytes": 913761,
+    "gifBytes": 842180,
     "recorder": "@littledemo/cli record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg"
   },
   "reset": {
@@ -14,7 +14,7 @@
     "mode": "littledemo",
     "video": "assets/demos/reset.mp4",
     "gif": "assets/demos/reset.gif",
-    "gifBytes": 888995,
+    "gifBytes": 790425,
     "recorder": "@littledemo/cli record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg"
   },
   "menubar": {
@@ -25,7 +25,7 @@
     "video": "assets/demos/menubar.mp4",
     "recorder": "@littledemo/cli record (local Chrome, loopback page), GIF re-encoded with ffmpeg",
     "gif": "assets/demos/menubar.gif",
-    "gifBytes": 1321376
+    "gifBytes": 1213384
   },
   "quickstart": {
     "name": "quickstart",
@@ -35,7 +35,7 @@
     "video": "assets/demos/quickstart.mp4",
     "recorder": "@littledemo/cli record (local Chrome, loopback page), GIF re-encoded with ffmpeg",
     "gif": "assets/demos/quickstart.gif",
-    "gifBytes": 542110
+    "gifBytes": 531136
   },
   "dashboard": {
     "name": "dashboard",
@@ -44,6 +44,6 @@
     "video": "assets/demos/dashboard.mp4",
     "recorder": "@littledemo/cli record (local Chrome, loopback dashboard), GIF re-encoded with ffmpeg",
     "gif": "assets/demos/dashboard.gif",
-    "gifBytes": 1374171
+    "gifBytes": 1417546
   }
 }

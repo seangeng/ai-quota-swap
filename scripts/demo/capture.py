@@ -5,8 +5,9 @@
     uv run python scripts/demo/capture.py frame       # ScreenFramed, when configured
     uv run python scripts/demo/capture.py record      # the GIFs in assets/demos (LittleDemo)
     uv run python scripts/demo/capture.py index       # docs/shots/index.html
+    uv run python scripts/demo/capture.py social      # assets/social-preview.png, from the hero
 
-``build.py`` runs html, shots, frame and index in order. Every qswap run
+``build.py`` runs html, shots, social, frame and index in order. Every qswap run
 happens in a guarded ``run.py`` subprocess with its own temp home; this
 process only drives Chrome, pngquant, ffmpeg and the two npx CLIs.
 See scripts/demo/README.md.
@@ -249,7 +250,47 @@ def capture_shots(only: set[str] | None = None) -> list[Path]:
             out.append(png)
 
     asyncio.run(menubar_pages())
+    for shot in shots.CHART_SHOTS:
+        if only and shot.name not in only:
+            continue
+        out += chart_shot(shot)
     return out
+
+
+def _appkit_python() -> list[str]:
+    """A Python with AppKit: this one when it has it, else this project's
+    with pyobjc added for the run (``uv run --with pyobjc-framework-Cocoa``)."""
+    import importlib.util
+
+    if importlib.util.find_spec("AppKit") is not None:
+        return [sys.executable]
+    uv = shutil.which("uv")
+    if uv is None:
+        raise SystemExit("menubar_chart.py needs AppKit: install pyobjc-framework-Cocoa, or uv")
+    return [uv, "run", "--with", "pyobjc-framework-Cocoa", "python"]
+
+
+def chart_shot(shot: shots.ChartShot) -> list[Path]:
+    """The cost row's chart alone, dark and light: ``menubar_chart.py``
+    draws it with the app's AppKit view, off screen, for the shot's
+    scenario (read in the demo sandbox). macOS only: elsewhere it says so
+    and keeps the PNGs there are."""
+    if sys.platform != "darwin":
+        log(f"png    {shot.name}: skipped, the AppKit view draws on macOS only")
+        return []
+    made = []
+    with tempfile.TemporaryDirectory(prefix=f"qswap-{shot.name}-") as tmp:
+        cmd = [*_appkit_python(), str(HERE / "menubar_chart.py"), "--out", tmp, shot.scenario]
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO)
+        if r.returncode != 0:
+            raise SystemExit(f"{shot.name} failed with {r.returncode}:\n{r.stderr}")
+        for theme, suffix in (("dark", ""), ("light", "-light")):
+            png = RAW_DIR / f"{shot.name}{suffix}.png"
+            shutil.copyfile(Path(tmp) / f"{shot.scenario}-{theme}.png", png)
+            compress(png)
+            log(f"png    {png.relative_to(REPO)}  {png.stat().st_size // 1024} KB")
+            made.append(png)
+    return made
 
 
 async def _shoot_tui(server: Server, shot: shots.TuiShot, png: Path) -> None:
@@ -269,6 +310,87 @@ async def _shoot_tui(server: Server, shot: shots.TuiShot, png: Path) -> None:
         await asyncio.sleep(0.8)
         await page.screenshot(png, "#window")
         await page.close()
+
+
+# -- social preview -----------------------------------------------------------
+
+
+SOCIAL_PREVIEW = REPO / "assets" / "social-preview.png"
+SOCIAL_SIZE = (1280, 640)  # GitHub's social preview: 2:1
+SOCIAL_MAX_BYTES = 1_000_000
+
+
+async def _hero_layout(page_path: Path) -> dict:
+    """Where the hero's window and menu sit on its stage, in CSS px, and
+    the top of each row of the menu."""
+    async with cdp.chrome(1) as new_page:
+        page = await new_page()
+        await page.setup(*MENUBAR_VIEWPORT)
+        await page.goto(page_path.as_uri())
+        await asyncio.sleep(0.3)
+        layout = await page.eval("""(() => {
+          const stage = document.getElementById("stage").getBoundingClientRect();
+          const box = (e) => {
+            const b = e.getBoundingClientRect();
+            return {left: b.left - stage.left, top: b.top - stage.top,
+                    right: b.right - stage.left, bottom: b.bottom - stage.top};
+          };
+          const menu = document.querySelector('.menu[data-level="0"]');
+          return {width: stage.width, height: stage.height,
+                  window: box(document.querySelector("img.window")), menu: box(menu),
+                  rows: [...menu.querySelectorAll(":scope > .item")].map((e) => box(e).top)};
+        })()""")
+        await page.close()
+    return layout
+
+
+def social_crop(layout: dict) -> tuple[float, float, float, float]:
+    """The part of the hero a 2:1 social preview shows, in CSS px (x, y,
+    width, height): from the menu bar down, the window behind the menu whole
+    across and the menu beside it, cut 2 px above the top of one of the
+    menu's rows, so the edge falls between two lines of its text. Only
+    wallpaper is trimmed at the sides (a little is kept at each)."""
+    spare_left = max(0.0, layout["window"]["left"] - 4)
+    spare_right = max(0.0, layout["width"] - layout["menu"]["right"] - 2)
+    widest = layout["width"]
+    narrowest = widest - spare_left - spare_right
+    cuts = [top - 2 for top in layout["rows"] if narrowest <= 2 * (top - 2) <= widest]
+    height = max(cuts) if cuts else widest / 2
+    width = 2 * height
+    trim = widest - width
+    right = min(spare_right, trim / 2)
+    return trim - right, 0.0, width, height
+
+
+def social_preview(hero: Path = RAW_DIR / "hero.png", page: Path = SHOTS_DIR / "hero.html") -> Path:
+    """``assets/social-preview.png``: the dark hero (the menu open in front
+    of the dashboard) cropped to 2:1 by :func:`social_crop` and scaled to
+    1280 x 640, nothing added. It is uploaded by hand in the repository's
+    settings; nothing links it."""
+    for path in (hero, page):
+        if not path.exists():
+            raise SystemExit(f"{path} is missing; run `capture.py shots --only hero` first")
+    layout = asyncio.run(_hero_layout(page))
+    raw = hero.read_bytes()
+    px = struct.unpack(">II", raw[16:24])[0] / layout["width"]  # the PNG's px per CSS px
+    x, y, w, h = (round(v * px) for v in social_crop(layout))
+    w, h = 2 * (w // 2), w // 2  # exactly 2:1
+    # The hero is paletted (pngquant). Without format=rgb24 ffmpeg would
+    # write the scaled picture paletted too, dithered onto its own fixed
+    # 256-colour palette, so no pixel would keep qswap's colours; pngquant
+    # then makes a palette from the true colours.
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(hero), "-vf",
+         f"crop={w}:{h}:{x}:{y},scale={SOCIAL_SIZE[0]}:{SOCIAL_SIZE[1]}:flags=lanczos,format=rgb24",
+         "-frames:v", "1", str(SOCIAL_PREVIEW)],
+        check=True,
+    )
+    compress(SOCIAL_PREVIEW)
+    size = SOCIAL_PREVIEW.stat().st_size
+    log(f"png    {SOCIAL_PREVIEW.relative_to(REPO)}  {size // 1024} KB (from {w}x{h} of {hero.name})")
+    if size > SOCIAL_MAX_BYTES:
+        raise SystemExit(f"{SOCIAL_PREVIEW.name} is {size} bytes; GitHub takes 1 MB at most")
+    return SOCIAL_PREVIEW
 
 
 # -- ScreenFramed -------------------------------------------------------------
@@ -319,8 +441,11 @@ def frame(base_url: str | None, *, background: str, device: str | None, only: se
 # -- recordings ---------------------------------------------------------------
 
 
+# 192 colours: the recordings draw with far fewer, and the smaller palette
+# keeps the busiest (the dashboard's 40-row views in qswap's colours) under
+# GIF_MAX_BYTES with room to spare, with no difference to see.
 GIF_PALETTE = (
-    "split[a][b];[a]palettegen=max_colors=256:stats_mode=full[p];"
+    "split[a][b];[a]palettegen=max_colors=192:stats_mode=full[p];"
     "[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
 )
 
@@ -495,21 +620,24 @@ def build_menubar_page(story: stories.Story, target: Path) -> Path:
             return path.read_text(encoding="utf-8")
 
         shots = [
-            # The menu open on the first check: #1 personal active, 5h 86%.
+            # The menu open on the first check: #1 personal active, 5h 86%,
+            # the cost row the week's chart.
             # Short: the recorder shows this frame for about a second before
             # its key starts the play.
             player_page.Shot(drawn(plain / "frame-00.html"), hold_ms=1000),
             # The menu shut, the bar magnified: the title climbs a minute at a
             # time. Fades are short, as the Mac's are (a title changes at
-            # once), and each full-frame step of a fade costs a GIF about 130 KB.
-            player_page.Shot(drawn(plain / "frame-00-closed.html"), hold_ms=1500, fade_ms=200, zoom=True),
+            # once), and each full-frame step of a fade costs a GIF 130 to
+            # 180 KB (the menu with its chart is taller).
+            player_page.Shot(drawn(plain / "frame-00-closed.html"), hold_ms=1500, fade_ms=120, zoom=True),
             player_page.Shot(drawn(plain / "frame-01-closed.html"), hold_ms=1500, fade_ms=120, zoom=True),
             # The engine switches at 91%: the title changes, and the banner is
             # the notification the app posts, which says why.
             player_page.Shot(drawn(plain / "frame-02-closed.html"), hold_ms=3400, fade_ms=200, zoom=True),
             # The menu opens on the same check: #2 work checked, #1 personal
-            # orange at 91%, and the switch in Switch history.
-            player_page.Shot(drawn(history / "frame-02.html"), hold_ms=4400, fade_ms=240),
+            # orange at 91%, the week's cost chart, and the switch in Switch
+            # history.
+            player_page.Shot(drawn(history / "frame-02.html"), hold_ms=4400, fade_ms=160),
         ]
     target.write_text(player_page.page(shots, width=w, height=h, scale=MENUBAR_PLAY_WIDTH / w),
                       encoding="utf-8")
@@ -668,6 +796,8 @@ def save_recordings(results: list[dict]) -> None:
 
 
 def write_index() -> Path:
+    from ai_quota_swap.tui import theme as c  # qswap's light palette, as the light shots use it
+
     rows = []
     for shot in shots.CLI_SHOTS:
         links = " · ".join(
@@ -698,18 +828,30 @@ def write_index() -> Path:
             f"<td><a href=\"{shot.name}.html\">{shot.theme}</a></td>"
             f"<td><a href=\"../../assets/screenshots/raw/{shot.name}.png\">PNG</a></td></tr>"
         )
+    for shot in shots.CHART_SHOTS:
+        pngs = " · ".join(
+            f'<a href="../../assets/screenshots/raw/{shot.name}{suffix}.png">{theme} PNG</a>'
+            for theme, suffix in (("dark", ""), ("light", "-light"))
+        )
+        rows.append(
+            f"<tr><td><code>menubar_chart.py {html.escape(shot.scenario)}</code></td>"
+            f"<td>{html.escape(shot.caption)} (the app's own AppKit view, drawn off screen)</td>"
+            f"<td></td><td>{pngs}</td></tr>"
+        )
     target = SHOTS_DIR / "index.html"
     target.write_text(f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>qswap demo shots</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   body {{ font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-         max-width: 960px; margin: 40px auto; padding: 0 20px; color: #242422; background: #fbfaf7; }}
-  h1 {{ font-size: 22px; margin-bottom: 4px; }} p {{ color: #6d6c68; margin-top: 0; }}
+         max-width: 960px; margin: 40px auto; padding: 0 20px; color: {c.FOREGROUND_LIGHT};
+         background: {c.BACKGROUND_LIGHT}; }}
+  h1 {{ font-size: 22px; margin-bottom: 4px; }} p {{ color: {c.MUTED_LIGHT}; margin-top: 0; }}
   table {{ border-collapse: collapse; width: 100%; }}
-  td, th {{ text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2dfd8; vertical-align: top; }}
+  td, th {{ text-align: left; padding: 8px 10px; border-bottom: 1px solid {c.PANEL_LIGHT};
+            vertical-align: top; }}
   code {{ font: 13px "SF Mono", Menlo, Consolas, monospace; white-space: nowrap; }}
-  a {{ color: #5b3fd1; }}
+  a {{ color: {c.ACCENT_LIGHT}; }}
 </style></head>
 <body>
 <h1>qswap demo shots</h1>
@@ -730,6 +872,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("html", "shots", "index"):
         s = sub.add_parser(name)
         s.add_argument("--only", help="comma-separated shot names")
+    sub.add_parser("social", help="assets/social-preview.png, from the dark hero")
     f = sub.add_parser("frame")
     f.add_argument("--base-url", help="public URL serving docs/shots/ (or SCREENFRAMED_BASE_URL)")
     f.add_argument("--background", default=os.environ.get("SCREENFRAMED_BACKGROUND", "midnight"))
@@ -751,6 +894,8 @@ def main(argv: list[str] | None = None) -> int:
         return frame(args.base_url, background=args.background, device=args.device, only=only)
     elif args.cmd == "index":
         write_index()
+    elif args.cmd == "social":
+        social_preview()
     elif args.cmd == "upload":
         save_recordings([upload(n) for n in args.names])
     elif args.cmd == "record":

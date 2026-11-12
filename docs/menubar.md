@@ -4,10 +4,10 @@ The menu bar app keeps the active account's usage in the macOS menu bar, and its
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="../assets/screenshots/raw/menubar-light.png">
-  <img src="../assets/screenshots/raw/menubar.png" alt="The menu bar's title and its open menu: Claude Code and Codex accounts with their usage, a check mark on each active account, held usage resets, today's estimated cost, and auto-switch running for both" width="561">
+  <img src="../assets/screenshots/raw/menubar.png" alt="The menu bar's title, personal · 46% · 38%, and its open menu: five Claude Code accounts and two Codex accounts with their usage, a check mark on each active account, held usage resets, the cost row as a seven-day chart by account (today $5.16, 7 days $78.25), and auto-switch running for both" width="566">
 </picture>
 
-The pictures on this page are drawings of the menu, not screenshots of the app: the [demo harness](../scripts/demo/README.md) draws the rows that `menubar.build_menu`, the function the app builds its menu from, returns for made-up accounts, with auto-switch turned on. The recording's notification is the text the app posts for that switch.
+The pictures on this page are drawings of the menu, not screenshots of the app: the [demo harness](../scripts/demo/README.md) draws the rows that `menubar.build_menu`, the function the app builds its menu from, returns for made-up accounts, with auto-switch turned on, and places the cost chart's bars with the app's own layout code. The chart on its own, under [The cost row](#the-cost-row), is the app's chart view, drawn off screen. The recording's notification is the text the app posts for that switch.
 
 ## Install and start
 
@@ -36,7 +36,7 @@ Either of these turns on Claude Code's engine:
 
 *Settings → Auto-switch Codex* appears once Codex manages an account. Turning it on asks first, because a Codex switch restarts Codex's background server, which interrupts work in progress.
 
-<img src="../assets/demos/menubar.gif" alt="Recording: the qswap menu bar with made-up accounts. The menu is open on #1 personal at 86% of its 5-hour window; it closes and the title climbs to 88%; when #1 personal's 5-hour window reaches 91%, auto-switch moves to #2 work, the title changes to work and a notification says Switched #1 personal → #2 work · 5h reached 91%; the menu opens again on Switch history: #1 personal → #2 work at 14:22" width="800">
+<img src="../assets/demos/menubar.gif" alt="Recording: the qswap menu bar with made-up accounts. The menu is open on #1 personal at 86% of its 5-hour window, above a chart of the week's estimated cost by account (7 days $89.45); it closes and the title climbs to 88%; when #1 personal's 5-hour window reaches 91%, auto-switch moves to #2 work, the title changes to work and a notification says Switched #1 personal → #2 work · 5h reached 91%; the menu opens again on Switch history: #1 personal → #2 work at 14:22" width="800">
 
 Each toggle runs the same engine as `qswap auto` or `qswap codex auto` ([auto-switch.md](auto-switch.md)), in a thread of its own. Both use the `autoswitch.*` settings, and Codex uses `codex.threshold` as its switch line. The menu bar's engines switch for real; there is no dry run here.
 
@@ -48,7 +48,7 @@ Turning *Auto-switch Claude Code* off, or quitting the menu bar, while sessions 
 
 ### Automatic resets
 
-<img src="../assets/screenshots/raw/menubar-auto-resets.png" alt="The menu with Settings and Use resets automatically open: As a last resort, when no account can take over, checked; Use a weekly reset for a single model's limit; and Use the active account's reset before switching, greyed under the last-resort mode" width="1054">
+<img src="../assets/screenshots/raw/menubar-auto-resets.png" alt="The menu with Settings and Use resets automatically open: As a last resort, when no account can take over, checked; Use a weekly reset for a single model's limit; and Use the active account's reset before switching, greyed under the last-resort mode" width="1058">
 
 *Settings → Use resets automatically* chooses when the engines spend a usage reset by themselves (`resets.auto`): *Off*, *When the active account reaches its limit* (`active`), *As a last resort, when no account can take over* (`last-resort`, the default) or *When any account reaches its limit* (`on-limit`); hover a choice for `qswap reset`'s line for it. *Use a weekly reset for a single model's limit* is `resets.weeklyForModelLimit`. *Use the active account's reset before switching* is `resets.beforeSwitch` ([resets.md](resets.md#before-switching)); it is greyed, and keeps its check mark, under *Off* and *As a last resort* and while `resets.enabled` is off, where the setting has no effect, and its tooltip says so. All of them apply to Claude Code and Codex, which the submenu's first line says once Codex manages an account. Turning automatic use on from *Off* asks once, since a spent reset cannot be taken back (at most three in 24 hours, per provider); the question is judged on `settings.json` at the click, so a `qswap config set resets.auto off` made since the menu was drawn still asks. The engines read these settings on every check, so a change applies without a restart.
 
@@ -112,7 +112,7 @@ Click a row to switch that provider to the account. For an account that needs re
 
 ### With an API key active
 
-<img src="../assets/screenshots/raw/menubar-key.png" alt="The menu with an API-key account active: what it spent today and this month against its budget, and the subscription logged in underneath it" width="572">
+<img src="../assets/screenshots/raw/menubar-key.png" alt="The menu with an API-key account active: #5 ci checked, over #1 personal, with $2.06 spent today and $25.22 of its $40 budget this month; #1 personal, logged in underneath it; the seven-day cost chart below the accounts" width="578">
 
 A click on an API-key account switches to it at once: running Claude Code sessions follow the key within a few seconds, and the subscription row says `underneath`. The title shows the key's name alone, `⇄ ci`. In the harness, `run.py showcase --menubar --auto-switch -- switch 5` switches to the key and prints the menu; its top part:
 
@@ -145,6 +145,11 @@ The notes `qswap list` prints about the line get one orange row under the accoun
 
 With *Settings → Show usage chart* on, as it is by default, the same sentence sits above a small chart: one column per day for the last seven days, today on the right, each split by account at the estimated cost `qswap usage --by account` gives it. The tallest day fills the chart. One line below names up to four accounts as their rows do, with their seven-day amounts in whole dollars; the rest are `other`, in grey. When the menu shows Codex too, each Codex account's entry starts with `Codex` (`Codex #2 work`) and a Claude Code entry has no provider word, so `#2 work` is Claude Code's. When the line is short of room, names are cut with an ellipsis, down to the number alone (`#2`, `Codex #2`). They are fitted from the largest amount down: each takes its whole name if the line still has room for it, else its longest cut that fits, else its number alone, so a short name can stay whole after a longer one was cut. An account's colour comes from its provider and number, not its rank: Claude Code's #1 is blue, #2 orange, #3 purple, and Codex's #1 green; when two accounts with usage that week would share one, the later takes the next free colour. Turn the setting off for the plain row.
 
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="../assets/screenshots/raw/menubar-chart-light.png">
+  <img src="../assets/screenshots/raw/menubar-chart.png" alt="The cost row's chart for made-up accounts: Today $17.21 · 7 days $180.55 (estimated) above one column per day from Wednesday to Tuesday, today, each split by account in its colour; the legend reads #1 personal $89, #2 work $80, #3 night-shift $9 and other $3" width="427">
+</picture>
+
 ### Below the cost row
 
 - *Rotate to next*, *Switch to best*, *Next available*: Claude Code's rotation strategies (`qswap switch`, `--strategy best`, `--strategy next-available`).
@@ -159,7 +164,7 @@ With *Settings → Show usage chart* on, as it is by default, the same sentence 
 
 ### Use a reset
 
-<img src="../assets/screenshots/raw/menubar-resets.png" alt="The menu with its Use a reset submenu open to the left: Claude #1 personal's Fable reset and #3 night-shift's 5-hour reset greyed until a limit is reached, and Codex #2 work's reset credit, which clears all usage, highlighted" width="934">
+<img src="../assets/screenshots/raw/menubar-resets.png" alt="The menu, with its seven-day cost chart, and its Use a reset submenu open to the left: Claude #1 personal's Fable reset and #3 night-shift's 5-hour reset greyed until a limit is reached, and Codex #2 work's reset credit, which clears all usage, highlighted" width="939">
 
 One row per account and kind, grouped by provider when both have some:
 
@@ -185,7 +190,7 @@ The accounts section says `No accounts are managed yet.` and the next step for e
 
 *Settings* in the menu holds, from the top: *Show account name in menu bar*, *Title follows* (with Codex managed), *Title percentage*, *Show model limits in title*, *Show usage chart* and *Refresh interval*; then the auto-switch toggles, their thresholds and *Use resets automatically*; then *Start at login*.
 
-<img src="../assets/screenshots/raw/menubar-settings.png" alt="The menu with Settings open: the title settings and Refresh interval, Auto-switch Claude Code and Auto-switch Codex checked, the two threshold submenus, Use resets automatically, and Start at login checked" width="729">
+<img src="../assets/screenshots/raw/menubar-settings.png" alt="The menu with Settings open: Show account name in menu bar, Title follows, Title percentage, Show model limits in title, Show usage chart checked, and Refresh interval; Auto-switch Claude Code and Auto-switch Codex checked, the two threshold submenus and Use resets automatically; Start at login checked" width="734">
 
 The menu's own preferences live in `menubar_settings.json` in the data directory (`~/.ai-quota-swap` on macOS). Change them from the menu; the menu bar reads the file when it starts.
 

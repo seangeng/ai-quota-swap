@@ -123,9 +123,11 @@ class UnknownRow(ValueError):
 class Backdrop:
     """A window on the desktop behind the menu (the hero: the dashboard).
 
-    ``png`` is a 2x screenshot; it is drawn ``width`` CSS px wide, ``top``
-    below the bar, its right edge ``overlap`` px under the menu, ``left`` px
-    from the picture's left edge."""
+    ``png`` is a 2x screenshot; it is drawn ``width`` CSS px wide, its right
+    edge ``overlap`` px under the menu, ``left`` px from the picture's left
+    edge. It sits midway between the bar and the picture's bottom edge, so
+    the wallpaper above and below it is even, and at least ``top`` below
+    the bar (see :func:`window_top`)."""
 
     png: bytes
     width: int = 760
@@ -138,6 +140,14 @@ class Backdrop:
     def height(self) -> int:
         w, h = struct.unpack(">II", self.png[16:24])  # the IHDR chunk
         return round(self.width * h / w)
+
+
+def window_top(backdrop: Backdrop, below_bar: float) -> int:
+    """How far below the bar the window behind the menu starts, in a
+    picture ``below_bar`` CSS px tall under the bar: midway, so the
+    wallpaper above and below it is even, and never less than
+    ``backdrop.top``."""
+    return max(backdrop.top, round((below_bar - backdrop.height) / 2))
 
 
 THEMES = {
@@ -508,11 +518,15 @@ def page(
 
     window = ""
     if backdrop is not None:
+        # The picture is as tall as its tallest menu (or the size asked for).
+        menus_bottom = max(tops[d] + _height(rows) for d, (_title, rows) in enumerate(levels))
+        tallest = max(menus_bottom, backdrop.top + backdrop.height)
+        below_bar = size[1] - BAR_H if size else tallest + BOTTOM_ROOM
         data = base64.b64encode(backdrop.png).decode()
         window = (
             f'<img class="window" alt="{html.escape(backdrop.alt, quote=True)}" '
             f'src="data:image/png;base64,{data}" style="width:{backdrop.width}px;'
-            f'height:{backdrop.height}px;margin-top:{backdrop.top}px;'
+            f'height:{backdrop.height}px;margin-top:{window_top(backdrop, below_bar)}px;'
             f'margin-right:-{backdrop.overlap}px">'
         )
     stage_size = f"width:{size[0]}px;height:{size[1]}px;" if size else ""

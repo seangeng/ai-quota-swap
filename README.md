@@ -4,18 +4,18 @@ ai-quota-swap (the `qswap` command) is an account switcher for Claude Code and t
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero-light.png">
-  <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero.png" alt="The qswap menu bar with its menu open in front of the terminal dashboard: Claude Code and Codex accounts with their 5-hour and weekly usage, held usage resets, an API key's spend against its budget, today's estimated cost, and auto-switch running for both" width="900">
+  <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero.png" alt="The qswap menu bar, titled personal · 46% · 38%, with its menu open in front of the terminal dashboard. The menu lists five Claude Code accounts and two Codex accounts with their 5-hour and weekly usage and held resets, the API key #5 ci at $25.22 of its $40 budget, and a chart of the last seven days of estimated cost by account: today $5.16, 7 days $78.25. Auto-switch is running for both." width="900">
 </picture>
 
-Every screenshot and recording on this page shows made-up accounts and comes from the [demo harness](https://github.com/seangeng/ai-quota-swap/blob/main/scripts/demo/README.md). The terminal pictures are qswap's own output. The menu bar pictures are drawings of the menu rows and notification text the app produces.
+Every screenshot and recording on this page shows made-up accounts and comes from the [demo harness](https://github.com/seangeng/ai-quota-swap/blob/main/scripts/demo/README.md). The terminal pictures are qswap's own output. The menu bar pictures are drawings of the menu rows, cost chart and notification text the app produces.
 
 ## What you get
 
 ### The macOS menu bar app
 
-`qswap menubar` puts the active account in the menu bar with how much of its 5-hour and weekly windows it has used, as `⇄ personal · 46% · 38%`. Its menu lists every Claude Code and Codex account with usage, held resets and today's cost. Click an account to switch to it, or run `qswap menubar --auto-switch` and let it switch for you; a notification says when and why.
+`qswap menubar` puts the active account in the menu bar with how much of its 5-hour and weekly windows it has used, as `⇄ personal · 46% · 38%`. Its menu lists every Claude Code and Codex account with usage and held resets, and charts the last seven days of estimated cost by account. Click an account to switch to it, or run `qswap menubar --auto-switch` and let it switch for you; a notification says when and why.
 
-<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/menubar.gif" alt="Recording: the qswap menu bar with made-up accounts. The menu is open on #1 personal at 86% of its 5-hour window; it closes and the title climbs to 88%; when #1 personal's 5-hour window reaches 91%, auto-switch moves to #2 work, the title changes to work and a notification says Switched #1 personal → #2 work · 5h reached 91%; the menu opens again with #2 work checked and the switch in Switch history" width="800">
+<img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/demos/menubar.gif" alt="Recording: the qswap menu bar with made-up accounts. The menu is open on #1 personal at 86% of its 5-hour window, above a chart of the week's estimated cost by account (7 days $89.45); it closes and the title climbs to 88%; when #1 personal's 5-hour window reaches 91%, auto-switch moves to #2 work, the title changes to work and a notification says Switched #1 personal → #2 work · 5h reached 91%; the menu opens again with #2 work checked and the switch in Switch history" width="800">
 
 Every row of the menu, its settings and how to start it at login: [docs/menubar.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/menubar.md).
 

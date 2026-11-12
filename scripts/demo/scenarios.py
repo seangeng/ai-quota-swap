@@ -855,6 +855,24 @@ FLEET = Scenario(
 )
 
 
+# Claude Code projects for the session histories (``usage``, ``showcase``,
+# ``autoswitch``).
+_PROJECTS = (
+    LedgerProject("/work/checkout-api", 0.38, (
+        ("claude-opus-5-5", 0.70), ("claude-sonnet-5-5", 0.25), ("claude-haiku-5-5", 0.05),
+    )),
+    LedgerProject("/work/billing-dashboard", 0.24, (
+        ("claude-sonnet-5-5", 0.65), ("claude-opus-5-5", 0.30), ("claude-haiku-5-5", 0.05),
+    )),
+    LedgerProject("/work/mobile-app", 0.16, (
+        ("claude-fable-5-2", 0.55), ("claude-sonnet-5-5", 0.45),
+    )),
+    LedgerProject("/work/infra-terraform", 0.10, (
+        ("claude-sonnet-5-5", 0.80), ("claude-haiku-5-5", 0.20),
+    )),
+)
+
+
 def _autoswitch_accounts() -> tuple[ClaudeAccount, ...]:
     a1, a2, a3, _a4 = _fleet_accounts()
     return (
@@ -879,6 +897,18 @@ AUTOSWITCH = Scenario(
     # check always reads afresh (86%). At exactly three minutes the seconds a
     # run takes decided whether it saw the warm-up reading instead.
     warmup=4 * M,
+    # A week of sessions, so the menu bar's cost row is its seven-day chart
+    # (the menu bar recording): mornings on #1, middays on #2, evenings on #1
+    # (#3 every third day).
+    ledger=Ledger(
+        days=7,
+        projects=_PROJECTS,
+        switches=tuple(
+            (d, h, slot)
+            for d in range(7, -1, -1)
+            for h, slot in ((8, 1), (12, 2), (17, 1 if d % 3 else 3))
+        ),
+    ),
 )
 
 
@@ -928,20 +958,7 @@ USAGE = Scenario(
     settings=_DARK,
     ledger=Ledger(
         days=14,
-        projects=(
-            LedgerProject("/work/checkout-api", 0.38, (
-                ("claude-opus-5-5", 0.70), ("claude-sonnet-5-5", 0.25), ("claude-haiku-5-5", 0.05),
-            )),
-            LedgerProject("/work/billing-dashboard", 0.24, (
-                ("claude-sonnet-5-5", 0.65), ("claude-opus-5-5", 0.30), ("claude-haiku-5-5", 0.05),
-            )),
-            LedgerProject("/work/mobile-app", 0.16, (
-                ("claude-fable-5-2", 0.55), ("claude-sonnet-5-5", 0.45),
-            )),
-            LedgerProject("/work/infra-terraform", 0.10, (
-                ("claude-sonnet-5-5", 0.80), ("claude-haiku-5-5", 0.20),
-            )),
-        ),
+        projects=_PROJECTS,
         switches=tuple(
             (d, h, slot)
             for d in range(15, -1, -1)

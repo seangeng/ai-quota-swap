@@ -6,7 +6,7 @@
     uv run python scripts/demo/build.py --record littledemo --upload
 
 Steps: CLI shots to HTML (docs/shots/), raw PNGs (assets/screenshots/raw/),
-ScreenFramed framing (assets/screenshots/, skipped with a message unless a
+the social preview cut from the hero (assets/social-preview.png), ScreenFramed framing (assets/screenshots/, skipped with a message unless a
 public base URL and a login are configured), the index page, and with
 ``--record`` the recordings (assets/demos/). Recordings are opt-in
 because LittleDemo ones use the maintainer's account.
@@ -39,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
 
     capture.render_html(only)
     capture.capture_shots(only)
+    if not only or only & {"hero", "social-preview"}:
+        capture.social_preview()
     status = 0
     if not args.no_frame:
         status = capture.frame(args.base_url, background="midnight", device=None, only=only)
