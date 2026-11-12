@@ -26,8 +26,8 @@ PYPI_URL = "https://pypi.org/pypi/ai-quota-swap/json"
 # the source the install recorded, so an install made from git before 0.1.0
 # keeps following the repository until it is reinstalled from PyPI.
 INSTALL_SOURCE = "ai-quota-swap"
-# A name pasted into the shell lines qswap prints: a package name only.
-_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# The alias package's name, and the folder uv and pipx give an install of it.
+ALIAS_NAME = "qswap"
 
 _VERSION_RE = re.compile(
     r"(\d+(?:\.\d+)*)(?:[-_.]?(alpha|beta|preview|pre|rc|a|b|c)[-_.]?(\d+)?)?",
@@ -118,12 +118,13 @@ def _detect_install_method() -> str | None:
 def install_name() -> str:
     """The name uv or pipx knows this install by, for the commands qswap runs
     and prints: ``qswap`` for an install made as ``uv tool install qswap``,
-    ai-quota-swap for one made under the package's own name (from PyPI or
-    from git) and for anything that is not a uv tool or a pipx venv.
+    ai-quota-swap for everything else. Any other folder name (a pipx
+    ``--suffix`` venv, a venv that only sits under a uv/tools path) is not a
+    name on PyPI that qswap can vouch for, so it keeps the package's own name.
     """
     found = _tool_install()
-    if found and _TOOL_NAME_RE.match(found[1]):
-        return found[1]
+    if found and found[1] == ALIAS_NAME:
+        return ALIAS_NAME
     return INSTALL_SOURCE
 
 
@@ -508,12 +509,13 @@ def run_self_upgrade(current_version: str | None = None) -> int:
     method = _detect_install_method()
     cmd = _upgrade_command(method)
     if cmd is None:
-        name = install_name()
+        # No uv tool or pipx venv was found, so install_name() would be
+        # ai-quota-swap here anyway.
         error(
             "qswap could not tell how it was installed, so it cannot upgrade itself.\n"
             "Upgrade it the way you installed it:\n"
-            f"  uv tool upgrade {name}\n"
-            f"  pipx upgrade {name}\n"
+            f"  uv tool upgrade {INSTALL_SOURCE}\n"
+            f"  pipx upgrade {INSTALL_SOURCE}\n"
             f"  {_shell_word(sys.executable)} -m pip install --upgrade {INSTALL_SOURCE}\n"
             "  git pull                      # a source checkout"
         )

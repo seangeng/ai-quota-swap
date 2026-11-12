@@ -1257,13 +1257,21 @@ class TestInstallName:
             (_PIPX_VENV + "ai-quota-swap", "ai-quota-swap"),
             ("/home/maya/code/ai-quota-swap/.venv", "ai-quota-swap"),
             ("/home/maya/venv", "ai-quota-swap"),
+            # Folders that are neither name: never pasted into a command.
+            (_PIPX_VENV + "ai-quota-swap_x", "ai-quota-swap"),
+            ("/home/maya/src/uv/tools/proj/venv", "ai-quota-swap"),
+            ("/opt/t/work/envs/thing", "ai-quota-swap"),
         ],
-        ids=["uv-alias", "uv", "pipx-alias", "pipx", "checkout", "plain-venv"],
+        ids=["uv-alias", "uv", "pipx-alias", "pipx", "checkout", "plain-venv",
+             "pipx-suffix", "nested-under-uv-tools", "under-UV_TOOL_DIR"],
     )
     def test_the_name_comes_from_the_install(self, monkeypatch, prefix, name):
         from ai_quota_swap import update_check
 
         self._prefix(monkeypatch, prefix)
+        if prefix.startswith("/opt/t/"):
+            monkeypatch.setenv("UV_TOOL_DIR", "/opt/t")
+            assert update_check._detect_install_method() == "uv"
         assert update_check.install_name() == name
         assert update_check.menubar_install_spec() == f"'{name}[menubar]'"
 
