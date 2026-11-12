@@ -165,7 +165,7 @@ def day_bounds(since: date, until: date) -> tuple[int, int]:
     return int(start.timestamp() // 3600), int(-(-end.timestamp() // 3600))
 
 
-def _local_day(hour: int) -> date:
+def local_day(hour: int) -> date:
     return datetime.fromtimestamp(hour * 3600).date()
 
 
@@ -268,6 +268,65 @@ def _profile_sessions(
     return out
 
 
+@dataclass
+class Attributed:
+    """A range's buckets, each with the account a report gives it:
+    ``(provider, hour, account, model, project, session, tokens)``."""
+
+    rows: list[tuple]
+    #: The ``qswap run`` sessions whose usage went to their profile's account.
+    profile_sessions: set[str]
+    #: Part of the range had an API key active as a saved key.
+    approximate: bool
+
+
+def attribute(
+    store: LedgerStore,
+    *,
+    since_hour: int,
+    until_hour: int,
+    provider: str | None,
+    accounts: Accounts,
+    logs: dict[str, ActivationLog],
+) -> Attributed:
+    """The buckets from ``since_hour`` to ``until_hour`` with the report-time
+    rules applied (the module docstring): a ``qswap run`` session goes to its
+    profile's account, and the saved-key rule moves key-period usage. Every
+    report reads usage through this, and so does the menu bar's chart."""
+    claude_log = logs.get("claude") or ActivationLog([])
+    overrides = _profile_sessions(store, accounts, claude_log)
+    # The saved-key rule (docs/design/api-key-sessions.md): only sessions
+    # started after a saved-key activation used the key.
+    saved_key = claude_log.saved_key_periods()
+    session_starts = (
+        {s: v[1] for s, v in store.sessions("claude").items()} if saved_key else {}
+    )
+    approximate = False
+    used_profile_sessions: set[str] = set()
+    rows: list[tuple] = []
+    raw = store.query_buckets(since_hour=since_hour, until_hour=until_hour, provider=provider)
+    for prov, hour, account, model, project, session, *toks in raw:
+        if prov == "claude" and session in overrides and account not in (DESKTOP_ACCOUNT,):
+            account = overrides[session]
+            used_profile_sessions.add(session)
+        elif saved_key and prov == "claude" and account not in (DESKTOP_ACCOUNT, UNATTRIBUTED):
+            moved = claude_log.saved_key_owner(account, hour, session_starts.get(session))
+            if moved is not None:
+                account = moved or UNATTRIBUTED
+                approximate = True
+            elif _in_saved_key_period(claude_log, account, hour):
+                approximate = True
+        rows.append((prov, hour, account, model, project, session, tuple(toks)))
+    return Attributed(rows, used_profile_sessions, approximate)
+
+
+def account_group(provider: str, account: str) -> tuple[str | None, str]:
+    """The ``--by account`` row a bucket's usage counts in: one per
+    provider's account (the two number their accounts separately), and one
+    for unattributed usage whatever its provider."""
+    return (None, account) if account == UNATTRIBUTED else (provider, account)
+
+
 def saved_key_moves(log: ActivationLog, hour: int, session_start: float | None,
                     account: str | None = None) -> str | None:
     """Where a bucket's usage goes under the saved-key rule, or None to keep
@@ -296,37 +355,19 @@ def build_report(
     logs = logs or {}
     prices = prices or PriceTable()
     accounts = Accounts(registries or {}, logs)
-    claude_log = logs.get("claude") or ActivationLog([])
-    overrides = _profile_sessions(store, accounts, claude_log)
-    # The saved-key rule (docs/design/api-key-sessions.md): only sessions
-    # started after a saved-key activation used the key.
-    saved_key = claude_log.saved_key_periods()
-    session_starts = (
-        {s: v[1] for s, v in store.sessions("claude").items()} if saved_key else {}
-    )
-    approximate = False
     since_hour, until_hour = day_bounds(since, until)
-    raw = store.query_buckets(since_hour=since_hour, until_hour=until_hour, provider=provider)
+    attributed = attribute(
+        store, since_hour=since_hour, until_hour=until_hour, provider=provider,
+        accounts=accounts, logs=logs,
+    )
 
     groups: dict[object, Row] = {}
     total = Totals()
     unpriced: dict[str, int] = {}
     unattributed = 0
-    used_profile_sessions: set[str] = set()
     seen_providers: set[str] = set()
-    for prov, hour, account, model, project, session, *toks in raw:
+    for prov, hour, account, model, project, session, toks in attributed.rows:
         seen_providers.add(prov)
-        toks = tuple(toks)
-        if prov == "claude" and session in overrides and account not in (DESKTOP_ACCOUNT,):
-            account = overrides[session]
-            used_profile_sessions.add(session)
-        elif saved_key and prov == "claude" and account not in (DESKTOP_ACCOUNT, UNATTRIBUTED):
-            moved = claude_log.saved_key_owner(account, hour, session_starts.get(session))
-            if moved is not None:
-                account = moved or UNATTRIBUTED
-                approximate = True
-            elif _in_saved_key_period(claude_log, account, hour):
-                approximate = True
         found = prices.lookup(model)
         cost = None
         if found is not None:
@@ -336,13 +377,11 @@ def build_report(
         if account == UNATTRIBUTED:
             unattributed += sum(toks[:5])
         if by == "day":
-            gkey: object = _local_day(hour)
+            gkey: object = local_day(hour)
         elif by == "model":
             gkey = model
         elif by == "account":
-            # One row per provider's account: the two number their accounts
-            # separately. Unattributed usage is one row whatever its provider.
-            gkey = (None, account) if account == UNATTRIBUTED else (prov, account)
+            gkey = account_group(prov, account)
         elif by == "project":
             gkey = project
         elif by == "provider":
@@ -380,12 +419,12 @@ def build_report(
         total=total,
         unpriced_models=dict(sorted(unpriced.items(), key=lambda x: -x[1])),
         unattributed_tokens=unattributed,
-        profile_sessions=len(used_profile_sessions),
+        profile_sessions=len(attributed.profile_sessions),
         prices=prices,
         attribution_starts={
             p: _iso_or_none(log.first_ts) for p, log in logs.items()
         },
-        approximate=approximate,
+        approximate=attributed.approximate,
     )
 
 

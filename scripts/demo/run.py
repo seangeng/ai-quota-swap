@@ -93,6 +93,9 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
                     help="put this 2x screenshot on the desktop as a window behind the menu "
                          "(the README's hero: the dashboard)")
     mb.add_argument("--size", metavar="WxH", help="fix the picture's size in CSS px")
+    mb.add_argument("--no-usage-chart", action="store_true",
+                    help="turn Settings > Show usage chart off, so the cost row is the "
+                         "plain sentence")
     mb.add_argument("--auto-switch", nargs="?", const="both", choices=("claude", "codex", "both"),
                     help="turn the menu bar's auto-switch on (default: both providers) and "
                          "host its engines as the app does; the menu is drawn after their "
@@ -108,10 +111,11 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     if "--" not in argv and not args.serve and not args.menubar:
         p.error("give the qswap arguments after --, e.g. run.py fleet -- list "
                 "(a bare `--` runs qswap with no arguments)")
-    drawing = ("open", "highlight", "closed", "beside", "size", "auto_switch", "frames")
+    drawing = ("open", "highlight", "closed", "beside", "size", "no_usage_chart", "auto_switch",
+               "frames")
     if not args.menubar and any(getattr(args, k) not in (None, False) for k in drawing):
-        p.error("--open, --highlight, --closed, --beside, --size, --auto-switch and "
-                "--frames go with --menubar")
+        p.error("--open, --highlight, --closed, --beside, --size, --no-usage-chart, "
+                "--auto-switch and --frames go with --menubar")
     if args.frames is not None and not args.auto_switch:
         p.error("--frames draws one picture per engine check: add --auto-switch")
     if args.typing and (args.html is None or args.menubar):
@@ -283,7 +287,7 @@ def run_menubar(args: argparse.Namespace, switcher, *, beside: bytes | None) -> 
     them; ``--frames`` draws after each of Claude Code's engine checks."""
     import menubar_page
 
-    host = MenuBarHost(switcher, auto_switch=args.auto_switch)
+    host = MenuBarHost(switcher, auto_switch=args.auto_switch, usage_chart=not args.no_usage_chart)
     backdrop = None
     if beside is not None:
         backdrop = menubar_page.Backdrop(beside, alt="The qswap dashboard")
@@ -340,13 +344,14 @@ class MenuBarHost:
     from what it left, so a picture never shows half a tick. The engines'
     events are queued as the app queues them, and :meth:`notifications`
     turns them into what the app would post (``menubar_notify.Notifier``).
+    Without ``usage_chart``, *Show usage chart* is turned off the same way.
 
     *Start at login* is drawn checked: that is the state the first
     ``qswap menubar`` leaves, and the app reads it from launchd, which the
     sandbox never reaches.
     """
 
-    def __init__(self, switcher, *, auto_switch: str | None) -> None:
+    def __init__(self, switcher, *, auto_switch: str | None, usage_chart: bool = True) -> None:
         import queue
         import threading
 
@@ -363,6 +368,9 @@ class MenuBarHost:
         if auto_switch:
             self.settings.auto_switch_enabled = auto_switch in ("claude", "both")
             self.settings.codex_auto_switch_enabled = auto_switch in ("codex", "both")
+        if not usage_chart:
+            self.settings.usage_chart = False
+        if auto_switch or not usage_chart:
             self.settings.save(self.settings_path)
         self.supervisor = None
         self._ticks: queue.Queue = queue.Queue()

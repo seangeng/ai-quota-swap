@@ -78,6 +78,24 @@ def _read_json(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def report_inputs(
+    data_root: Path, claude_registry: dict | None
+) -> tuple[dict[str, ActivationLog], dict[str, dict | None]]:
+    """The activation logs and account registries a report attributes and
+    names usage with: Claude Code's registry as given (``sequence.json``),
+    Codex's read from ``<data_root>/codex/``. Reads only."""
+    data_root = Path(data_root)
+    logs = {
+        "claude": ActivationLog.load(data_root),
+        "codex": ActivationLog.load(data_root / "codex"),
+    }
+    registries = {
+        "claude": claude_registry,
+        "codex": _read_json(data_root / "codex" / "sequence.json"),
+    }
+    return logs, registries
+
+
 def scan_recent(
     data_root: Path, *, registry: dict | None = None, days: int = 7,
     provider: str = "claude", today: date | None = None, start: float | None = None,
@@ -153,14 +171,7 @@ def run_usage(
             store.set_meta(LAST_SCAN_META, f"{time.time():.3f}")
             if not stats.files_seen and not stats.files_skipped:
                 searched = searched_dirs(config, providers)
-        logs = {
-            "claude": ActivationLog.load(data_root),
-            "codex": ActivationLog.load(data_root / "codex"),
-        }
-        registries = {
-            "claude": registry,
-            "codex": _read_json(data_root / "codex" / "sequence.json"),
-        }
+        logs, registries = report_inputs(data_root, registry)
         report = build_report(
             store,
             since=since,

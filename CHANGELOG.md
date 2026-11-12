@@ -45,6 +45,7 @@ The package is `ai-quota-swap` and the command `qswap`. Install it with `uv tool
 - One auto-switch toggle per provider (*Auto-switch Claude Code*, *Auto-switch Codex*), each hosting that provider's engine in its own thread with its own settings (`codex.threshold` for Codex). The first row says, in words, which engines run; *Settings → Title follows* puts Claude Code's, Codex's or the closest-to-its-limit account in the title.
 - Account rows are short (`#1 personal · 5h 46% · 7d 38% · 1 Fable reset`, at most 72 characters): a countdown only once a window is at its limit, orange from the switch line, the full `qswap list` block as the tooltip. Rows and notifications use the command line's words: `#2 work`, `needs re-login` (also for an account the engine set aside), `usage unavailable (HTTP 503), retrying`, `as of 3h 5m ago`, `extra`, API-key spend. Notifications are titled `ai-quota-swap` and say each thing once, across both engines.
 - A cost row, `Today $17.21 · 7 days $180.55 (estimated)`, from the ledger, which the menu bar scans in the background every 15 minutes.
+- The cost row is a small seven-day chart under the same sentence, each day split by account as `qswap usage --by account` counts it, with up to four accounts named below; *Settings → Show usage chart* (`usage_chart`) turns it back into the plain row.
 - Adding from a token is one dialog (token, optional email, setup-token or API key); removing asks what `qswap remove` asks; switching to an account that needs re-login asks first with `qswap switch`'s explanation.
 - `menubar_settings.json` gains `codex_auto_switch_enabled` and `title_follows`; an older file loads as before, and keys a build does not know are kept.
 - The menu is described by one pure function (`menubar.build_menu`) and drawn by a thin rumps layer; `scripts/demo/run.py SCENARIO --menubar` prints it.
@@ -57,6 +58,8 @@ The package is `ai-quota-swap` and the command `qswap`. Install it with `uv tool
 - The price table is copied from the vendors' published pages; `pricing.json` overrides it.
 - An activation log records which account was active when, so usage is attributed to accounts.
 - A report reads only the session files its date range needs.
+- A report walks the activation log once, not once for every hour of usage, when the log holds a saved-key line; with a few thousand lines that took a week's report from over half a second to a few tens of milliseconds.
+- A line of the activation log whose time is `NaN`, `Infinity` or a number too large for a float (only a hand edit makes one) is skipped like any other unreadable line.
 
 ### Usage resets
 
