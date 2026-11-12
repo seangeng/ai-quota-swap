@@ -146,9 +146,9 @@ fails. It never falls back to real behaviour.
    `fakeapi.py`. The package still builds its real requests and parses the
    answers with its real code; only the transport is fake. It answers
    Anthropic's endpoints, Codex's `chatgpt.com/backend-api/wham` usage and
-   reset-credit endpoints, and PyPI's project page (404, as today, since the
-   package is not on PyPI). A request the fake has no answer for counts as a
-   violation.
+   reset-credit endpoints, and PyPI's project page (404, so the daily update
+   check finds nothing newer and stays quiet). A request the fake has no answer
+   for counts as a violation.
 
 The self-test in `guards.verify` raises synthetic audit events at the hook
 (a real-store read, an outside write, a `security` spawn, a connection, a DNS
