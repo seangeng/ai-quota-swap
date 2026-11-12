@@ -23,3 +23,7 @@ docs/superpowers/
 
 # Demo harness: recordings stay local; the hosted copies live on LittleDemo
 assets/demos/*.mp4
+
+# Local secrets
+.env
+.env.*
