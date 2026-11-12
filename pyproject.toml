@@ -1,6 +1,6 @@
 [project]
 name = "ai-quota-swap"
-version = "0.1.0"
+version = "0.1.1"
 description = "Claude Code and Codex account switcher: multiple accounts, live 5-hour and weekly quota, auto-switch before usage limits, usage resets, token costs, terminal dashboard, macOS menu bar"
 readme = "README.md"
 requires-python = ">=3.12"

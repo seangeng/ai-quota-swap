@@ -26,7 +26,7 @@ It needs Python 3.12 or newer and runs on macOS, Linux (WSL included) and Window
 
 ```text
 $ qswap --version
-qswap 0.1.0
+qswap 0.1.1
 ```
 
 For the newest build from `main` instead of the release, install from GitHub: `uv tool install git+https://github.com/seangeng/ai-quota-swap`, or on a Mac `uv tool install 'ai-quota-swap[menubar] @ git+https://github.com/seangeng/ai-quota-swap'`. `qswap --version` then adds the commit in brackets (`qswap 0.1.0 (fdeb279)`), and so does `qswap upgrade`, so you can tell a new build of the same version from no change.

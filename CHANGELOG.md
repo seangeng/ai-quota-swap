@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1
+
+A patch release: fixes for an install made under the name qswap, two wrong outputs, and packaging.
+
+- `qswap upgrade` works on an install made as `uv tool install qswap`: it runs `uv tool upgrade qswap`. The update notice, the cooldown remedy and the menu bar reinstall hints name the tool qswap there too, and say `'qswap[menubar]'` (#35). An install made as ai-quota-swap prints what it did before.
+- On an install made as `pipx install qswap`, `qswap upgrade` runs `pipx runpip qswap install --upgrade ai-quota-swap`, because `pipx upgrade qswap` would only upgrade the qswap package, which holds no code. This follows pipx's source and has not been run against a real pipx install.
+- `qswap doctor` no longer prints `ok active API key` beside a warning about the settings' env block. When a variable there comes before the active key line, the key check itself warns and gives the fix. In `--json` that warning is on the `claude.key_helper` check while a key is active (#16).
+- `qswap usage`, the menu bar's caption and today's column count every hour of a day the clocks change. A range that ended on such a day was an hour long in spring and an hour short in autumn (#30).
+- qswap's own requests send `ai-quota-swap/<version>` as their User-Agent instead of `ai-quota-swap/1.0`.
+- rich is a declared dependency (`rich>=14.2.0`). The dashboard imports it directly; it used to arrive only through textual.
+- The source distribution is built from a list of what it includes, so a stray file in the tree cannot ship. Its contents are the same as in 0.1.0.
+- The PyPI release workflow builds in one job and publishes in a second, the only one that can ask PyPI for a publishing token.
+- The qswap package on PyPI is 0.1.1 too and asks for ai-quota-swap 0.1.1 or newer, so a new install under that name has the working `qswap upgrade`.
+
 ## 0.1.0
 
 The first release under the name ai-quota-swap, and the first on PyPI. The project started as a fork of [claude-swap](https://github.com/realiti4/claude-swap) 1.1.0b1, and everything that version did still works: switching Claude Code accounts by hand or automatically, parallel sessions with `run`, the dashboard, the macOS menu bar, JSON output, export and import.

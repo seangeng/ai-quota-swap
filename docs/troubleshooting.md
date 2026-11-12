@@ -140,7 +140,7 @@ uv tool install --force 'ai-quota-swap[menubar]'
 qswap menubar
 ```
 
-With pipx: `pipx install --force 'ai-quota-swap[menubar]'`. On Linux or Windows, leave out the extra and the second line: `uv tool install --force ai-quota-swap`. With pip, run `python -m pip install --force-reinstall 'ai-quota-swap[menubar]'` with the Python qswap runs on; `pip install --upgrade` leaves a GitHub install where it is, since the version is the same. A reinstall leaves your accounts, saved logins and settings where they are. Afterwards `qswap --version` prints `qswap 0.1.0`, with no commit in brackets, and `qswap upgrade` takes new releases from PyPI.
+With pipx: `pipx install --force 'ai-quota-swap[menubar]'`. On Linux or Windows, leave out the extra and the second line: `uv tool install --force ai-quota-swap`. With pip, run `python -m pip install --force-reinstall 'ai-quota-swap[menubar]'` with the Python qswap runs on; `pip install --upgrade` leaves a GitHub install where it is, since the version is the same. A reinstall leaves your accounts, saved logins and settings where they are. Afterwards `qswap --version` prints the version alone (`qswap 0.1.1`), with no commit in brackets, and `qswap upgrade` takes new releases from PyPI.
 
 ## A running session still uses the old account
 
