@@ -56,14 +56,24 @@ _UPSTREAM = {
 }
 
 
+# The demo harness's own warm colours from before qswap had its palette: the
+# CLI window's light frame (render.py), the recordings' stage backdrop
+# (web/app_index.html and the played pages) and the shots index.
+_OLD_HARNESS = {
+    "#fbfaf7", "#ecebe7", "#d9d7d1", "#6d6c68", "#8a8984", "#242422",
+    "#26211d", "#0d0d0e", "#fffaf2", "#e9e3d8", "#e2dfd8",
+}
+
+
 def test_palette_is_qswaps_own():
     assert {name: getattr(theme, name) for name in _PALETTE} == _PALETTE
-    assert not set(_PALETTE.values()) & _UPSTREAM
+    assert not set(_PALETTE.values()) & (_UPSTREAM | _OLD_HARNESS)
 
 
 def test_no_upstream_colour_in_the_code_or_the_demo_scripts():
     # The constants above are the one source of truth: no widget, stylesheet
-    # or demo script may draw with an upstream value of its own.
+    # or demo script may draw with an upstream value, or an old harness one,
+    # of its own.
     root = Path(__file__).resolve().parents[1]
     files = [
         path
@@ -75,7 +85,7 @@ def test_no_upstream_colour_in_the_code_or_the_demo_scripts():
     found = [
         f"{path.relative_to(root)}: {value}"
         for path in files
-        for value in _UPSTREAM
+        for value in sorted(_UPSTREAM | _OLD_HARNESS)
         if value in path.read_text(encoding="utf-8").lower()
     ]
     assert found == []

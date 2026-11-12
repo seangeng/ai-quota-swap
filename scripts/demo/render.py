@@ -19,12 +19,23 @@ from rich.console import Console
 from rich.terminal_theme import TerminalTheme
 from rich.text import Text
 
+from ai_quota_swap.tui import theme as palette
+
 FONT_SIZE = 15  # px, the same in every window, so text keeps one scale
 PADDING_X = 28  # px on each side of the text
 
+
+def _rgb(hex_colour: str) -> tuple[int, int, int]:
+    return tuple(int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))  # type: ignore[return-value]
+
+
+# The terminal's background and text are the window's (qswap's palette in
+# tui/theme.py), so dim text, which Rich blends from the two, is in the same
+# cool greys as the frame. The sixteen ANSI colours stand in for a terminal's
+# own: of them, the command line uses red and yellow, in its dark palette.
 DARK = TerminalTheme(
-    (23, 24, 28),
-    (228, 228, 226),
+    _rgb(palette.BACKGROUND),
+    _rgb(palette.FOREGROUND),
     [
         (60, 62, 68), (232, 108, 108), (143, 196, 120), (226, 186, 106),
         (110, 166, 230), (196, 140, 220), (98, 190, 196), (212, 212, 208),
@@ -35,8 +46,8 @@ DARK = TerminalTheme(
     ],
 )
 LIGHT = TerminalTheme(
-    (251, 250, 247),
-    (36, 36, 34),
+    _rgb(palette.BACKGROUND_LIGHT),
+    _rgb(palette.FOREGROUND_LIGHT),
     [
         (36, 36, 34), (179, 38, 58), (46, 118, 52), (122, 82, 0),
         (36, 92, 170), (130, 60, 150), (24, 120, 128), (120, 118, 112),
@@ -47,15 +58,26 @@ LIGHT = TerminalTheme(
     ],
 )
 
+# The window around the output, in the same constants as the dashboard's
+# window (web/app_index.html), so a CLI shot and a dashboard shot match.
 _CHROME = {
     "dark": {
-        "bg": "#17181c", "fg": "#e4e4e2", "chrome": "#222327", "chrome_fg": "#9a9a98",
-        "border": "#33343a", "prompt": "#8a8a88",
+        "bg": palette.BACKGROUND, "fg": palette.FOREGROUND, "chrome": palette.SURFACE,
+        "chrome_fg": palette.MUTED, "border": palette.PANEL, "prompt": palette.MUTED,
     },
     "light": {
-        "bg": "#fbfaf7", "fg": "#242422", "chrome": "#ecebe7", "chrome_fg": "#6d6c68",
-        "border": "#d9d7d1", "prompt": "#8a8984",
+        "bg": palette.BACKGROUND_LIGHT, "fg": palette.FOREGROUND_LIGHT,
+        "chrome": palette.SURFACE_LIGHT, "chrome_fg": palette.MUTED_LIGHT,
+        "border": palette.PANEL_LIGHT, "prompt": palette.MUTED_LIGHT,
     },
+}
+
+# What a recording's window sits on: lighter in the middle, the palette's
+# background at the edges (web/app_index.html draws the dashboard's the same).
+STAGE = {
+    "dark": f"radial-gradient(ellipse at 50% 40%, {palette.SURFACE} 0%, {palette.BACKGROUND} 70%)",
+    "light": (f"radial-gradient(ellipse at 50% 40%, {palette.BACKGROUND_LIGHT} 0%, "
+              f"{palette.SURFACE_LIGHT} 70%)"),
 }
 
 

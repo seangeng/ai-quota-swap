@@ -4,7 +4,8 @@ CLI shots render to HTML (``docs/shots/<name>.html`` and ``<name>-light.html``)
 and are screenshotted from there; TUI shots are screenshotted from the served
 dashboard; menu bar shots are drawings of the menu's rows
 (``docs/shots/<name>.html``, see ``menubar_page.py``), taken after the TUI
-shots because the hero puts one behind the menu. ``columns`` is the
+shots because the hero puts one behind the menu; chart shots are the menu's
+chart alone, drawn by the app's AppKit view (``menubar_chart.py``). ``columns`` is the
 terminal's column count: a CLI window is as wide as its columns at one font
 size, and a TUI shot is sized in cells (columns x rows), so text keeps one
 scale across the README. Everything is captured at 2x.
@@ -127,6 +128,23 @@ MENUBAR_SHOTS = (
     MenubarShot("hero-light", "showcase",
                 "The qswap menu bar open over the dashboard, light theme",
                 theme="light", beside="dashboard-light"),
+)
+
+
+@dataclass(frozen=True)
+class ChartShot:
+    """The menu bar's usage chart alone, drawn by the app's own AppKit view
+    off screen (``menubar_chart.py``) from a scenario's ledger: ``<name>.png``
+    (dark) and ``<name>-light.png``. macOS only; a pair for a ``<picture>``."""
+
+    name: str
+    scenario: str
+    caption: str
+
+
+CHART_SHOTS = (
+    ChartShot("menubar-chart", "usage",
+              "The cost row's chart: the last seven days of estimated cost, by account"),
 )
 
 

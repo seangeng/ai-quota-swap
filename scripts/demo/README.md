@@ -90,7 +90,10 @@ else (the window behind the hero is embedded in the page).
 screen into PNGs (light and dark, at 2x), from invented shapes or from a
 scenario read in the sandbox: `uv run --with pyobjc-framework-Cocoa python
 scripts/demo/menubar_chart.py --out DIR` (`--list` names the shapes). It
-needs macOS and makes no window, menu or application object.
+needs macOS. Before AppKit measures or draws anything, the process takes the
+Prohibited activation policy (no Dock icon, never active, no window can
+show), and it makes no window or menu. `docs/menubar.md`'s chart pair comes
+from it (`CHART_SHOTS`, below).
 
 Without `--auto-switch` the menu's first row reads `Auto-switch off`, as it
 does on a Mac where nobody turned it on. With it, the harness turns the
@@ -193,7 +196,9 @@ disabled flags, settings, and optionally a session history.
   account holding a reset credit). Every account was read two minutes before
   the clock, so `auto --once` compares real readings.
 - `autoswitch`: the active account climbs from 86% to past its 90% line and
-  the engine switches to the account with the most headroom.
+  the engine switches to the account with the most headroom. A week of
+  Claude Code sessions across its three accounts gives the menu bar's cost
+  row its chart (and the dashboard its cost line).
 - `reset`: the active account is at 100% on its Fable weekly window and holds
   a Fable reset and a weekly reset; `reset-after` is the same state once the
   Fable reset is spent.
@@ -253,6 +258,11 @@ guarded app process. Their PNGs are also wrapped in static pages
 (`docs/shots/dashboard.html`, `watch.html`, ...) so the whole set can be
 published from `docs/shots/` with `index.html` as the entry.
 
+Chart shots (`CHART_SHOTS`) are the menu's cost chart alone, drawn by the
+app's AppKit view with `menubar_chart.py` for a scenario, as `<name>.png`
+(dark) and `<name>-light.png`; on macOS only, elsewhere the step says so and
+keeps the PNGs there are. `menubar-chart` is the `usage` scenario's.
+
 Menu bar shots (`MENUBAR_SHOTS`) render to `docs/shots/<name>.html` with
 `run.py --menubar --html` and are captured after the dashboard shots, because
 `hero` and `hero-light` put `dashboard.png` and `dashboard-light.png` behind
@@ -274,7 +284,9 @@ still exists.
   wait for `shots`, which renders them once the dashboard PNGs exist).
 - `capture.py shots` takes raw screenshots with a local headless Chrome at 2x
   into `assets/screenshots/raw/`: CLI pages, then dashboard shots, then menu
-  bar drawings. It compresses them with pngquant when it is installed. Set `CHROME_PATH` if Chrome is not at
+  bar drawings, then the chart pairs (`menubar_chart.py`, with pyobjc added
+  through `uv run --with pyobjc-framework-Cocoa` when this Python lacks it).
+  It compresses them with pngquant when it is installed. Set `CHROME_PATH` if Chrome is not at
   `/Applications/Google Chrome.app`.
 - `capture.py frame` frames each page with the ScreenFramed CLI into
   `assets/screenshots/`. ScreenFramed renders the URL in its cloud, so it needs
@@ -295,9 +307,14 @@ still exists.
   Recording and hosting are separate so nothing is published unseen; a new
   recording drops the record of a copy hosted earlier, which shows the old
   one.
+- `capture.py social` cuts `assets/social-preview.png` (1280 x 640, under
+  1 MB) from the dark hero: the menu bar and the menu with its chart in front
+  of the dashboard's accounts, cut between two lines of the menu's text and
+  scaled down, nothing added. Nothing links it; it is uploaded by hand as the
+  repository's social preview.
 - `capture.py index` writes `docs/shots/index.html`.
 
-`build.py` runs html, shots, frame and index; add `--record local` or
+`build.py` runs html, shots, social, frame and index; add `--record local` or
 `--record littledemo --upload` to remake the recordings too, and `--only` to
 limit it to some shots.
 
@@ -309,7 +326,7 @@ records how each was made.
 
 | GIF | Scenario | Shows | Storyboard |
 |---|---|---|---|
-| `menubar.gif` | `autoswitch` | The menu open on `#1 personal` at 86%; the bar magnified while the title's 5-hour figure climbs to 88%, then changes to `work` when the menu bar's own engine switches at 91%, with the app's notification (`Switched #1 personal → #2 work · 5h reached 91%`) under the bar; then the menu open on that check, on Switch history (`#1 personal → #2 work · 2026-11-10 14:22`) | a played page (`player_page.py`) |
+| `menubar.gif` | `autoswitch` | The menu open on `#1 personal` at 86%, its cost row the week's chart; the bar magnified while the title's 5-hour figure climbs to 88%, then changes to `work` when the menu bar's own engine switches at 91%, with the app's notification (`Switched #1 personal → #2 work · 5h reached 91%`) under the bar; then the menu open on that check, on Switch history (`#1 personal → #2 work · 2026-11-10 14:22`) | a played page (`player_page.py`) |
 | `quickstart.gif` | `quickstart` | `qswap add --alias work`, `qswap list`, `qswap switch 1`, `qswap status`, typed and answered with their real output | a played page (`run.py --typing`) |
 | `dashboard.gif` | `showcase` | The dashboard's main view, then `w` (watch), `g` (the auto view, in dry run) and `u` (usage), each closed with `esc` | keys into the served dashboard, 100x40 cells |
 | `autoswitch.gif` | `autoswitch` | The auto view goes live (the Go live dialog held long enough to read); `#1 personal` climbs from 86% and the engine switches to `#2 work` at 92% | keys into the served dashboard |
@@ -344,8 +361,9 @@ after a pressed key (its key overlay, then its delay), which the storyboards
 count. The stage page and the played pages hide LittleDemo's pointer and key
 overlays. To make the GIF, ffmpeg crops a served dashboard to its window plus
 8 px of the stage, scales to 960 px, drops frames that repeat the one before
-(`mpdecimate` with strict thresholds, so every step of a fade is kept) and
-holds the last frame to the video's end. Played pages are drawn about 1.5
+(`mpdecimate` with strict thresholds, so every step of a fade is kept),
+maps it to one palette of 192 colours and holds the last frame to the
+video's end. Played pages are drawn about 1.5
 times larger than the GIF and scaled down, which keeps text sharp through the
 video's colour subsampling.
 
