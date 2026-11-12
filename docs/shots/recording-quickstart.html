@@ -8,15 +8,15 @@
 <style>
   html, body { margin: 0; padding: 0; }
   body { display: flex; justify-content: center; align-items: center; min-height: 100vh;
-          background: radial-gradient(ellipse at 50% 40%, #26211d 0%, #0d0d0e 70%); }
+          background: radial-gradient(ellipse at 50% 40%, #161922 0%, #0f1117 70%); }
   #frame { zoom: 1.8; padding: 8px; }
   .window {
     width: fit-content; box-sizing: border-box; overflow: hidden;
-    background: #17181c; border: 1px solid #33343a; border-radius: 12px;
+    background: #0f1117; border: 1px solid #1f2330; border-radius: 12px;
   }
   .titlebar {
     position: relative; height: 40px; display: flex; align-items: center;
-    background: #222327; border-bottom: 1px solid #33343a;
+    background: #161922; border-bottom: 1px solid #1f2330;
   }
   .dots { display: flex; gap: 8px; padding-left: 16px; }
   .dots i { display: block; width: 12px; height: 12px; border-radius: 50%; }
@@ -26,10 +26,10 @@
   .title {
     position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
     font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    color: #9a9a98;
+    color: #8a8fa3;
   }
   .screen {
-    margin: 0; padding: 20px 28px 24px; color: #e4e4e2;
+    margin: 0; padding: 20px 28px 24px; color: #e4e6ee;
     width: 80ch;
     font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
       "DejaVu Sans Mono", "Liberation Mono", monospace;
@@ -37,14 +37,14 @@
     font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
     tab-size: 8;
   }
-  .prompt { color: #8a8a88; }
+  .prompt { color: #8a8fa3; }
   .cmd { font-weight: 600; }
   .window { box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3); }
   /* The lines scroll inside the screen's padding, as a terminal's do. */
   .scroll { height: 33em; overflow: hidden; }
   .scroll > div { min-height: 1.5em; }
   .cur { display: inline-block; width: 0.6em; height: 1.15em; vertical-align: -0.2em;
-          margin-left: 1px; background: #e4e4e2; opacity: 0.85; }
+          margin-left: 1px; background: #e4e6ee; opacity: 0.85; }
   .cur[hidden], .part[hidden] { display: none; }
   /* A recording is keyboard-only: the recorder's pointer and key overlays
      would sit over the drawing, so the page hides them. */
@@ -56,28 +56,28 @@
 <div class="window" id="window">
   <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
     <div class="title">qswap</div></div>
-<div class="screen"><div class="scroll" id="screen"><div class="part" id="line0"><span class="prompt">$</span> <span class="cmd" id="cmd0">qswap add --alias work</span><span class="cur" id="cur0" hidden></span></div><div class="part out" id="out0"><span style="color: #d7875f; text-decoration-color: #d7875f">Added</span> #2 work (maya@northwind.example.com)</div><div class="part" id="gap1"> </div><div class="part" id="line1"><span class="prompt">$</span> <span class="cmd" id="cmd1">qswap list</span><span class="cur" id="cur1" hidden></span></div><div class="part out" id="out1"><span style="font-weight: bold">Claude Code accounts</span>
-  #1 <span style="color: #d7875f; text-decoration-color: #d7875f">personal</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@example.com) · Max 20x</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 18%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 17:30 · in 3h 10m</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 26%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 14 16:20 · in 4d 2h</span>
+<div class="screen"><div class="scroll" id="screen"><div class="part" id="line0"><span class="prompt">$</span> <span class="cmd" id="cmd0">qswap add --alias work</span><span class="cur" id="cur0" hidden></span></div><div class="part out" id="out0"><span style="color: #af87ff; text-decoration-color: #af87ff">Added</span> #2 work (maya@northwind.example.com)</div><div class="part" id="gap1"> </div><div class="part" id="line1"><span class="prompt">$</span> <span class="cmd" id="cmd1">qswap list</span><span class="cur" id="cur1" hidden></span></div><div class="part out" id="out1"><span style="font-weight: bold">Claude Code accounts</span>
+  #1 <span style="color: #af87ff; text-decoration-color: #af87ff">personal</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@example.com) · Max 20x</span>
+     <span style="color: #797b82; text-decoration-color: #797b82">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 18%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 17:30 · in 3h 10m</span>
+     <span style="color: #797b82; text-decoration-color: #797b82">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 26%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 14 16:20 · in 4d 2h</span>
 
-  #2 <span style="color: #d7875f; text-decoration-color: #d7875f">work</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@northwind.example.com) · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Team · Northwind Labs</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 71%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 16:00 · in 1h 40m</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 44%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 15 16:20 · in 5d 2h · ahead of pace</span></div><div class="part" id="gap2"> </div><div class="part" id="line2"><span class="prompt">$</span> <span class="cmd" id="cmd2">qswap switch 1</span><span class="cur" id="cur2" hidden></span></div><div class="part out" id="out2"><span style="color: #d7875f; text-decoration-color: #d7875f">Switched</span> #2 work → #1 personal (maya@example.com)
+  #2 <span style="color: #af87ff; text-decoration-color: #af87ff">work</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@northwind.example.com) · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Team · Northwind Labs</span>
+     <span style="color: #797b82; text-decoration-color: #797b82">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 71%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 16:00 · in 1h 40m</span>
+     <span style="color: #797b82; text-decoration-color: #797b82">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 44%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 15 16:20 · in 5d 2h · ahead of pace</span></div><div class="part" id="gap2"> </div><div class="part" id="line2"><span class="prompt">$</span> <span class="cmd" id="cmd2">qswap switch 1</span><span class="cur" id="cur2" hidden></span></div><div class="part out" id="out2"><span style="color: #af87ff; text-decoration-color: #af87ff">Switched</span> #2 work → #1 personal (maya@example.com)
 <span style="font-weight: bold">Claude Code accounts</span>
-  #1 <span style="color: #d7875f; text-decoration-color: #d7875f">personal</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@example.com) · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Max 20x</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 18%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 17:30 · in 3h 10m</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 26%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 14 16:20 · in 4d 2h</span>
+  #1 <span style="color: #af87ff; text-decoration-color: #af87ff">personal</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@example.com) · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Max 20x</span>
+     <span style="color: #797b82; text-decoration-color: #797b82">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 18%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 17:30 · in 3h 10m</span>
+     <span style="color: #797b82; text-decoration-color: #797b82">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 26%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 14 16:20 · in 4d 2h</span>
 
-  #2 <span style="color: #d7875f; text-decoration-color: #d7875f">work</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@northwind.example.com) · Team · Northwind Labs</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 71%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 16:00 · in 1h 40m</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 44%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 15 16:20 · in 5d 2h · ahead of pace</span>
-<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">Claude Code picks up the new account within 30 seconds; restart it to apply now.</span></div><div class="part" id="gap3"> </div><div class="part" id="line3"><span class="prompt">$</span> <span class="cmd" id="cmd3">qswap status</span><span class="cur" id="cur3" hidden></span></div><div class="part out" id="out3"><span style="font-weight: bold">Claude Code</span>
-  #1 <span style="color: #d7875f; text-decoration-color: #d7875f">personal</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@example.com) · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Max 20x</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 18%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 17:30 · in 3h 10m</span>
-     <span style="color: #7d7e7f; text-decoration-color: #7d7e7f">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 26%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 14 16:20 · in 4d 2h</span>
+  #2 <span style="color: #af87ff; text-decoration-color: #af87ff">work</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@northwind.example.com) · Team · Northwind Labs</span>
+     <span style="color: #797b82; text-decoration-color: #797b82">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 71%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 16:00 · in 1h 40m</span>
+     <span style="color: #797b82; text-decoration-color: #797b82">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 44%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 15 16:20 · in 5d 2h · ahead of pace</span>
+<span style="color: #797b82; text-decoration-color: #797b82">Claude Code picks up the new account within 30 seconds; restart it to apply now.</span></div><div class="part" id="gap3"> </div><div class="part" id="line3"><span class="prompt">$</span> <span class="cmd" id="cmd3">qswap status</span><span class="cur" id="cur3" hidden></span></div><div class="part out" id="out3"><span style="font-weight: bold">Claude Code</span>
+  #1 <span style="color: #af87ff; text-decoration-color: #af87ff">personal</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> (maya@example.com) · </span><span style="font-weight: bold">active</span><span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> · Max 20x</span>
+     <span style="color: #797b82; text-decoration-color: #797b82">├</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">5h   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 18%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets 17:30 · in 3h 10m</span>
+     <span style="color: #797b82; text-decoration-color: #797b82">└</span> <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">7d   </span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc"> 26%</span>  <span style="color: #bcbcbc; text-decoration-color: #bcbcbc">resets Nov 14 16:20 · in 4d 2h</span>
 
-<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">2 Claude Code accounts are managed.</span>
+<span style="color: #797b82; text-decoration-color: #797b82">2 Claude Code accounts are managed.</span>
 Auto-switch is not running. Start it with: qswap auto</div><div class="part" id="gapend"> </div><div class="part" id="lineend"><span class="prompt">$</span> <span class="cur" id="curend"></span></div></div></div>
 </div>
 </div>

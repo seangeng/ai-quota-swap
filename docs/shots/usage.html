@@ -10,11 +10,11 @@
   body { display: flex; justify-content: center; }
   .window {
     width: fit-content; box-sizing: border-box; overflow: hidden;
-    background: #17181c; border: 1px solid #33343a; border-radius: 12px;
+    background: #0f1117; border: 1px solid #1f2330; border-radius: 12px;
   }
   .titlebar {
     position: relative; height: 40px; display: flex; align-items: center;
-    background: #222327; border-bottom: 1px solid #33343a;
+    background: #161922; border-bottom: 1px solid #1f2330;
   }
   .dots { display: flex; gap: 8px; padding-left: 16px; }
   .dots i { display: block; width: 12px; height: 12px; border-radius: 50%; }
@@ -24,10 +24,10 @@
   .title {
     position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
     font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    color: #9a9a98;
+    color: #8a8fa3;
   }
   .screen {
-    margin: 0; padding: 20px 28px 24px; color: #e4e4e2;
+    margin: 0; padding: 20px 28px 24px; color: #e4e6ee;
     width: 80ch;
     font-family: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas,
       "DejaVu Sans Mono", "Liberation Mono", monospace;
@@ -35,7 +35,7 @@
     font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
     tab-size: 8;
   }
-  .prompt { color: #8a8a88; }
+  .prompt { color: #8a8fa3; }
   .cmd { font-weight: 600; }
 </style>
 </head>
@@ -46,7 +46,7 @@
 <pre class="screen"><span class="prompt">$</span> <span class="cmd">qswap usage</span>
 <span style="font-weight: bold">Token usage, 2026-11-04 to 2026-11-10, Claude Code and Codex, by day</span>
 
-<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">  Day             Input  Output  Cache read  Cache write  Est. cost</span>
+<span style="color: #797b82; text-decoration-color: #797b82">  Day             Input  Output  Cache read  Cache write  Est. cost</span>
   Wed 2026-11-04   506K    499K       20.6M         1.0M     $17.03
   Thu 2026-11-05   390K    534K       24.2M         1.2M     $15.85
   Fri 2026-11-06   433K    484K       21.9M         1.2M     $16.91
@@ -56,8 +56,8 @@
   Tue 2026-11-10   313K    163K        6.5M         261K      $5.16
 <span style="font-weight: bold">  Total            2.1M    2.3M        103M         5.2M     $78.25</span>
 
-<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">Costs are estimates at API list prices (Anthropic and OpenAI pricing pages,</span>
-<span style="color: #7d7e7f; text-decoration-color: #7d7e7f">2026-11-10). Subscription usage is not billed this way.</span></pre>
+<span style="color: #797b82; text-decoration-color: #797b82">Costs are estimates at API list prices (Anthropic and OpenAI pricing pages,</span>
+<span style="color: #797b82; text-decoration-color: #797b82">2026-11-10). Subscription usage is not billed this way.</span></pre>
 </div>
 </body>
 </html>
