@@ -1747,3 +1747,34 @@ def test_a_log_line_whose_time_is_not_a_finite_number_is_skipped(tmp_path):
     # is not a time is no credit, rather than one that raises later.
     assert api_spend.credit_from_record({"credit": {"amount": 25, "since": float("nan")}}) is None
     assert api_spend.credit_counted_from({"since": float("inf")}, None) == ""
+
+
+@pytest.fixture
+def local_zone(monkeypatch):
+    """Run in another local time zone: ``set_zone("America/Los_Angeles")``."""
+    import time
+
+    def set_zone(name: str) -> None:
+        monkeypatch.setenv("TZ", name)
+        time.tzset()
+
+    yield set_zone
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="time.tzset is POSIX-only")
+@pytest.mark.parametrize("day, hours", [
+    (date(2026, 3, 8), 23),  # the clocks go forward
+    (date(2026, 11, 1), 25),  # the clocks go back
+    (date(2026, 11, 4), 24),
+])
+def test_a_day_is_as_long_as_the_local_day(local_zone, day, hours):
+    local_zone("America/Los_Angeles")
+    start, end = day_bounds(day, day)
+    assert end - start == hours
+    # It ends where the next day starts, so ranges side by side meet.
+    after = date.fromordinal(day.toordinal() + 1)
+    assert end == day_bounds(after, after)[0]
+    assert day_bounds(date.fromordinal(day.toordinal() - 6), day) == (
+        day_bounds(date.fromordinal(day.toordinal() - 6), date.fromordinal(day.toordinal() - 6))[0], end)

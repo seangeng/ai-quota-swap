@@ -161,7 +161,10 @@ class Report:
 def day_bounds(since: date, until: date) -> tuple[int, int]:
     """UTC epoch hours covering local ``since`` 00:00 to ``until`` 24:00."""
     start = datetime(since.year, since.month, since.day).astimezone()
-    end = datetime(until.year, until.month, until.day).astimezone() + timedelta(days=1)
+    # The next local midnight, not midnight plus 24 hours: a day the clocks
+    # change has 23 or 25.
+    after = until + timedelta(days=1)
+    end = datetime(after.year, after.month, after.day).astimezone()
     return int(start.timestamp() // 3600), int(-(-end.timestamp() // 3600))
 
 

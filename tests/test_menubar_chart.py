@@ -976,6 +976,8 @@ def local_zone(monkeypatch):
     ("Asia/Kolkata", _dt.date(2026, 11, 10), 169, 25),
     # A whole-hour zone across a change: 1 November 2026 is 25 hours long.
     ("America/New_York", _dt.date(2026, 11, 3), 169, 24),
+    # Today is the change day: the caption counts all 25 of its hours.
+    ("America/Los_Angeles", _dt.date(2026, 11, 1), 169, 25),
 ])
 def test_the_columns_count_what_the_caption_counts(tmp_path, local_zone, zone, today, week_hours, today_hours):
     from ai_quota_swap.ledger.report import day_bounds
