@@ -28,6 +28,7 @@ resets.minHoursLeft               24           (default)
 resets.expiryDays                 7            (default)
 resets.expiryThreshold            50           (default)
 resets.weeklyForModelLimit        false        (default)
+resets.beforeSwitch               false        (default)
 codex.restartDaemon               true         (default)
 codex.threshold                   99           (default)
 ```

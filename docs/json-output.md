@@ -84,7 +84,8 @@ $ qswap switch 2 --json
   "strategy": "direct",
   "reason": "switched",
   "message": "Switched to Account-2 (maya@northwind.example.com)",
-  "warnings": []
+  "warnings": [],
+  "how": "login"
 }
 ```
 
