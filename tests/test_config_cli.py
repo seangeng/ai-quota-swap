@@ -36,6 +36,15 @@ def _settings_file(capsys) -> Path:
 
 
 class TestConfigList:
+    def test_the_settings_page_quotes_this_listing(self, temp_home, capsys):
+        # docs/settings.md quotes `qswap config` with nothing set, so a new
+        # setting has to be added to that block too.
+        code, out, _ = _run([], capsys)
+        assert code == 0
+        page = Path(__file__).resolve().parents[1] / "docs" / "settings.md"
+        listing = "\n".join(line.rstrip() for line in out.strip().splitlines())
+        assert f"$ qswap config\n{listing}\n```" in page.read_text(encoding="utf-8")
+
     def test_lists_all_keys_as_defaults(self, temp_home, capsys):
         code, out, _ = _run([], capsys)
         assert code == 0
