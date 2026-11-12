@@ -5,6 +5,9 @@ description = "Claude Code and Codex account switcher: multiple accounts, live 5
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # The dashboard imports rich itself; textual also needs it. The bound is
+    # the one textual 8.2.8 sets.
+    "rich>=14.2.0",
     "textual>=8.2.8,<9",
     "truststore>=0.10.4",
     # Codex compresses idle session files with zstd; the standard library reads
