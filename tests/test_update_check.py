@@ -917,6 +917,15 @@ class _Dist:
 
 
 class TestInstallIdentity:
+    @pytest.fixture(autouse=True)
+    def _version_already_read(self):
+        # The package looks its version up once, through importlib.metadata,
+        # which these tests replace: read it before they do, so each passes
+        # when run alone.
+        import ai_quota_swap
+
+        assert ai_quota_swap.__version__
+
     def test_git_install_carries_its_commit(self):
         from ai_quota_swap import update_check
 

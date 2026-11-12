@@ -68,7 +68,8 @@ def _markdown_files() -> list[Path]:
     out = []
     for path in REPO.rglob("*.md"):
         rel = path.relative_to(REPO)
-        if any(part in SKIP_DIRS for part in rel.parts[:-1]):
+        # .gitignore allows any environment named .venv*, such as .venv-3.12.
+        if any(part in SKIP_DIRS or part.startswith(".venv") for part in rel.parts[:-1]):
             continue
         out.append(path)
     return sorted(out)

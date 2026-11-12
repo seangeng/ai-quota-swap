@@ -148,4 +148,7 @@ A release is published to PyPI by `.github/workflows/publish.yml` through truste
    HOME="$scratch/home" "$scratch/venv/bin/qswap" --version
    ```
 
-3. Merge, then publish a GitHub release whose tag is the version (`v0.1.0` for `0.1.0`). The workflow refuses a tag that does not match the version, and a tree whose `CHANGELOG.md` has no section for it. Name the repository in every `gh` command of the release, for example `gh release create v0.1.0 --target main -R seangeng/ai-quota-swap`: in a clone that also has the original project as a remote named `upstream`, `gh` picks that one when no default repository is set.
+3. Merge, then publish a GitHub release whose tag is the version (`v0.1.0` for `0.1.0`). The workflow refuses a tag that does not match the version, and a tree whose `CHANGELOG.md` has no section for it. Name the repository in every `gh` command of the release, for example `gh release create v0.1.0 --target main -R seangeng/ai-quota-swap`: in a clone that also has the original project as a remote named `upstream` and no default repository set, `gh` run from a script picks that one, and at a terminal it stops and asks for `gh repo set-default`.
+4. Watch the run (`gh run watch -R seangeng/ai-quota-swap`), then check that `https://pypi.org/pypi/ai-quota-swap/json` answers with the new version.
+
+If the publish job fails before anything was uploaded, re-run it from the Actions page when the tree was not at fault; when it needs a change, delete the release and its tag, fix main, and create the release again. A version that did upload can never be replaced: publish the next patch version, then yank the bad one on PyPI.

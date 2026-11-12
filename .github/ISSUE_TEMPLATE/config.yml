@@ -1,7 +1,7 @@
 blank_issues_enabled: true
 contact_links:
   - name: Documentation
-    url: https://github.com/seangeng/ai-quota-swap#documentation
+    url: https://github.com/seangeng/ai-quota-swap/blob/main/docs/README.md
     about: How auto-switch decides, usage resets, Codex accounts, the menu bar, JSON output, and common questions.
   - name: Report a security vulnerability
     url: https://github.com/seangeng/ai-quota-swap/security/advisories/new

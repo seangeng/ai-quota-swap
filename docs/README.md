@@ -50,5 +50,5 @@ Start with the [quick start](quickstart.md). Each page below opens with what it 
 |---|---|
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | setup, running qswap against invented accounts, tests, lint |
 | [architecture.md](architecture.md) | a map of the code and the data directory |
-| [design/](design/) | the reasoning behind the larger decisions: [providers](design/providers.md), [Codex](design/codex.md), [the ledger](design/ledger.md), [API accounts](design/api-accounts.md), [output and wording rules](design/ux.md) |
+| [design/](design/) | the reasoning behind the larger decisions: [providers](design/providers.md), [Codex](design/codex.md), [the ledger](design/ledger.md), [API accounts](design/api-accounts.md), [API-key accounts and running sessions](design/api-key-sessions.md), [output and wording rules](design/ux.md) |
 | [../scripts/demo/README.md](../scripts/demo/README.md) | the demo harness that makes every screenshot and recording from invented accounts |
