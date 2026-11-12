@@ -606,7 +606,9 @@ class TestWhatOutranksTheLineIsSaidEverywhere:
         s.switch_to("5", json_output=True)
         _with_env(temp_home, ANTHROPIC_API_KEY="x")
         checks = {c.id: c for c in doctor.run_checks()}
-        assert checks["claude.settings_env"].status == "warn"
+        # Over the active key, the key check carries the warning (#16).
+        assert checks["claude.key_helper"].status == "warn"
+        assert "ANTHROPIC_API_KEY" in checks["claude.key_helper"].summary
         _settings(temp_home).write_text(
             json.dumps({"apiKeyHelper": "/opt/vault/print-key"}), encoding="utf-8"
         )

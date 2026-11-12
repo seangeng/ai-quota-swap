@@ -794,6 +794,10 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
         row = row if isinstance(row, dict) else {}
         return _label(number, row, row.get("email", "") if isinstance(row.get("email"), str) else "")
 
+    env_check = _settings_env_check(
+        raw if read_err is None else None, where, findings.key,
+        label(findings.key) if findings.key is not None else None,
+    )
     if state.kind == claude_settings.INVALID:
         if read_err is None:
             checks.append(Check(
@@ -880,11 +884,16 @@ def _key_helper_checks(p: Probes, f: _Facts) -> list[Check]:
                     "program wrote an older copy of the settings)",
                     fix=fix,
                 )
+            if env_check is not None and check.status == PASS:
+                # The env block is about this key: the key check carries
+                # its warning, rather than passing beside it (as the note
+                # does in list and status).
+                check = Check(
+                    "claude.key_helper", "claude", WARN,
+                    f"{check.summary}. {env_check.summary}", fix=env_check.fix,
+                )
+                env_check = None
             checks.append(check)
-    env_check = _settings_env_check(
-        raw if read_err is None else None, where, findings.key,
-        label(findings.key) if findings.key is not None else None,
-    )
     if env_check is not None:
         checks.append(env_check)
     lost_said = False

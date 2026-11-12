@@ -211,7 +211,7 @@ so either may be billed. Remove ANTHROPIC_AUTH_TOKEN from the env block of
 ~/.claude/settings.json, then: qswap switch 5
 ```
 
-Claude Code 2.1.322 still runs the line while `ANTHROPIC_AUTH_TOKEN` is set beside it: every request carries the key from the line as `x-api-key` and the token as the bearer, sent to `ANTHROPIC_BASE_URL` when that is set too (measured end to end; `ANTHROPIC_API_KEY` takes the other header, read in the binary). Which of the two Anthropic bills was not tested, so the note says either may be. With a cloud provider variable (`CLAUDE_CODE_USE_BEDROCK` and the like) no key of Anthropic's is sent, and the note says sessions do not use the key. Doctor says the same, the host included.
+Claude Code 2.1.322 still runs the line while `ANTHROPIC_AUTH_TOKEN` is set beside it: every request carries the key from the line as `x-api-key` and the token as the bearer, sent to `ANTHROPIC_BASE_URL` when that is set too (measured end to end; `ANTHROPIC_API_KEY` takes the other header, read in the binary). Which of the two Anthropic bills was not tested, so the note says either may be. With a cloud provider variable (`CLAUDE_CODE_USE_BEDROCK` and the like) no key of Anthropic's is sent, and the note says sessions do not use the key. Doctor says the same, the host included, on its check of the active key, which then warns instead of passing.
 
 `qswap switch 5` to the key already active refuses in the same words, and changes nothing, while such a variable is set. Only doctor reports the other layers and a line whose command fails its check while its program is there.
 

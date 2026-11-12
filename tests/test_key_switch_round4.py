@@ -8,6 +8,7 @@ names; the key line's command is fixed as in test_key_helper_live.py.
 
 from __future__ import annotations
 
+import re
 import time
 
 import pytest
@@ -280,11 +281,43 @@ class TestACredentialBesideTheActiveKey:
         s = self._over_the_key(temp_home, ANTHROPIC_AUTH_TOKEN="made-up",
                                ANTHROPIC_BASE_URL="https://gateway.example.com/v1")
         assert "with every request to gateway.example.com, beside" in _notes(s)
-        env = {c.id: c for c in doctor.run_checks()}["claude.settings_env"]
+        env = {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
         text = " ".join(env.summary.split())
         assert "the key of #5 ci with every request to gateway.example.com" in text
         assert "qswap will not switch" not in text
         assert env.fix.endswith("then: qswap switch 5")
+
+    @pytest.mark.parametrize("name", ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"])
+    def test_doctor_does_not_pass_the_key_beside_the_warning(self, temp_home, name):
+        """#16: the key check carries the env block's warning, in the text
+        and in --json alike, and no second check repeats it."""
+        from ai_quota_swap import doctor
+        from tests.test_key_switch_round3 import WHERE
+
+        self._over_the_key(temp_home, **{name: "made-up"})
+        checks = doctor.run_checks()
+        ids = [c.id for c in checks]
+        assert "claude.settings_env" not in ids and ids.count("claude.key_helper") == 1
+        key = next(c for c in checks if c.id == "claude.key_helper")
+        assert key.status == doctor.WARN
+        text = " ".join(key.summary.split())
+        assert text.startswith(f"active API key: #5 ci, through qswap's key line in {WHERE}")
+        assert (
+            f"{WHERE} sets {name} in its env block, which Claude Code obeys before any "
+            "key line, yet sessions still send the key of #5 ci with every request"
+        ) in text
+        assert key.fix == f"remove {name} from the env block of {WHERE}, then: qswap switch 5"
+        assert "made-up" not in text
+        report = "\n".join(doctor.render_text(checks, online=False))
+        assert "active API key: #5 ci" in report
+        line = next(ln for ln in report.splitlines() if "active API key: #5 ci" in ln)
+        assert re.sub(r"\x1b\[[0-9;]*m", "", line).split()[0] == doctor.MARKS[doctor.WARN]
+        payload = doctor.to_json(checks, online=False)
+        assert payload["schemaVersion"] == 1
+        entry = next(c for c in payload["checks"] if c["id"] == "claude.key_helper")
+        assert entry["status"] == "warn" and entry["summary"] == key.summary
+        assert entry["fix"] == key.fix
+        assert not [c for c in payload["checks"] if c["id"] == "claude.settings_env"]
 
     def test_another_provider_still_means_the_key_is_not_used(self, temp_home):
         from tests.test_key_switch_round3 import _notes
