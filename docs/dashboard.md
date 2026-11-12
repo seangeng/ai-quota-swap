@@ -158,7 +158,7 @@ While the auto view is open, the rest of the dashboard only reads the usage stor
 
 ## Usage screen (`u`)
 
-<img src="../assets/screenshots/raw/dashboard-usage.png" alt="The usage screen: token usage and estimated cost for the last 7 days, one row per day, with a total" width="800">
+<img src="../assets/screenshots/raw/dashboard-usage.png" alt="The usage screen regrouped by account: tokens and estimated cost for the last 7 days, one row per Claude Code and Codex account, from Claude #1 personal at $33.61 down to Codex #1 maya@example.com at $1.03, and a total of $78.25" width="800">
 
 `qswap usage` on a screen: tokens and their estimated cost at API prices for the last 7 days, by day to start with ([usage.md](usage.md)). It shows what the ledger already holds at once, then reads new session files, and the title says `reading new session files…` while it does. With no usage recorded it says `No usage recorded yet. Use Claude Code or Codex, then press f.`
 
