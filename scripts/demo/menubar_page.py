@@ -17,7 +17,13 @@ What it mirrors from ``menubar_app._item`` and ``_draw``:
   ``⚠`` in ``Menu.outline`` is the outline's own marker);
 * ``children`` make a submenu (a chevron at the right), separators are
   separator items;
-* the open submenu's parent row is selected, as AppKit draws it.
+* the open submenu's parent row is selected, as AppKit draws it;
+* a row with a ``chart`` (the cost row) is drawn as the chart, as
+  ``menubar_chart_view`` draws it: the caption, the columns stacked by
+  account (each clipped to one outline with rounded top corners), the
+  weekday letters and the legend line, laid out by the same
+  ``menubar_chart.layout_columns`` in inline SVG, in the system colours'
+  light and dark values (:data:`SYSTEM_COLOURS`).
 
 It can also draw one notification banner, top right under the bar, as macOS
 shows them: its title and body are a ``menubar_notify.Notification`` the
@@ -28,8 +34,18 @@ A status item near the right-hand end of the bar gets its menu pushed left
 to stay on screen, so submenus open to the left. That is what this draws.
 
 No external fonts, scripts or images: the page renders the same offline and
-the demo sandbox refuses the network. Not imported by anything in
-``ai_quota_swap``; it reads only the attributes of the menu it is handed.
+the demo sandbox refuses the network. The only ``url(…)`` in it names one of
+the chart's own clip paths by its id (``url(#chart-m0-r7-day0)``). Not
+imported by anything in
+``ai_quota_swap``; it reads only the attributes of the menu it is handed,
+and lays the chart out with ``menubar_chart``'s pure functions.
+
+A page has no script, so the browser cannot say how wide the menu's rows
+are; the chart needs that width to place its columns and to cut legend
+names. :func:`text_width` estimates it from the system font's advances,
+measured in the headless Chrome the harness draws with (within 2% of what
+that Chrome lays out), and the chart row is made at least as wide as the
+widest row, so the menu is as wide as the chart.
 """
 
 from __future__ import annotations
@@ -54,6 +70,45 @@ BOTTOM_ROOM = 34
 NOTE_W = 344  # a notification banner's width
 NOTE_TOP = 6  # ... its gap under the bar
 NOTE_RIGHT = 10  # ... and from the screen's right edge
+ITEM_LEFT = 17  # a row's title starts this far into the row (the check column)
+ITEM_RIGHT = 18  # ... and ends this far from its right edge
+SUBMENU_RIGHT = 34  # ... a submenu row's, to leave room for its chevron
+DAY_LINE = 12  # the chart's weekday letters: 10 px type on a 12 px line
+LEGEND_LINE = 13  # its legend: 11 px type on a 13 px line
+
+#: The system colours the chart's AppKit view draws with, as NSColor gives
+#: them on macOS 26 in the light (Aqua) and dark (DarkAqua) appearance.
+SYSTEM_COLOURS = {
+    #                light        dark
+    "blue": ("#0088ff", "#0091ff"),
+    "orange": ("#ff8d28", "#ff9230"),
+    "purple": ("#cb30e0", "#db34f2"),
+    "teal": ("#00c3d0", "#00d2e0"),
+    "green": ("#34c759", "#30d158"),
+    "brown": ("#ac7f5e", "#b78a66"),
+    "indigo": ("#6155f5", "#6d7cff"),
+    "yellow": ("#ffcc00", "#ffd600"),
+    "gray": ("#8e8e93", "#98989d"),  # "other"
+    "label": ("#000000d8", "#ffffffd8"),  # amounts, today's letter
+    "secondaryLabel": ("#0000007f", "#ffffff8c"),  # caption, names, letters
+    "tertiaryLabel": ("#00000042", "#ffffff3f"),  # a day with nothing
+}
+
+# The system font's advances at 13 px, in thousandths of an em, for the
+# characters below, as headless Chrome lays out -apple-system; other
+# characters count as a whole em. At 11 px each character is
+# _TRACKING[11] em wider (the font's own tracking).
+_CHARS = "".join(chr(c) for c in range(32, 127)) + "·…→—–’"
+_ADVANCES = dict(zip(_CHARS, (
+    275, 305, 472, 624, 624, 919, 706, 291, 376, 376, 466, 624, 291, 466, 291, 299,
+    624, 458, 598, 621, 638, 612, 631, 582, 633, 631, 291, 291, 624, 624, 624, 507,
+    912, 668, 651, 710, 721, 590, 566, 741, 736, 262, 532, 653, 562, 868, 736, 766,
+    629, 766, 647, 631, 628, 731, 668, 962, 673, 649, 656, 376, 299, 376, 624, 541,
+    494, 546, 608, 554, 608, 565, 356, 604, 583, 241, 241, 537, 247, 864, 578, 585,
+    605, 604, 384, 508, 357, 578, 536, 769, 519, 537, 533, 376, 253, 376, 624, 291,
+    799, 900, 872, 578, 291,
+)))
+_TRACKING = {13: 0.0, 11: 0.012}
 
 
 class UnknownSubmenu(ValueError):
@@ -179,6 +234,141 @@ GLYPHS = {
 }
 
 
+def text_width(text: str, size: int, *, letter_spacing: float = 0.0) -> float:
+    """About how wide ``text`` is in the system font at ``size`` px (13 or
+    11), with ``letter_spacing`` px after each character; a little more
+    rather than less."""
+    em = sum(_ADVANCES.get(c, 1000) for c in text) / 1000 + _TRACKING[size] * len(text)
+    return em * size + letter_spacing * len(text)
+
+
+def _row_width(row) -> float:
+    """A title row's width inside the menu's side margins."""
+    right = SUBMENU_RIGHT if row.children else ITEM_RIGHT
+    return ITEM_LEFT + text_width(row.text, 13, letter_spacing=-0.08) + right
+
+
+def _legend_text_width(name: str, entry) -> float:
+    return text_width(f"{name} {entry.amount_text}", 11)
+
+
+def _chart_frame():
+    from ai_quota_swap.menubar_chart import frame
+
+    return frame(DAY_LINE, LEGEND_LINE)
+
+
+def chart_row_width(chart, rows: Sequence) -> int:
+    """The chart row's width: as wide as the widest other row of its menu,
+    and wide enough for its caption and its legend with names as short as
+    they go (as ``menubar_chart_view.min_width``), so it spans the menu."""
+    from ai_quota_swap.menubar_chart import legend_width
+
+    widest = max((_row_width(r) for r in rows if not r.separator and r.chart is None), default=0.0)
+    shortest = chart.fit_legend(lambda _names: False)
+    legend = legend_width([_legend_text_width(n, e) for n, e in zip(shortest, chart.legend)])
+    caption = text_width(chart.caption, 13, letter_spacing=-0.08)
+    own = ITEM_LEFT + max(caption, legend) + ITEM_RIGHT
+    return int(-(-max(widest, own) // 1)) + 2  # a little more rather than less
+
+
+def _colour_class(index: int) -> str:
+    return "cx" if index < 0 else f"c{index}"
+
+
+def _top_rounded_path(x: float, y: float, w: float, h: float, radius: float) -> str:
+    """A rectangle with its top corners rounded, as the AppKit view clips
+    a column to."""
+    r = max(0.0, min(radius, w / 2, h))
+    return (f"M{x:g} {y + h:g}V{y + r:g}A{r:g} {r:g} 0 0 1 {x + r:g} {y:g}H{x + w - r:g}"
+            f"A{r:g} {r:g} 0 0 1 {x + w:g} {y + r:g}V{y + h:g}Z")
+
+
+def _chart_html(row, width: int, ident: str = "chart") -> str:
+    """The cost row's chart, ``width`` px wide: the caption and the legend
+    as text, the columns and weekday letters as SVG. Each column's segments
+    are plain rectangles clipped to one outline, as the AppKit view draws
+    them; ``ident`` starts the clip paths' ids, unique in the page."""
+    from ai_quota_swap.menubar_chart import WEEKDAY_NAMES, layout_columns, legend_width
+
+    chart = row.chart
+    bands = _chart_frame()
+    inner = width - ITEM_LEFT - ITEM_RIGHT
+    days = []
+    for i, col in enumerate(layout_columns(chart, left=ITEM_LEFT, width=inner, base=bands.base)):
+        c = col.column
+        parts = []
+        if col.stub is not None:
+            b = col.stub
+            parts.append(f'<rect class="stub" x="{b.x:g}" y="{b.y:g}" width="{b.w:g}" height="{b.h:g}"/>')
+        if col.outline is not None:
+            o, clip = col.outline, f"{ident}-day{i}"
+            parts.append(f'<clipPath id="{clip}"><path class="outline" '
+                         f'd="{_top_rounded_path(o.x, o.y, o.w, o.h, col.radius)}"/></clipPath>')
+            rects = "".join(
+                f'<rect class="seg {_colour_class(p.segment.colour)}" x="{p.box.x:g}" y="{p.box.y:g}" '
+                f'width="{p.box.w:g}" height="{p.box.h:g}"/>'
+                for p in col.segments
+            )
+            parts.append(f'<g clip-path="url(#{clip})">{rects}</g>')
+        letter = "letter today" if c.today else "letter"
+        parts.append(f'<text class="{letter}" x="{col.centre:g}" y="{bands.letters_top + DAY_LINE / 2:g}">'
+                     f"{html.escape(c.label)}</text>")
+        total = next(text for column, text in chart.day_totals() if column is c)
+        days.append(f'<g class="day" data-day="{WEEKDAY_NAMES[c.day.weekday()][:3]}" '
+                    f'data-total="{html.escape(total, quote=True)}">{"".join(parts)}</g>')
+    names = chart.fit_legend(lambda ns: legend_width(
+        [_legend_text_width(n, e) for n, e in zip(ns, chart.legend)]) <= inner)
+    entries = "".join(
+        f'<span class="entry" data-name="{html.escape(e.name, quote=True)}" '
+        f'data-amount="{html.escape(e.amount_text, quote=True)}">'
+        f'<i class="dot {_colour_class(e.colour)}"></i><span class="lt">'
+        f'<span class="name">{html.escape(n)}</span> <span class="amt">{html.escape(e.amount_text)}</span>'
+        "</span></span>"
+        for n, e in zip(names, chart.legend)
+    )
+    return (
+        f'<div class="chart" role="img" aria-label="{html.escape(chart.accessibility_label(), quote=True)}" '
+        f'style="width:{width}px;height:{bands.height:g}px">'
+        f'<div class="cap" style="width:{inner}px">{html.escape(chart.caption)}</div>'
+        f'<svg class="bars" width="{width}" height="{bands.height:g}" viewBox="0 0 {width} {bands.height:g}" '
+        f'aria-hidden="true">{"".join(days)}</svg>'
+        f'<div class="legend" style="top:{bands.legend_top:g}px">{entries}</div></div>'
+    )
+
+
+def _chart_css(theme: str) -> str:
+    from ai_quota_swap.menubar_chart import ACCOUNT_COLOURS, CAPTION_BAND, DOT, DOT_GAP, ENTRY_GAP
+
+    side = 0 if theme == "light" else 1
+    colour = {name: pair[side] for name, pair in SYSTEM_COLOURS.items()}
+    fills = "".join(
+        f"  .c{i} {{ fill: {colour[name]}; background: {colour[name]}; }}\n"
+        for i, name in enumerate(ACCOUNT_COLOURS)
+    )
+    return f"""  .chart {{ position: relative; margin: 0 5px; box-sizing: border-box; }}
+  .chart .bars {{ position: absolute; left: 0; top: 0; overflow: visible; }}
+  .chart .cap {{
+    position: absolute; left: {ITEM_LEFT}px; top: 0; height: {CAPTION_BAND:g}px;
+    line-height: {CAPTION_BAND:g}px; letter-spacing: -0.08px; color: {colour["secondaryLabel"]};
+    overflow: hidden; text-overflow: ellipsis;
+  }}
+  .chart .stub {{ fill: {colour["tertiaryLabel"]}; }}
+  .chart .letter {{ font-size: 10px; fill: {colour["secondaryLabel"]}; text-anchor: middle;
+                    dominant-baseline: central; }}
+  .chart .letter.today {{ fill: {colour["label"]}; }}
+  .chart .legend {{
+    position: absolute; left: {ITEM_LEFT}px; height: {LEGEND_LINE}px; display: flex;
+    gap: {ENTRY_GAP:g}px; font-size: 11px; line-height: {LEGEND_LINE}px;
+  }}
+  .chart .entry {{ display: flex; align-items: center; gap: {DOT_GAP:g}px; }}
+  .chart .dot {{ display: block; width: {DOT:g}px; height: {DOT:g}px; border-radius: 50%; }}
+  .chart .name {{ color: {colour["secondaryLabel"]}; }}
+  .chart .amt {{ color: {colour["label"]}; }}
+{fills}  .cx {{ fill: {colour["gray"]}; background: {colour["gray"]}; }}
+"""
+
+
 def resolve(menu, open_path: Sequence[str] = ()) -> list[tuple[str | None, list]]:
     """The menus drawn, outermost first: ``[(None, main rows), (title, its
     rows), ...]``. Each name in ``open_path`` must be the exact text of a
@@ -199,18 +389,28 @@ def resolve(menu, open_path: Sequence[str] = ()) -> list[tuple[str | None, list]
     return levels
 
 
-def _row_top(rows: Sequence, index: int) -> int:
+def _row_h(row) -> float:
+    if row.separator:
+        return SEP_H
+    if getattr(row, "chart", None) is not None:
+        return _chart_frame().height
+    return ROW_H
+
+
+def _row_top(rows: Sequence, index: int) -> float:
     """Where row ``index`` starts, below the panel's top padding."""
-    return sum(SEP_H if r.separator else ROW_H for r in rows[:index])
+    return sum(_row_h(r) for r in rows[:index])
 
 
 def _height(rows: Sequence) -> int:
     return 2 * PAD_V + _row_top(rows, len(rows))
 
 
-def _row_html(row, *, selected: bool) -> str:
+def _row_html(row, *, selected: bool, chart_width: int = 0, ident: str = "chart") -> str:
     if row.separator:
         return '<div class="sep" role="separator"></div>'
+    if getattr(row, "chart", None) is not None:
+        return _chart_html(row, chart_width, ident)
     classes = ["item"]
     if row.checked:
         classes.append("checked")
@@ -234,11 +434,19 @@ def _row_html(row, *, selected: bool) -> str:
 
 def _menu_html(rows: Sequence, *, level: int, title: str | None, selected: int | None,
                margin_top: int) -> str:
-    body = "".join(_row_html(r, selected=(i == selected)) for i, r in enumerate(rows))
+    chart_width = next(
+        (chart_row_width(r.chart, rows) for r in rows if getattr(r, "chart", None) is not None), 0,
+    )
+    # A chart's clip paths are named after its menu and row, so no two
+    # charts in a page share an id.
+    body = "".join(
+        _row_html(r, selected=(i == selected), chart_width=chart_width, ident=f"chart-m{level}-r{i}")
+        for i, r in enumerate(rows)
+    )
     name = "" if title is None else f' data-title="{html.escape(title, quote=True)}"'
     return (
         f'<div class="menu" data-level="{level}"{name} '
-        f'style="margin-top:{margin_top}px;z-index:{10 + level}">{body}</div>'
+        f'style="margin-top:{margin_top:g}px;z-index:{10 + level}">{body}</div>'
     )
 
 
@@ -394,7 +602,7 @@ def page(
   .note-icon {{ flex: none; width: 32px; height: 32px; margin-top: 1px; border-radius: 8px;
                 background: {c["note_icon"]}; }}
   .note-title {{ font-weight: 600; }}
-</style>
+{_chart_css(theme)}</style>
 </head>
 <body>
 <div class="stage {theme}{hidden}" id="stage">

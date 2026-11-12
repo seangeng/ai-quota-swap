@@ -56,6 +56,7 @@ from ai_quota_swap.menubar import (
     change_resets_setting,
     relogin_confirmation,
     remove_dialog,
+    toggle_menu_setting,
     use_reset,
     wanted_engines,
 )
@@ -63,11 +64,10 @@ from ai_quota_swap.menubar_data import (
     COST_FIRST_SCAN_DELAY_S,
     COST_SCAN_INTERVAL_S,
     CodexReader,
+    CostCache,
     Gathered,
     claude_state,
     heartbeats,
-    ledger_stamp,
-    read_cost,
     read_history,
     scan_ledger,
 )
@@ -115,7 +115,10 @@ def run_app(switcher, rumps, AppKit) -> int:
             self._codex = CodexReader(data_root)
             self._data = Gathered(ProviderState("claude"), ProviderState("codex"))
             self._cost = None
-            self._cost_stamp: tuple | None = None
+            # Read again when the ledger, a registry or an activation log
+            # changes, or when the chart is turned on (the read for the
+            # chart also reads each day by account; without it, it does not).
+            self._cost_cache = CostCache()
             self._dirty = False
             self._refreshing = False
             self._scanning = False
@@ -186,10 +189,7 @@ def run_app(switcher, rumps, AppKit) -> int:
                 except Exception:
                     logger.debug("menu bar Codex read failed", exc_info=True)
                     codex = previous.codex
-                stamp = ledger_stamp(data_root)
-                if stamp != self._cost_stamp:
-                    self._cost = read_cost(data_root)
-                    self._cost_stamp = stamp
+                self._cost = self._cost_cache.read(data_root, days=self.settings.usage_chart)
                 self._data = Gathered(
                     claude, codex, read_history(log_path), heartbeats(data_root), now,
                 )
@@ -232,8 +232,7 @@ def run_app(switcher, rumps, AppKit) -> int:
                 except Exception:
                     pass
                 scan_ledger(data_root, registry=registry)
-                self._cost = read_cost(data_root)
-                self._cost_stamp = ledger_stamp(data_root)
+                self._cost = self._cost_cache.read(data_root, days=self.settings.usage_chart, again=True)
                 self._dirty = True
             except Exception:
                 logger.debug("menu bar ledger scan failed", exc_info=True)
@@ -425,6 +424,10 @@ def run_app(switcher, rumps, AppKit) -> int:
                     self._health_row = row
 
         def _item(self, row: Row):
+            if row.chart is not None:
+                item = _chart_item(rumps, row, logger)
+                if item is not None:
+                    return item
             if row.children:
                 item = rumps.MenuItem(row.text)
                 for j, child in enumerate(row.children):
@@ -785,13 +788,21 @@ def run_app(switcher, rumps, AppKit) -> int:
             self.settings.save(settings_path)
             self.rebuild_menu()
 
-        def _do_toggle_name(self, _a: Action):
-            self.settings.show_account_name = not self.settings.show_account_name
-            self._save_and_rebuild()
+        def _toggle_setting(self, a: Action):
+            toggle_menu_setting(a, self.settings, save=lambda s: s.save(settings_path))
+            self.rebuild_menu()
 
-        def _do_toggle_scoped(self, _a: Action):
-            self.settings.title_scoped = not self.settings.title_scoped
-            self._save_and_rebuild()
+        def _do_toggle_name(self, a: Action):
+            self._toggle_setting(a)
+
+        def _do_toggle_scoped(self, a: Action):
+            self._toggle_setting(a)
+
+        def _do_toggle_chart(self, a: Action):
+            self._toggle_setting(a)
+            # The cost read without the days cannot draw the chart: read it
+            # again now rather than at the next refresh tick.
+            self.refresh_async()
 
         def _do_title_pct(self, a: Action):
             self.settings.title_pct = str(a.value)
@@ -848,6 +859,21 @@ def _codex_live_email():
     from ai_quota_swap import codex_cli
 
     return codex_cli.live_codex_email()
+
+
+def _chart_item(rumps, row: Row, logger):
+    """The cost row drawn as its chart (``menubar_chart_view``), or None
+    when the view cannot be made, so the plain text row shows instead."""
+    try:
+        from ai_quota_swap.menubar_chart_view import make_view
+
+        view = make_view(row.chart)
+        item = rumps.MenuItem(row.text)
+        item._menuitem.setView_(view)
+        return item
+    except Exception:
+        logger.debug("menu bar: the usage chart could not be drawn; showing the text row", exc_info=True)
+        return None
 
 
 def _mark_attention(AppKit, item, text: str) -> None:

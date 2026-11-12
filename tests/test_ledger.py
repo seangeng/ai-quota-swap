@@ -4,6 +4,7 @@ and live under the test's isolated home."""
 
 from __future__ import annotations
 
+import bisect
 import json
 import os
 import re
@@ -1565,3 +1566,184 @@ class TestScanWindow:
         assert stats.older_not_in_ledger == 1
         env.scan()
         assert env.sums()["requests"] == 2
+
+
+# --- saved-key lookups: one walk of the log, not one per bucket -------------------------------
+
+
+def _reference_saved_key_owner(log, account, hour, session_start):
+    """ActivationLog.saved_key_owner as it was before it kept its periods:
+    two walks of the whole log per call. The behaviour to keep."""
+    if session_start is None:
+        return None
+    lo, hi = hour * 3600, (hour + 1) * 3600
+    acts = log.activations
+    hows, starts = [], []
+    for i, a in enumerate(acts):
+        how, start = a.how, i
+        if not how and i > 0 and acts[i - 1].account == a.account:
+            how, start = hows[i - 1], starts[i - 1]
+        hows.append(how)
+        starts.append(start)
+    in_force = [
+        i for i, a in enumerate(acts)
+        if a.account == account and a.ts < hi and (i + 1 == len(acts) or acts[i + 1].ts > lo)
+    ]
+    if not in_force or any(hows[i] != "saved-key" for i in in_force):
+        return None
+    first = min(starts[i] for i in in_force)
+    if session_start >= acts[first].ts:
+        return None
+    before = acts[first - 1].account if first > 0 else ""
+    return None if before == account else before
+
+
+_H = 490_000  # an hour number (2025-11-24); every line below is relative to it
+_A, _B, _K = "a@example.com|", "b@example.com|", "key5@token.local|"
+
+
+def _saved_key_log():
+    from ai_quota_swap.ledger.activations import Activation
+
+    base = _H * 3600
+    lines = [
+        (base - 7200, _A, "login"), (base - 1800, _K, "helper"),
+        (base, _K, "saved-key"), (base, _K, ""),  # on the hour, and a tie
+        (base + 1200, _A, "login"),
+        (base + 3600, _K, "saved-key"), (base + 4500, _K, ""),
+        (base + 7210, _B, "login"), (base + 9000, _K, "saved-key"),
+        (base + 10800, _K, "helper"), (base + 11400, _K, "saved-key"),
+        (base + 14399, _A, ""), (base + 18000, _K, "saved-key"), (base + 18000, _B, "saved-key"),
+        (base + 21605, _K, ""), (base + 25200, _K, "saved-key"),
+    ]
+    return ActivationLog([Activation(ts, acc, None, "switch", how) for ts, acc, how in lines])
+
+
+def test_saved_key_owner_is_what_it_was_on_every_hour_account_and_session_start():
+    log = _saved_key_log()
+    times = sorted({a.ts for a in log.activations} | {(_H + k) * 3600 for k in range(-3, 10)})
+    starts = [None, float("-inf")] + [t + d for t in times for d in (-1, -0.5, 0, 0.5, 1)]
+    checked = moved = 0
+    for account in (_A, _B, _K, "nobody@example.com|"):
+        for hour in range(_H - 3, _H + 10):
+            for start in starts:
+                want = _reference_saved_key_owner(log, account, hour, start)
+                assert log.saved_key_owner(account, hour, start) == want, (account, hour, start)
+                checked += 1
+                moved += want is not None
+    assert checked > 5000 and moved > 50  # the grid reaches the rule, not only its refusals
+
+
+def test_hows_and_the_login_under_a_key_are_what_they_were():
+    log = _saved_key_log()
+    acts = log.activations
+    hows = []
+    for i, a in enumerate(acts):  # the walk _hows did on every call
+        how = a.how
+        if not how and i > 0 and acts[i - 1].account == a.account:
+            how = hows[i - 1]
+        hows.append(how)
+    assert log._hows() == hows
+
+    def underneath(ts):  # helper_underneath over that walk
+        i = bisect.bisect_right([a.ts for a in acts], ts) - 1
+        if i < 0 or hows[i] != "helper":
+            return None
+        while i >= 0 and hows[i] == "helper":
+            i -= 1
+        return acts[i].account if i >= 0 else None
+
+    times = sorted({a.ts for a in acts} | {(_H + k) * 3600 for k in range(-3, 10)})
+    found = [log.helper_underneath(t + d) for t in times for d in (-1, 0, 1)]
+    assert found == [underneath(t + d) for t in times for d in (-1, 0, 1)]
+    assert _A in found and _K in found  # the walk back reaches both kinds of line
+
+
+class _CountingLines(list):
+    """A log's lines that count every line read, by index or by walking."""
+
+    visits = 0
+
+    def __getitem__(self, i):
+        out = super().__getitem__(i)
+        _CountingLines.visits += len(out) if isinstance(i, slice) else 1
+        return out
+
+    def __iter__(self):
+        for line in super().__iter__():
+            _CountingLines.visits += 1
+            yield line
+
+
+def test_a_report_walks_the_activation_log_once_not_once_per_bucket(tmp_path):
+    # A week of hourly buckets on a log with saved-key lines and `qswap run`
+    # sessions: the attribution reads each line a few times in all, never
+    # the whole log for every bucket (the menu bar's chart reads this on
+    # every ledger change).
+    from ai_quota_swap.ledger.activations import Activation
+    from ai_quota_swap.ledger.report import Accounts, attribute, day_bounds
+
+    today = date(2026, 11, 10)
+    since_hour, until_hour = day_bounds(date(2026, 11, 4), today)
+    accounts = {1: "a@example.com", 2: "b@example.com", 5: "key5@token.local"}
+    lines = [
+        Activation((since_hour - 48) * 3600 + i * 1700.0, f"{accounts[n]}|", n, "switch",
+                   "saved-key" if n == 5 and i % 2 else "helper" if n == 5 else "login")
+        for i, n in enumerate([1, 5, 2, 5, 1, 2] * 70)
+    ]
+    log = ActivationLog(lines)
+    store = LedgerStore(tmp_path / DB_FILENAME)
+    store.begin()
+    buckets = [
+        ("claude", h, f"{accounts[n]}|", "claude-opus-5", "p", f"s{h // 3}-{n}", 1000, 0, 0, 0, 0, 0, 1)
+        for h in range(since_hour, until_hour) for n in (1, 2, 5)
+    ]
+    store.add_buckets(buckets)
+    store.note_sessions([("claude", b[5], "uuid-2|" if b[5].endswith("-1") else None, b[1] * 3600 + 60.0, 1)
+                         for b in buckets])
+    store.commit()
+    registry = {"accounts": {str(n): {"email": e, "uuid": f"uuid-{n}", "organizationUuid": ""}
+                             for n, e in accounts.items()}}
+    log.activations = _CountingLines(log.activations)
+    _CountingLines.visits = 0
+    try:
+        out = attribute(store, since_hour=since_hour, until_hour=until_hour, provider=None,
+                        accounts=Accounts({"claude": registry}, {"claude": log}), logs={"claude": log})
+    finally:
+        store.close()
+    assert out.approximate and out.profile_sessions  # both rules were reached
+    assert len(buckets) > 400 and len(log) > 400
+    assert _CountingLines.visits <= 4 * len(log) + 8 * len(buckets), _CountingLines.visits
+
+
+def test_a_log_line_whose_time_is_not_a_finite_number_is_skipped(tmp_path):
+    # JSON readers accept NaN and Infinity, and an integer too large for a
+    # float. qswap never writes them (a hand-edited line), and such a line
+    # is skipped like any other unreadable one. Kept, a NaN compares false
+    # with every time, so the log's binary search could take a saved-key
+    # line as in force for any hour and move that hour's usage of the key.
+    from ai_quota_swap import api_spend
+    from ai_quota_swap.ledger.activations import parse_ts
+    from ai_quota_swap.ledger.report import _in_saved_key_period
+
+    (tmp_path / "activations.jsonl").write_text(
+        '{"ts":NaN,"number":5,"email":"key5@token.local","org":"","source":"switch","how":"saved-key"}\n'
+        '{"ts":"2025-11-24T17:33:25.584Z","number":2,"email":"omar@example.com","org":"","source":"switch",'
+        '"how":"login"}\n'
+    )
+    log = ActivationLog.load(tmp_path)
+    assert len(log) == 1 and log.first_ts == parse_ts("2025-11-24T17:33:25.584Z")
+    hour = int(log.first_ts // 3600)
+    assert log.saved_key_owner("key5@token.local|", hour, float("-inf")) is None
+    assert not _in_saved_key_period(log, "key5@token.local|", hour)
+    assert not log.saved_key_periods()
+    for ts in ("Infinity", "-Infinity", "1" + "0" * 400):
+        (tmp_path / "activations.jsonl").write_text(
+            f'{{"ts":{ts},"number":1,"email":"maya@example.com","org":"","source":"switch"}}\n')
+        assert len(ActivationLog.load(tmp_path)) == 0  # and no OverflowError
+    assert [parse_ts(v) for v in (float("nan"), float("inf"), -float("inf"), 10 ** 400)] == [None] * 4
+    assert parse_ts(1762000000) == 1762000000.0 and parse_ts(1762000000.5) == 1762000000.5
+    # The other readers of these times want the same: a credit whose start
+    # is not a time is no credit, rather than one that raises later.
+    assert api_spend.credit_from_record({"credit": {"amount": 25, "since": float("nan")}}) is None
+    assert api_spend.credit_counted_from({"since": float("inf")}, None) == ""

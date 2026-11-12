@@ -54,7 +54,7 @@ Turning *Auto-switch Claude Code* off, or quitting the menu bar, while sessions 
 
 ## The menu, top to bottom
 
-The demo harness also prints the menu as an outline, which this page quotes. In it, `✓` is a check mark, `⚠` a row drawn in orange, `▸` a submenu, `(heading)` a section heading and `(greyed)` a row you cannot click:
+The demo harness also prints the menu as an outline, which this page quotes. In it, `✓` is a check mark, `⚠` a row drawn in orange, `▸` a submenu, `(heading)` a section heading, `(greyed)` a row you cannot click and `chart:` the cost row's chart, each day's total and then its legend:
 
 ```text
 $ uv run python scripts/demo/run.py showcase --menubar --auto-switch
@@ -73,6 +73,7 @@ title: ⇄ personal · 46% · 38%
   #2 work · 5h 8% · 7d 15% · 1 reset credit
 ────
   Today $5.16 · 7 days $78.25 (estimated)  (greyed)
+    chart: Wed $17.03 · Thu $15.85 · Fri $16.91 · Sat $2.27 · Sun $5.67 · Mon $15.35 · Tue $5.16 | #1 personal $34 · #2 work $23 · #5 ci $16 · Codex #2 work $3 · other $3
 ────
   Rotate to next (Claude Code)
   Switch to best (Claude Code)
@@ -142,6 +143,8 @@ The notes `qswap list` prints about the line get one orange row under the accoun
 
 `Today $5.16 · 7 days $78.25 (estimated)` totals both providers over today and the last seven days at API list prices, as `qswap usage` does ([usage.md](usage.md)). It appears once the ledger holds anything. Clicking it does nothing. The menu bar reads new session files a minute after it starts and every 15 minutes after that. A `qswap usage` run shows up at the next refresh.
 
+With *Settings → Show usage chart* on, as it is by default, the same sentence sits above a small chart: one column per day for the last seven days, today on the right, each split by account at the estimated cost `qswap usage --by account` gives it. The tallest day fills the chart. One line below names up to four accounts as their rows do, with their seven-day amounts in whole dollars; the rest are `other`, in grey. When the menu shows Codex too, each Codex account's entry starts with `Codex` (`Codex #2 work`) and a Claude Code entry has no provider word, so `#2 work` is Claude Code's. When the line is short of room, names are cut with an ellipsis, down to the number alone (`#2`, `Codex #2`). They are fitted from the largest amount down: each takes its whole name if the line still has room for it, else its longest cut that fits, else its number alone, so a short name can stay whole after a longer one was cut. An account's colour comes from its provider and number, not its rank: Claude Code's #1 is blue, #2 orange, #3 purple, and Codex's #1 green; when two accounts with usage that week would share one, the later takes the next free colour. Turn the setting off for the plain row.
+
 ### Below the cost row
 
 - *Rotate to next*, *Switch to best*, *Next available*: Claude Code's rotation strategies (`qswap switch`, `--strategy best`, `--strategy next-available`).
@@ -180,7 +183,7 @@ The accounts section says `No accounts are managed yet.` and the next step for e
 
 ## Settings
 
-*Settings* in the menu holds, from the top: *Show account name in menu bar*, *Title follows* (with Codex managed), *Title percentage*, *Show model limits in title* and *Refresh interval*; then the auto-switch toggles, their thresholds and *Use resets automatically*; then *Start at login*.
+*Settings* in the menu holds, from the top: *Show account name in menu bar*, *Title follows* (with Codex managed), *Title percentage*, *Show model limits in title*, *Show usage chart* and *Refresh interval*; then the auto-switch toggles, their thresholds and *Use resets automatically*; then *Start at login*.
 
 <img src="../assets/screenshots/raw/menubar-settings.png" alt="The menu with Settings open: the title settings and Refresh interval, Auto-switch Claude Code and Auto-switch Codex checked, the two threshold submenus, Use resets automatically, and Start at login checked" width="729">
 
@@ -195,6 +198,7 @@ The menu's own preferences live in `menubar_settings.json` in the data directory
 | `auto_switch_enabled` | `false` | *Auto-switch Claude Code* |
 | `codex_auto_switch_enabled` | `false` | *Auto-switch Codex* |
 | `title_follows` | `"claude"` | whose active account the title shows: `claude`, `codex` or `closest` |
+| `usage_chart` | `true` | *Show usage chart*: the cost row as a seven-day chart by account |
 
 A file from an earlier build loads as it did, and a key this build does not know is kept. The switch lines are qswap settings, shared with the command line ([settings.md](settings.md)):
 

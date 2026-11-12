@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -65,11 +66,18 @@ def _iso(ts: float) -> str:
 
 
 def parse_ts(value: object) -> float | None:
-    """Epoch seconds from an ISO-8601 string or a number; None when unusable."""
+    """Epoch seconds from an ISO-8601 string or a number; None when unusable:
+    a number that is not finite (``NaN`` and ``Infinity``, which JSON readers
+    accept) or too large for a float, so a line carrying one is skipped like
+    any other unreadable line."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        try:
+            ts = float(value)
+        except OverflowError:
+            return None
+        return ts if math.isfinite(ts) else None
     if not isinstance(value, str) or not value:
         return None
     try:
@@ -214,6 +222,9 @@ class ActivationLog:
     def __init__(self, activations: list[Activation]):
         self.activations = sorted(activations, key=lambda a: a.ts)
         self._times = [a.ts for a in self.activations]
+        # Worked out from the whole log once, on first use (_periods).
+        self._period_cache: tuple[list[str], list[int]] | None = None
+        self._has_saved_key: bool | None = None
 
     @classmethod
     def load(cls, root: Path) -> ActivationLog:
@@ -258,16 +269,28 @@ class ActivationLog:
         i = bisect.bisect_right(self._times, ts) - 1
         return self.activations[i].account if i >= 0 else ""
 
+    def _periods(self) -> tuple[list[str], list[int]]:
+        """For each line, the ``how`` in force from it and the line its
+        period began at: a line with none continues the one before it when
+        that is the same account. One walk of the log, kept: reports ask
+        this for every bucket and every ``qswap run`` session."""
+        if self._period_cache is None:
+            acts = self.activations
+            hows: list[str] = []
+            starts: list[int] = []
+            for i, a in enumerate(acts):
+                how, start = a.how, i
+                if not how and i > 0 and acts[i - 1].account == a.account:
+                    how, start = hows[i - 1], starts[i - 1]
+                hows.append(how)
+                starts.append(start)
+            self._period_cache = (hows, starts)
+        return self._period_cache
+
     def _hows(self) -> list[str]:
         """The ``how`` in force from each line: a line with none continues
         the one before it when that is the same account."""
-        hows: list[str] = []
-        for i, a in enumerate(self.activations):
-            how = a.how
-            if not how and i > 0 and self.activations[i - 1].account == a.account:
-                how = hows[i - 1]
-            hows.append(how)
-        return hows
+        return self._periods()[0]
 
     def helper_underneath(self, ts: float) -> str | None:
         """The login under the API key active through qswap's key line at
@@ -287,7 +310,9 @@ class ActivationLog:
 
     def saved_key_periods(self) -> bool:
         """Whether any line activated an API key as a saved key."""
-        return any(a.how == "saved-key" for a in self.activations)
+        if self._has_saved_key is None:
+            self._has_saved_key = any(a.how == "saved-key" for a in self.activations)
+        return self._has_saved_key
 
     def saved_key_owner(
         self, account: str, hour: int, session_start: float | None
@@ -312,18 +337,13 @@ class ActivationLog:
             return None
         lo, hi = hour * 3600, (hour + 1) * 3600
         acts = self.activations
-        hows: list[str] = []
-        starts: list[int] = []
-        for i, a in enumerate(acts):
-            how, start = a.how, i
-            if not how and i > 0 and acts[i - 1].account == a.account:
-                how, start = hows[i - 1], starts[i - 1]
-            hows.append(how)
-            starts.append(start)
-        in_force = [
-            i for i, a in enumerate(acts)
-            if a.account == account and a.ts < hi and (i + 1 == len(acts) or acts[i + 1].ts > lo)
-        ]
+        hows, starts = self._periods()
+        # The lines in force during the hour: each line from the last one at
+        # or before its start (the next line comes after the start) to the
+        # last one before its end.
+        first_line = max(0, bisect.bisect_right(self._times, lo) - 1)
+        end_line = bisect.bisect_left(self._times, hi)
+        in_force = [i for i in range(first_line, end_line) if acts[i].account == account]
         if not in_force or any(hows[i] != "saved-key" for i in in_force):
             return None
         first = min(starts[i] for i in in_force)
