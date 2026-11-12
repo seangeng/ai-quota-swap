@@ -1,29 +1,30 @@
 name: Publish to PyPI
 
-# Runs when a GitHub release is published. PyPI trusts this workflow through
-# trusted publishing (no token is stored anywhere): the project's publisher on
-# PyPI must name this repository, this file (publish.yml) and the `pypi`
-# environment. CONTRIBUTING.md has the release steps.
+# Runs when a GitHub release is published, in two jobs. The build job checks
+# that the release tag matches the package version and the changelog, builds
+# the sdist and the wheel, checks them with twine and keeps them as the run's
+# `dist` artifact. It can only read the repository. The publish job takes that
+# artifact and uploads it to PyPI. It is the only job that can ask for an OIDC
+# token, and it runs in the `pypi` environment. PyPI trusts this workflow
+# through trusted publishing (no token is stored anywhere): the project's
+# publisher on PyPI must name this repository, this file (publish.yml) and the
+# `pypi` environment. CONTRIBUTING.md has the release steps.
 
 on:
   release:
     types: [published]
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/ai-quota-swap
     permissions:
       contents: read
-      id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -47,10 +48,36 @@ jobs:
           fi
 
       - name: Install build dependencies
-        run: pip install build
+        run: pip install build twine
 
       - name: Build package
         run: python -m build
+
+      - name: Check the package metadata
+        run: twine check --strict dist/*
+
+      - name: Keep the package for the publish job
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ai-quota-swap
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download the package
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

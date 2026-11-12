@@ -5,6 +5,9 @@ description = "Claude Code and Codex account switcher: multiple accounts, live 5
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # The dashboard imports rich itself; textual also needs it. The bound is
+    # the one textual 8.2.8 sets.
+    "rich>=14.2.0",
     "textual>=8.2.8,<9",
     "truststore>=0.10.4",
     # Codex compresses idle session files with zstd; the standard library reads
@@ -81,22 +84,29 @@ build-backend = "hatchling.build"
 packages = ["src/ai_quota_swap"]
 
 # The sdist carries the source, the tests and what they need (the demo
-# harness's code, scripts/settings_doc.py, the Markdown docs), not the
-# screenshots, recordings and rendered pages the harness made, nor CI files,
-# nor the qswap alias package in packaging/ (it is built and uploaded on its
-# own). The one exception is the dashboard screenshot that the menu bar
-# drawing tests in tests/test_demo_harness.py draw the menu in front of.
+# harness's code, scripts/settings_doc.py, the Markdown docs), and nothing
+# else: a file is left out unless this list names it. So the screenshots,
+# recordings and rendered pages the harness made, CI files and the qswap alias
+# package in packaging/ (it is built and uploaded on its own) stay out. The one
+# file from assets/ is the dashboard screenshot that the menu bar drawing tests
+# in tests/test_demo_harness.py draw the menu in front of.
 [tool.hatch.build.targets.sdist]
-exclude = [
-    "/assets",
-    "/docs/shots",
-    "/.github",
-    "/.python-version",
-    "/packaging",
+include = [
+    "/src",
+    "/tests",
+    "/scripts",
+    "/docs/**/*.md",
+    "/assets/screenshots/raw/dashboard.png",
+    "/.gitignore",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/LICENSE",
+    "/README.md",
+    "/ROADMAP.md",
+    "/SECURITY.md",
+    "/pyproject.toml",
+    "/uv.lock",
 ]
-
-[tool.hatch.build.targets.sdist.force-include]
-"assets/screenshots/raw/dashboard.png" = "assets/screenshots/raw/dashboard.png"
 
 [dependency-groups]
 dev = [
