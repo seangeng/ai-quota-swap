@@ -57,6 +57,7 @@ class TestConfigList:
             "autoswitch.strategy",
             "autoswitch.includeApiKeyAccounts",
             "autoswitch.unhealthyTicks",
+            "autoswitch.watchLoginExpiry",
             "autoswitch.model",
             "ui.theme",
             "run.shareHistory",
@@ -67,7 +68,7 @@ class TestConfigList:
         ):
             assert key in out
         assert "login.notifyDays" in out
-        assert out.count("(default)") == 24
+        assert out.count("(default)") == 25
 
     def test_set_key_not_marked_default(self, temp_home, capsys):
         _run(["set", "autoswitch.cooldownSeconds", "600"], capsys)
@@ -94,7 +95,7 @@ class TestConfigList:
         assert payload["schemaVersion"] == 1
         assert payload["path"].endswith("settings.json")
         by_key = {entry["key"]: entry for entry in payload["settings"]}
-        assert len(by_key) == 24
+        assert len(by_key) == 25
         assert by_key["login.notifyDays"]["value"] == 3
         assert by_key["resets.weeklyForModelLimit"]["value"] is False
         assert by_key["resets.beforeSwitch"]["value"] is False

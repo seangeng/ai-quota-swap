@@ -16,6 +16,7 @@ autoswitch.hysteresisPct          10           (default)
 autoswitch.strategy               best         (default)
 autoswitch.includeApiKeyAccounts  false        (default)
 autoswitch.unhealthyTicks         3            (default)
+autoswitch.watchLoginExpiry       true         (default)
 autoswitch.model                  (none)       (default)
 ui.theme                          auto         (default)
 run.shareHistory                  true         (default)
@@ -80,6 +81,7 @@ Flags override settings for one run. `qswap auto --threshold 80` switches at 80%
 | `autoswitch.strategy` | `best` | How auto-switch picks the account to move to. [auto-switch.md](auto-switch.md) explains each. One of `best`, `weekly-first`, `consume-first`, `priority-consume-first`. | `qswap config set autoswitch.strategy weekly-first` |
 | `autoswitch.includeApiKeyAccounts` | `false` | Let auto-switch move to an API-key account as a last resort, when the active subscription is at its limit and no other has room. API keys are billed per token, so only a key with a monthly budget or a credit, and a spend figure no older than 20 minutes, is used. Running Claude Code sessions follow the move through the key line; the engine comes back once a subscription has 5 points of room after the cooldown, and leaves the key at once at its budget or credit. [api-accounts.md](api-accounts.md) has the rules. `true` or `false`. | `qswap config set autoswitch.includeApiKeyAccounts true` |
 | `autoswitch.unhealthyTicks` | `3` | Checks in a row on which the active account's usage cannot be read before auto-switch moves to another account. A whole number from 1 to 100. | `qswap config set autoswitch.unhealthyTicks 5` |
+| `autoswitch.watchLoginExpiry` | `true` | Watch the date each saved login ends. An account whose login ends within 2 hours, or whose date has passed, is picked only when no other account qualifies, and in the 15 minutes before its date the active account is left for another with room whose login lasts. `qswap login N` renews a login. Accounts with no end date (API keys, setup-tokens, Codex) are not affected. `true` or `false`. | `qswap config set autoswitch.watchLoginExpiry false` |
 | `autoswitch.model` | `(none)` | Also switch when one of these models' weekly limits is reached: one name (`Fable`), several (`Fable,Opus`) or `all`, as the per-model rows of `qswap list` name them. Not set: only the 5-hour and 7-day windows count. | `qswap config set autoswitch.model Fable` |
 
 ### Usage resets (both providers)

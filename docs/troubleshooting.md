@@ -126,6 +126,8 @@ qswap list --json > usage.json                  # on the machine that reads
 qswap import-usage usage.json --hold 600        # on each other machine
 ```
 
+A failure that never reached the server says what failed in the log: `Usage fetch failed for account 3: network (dns)` (also `network (connection refused)`, `network (unreachable)`, `network (tls)`, or `timeout`). When every read fails that way, auto-switch treats the machine as offline: it writes one `Offline: ...` line, holds without failing over, and writes `Back online: ...` with how long it lasted once a read works again. See [auto-switch.md](auto-switch.md#when-something-fails).
+
 An account added with `qswap add-token` from a setup-token shows `usage unavailable (setup-tokens cannot read usage; ...)`: the usage endpoint refuses setup-tokens. `qswap config set usage.headerProbe true` reads its usage from the headers of a one-token Haiku request instead. Each reading is a real request on that account and uses a little of its quota.
 
 ## The macOS Keychain asks for access

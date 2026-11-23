@@ -72,6 +72,14 @@ MEANINGS: dict[str, str] = {
         "Checks in a row on which the active account's usage cannot be read "
         "before auto-switch moves to another account."
     ),
+    "autoswitch.watchLoginExpiry": (
+        "Watch the date each saved login ends. An account whose login ends "
+        "within 2 hours, or whose date has passed, is picked only when no other "
+        "account qualifies, and in the 15 minutes before its date the active "
+        "account is left for another with room whose login lasts. "
+        "`qswap login N` renews a login. Accounts with no end date (API keys, "
+        "setup-tokens, Codex) are not affected."
+    ),
     "autoswitch.model": (
         "Also switch when one of these models' weekly limits is reached: one "
         "name (`Fable`), several (`Fable,Opus`) or `all`, as the per-model rows "
@@ -156,6 +164,7 @@ EXAMPLES: dict[str, str] = {
     "autoswitch.strategy": "weekly-first",
     "autoswitch.includeApiKeyAccounts": "true",
     "autoswitch.unhealthyTicks": "5",
+    "autoswitch.watchLoginExpiry": "false",
     "autoswitch.model": "Fable",
     "ui.theme": "light",
     "run.shareHistory": "false",

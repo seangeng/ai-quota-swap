@@ -1047,6 +1047,28 @@ def _no_key_line_runs(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reachable_usage_host(monkeypatch):
+    """Safety net: the auto engine's reachability check never opens a socket.
+
+    When no usage read says whether the network works, the engine asks
+    ``autoswitch.host_unreachable`` for a TCP connection to the usage host.
+    Here the host always answers, so an engine behaves as it does online
+    unless a test replaces the check with its own answer. Afterwards the
+    lines an offline episode held back are let through again, so a test that
+    leaves one open cannot quiet another test's log.
+    """
+    import logging
+
+    from ai_quota_swap import autoswitch
+
+    monkeypatch.setattr(autoswitch, "host_unreachable", lambda host, port=443: None)
+    yield
+    logger = logging.getLogger("ai-quota-swap")
+    for held in [f for f in logger.filters if isinstance(f, autoswitch.RepeatFailureFilter)]:
+        logger.removeFilter(held)
+
+
+@pytest.fixture(autouse=True)
 def _no_machine_settings(monkeypatch, tmp_path):
     """Determinism: doctor reads Claude Code's machine-wide managed settings
     and the project settings of the directory it runs in. Here neither is

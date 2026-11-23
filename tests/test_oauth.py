@@ -1928,3 +1928,209 @@ class TestUserAgent:
             if "ai-quota-swap/1.0" in path.read_text(encoding="utf-8")
         ]
         assert hits == []
+
+
+class TestUsageErrorDetail:
+    """The log says what a ``network`` failure was; the kind stays stable."""
+
+    @staticmethod
+    def _url_error(reason):
+        return urllib.error.URLError(reason)
+
+    @pytest.mark.parametrize(
+        ("reason", "detail"),
+        [
+            ("dns", "network (dns)"),
+            ("refused", "network (connection refused)"),
+            ("ENETUNREACH", "network (unreachable)"),
+            ("EHOSTUNREACH", "network (unreachable)"),
+            ("ENETDOWN", "network (unreachable)"),
+            ("tls", "network (tls)"),
+            ("reset", "network (ConnectionResetError)"),
+            ("words", "network (URLError)"),
+        ],
+    )
+    def test_network_kind_keeps_its_token_and_gains_a_detail(self, reason, detail):
+        import errno
+        import socket
+        import ssl
+
+        made = {
+            "dns": lambda: socket.gaierror(8, "nodename nor servname provided"),
+            "refused": lambda: ConnectionRefusedError(61, "Connection refused"),
+            "tls": lambda: ssl.SSLCertVerificationError(1, "certificate verify failed"),
+            "reset": lambda: ConnectionResetError(54, "Connection reset by peer"),
+            "words": lambda: "unknown url type: https://example.com/?token=abc",
+        }
+        cause = (
+            made[reason]() if reason in made
+            else OSError(getattr(errno, reason), "no route")
+        )
+        error = self._url_error(cause)
+        assert oauth._classify_usage_error(error)[0] == "network"
+        assert oauth.usage_error_detail(error) == detail
+        # Fixed words and class names only: never the exception's own text.
+        assert "example.com" not in oauth.usage_error_detail(error)
+        assert "token" not in oauth.usage_error_detail(error)
+
+    def test_a_raw_socket_error_reads_the_same_once_wrapped(self):
+        import socket
+
+        assert oauth.usage_error_detail(
+            urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+        ) == "network (dns)"
+
+    def test_other_kinds_are_themselves(self):
+        assert oauth.usage_error_detail(TimeoutError()) == "timeout"
+        assert oauth.usage_error_detail(
+            urllib.error.URLError(TimeoutError())
+        ) == "timeout"
+        err = urllib.error.HTTPError(
+            "https://api.anthropic.com/api/oauth/usage", 503, "busy", hdrs=None, fp=None
+        )
+        assert oauth.usage_error_detail(err) == "http-503"
+        assert oauth.usage_error_detail(ValueError("x")) == "ValueError"
+
+    @pytest.mark.parametrize(
+        ("kind", "detail", "network"),
+        [
+            ("network", "network (dns)", True),
+            ("timeout", None, True),
+            ("refresh-failed", "network (dns)", True),
+            ("refresh-failed", "timeout", True),
+            ("refresh-failed", "http-503", False),
+            ("refresh-failed", None, False),
+            ("http-503", None, False),
+            ("invalid_grant", None, False),
+            (None, None, False),
+        ],
+    )
+    def test_is_network_failure(self, kind, detail, network):
+        assert oauth.is_network_failure(kind, detail) is network
+
+    def test_the_failure_line_says_the_detail_and_is_tagged(self, caplog):
+        import logging
+        import socket
+
+        creds = TestTryFetchUsageOutcome._make_credentials()
+        err = urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided"))
+        with (
+            patch("ai_quota_swap.oauth.urllib.request.urlopen", side_effect=err),
+            caplog.at_level(logging.WARNING, logger="ai-quota-swap"),
+        ):
+            outcome = oauth.try_fetch_usage_for_account("2", "a@example.com", creds, False)
+        assert (outcome.error, outcome.detail) == ("network", "network (dns)")
+        (record,) = [r for r in caplog.records if "Usage fetch failed" in r.getMessage()]
+        assert record.getMessage() == "Usage fetch failed for account 2: network (dns)"
+        assert getattr(record, oauth.FAILURE_LINE) == ("claude", "2", "network")
+
+    def test_a_401_on_a_freshly_renewed_token_says_so(self):
+        creds = TestTryFetchUsageOutcome._make_credentials()
+        refused = urllib.error.HTTPError(
+            "https://api.anthropic.com/api/oauth/usage", 401, "no", hdrs=None, fp=None
+        )
+        fresh = json.dumps({"claudeAiOauth": {
+            "accessToken": "renewed", "refreshToken": "r2", "expiresAt": 99_999_999_999_000,
+        }})
+        with (
+            patch("ai_quota_swap.oauth.request_usage_data", side_effect=refused),
+            patch(
+                "ai_quota_swap.oauth.try_refresh_oauth_credentials",
+                return_value=oauth.RefreshOutcome(fresh, None),
+            ),
+        ):
+            outcome = oauth.try_fetch_usage_for_account("3", "c@example.com", creds, False)
+        assert outcome.error == "http-401"
+        assert outcome.detail == oauth.REFUSED_AFTER_REFRESH
+
+    def test_a_refresh_that_never_reached_the_server_says_why(self):
+        import socket
+
+        err = urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided"))
+        with patch("ai_quota_swap.oauth.urllib.request.urlopen", side_effect=err):
+            outcome = oauth.try_refresh_oauth_credentials(
+                TestRefreshOAuthCredentials._make_credentials()
+            )
+        assert (outcome.error, outcome.detail) == ("transient", "network (dns)")
+
+
+class TestLoginLifetimeLine:
+    """A refresh by qswap logs how long the server says the login lasts,
+    next to the end date the saved login records, and changes neither."""
+
+    SAVED_MS = 1_799_000_000_000  # 2027-01-03T18:13:20Z
+
+    def _credentials(self, saved_ms=SAVED_MS):
+        oauth_blob = {
+            "accessToken": "old-access", "refreshToken": "old-refresh", "expiresAt": 0,
+        }
+        if saved_ms is not None:
+            oauth_blob["refreshTokenExpiresAt"] = saved_ms
+        return json.dumps({"claudeAiOauth": oauth_blob})
+
+    @staticmethod
+    def _answer(**extra):
+        response = MagicMock()
+        response.read.return_value = json.dumps({
+            "access_token": "new-access", "refresh_token": "new-refresh",
+            "expires_in": 28800, **extra,
+        }).encode()
+        response.__enter__ = lambda s: s
+        response.__exit__ = MagicMock(return_value=False)
+        return response
+
+    def _refresh(self, caplog, credentials, *, account=None, **extra):
+        import logging
+
+        with (
+            patch(
+                "ai_quota_swap.oauth.urllib.request.urlopen",
+                return_value=self._answer(**extra),
+            ),
+            caplog.at_level(logging.INFO, logger="ai-quota-swap"),
+        ):
+            if account is None:
+                outcome = oauth.try_refresh_oauth_credentials(credentials)
+            else:
+                with oauth.refreshing(account):
+                    outcome = oauth.try_refresh_oauth_credentials(credentials)
+        lines = [r.getMessage() for r in caplog.records if "Token refresh" in r.getMessage()]
+        return outcome, lines
+
+    def test_one_line_with_the_servers_figure_and_the_saved_date(self, caplog):
+        outcome, lines = self._refresh(
+            caplog, self._credentials(), account="3", refresh_token_expires_in=2_592_000,
+        )
+        assert outcome.error is None
+        (line,) = lines
+        assert line.startswith(
+            "Token refresh for account 3: the server says the login lasts 30d 0h more "
+            "(refresh_token_expires_in 2592000s, until "
+        )
+        assert line.endswith("); the saved login says it ends 2027-01-03T18:13:20Z")
+        assert "new-access" not in line and "new-refresh" not in line
+        # Log only: the saved end date is written back as it was.
+        rotated = json.loads(outcome.credentials)["claudeAiOauth"]
+        assert rotated["refreshTokenExpiresAt"] == self.SAVED_MS
+
+    def test_a_login_with_no_saved_date_says_so(self, caplog):
+        _outcome, (line,) = self._refresh(
+            caplog, self._credentials(saved_ms=None), refresh_token_expires_in=3600,
+        )
+        assert line.startswith("Token refresh: the server says the login lasts 1h 0m more")
+        assert line.endswith("the saved login records no end date")
+
+    @pytest.mark.parametrize("value", [None, "soon", True, -5, float("nan")])
+    def test_no_line_without_a_usable_figure(self, caplog, value):
+        extra = {} if value is None else {"refresh_token_expires_in": value}
+        outcome, lines = self._refresh(caplog, self._credentials(), **extra)
+        assert outcome.error is None
+        assert lines == []
+
+    def test_the_account_is_only_named_inside_its_block(self, caplog):
+        with oauth.refreshing("4"):
+            pass
+        _outcome, (line,) = self._refresh(
+            caplog, self._credentials(), refresh_token_expires_in=60,
+        )
+        assert line.startswith("Token refresh: ")

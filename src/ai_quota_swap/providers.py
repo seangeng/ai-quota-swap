@@ -12,7 +12,7 @@ runs no type checker.
 
 Optional engine-host members, outside the Protocol: the engine reads them with
 ``getattr`` and falls back to Claude Code's behaviour when a switcher lacks
-them, so the Claude switcher defines none.
+them, so the Claude switcher defines none but ``lift_network_backoff``.
 
 - ``new_reset_request_id() -> str`` and ``is_reset_request_id(value) -> bool``:
   the format of the idempotency key a reset claim carries
@@ -22,6 +22,13 @@ them, so the Claude switcher defines none.
   in ``no-switch`` details. Default ``qswap --add-account``.
 - ``recover_hint: str``: the sentence that tells a quarantined account's owner
   how to recover it. Default: re-add it with ``qswap add --slot N``.
+- ``usage_host: str``: the host the usage read goes to, which the engine's
+  reachability check connects to when no read said whether the network
+  works. Default ``oauth.USAGE_HOST``. Codex: ``chatgpt.com``.
+- ``lift_network_backoff(nums) -> set[str]``: let the given accounts' usage be
+  read again now when their last read failed for want of a network (the
+  engine calls it once the host answers again during an offline episode).
+  Without it, those reads wait out their failure backoff.
 """
 
 from __future__ import annotations

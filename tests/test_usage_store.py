@@ -1944,3 +1944,77 @@ class TestAdopt:
         store.adopt({"2": (USAGE, 0.0)}, IDENT)
         row = json.loads(store.path.read_text(encoding="utf-8"))["accounts"]["2"]
         assert (row["email"], row["organizationUuid"]) == IDENT["2"]
+
+
+class TestErrorDetail:
+    """The failure's detail rides beside ``lastError`` and only ever reads
+    as that error's."""
+
+    def test_stored_with_its_error_and_cleared_by_a_success(self, store, clock):
+        store.record({"1": FetchRecord(error="network", error_detail="network (dns)")}, IDENT)
+        entry = store.entries(IDENT)["1"]
+        assert (entry.last_error, entry.error_detail) == ("network", "network (dns)")
+        assert entry.network_failure() == "network (dns)"
+        clock.advance(60)
+        store.record({"1": FetchRecord(usage=USAGE)}, IDENT)
+        entry = store.entries(IDENT)["1"]
+        assert (entry.last_error, entry.error_detail, entry.network_failure()) == (None, None, None)
+
+    def test_a_detail_left_beside_another_error_is_not_read(self, store):
+        store.record({"1": FetchRecord(error="network", error_detail="network (dns)")}, IDENT)
+        rows = store._read_rows()
+        rows["1"]["lastError"] = "http-503"  # an older writer, which keeps no detail
+        store._write_rows(rows)
+        entry = store.entries(IDENT)["1"]
+        assert (entry.last_error, entry.error_detail, entry.network_failure()) == (
+            "http-503", None, None,
+        )
+
+    def test_a_refresh_that_failed_offline_is_a_network_failure(self, store):
+        store.record(
+            {"1": FetchRecord(error="refresh-failed", error_detail="network (dns)")}, IDENT
+        )
+        assert store.entries(IDENT)["1"].network_failure() == "network (dns)"
+
+
+class TestLiftNetworkBackoff:
+    """Once the network is back, reads it failed may be taken at once, never
+    more than once per bound and never against the server's own wait."""
+
+    def test_lifts_only_network_failures_attempted_before_the_bound(self, store, clock):
+        ident = {**IDENT, "3": ("c@x.com", "")}
+        store.record({"1": FetchRecord(error="network", error_detail="network (dns)")}, ident)
+        store.record({"2": FetchRecord(error="http-429", retry_after_s=3600.0)}, ident)
+        store.record({"3": FetchRecord(error="timeout", error_detail="timeout")}, ident)
+        for _ in range(6):  # the backoff climbs to its cap
+            store.record({"1": FetchRecord(error="network", error_detail="network (dns)")}, ident)
+        clock.advance(100)
+        store.record({"3": FetchRecord(error="timeout", error_detail="timeout")}, ident)
+        clock.advance(20)  # #3 was tried 20 s ago, #1 two minutes ago
+        lifted = store.lift_network_backoff(
+            {"1", "2", "3"}, ident, attempted_before=clock.now - 50.0
+        )
+        assert lifted == {"1"}
+        entries = store.entries(ident)
+        assert not entries["1"].in_backoff(clock.now)
+        assert entries["1"].consecutive_failures == 7  # the ladder continues from here
+        assert entries["2"].in_backoff(clock.now)  # a Retry-After is never cut short
+        assert entries["3"].in_backoff(clock.now)  # tried under the bound ago
+
+    def test_a_timeout_is_never_lifted(self, store, clock):
+        """A host that takes the connection and does not answer is not back:
+        its reads wait out their backoff, whatever the reachability check says."""
+        store.record({"1": FetchRecord(error="timeout", error_detail="timeout")}, IDENT)
+        store.record({"2": FetchRecord(error="refresh-failed", error_detail="timeout")}, IDENT)
+        clock.advance(BACKOFF_BASE_S / 2)
+        assert store.lift_network_backoff({"1", "2"}, IDENT, attempted_before=clock.now) == set()
+        store.record(
+            {"2": FetchRecord(error="refresh-failed", error_detail="network (dns)")}, IDENT
+        )
+        clock.advance(BACKOFF_BASE_S / 2)
+        assert store.lift_network_backoff({"1", "2"}, IDENT, attempted_before=clock.now) == {"2"}
+
+    def test_nothing_to_lift_outside_backoff(self, store, clock):
+        store.record({"1": FetchRecord(error="network", error_detail="network (dns)")}, IDENT)
+        clock.advance(BACKOFF_CAP_S)
+        assert store.lift_network_backoff({"1"}, IDENT, attempted_before=clock.now) == set()

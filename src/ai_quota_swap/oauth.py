@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import errno
 import functools
 import hashlib
 import json
 import logging
 import math
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -16,10 +20,20 @@ from datetime import datetime, timedelta, timezone
 
 from ai_quota_swap.printer import warning as print_warning
 
+try:
+    import ssl
+except ImportError:  # pragma: no cover - a Python built without ssl
+    _TLS_ERRORS: tuple[type[BaseException], ...] = ()
+else:
+    _TLS_ERRORS = (ssl.SSLError,)
+
 OAUTH_BETA_HEADER = "oauth-2025-04-20"
 OAUTH_EXPIRY_BUFFER_MS = 5 * 60 * 1000
 OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+# The host the usage endpoint lives on: what the auto engine's reachability
+# check connects to when no usage read said whether the network works.
+USAGE_HOST = "api.anthropic.com"
 
 # What ``claude setup-token`` grants (and what ``qswap add-token`` stores).
 # Such a token can run inference but cannot read the usage endpoint.
@@ -254,6 +268,28 @@ class RefreshOutcome:
     # tell the user what to do next must not promise a stash that never
     # happened.
     stashed: bool = False
+    # What lay behind a ``transient`` failure, for the log and the usage
+    # store (:func:`usage_error_detail`: ``network (dns)``, ``http-503``).
+    # None on success and on the decided kinds.
+    detail: str | None = None
+
+
+# The account a refresh is for, named by the line ``_log_login_lifetime``
+# writes. Set by the caller around the call (``refreshing``) rather than
+# passed, so the function keeps the signature its many fakes have.
+_REFRESH_ACCOUNT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "qswap_refresh_account", default=None
+)
+
+
+@contextlib.contextmanager
+def refreshing(account: object):
+    """Name the account the refreshes inside this block are for."""
+    token = _REFRESH_ACCOUNT.set(str(account) if account not in (None, "") else None)
+    try:
+        yield
+    finally:
+        _REFRESH_ACCOUNT.reset(token)
 
 
 def try_refresh_oauth_credentials(
@@ -263,7 +299,9 @@ def try_refresh_oauth_credentials(
 
     ``timeout_s`` bounds the network exchange. Callers that hold locks other
     processes contend for should pass a budget comfortably inside the
-    contenders' acquire timeout (see ``_fetch_active_usage``).
+    contenders' acquire timeout (see ``_fetch_active_usage``). A caller that
+    wraps the call in :func:`refreshing` gets the account named in the line
+    :func:`_log_login_lifetime` writes after it.
     """
     # ``no_refresh_token`` is a PERMANENT verdict (it strikes at
     # AUTH_DEAD_STRIKES=1), so it demands a structurally complete OAuth dict
@@ -306,6 +344,7 @@ def try_refresh_oauth_credentials(
             oauth["refreshToken"] = resp_data["refresh_token"]
         if resp_data.get("scope"):
             oauth["scopes"] = resp_data["scope"].split()
+        _log_login_lifetime(_REFRESH_ACCOUNT.get(), resp_data, oauth, now_ms / 1000)
 
         data["claudeAiOauth"] = oauth
         return RefreshOutcome(
@@ -336,10 +375,72 @@ def try_refresh_oauth_credentials(
             # keeps its own kind and lands no strike.
             if err in ("invalid_grant", "invalid_client"):
                 return RefreshOutcome(None, err)
-        return RefreshOutcome(None, "transient")
+        return RefreshOutcome(None, "transient", detail=f"http-{e.code}")
     except Exception as e:
         _logger.debug("OAuth refresh failed: %r", e)
-        return RefreshOutcome(None, "transient")
+        return RefreshOutcome(None, "transient", detail=usage_error_detail(e))
+
+
+def _log_login_lifetime(
+    account: str | None, resp_data: object, oauth: dict, now: float
+) -> None:
+    """One INFO line per refresh whose answer says how long the login lasts.
+
+    The token endpoint may send ``refresh_token_expires_in`` (seconds) beside
+    the new tokens. Whether the login's end date is fixed at sign-in or moves
+    with each refresh is not known yet; this line puts the server's figure
+    next to the end date the saved login records (``refreshTokenExpiresAt``,
+    which a refresh by qswap leaves as it is), so the log answers it. Only
+    numbers and times: never a token. Never raises: it runs after the grant
+    was consumed, where an exception would discard the successor.
+    """
+    try:
+        _write_login_lifetime(account, resp_data, oauth, now)
+    except Exception as e:  # noqa: BLE001 - a log line must never cost a refresh
+        _logger.debug("login lifetime line skipped: %r", e)
+
+
+def _write_login_lifetime(
+    account: str | None, resp_data: object, oauth: dict, now: float
+) -> None:
+    if not isinstance(resp_data, dict):
+        return
+    seconds = resp_data.get("refresh_token_expires_in")
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not math.isfinite(seconds)
+        or seconds < 0
+    ):
+        return
+    saved_ms = oauth.get("refreshTokenExpiresAt")
+    saved = (
+        _iso_utc(saved_ms / 1000)
+        if isinstance(saved_ms, (int, float)) and not isinstance(saved_ms, bool)
+        and math.isfinite(saved_ms) and saved_ms > 0
+        else None
+    )
+    _logger.info(
+        "Token refresh%s: the server says the login lasts %s more (refresh_token_expires_in "
+        "%ds, until %s); the saved login %s",
+        f" for account {account}" if account else "",
+        format_countdown(seconds),
+        int(seconds),
+        _iso_utc(now + seconds),
+        f"says it ends {saved}" if saved else "records no end date",
+    )
+
+
+def _iso_utc(epoch: float) -> str:
+    """``2026-12-20T14:02:00Z``, for log lines."""
+    try:
+        return (
+            datetime.fromtimestamp(epoch, tz=timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        )
+    except (OverflowError, OSError, ValueError):
+        return "an unreadable date"
 
 
 def _parse_token_account(resp_data: dict) -> dict | None:
@@ -518,7 +619,7 @@ def request_usage_data(access_token: str, *, resets: bool = False) -> dict:
     """
     from ai_quota_swap import resets as resets_mod
 
-    url = "https://api.anthropic.com/api/oauth/usage"
+    url = f"https://{USAGE_HOST}/api/oauth/usage"
     agent = user_agent()
     if resets:
         url += "?" + resets_mod.USAGE_QUERY
@@ -694,7 +795,9 @@ def request_usage_via_probe(access_token: str) -> dict:
         return data
 
 
-def _usage_from_probe(access_token: str, context: str) -> "UsageOutcome":
+def _usage_from_probe(
+    access_token: str, context: str, *, account: str | None = None
+) -> "UsageOutcome":
     """Usage from the header probe, classified like an endpoint fetch.
 
     The result is marked ``source: headers`` and keeps the probe's
@@ -708,10 +811,14 @@ def _usage_from_probe(access_token: str, context: str) -> "UsageOutcome":
         data = request_usage_via_probe(access_token)
     except Exception as e:
         kind, retry_after = _classify_usage_error(e)
-        cause = kind if retry_after is None else f"{kind}, retry-after {retry_after:.0f}s"
-        _logger.warning("Usage header probe failed %s: %s", context, cause)
+        detail = usage_error_detail(e, kind)
+        cause = detail if retry_after is None else f"{detail}, retry-after {retry_after:.0f}s"
+        _logger.warning(
+            "Usage header probe failed %s: %s", context, cause,
+            extra=failure_line_tag("claude", account, kind),
+        )
         _logger.debug("Usage header probe failure detail %s: %r", context, e)
-        return UsageOutcome(None, error=kind, retry_after_s=retry_after)
+        return UsageOutcome(None, error=kind, retry_after_s=retry_after, detail=detail)
     try:
         usage = build_usage_result(data) or {}
     except Exception as e:
@@ -825,17 +932,92 @@ def _classify_usage_error(e: Exception) -> tuple[str, float | None]:
     return type(e).__name__, None
 
 
+#: Fetch-error kinds that say no answer came back from the server: the
+#: network, not the account, failed. The auto engine reads a check on which
+#: no read succeeded and one of these failed as offline.
+NETWORK_ERRORS = frozenset({"network", "timeout"})
+
+# Errnos that mean there is no route to the host: ``network (unreachable)``.
+_UNREACHABLE_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None)
+        for name in ("ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN")
+    )
+    if code is not None
+)
+
+
+def _network_reason(e: BaseException) -> str:
+    """What lies behind a ``network`` failure: ``dns``, ``connection
+    refused``, ``unreachable``, ``tls``, or the class name of the underlying
+    exception. Fixed words and class names only, never the exception's
+    text, which can name a host, a URL or a header."""
+    reason = getattr(e, "reason", None)
+    if not isinstance(reason, BaseException):
+        reason = e
+    if isinstance(reason, socket.gaierror):
+        return "dns"
+    if isinstance(reason, ConnectionRefusedError):
+        return "connection refused"
+    if _TLS_ERRORS and isinstance(reason, _TLS_ERRORS):
+        return "tls"
+    if isinstance(reason, OSError) and reason.errno in _UNREACHABLE_ERRNOS:
+        return "unreachable"
+    return type(reason).__name__
+
+
+def usage_error_detail(e: BaseException, kind: str | None = None) -> str:
+    """The failure's kind as the log says it: ``network (dns)``, ``network
+    (connection refused)``, ``network (unreachable)``, ``network (tls)``,
+    ``network (ConnectionResetError)``; any other kind as itself
+    (``timeout``, ``http-503``). ``kind`` (:func:`_classify_usage_error`)
+    stays the stable token backoff decisions read; this only ever goes to
+    the log and beside the kind in the usage store."""
+    if kind is None:
+        kind, _ = _classify_usage_error(e)
+    if kind == "network":
+        return f"network ({_network_reason(e)})"
+    return kind
+
+
+def is_network_failure(kind: str | None, detail: str | None = None) -> bool:
+    """Whether a failure says the network, not the server, failed: its kind
+    is one of :data:`NETWORK_ERRORS`, or its detail starts with one (a token
+    refresh that failed for want of a connection is ``refresh-failed`` with
+    the detail ``network (dns)``)."""
+    if kind in NETWORK_ERRORS:
+        return True
+    return bool(detail) and detail.split(" ", 1)[0] in NETWORK_ERRORS
+
+
+#: Attribute a usage-fetch failure line carries (``extra``):
+#: ``(provider, account number, kind)``. While an offline episode is open the
+#: auto engine writes each account's first such line of a network kind and
+#: counts the rest (``autoswitch.RepeatFailureFilter``).
+FAILURE_LINE = "qswap_usage_failure"
+
+
+def failure_line_tag(provider: str, account: str | None, kind: str | None) -> dict:
+    """The ``extra`` of a usage-fetch failure line; empty without an account."""
+    return {FAILURE_LINE: (provider, str(account), kind)} if account else {}
+
+
 def _log_usage_failure(
-    context: str, e: Exception, kind: str, retry_after_s: float | None = None
+    context: str, e: Exception, kind: str, retry_after_s: float | None = None,
+    *, account: str | None = None,
 ) -> None:
     """One WARNING line with the cause so it lands in the default log file
     (issue #85 was undiagnosable with failures swallowed at DEBUG); the full
     exception repr stays at DEBUG. The line is what users paste into public
     issues, so ``context`` must not carry the email, and the server's
     Retry-After rides along when present (it answers the backoff-tuning
-    question without a second ask)."""
+    question without a second ask). A network failure says what failed
+    (:func:`usage_error_detail`). ``account`` tags the line so an offline
+    episode can hold back its repeats."""
     where = f" {context}" if context else ""
-    cause = kind if retry_after_s is None else f"{kind}, retry-after {retry_after_s:.0f}s"
+    detail = usage_error_detail(e, kind)
+    cause = detail if retry_after_s is None else f"{detail}, retry-after {retry_after_s:.0f}s"
     if kind == "http-429":
         # Whether the budget counts per access token or per account depends
         # on the org's 429 regime (both measured; see poll_policy), so the
@@ -845,7 +1027,10 @@ def _log_usage_failure(
         # cumulative polling across surfaces and machines can saturate it,
         # and backoff plus the adaptive cadence are the recovery.
         cause += " (usage-endpoint budget reached; backing off)"
-    _logger.warning("Usage fetch failed%s: %s", where, cause)
+    _logger.warning(
+        "Usage fetch failed%s: %s", where, cause,
+        extra=failure_line_tag("claude", account, kind),
+    )
     _logger.debug("Usage fetch failure detail%s: %r", where, e)
 
 
@@ -1080,6 +1265,15 @@ class UsageOutcome:
     # permanent auth kind — lets the store bind the strike to that
     # generation (see usage_store.FetchRecord.struck_fp).
     struck_fp: str | None = None
+    # The failure as the log says it (``usage_error_detail``: ``network
+    # (dns)``), or ``REFUSED_AFTER_REFRESH`` for a token the endpoint refused
+    # though it was just renewed. Kept beside ``error`` in the usage store.
+    detail: str | None = None
+
+
+#: ``UsageOutcome.detail`` of a 401 on a token renewed moments before: the
+#: account itself is refused, not an old token.
+REFUSED_AFTER_REFRESH = "http-401 after refresh"
 
 
 def fetch_usage(access_token: str) -> dict | None:
@@ -1141,7 +1335,7 @@ def try_fetch_usage_for_account(
 
     if is_setup_token(oauth):
         if header_probe:
-            return _usage_from_probe(access_token, context)
+            return _usage_from_probe(access_token, context, account=account_num)
         return UsageOutcome(None, error="setup-token")
 
     working_credentials = credentials
@@ -1154,7 +1348,8 @@ def try_fetch_usage_for_account(
         if refresh_via is not None:
             refresh = refresh_via(account_num, email, working_credentials)
         else:
-            refresh = try_refresh_oauth_credentials(working_credentials)
+            with refreshing(account_num):
+                refresh = try_refresh_oauth_credentials(working_credentials)
         if refresh.credentials:
             working_credentials = refresh.credentials
             if refresh_via is None:
@@ -1198,8 +1393,11 @@ def try_fetch_usage_for_account(
             or not oauth
             or not oauth.get("refreshToken")
         ):
-            _log_usage_failure(context, e, kind, retry_after)
-            return UsageOutcome(None, error=kind, retry_after_s=retry_after)
+            _log_usage_failure(context, e, kind, retry_after, account=account_num)
+            return UsageOutcome(
+                None, error=kind, retry_after_s=retry_after,
+                detail=usage_error_detail(e, kind),
+            )
 
         # Retry once after refreshing on 401 (inactive accounts only). A
         # server-rejected grant (invalid_grant) means this refresh-token lineage
@@ -1209,9 +1407,10 @@ def try_fetch_usage_for_account(
         if refresh_via is not None:
             refresh = refresh_via(account_num, email, working_credentials)
         else:
-            refresh = try_refresh_oauth_credentials(working_credentials)
+            with refreshing(account_num):
+                refresh = try_refresh_oauth_credentials(working_credentials)
         if not refresh.credentials:
-            _log_usage_failure(context, e, kind)
+            _log_usage_failure(context, e, kind, account=account_num)
             dead = refresh.error in ("invalid_grant", "no_refresh_token")
             # Deterministic kinds keep their identity here too — collapsing
             # them to "refresh-failed" would hide the ERROR_NOTES remedy
@@ -1226,6 +1425,7 @@ def try_fetch_usage_for_account(
                      or credential_fingerprint(working_credentials))
                     if dead else None
                 ),
+                detail=refresh.detail,
             )
 
         working_credentials = refresh.credentials
@@ -1241,12 +1441,27 @@ def try_fetch_usage_for_account(
             return UsageOutcome(build_usage_result(data))
         except Exception as retry_error:
             kind, retry_after = _classify_usage_error(retry_error)
-            _log_usage_failure(context + " after refresh", retry_error, kind, retry_after)
-            return UsageOutcome(None, error=kind, retry_after_s=retry_after)
+            _log_usage_failure(
+                context + " after refresh", retry_error, kind, retry_after,
+                account=account_num,
+            )
+            # A 401 on the token renewed a moment ago refuses the account,
+            # not an old token: said so, for the line the engine writes when
+            # an account stops being readable.
+            return UsageOutcome(
+                None, error=kind, retry_after_s=retry_after,
+                detail=(
+                    REFUSED_AFTER_REFRESH if kind == "http-401"
+                    else usage_error_detail(retry_error, kind)
+                ),
+            )
     except Exception as e:
         kind, retry_after = _classify_usage_error(e)
-        _log_usage_failure(context, e, kind, retry_after)
-        return UsageOutcome(None, error=kind, retry_after_s=retry_after)
+        _log_usage_failure(context, e, kind, retry_after, account=account_num)
+        return UsageOutcome(
+            None, error=kind, retry_after_s=retry_after,
+            detail=usage_error_detail(e, kind),
+        )
 
 
 def fetch_usage_for_account(

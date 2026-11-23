@@ -267,6 +267,10 @@ class FetchRecord:
     # persists: later passes skip the request while the credential still
     # carries that token, and a success clears it.
     rejected_fp: str | None = None
+    # The failure as the log says it (``oauth.usage_error_detail``: ``network
+    # (dns)``; ``refresh-failed`` carries what failed the refresh). Stored
+    # beside ``lastError`` and cleared by a success.
+    error_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -318,6 +322,23 @@ class UsageEntry:
     # the ``"api key"`` sentinel by the collector; never persisted, never part
     # of ``decision_value``. Appended for the same positional compatibility.
     api_spend: dict | None = None
+    # ``last_error`` as the log says it (``FetchRecord.error_detail``), None
+    # when the writer gave none. Appended for the same positional compatibility.
+    error_detail: str | None = None
+    # When the saved login itself lapses (``oauth.login_expires_at_epoch`` of
+    # the credential the collector read this pass), epoch seconds; None for
+    # API keys, setup-tokens, Codex and logins that record no end date. Set
+    # by the collector beside the stored fields, never persisted, never part
+    # of ``decision_value``. Appended for the same positional compatibility.
+    login_expires_at: float | None = None
+
+    def network_failure(self) -> str | None:
+        """What a last failure that never reached the server said (``network
+        (dns)``, ``timeout``), or None: no failure, or one the server
+        answered (``http-503``), or one that says nothing about the network."""
+        if not oauth.is_network_failure(self.last_error, self.error_detail):
+            return None
+        return self.error_detail or self.last_error
 
     def fresh(self, now: float, ttl: float = SERVE_TTL_S) -> bool:
         return self.fetched_at is not None and (now - self.fetched_at) <= ttl
@@ -1015,6 +1036,7 @@ class UsageStore:
                 trust_extended=trust_extended,
                 claim_until=claim_until,
                 held_until=held_until,
+                error_detail=_error_detail(row),
             )
         return out
 
@@ -1159,6 +1181,7 @@ class UsageStore:
                     row["nextPollAt"], row["pollIntervalS"] = plan
                 row["consecutiveFailures"] = 0
                 row["lastError"] = None
+                row.pop("lastErrorDetail", None)
                 # A confirmed probe rejection's Retry-After is a deadline no
                 # collector may fetch before (see _rejection_backoff_until).
                 row["backoffUntil"] = _rejection_backoff_until(rec.usage, now)
@@ -1168,6 +1191,12 @@ class UsageStore:
                 failures = int(row.get("consecutiveFailures") or 0) + 1
                 row["consecutiveFailures"] = failures
                 row["lastError"] = rec.error
+                # The kind rides along, so a detail an older writer left beside
+                # a later lastError is never read as that error's.
+                if rec.error_detail:
+                    row["lastErrorDetail"] = [rec.error, rec.error_detail]
+                else:
+                    row.pop("lastErrorDetail", None)
                 if rec.error == "http-429":
                     # Kept across later successes: the poll planner floors the
                     # cadence while a 429 is recent (see UsageEntry.last_429_at).
@@ -1323,6 +1352,55 @@ class UsageStore:
 
         self._mutate(identities, nums, apply)
 
+    def lift_network_backoff(
+        self,
+        nums: Iterable[str],
+        identities: dict[str, Identity],
+        *,
+        attempted_before: float,
+    ) -> set[str]:
+        """Let rows whose last read failed for want of a network be read now.
+
+        For the auto engine once the usage host answers again during an
+        offline episode: the failure backoff (up to ``BACKOFF_CAP_S``) would
+        otherwise hold the first read after the network came back for as
+        long as ten minutes. Only a row whose last read found no network at
+        all (``network``, or a refresh that failed that way), still in
+        backoff, and last attempted before ``attempted_before`` is lifted: a
+        timeout (a host that takes connections and does not answer), a
+        Retry-After, or any failure the server answered is never cut short,
+        and a row is never tried more often than the caller's bound. The
+        failure count stays, so a read that fails again backs off from where
+        it was. Returns the rows lifted.
+        """
+        nums = [n for n in nums if n in identities]
+        if not nums:
+            return set()
+        now = self.clock()
+        lifted: set[str] = set()
+        with self._lock():
+            rows = self._read_rows()
+            for num in nums:
+                row = rows.get(num)
+                if not self._matches(row, identities[num]):
+                    continue
+                assert isinstance(row, dict)
+                backoff_until = _num_or_none(row.get("backoffUntil"))
+                attempted = _num_or_none(row.get("lastAttemptAt"))
+                if (
+                    backoff_until is None
+                    or now >= backoff_until
+                    or attempted is None
+                    or attempted >= attempted_before
+                    or not _no_network(row.get("lastError"), _error_detail(row))
+                ):
+                    continue
+                row["backoffUntil"] = None
+                lifted.add(num)
+            if lifted:
+                self._write_rows(rows)
+        return lifted
+
     def clear_dead_token(
         self, nums: Iterable[str], identities: dict[str, Identity]
     ) -> None:
@@ -1344,6 +1422,7 @@ class UsageStore:
             row["struckFingerprint"] = None
             row["consecutiveFailures"] = 0
             row["lastError"] = None
+            row.pop("lastErrorDetail", None)
             row["backoffUntil"] = None
 
         self._mutate(identities, nums, apply)
@@ -1351,6 +1430,29 @@ class UsageStore:
 
 def _num_or_none(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
+
+
+def _no_network(kind: str | None, detail: str | None) -> bool:
+    """Whether a failure found no network at all: ``network``, or a refresh
+    whose detail says so. Not a timeout."""
+    if kind == "network":
+        return True
+    return kind == "refresh-failed" and bool(detail) and detail.startswith("network")
+
+
+def _error_detail(row: dict) -> str | None:
+    """The stored detail of the row's ``lastError``, when it is that error's
+    (``lastErrorDetail`` is ``[kind, detail]``)."""
+    stored = row.get("lastErrorDetail")
+    if (
+        isinstance(stored, list)
+        and len(stored) == 2
+        and isinstance(stored[1], str)
+        and stored[0] == row.get("lastError")
+        and row.get("lastError") is not None
+    ):
+        return stored[1]
+    return None
 
 
 def _row_eligible(
@@ -1393,3 +1495,10 @@ def with_sentinel(entry: UsageEntry, sentinel: str | None) -> UsageEntry:
     if sentinel is None:
         return entry
     return replace(entry, sentinel=sentinel)
+
+
+def with_login_expiry(entry: UsageEntry, expires_at: float | None) -> UsageEntry:
+    """Overlay when the account's saved login lapses (read model only)."""
+    if expires_at is None:
+        return entry
+    return replace(entry, login_expires_at=expires_at)

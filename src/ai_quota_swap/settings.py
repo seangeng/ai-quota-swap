@@ -64,6 +64,11 @@ class AutoSwitchSettings:
     strategy: str = "best"  # Opt-in alternatives are in AUTOSWITCH_STRATEGIES.
     include_api_key_accounts: bool = False
     unhealthy_ticks: int = 3
+    # Each saved login's end date (``refreshTokenExpiresAt``) counts: an
+    # account whose login ends within autoswitch.LOGIN_ENDING_S ranks behind
+    # every other, and the active account is left LOGIN_LEAVE_S before its
+    # login ends when another has room. Preferences only, never an exclusion.
+    watch_login_expiry: bool = True
     # Comma-separated model display name(s) (e.g. "Fable" or "Fable,Opus"),
     # or "all" for every scoped window an account reports. Each named model's
     # per-model weekly limit is folded into the binding window, so the engine
@@ -294,6 +299,13 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "autoswitch", "unhealthyTicks", "unhealthy_ticks", "int", 1, 100,
             help="Consecutive failed polls before an account is unhealthy",
+        ),
+        SettingSpec(
+            "autoswitch", "watchLoginExpiry", "watch_login_expiry", "bool",
+            help=(
+                "Prefer accounts whose saved login is not about to end, and leave "
+                "the active one 15 minutes before its login ends"
+            ),
         ),
         SettingSpec(
             "autoswitch", "model", "model", "string",

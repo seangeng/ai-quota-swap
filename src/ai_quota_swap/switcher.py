@@ -112,6 +112,7 @@ from ai_quota_swap.usage_store import (
     FetchRecord,
     UsageEntry,
     UsageStore,
+    with_login_expiry,
     with_sentinel,
 )
 
@@ -2163,6 +2164,21 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         """:meth:`refresh_usage` for one slot; its entry, None if no such slot."""
         return self.refresh_usage({str(account_num)}).get(str(account_num))
 
+    def lift_network_backoff(self, account_nums: set[str], *, attempted_before: float) -> set[str]:
+        """Let slots whose last usage read failed for want of a network be
+        read again now (``UsageStore.lift_network_backoff``); the slots lifted.
+        Touches no credential: the identities come from the registry."""
+        data = self._get_sequence_data() or {}
+        accounts = data.get("accounts", {}) if isinstance(data, dict) else {}
+        identities = {
+            str(num): (record.get("email", ""), record.get("organizationUuid", "") or "")
+            for num, record in accounts.items()
+            if isinstance(record, dict)
+        }
+        return self._usage_store.lift_network_backoff(
+            {str(n) for n in account_nums}, identities, attempted_before=attempted_before,
+        )
+
     def _subscription_store(self) -> subscription.PlanStore:
         return subscription.PlanStore(
             self.backup_dir / "cache" / subscription.PLAN_FILENAME,
@@ -3078,7 +3094,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             # never fires and the POST proceeds.
             return oauth.RefreshOutcome(refresh_input, None, None, consumed_fp)
 
-        result = oauth.try_refresh_oauth_credentials(refresh_input)
+        with oauth.refreshing(account_num):
+            result = oauth.try_refresh_oauth_credentials(refresh_input)
         if result.error is not None or not result.credentials:
             # Strike binding must follow the POSTed bytes: the gate may have
             # substituted a locked re-read or the session profile for the
@@ -5474,6 +5491,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         oauth_data = oauth.extract_oauth_data(creds)
         if not oauth_data or not oauth_data.get("accessToken"):
             return FetchRecord(sentinel=USAGE_NO_CREDENTIALS)
+        # Whether this pass renewed the token itself (a refresh POST below),
+        # so a 401 on the renewed token reads as the account refused.
+        renewed = False
 
         # Every defer before the grant is consumed routes through this: a
         # genuinely expired token earns the sentinel, but a locally-valid
@@ -5542,6 +5562,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     usage=outcome.usage,
                     error=outcome.error,
                     retry_after_s=outcome.retry_after_s,
+                    error_detail=outcome.detail,
                 )
             # A locally-valid token the server rejects: revoked out-of-band
             # (measured: a sibling machine rotating a synced lineage kills
@@ -5554,6 +5575,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             # sentinel mislabeling an unexpired token.
             force_refresh = FetchRecord(
                 error=outcome.error, retry_after_s=outcome.retry_after_s,
+                error_detail=outcome.detail,
             )
 
         # Expired (or server-rejected). Before any recovery that would
@@ -5843,9 +5865,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                         # inside that budget so a slow network can't make a
                         # concurrent switch's acquire expire — the switch
                         # then waits out the tail instead of erroring.
-                        result = oauth.try_refresh_oauth_credentials(
-                            refresh_input, timeout_s=6.0
-                        )
+                        with oauth.refreshing(account_num):
+                            result = oauth.try_refresh_oauth_credentials(
+                                refresh_input, timeout_s=6.0
+                            )
                         if result.error in (
                             "invalid_grant", "no_refresh_token"
                         ) or (
@@ -5906,8 +5929,13 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                             )
                         if result.error is not None:
                             # Transient (network) failure: backoff via store.
-                            return FetchRecord(error="refresh-failed")
+                            # The detail says which, so the auto engine can
+                            # tell an offline machine from a refused refresh.
+                            return FetchRecord(
+                                error="refresh-failed", error_detail=result.detail,
+                            )
                         working = result.credentials
+                        renewed = True
                         # Our own POST produced this lineage — self-attributed,
                         # no oracle needed. The verdict is what lets the next
                         # expiry consume it if the backup write below fails.
@@ -6002,6 +6030,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             usage=outcome.usage,
             error=outcome.error,
             retry_after_s=outcome.retry_after_s,
+            error_detail=(
+                oauth.REFUSED_AFTER_REFRESH
+                if renewed and outcome.error == "http-401" else outcome.detail
+            ),
         )
 
     def _resync_rotated_backup(
@@ -6300,6 +6332,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             error=outcome.error,
             retry_after_s=outcome.retry_after_s,
             struck_fp=outcome.struck_fp,
+            error_detail=outcome.detail,
         )
 
     def _read_only_fetch(
@@ -6326,6 +6359,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             usage=outcome.usage,
             error=outcome.error,
             retry_after_s=outcome.retry_after_s,
+            error_detail=outcome.detail,
         )
 
     def _run_usage_fetches(
@@ -6487,7 +6521,16 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     sentinels[num] = USAGE_RELOGIN_REQUIRED
 
         collected = {
-            num: with_sentinel(entries[num], sentinels.get(num))
+            num: with_login_expiry(
+                with_sentinel(entries[num], sentinels.get(num)),
+                # The credential this pass already read (no extra Keychain
+                # read): the live store's for the active account. Not from a
+                # degraded live read: the fallback copy can be the login from
+                # before a renewal, whose old end date would send the engine
+                # off a login just renewed.
+                None if info_by_num[num][4] and self._active_read_degraded
+                else oauth.login_expires_at_epoch(info_by_num[num][5] or ""),
+            )
             for num in info_by_num
         }
         # API-key accounts keep their sentinel (never ranked by windows, never
