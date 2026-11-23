@@ -652,6 +652,100 @@ class TestConflictPolicy:
 # ---------------------------------------------------------------------------
 
 
+def _envelope(*accounts: dict) -> dict:
+    return {"version": 1, "encrypted": False, "activeAccountNumber": None,
+            "accounts": list(accounts)}
+
+
+def _entry(num: int, email: str, credentials, *, kind: str | None = None,
+           alias: str | None = None) -> dict:
+    entry = {
+        "number": num, "email": email, "uuid": f"acct-{num}", "organizationUuid": "",
+        "organizationName": "", "added": "2026-11-01T00:00:00Z", "credentials": credentials,
+        "config": {"oauthAccount": {"emailAddress": email, "accountUuid": f"acct-{num}"}},
+    }
+    if kind:
+        entry["kind"] = kind
+    if alias:
+        entry["alias"] = alias
+    return entry
+
+
+def _login(tag: str) -> dict:
+    """A subscription login: it renews, so every renewal replaces it."""
+    return {"claudeAiOauth": {"accessToken": f"sk-ant-oat01-{tag}",
+                              "refreshToken": f"sk-ant-ort01-{tag}", "expiresAt": 9999}}
+
+
+#: A setup-token as ``qswap add-token`` saves it: no refresh token.
+SETUP_TOKEN = {"claudeAiOauth": {"accessToken": "sk-ant-oat01-setup-fake",
+                                 "scopes": ["user:inference"]}}
+API_KEY = "sk-ant-api03-" + "imp" * 12  # made up
+
+
+class TestOneMachineNote:
+    """A login renews by being replaced, so the same saved copy on two
+    machines leaves one of them with a refused login. After an import that
+    saved a subscription login, a note says to use it on one machine and to
+    sign in on each machine instead."""
+
+    @staticmethod
+    def _import(temp_home: Path, capsys, envelope: dict, *, force: bool = False,
+                switcher=None) -> str:
+        s = switcher or _linux_switcher(temp_home)
+        path = temp_home / "moved.json"
+        path.write_text(json.dumps(envelope))
+        capsys.readouterr()
+        import_accounts(s, str(path), force=force)
+        return capsys.readouterr().err
+
+    def test_one_login_names_its_account_and_the_command(self, temp_home: Path, capsys):
+        err = self._import(temp_home, capsys, _envelope(
+            _entry(2, "maya@example.com", _login("a"), alias="work"),
+            _entry(5, "api-key-5@token.local", API_KEY, kind="api_key"),
+        ))
+        assert err.splitlines()[-4:] == [
+            "Use the login for #2 work on one machine only. Each renewal replaces a login, so",
+            "when two machines use the same copy, one of them soon needs re-login. To use the",
+            "account on both, sign in on each machine; on this one with:",
+            "  qswap login 2",
+        ], err
+        assert all(len(line) <= 80 for line in err.splitlines())
+
+    def test_several_logins_are_counted_and_the_command_takes_n(self, temp_home: Path, capsys):
+        err = self._import(temp_home, capsys, _envelope(
+            _entry(1, "maya@example.com", _login("a")),
+            _entry(2, "sam@example.org", _login("b")),
+            _entry(3, "setup-token-3@token.local", SETUP_TOKEN),
+        ))
+        text = " ".join(err.split())
+        assert "Use these 2 logins on one machine only." in text
+        assert text.endswith("on this one with: qswap login N")
+
+    def test_api_keys_and_setup_tokens_alone_get_no_note(self, temp_home: Path, capsys):
+        err = self._import(temp_home, capsys, _envelope(
+            _entry(3, "setup-token-3@token.local", SETUP_TOKEN),
+            _entry(5, "api-key-5@token.local", API_KEY, kind="api_key"),
+        ))
+        assert "Done: 2 imported" in err
+        assert "one machine" not in err and "qswap login" not in err
+
+    def test_a_login_the_import_skipped_gets_no_note(self, temp_home: Path, capsys):
+        s = _linux_switcher(temp_home)
+        _seed_account(s, 1, "maya@example.com")
+        err = self._import(temp_home, capsys, _envelope(
+            _entry(1, "maya@example.com", _login("a")),
+        ), switcher=s)
+        assert "Skipped maya@example.com (already exists, use --force)" in err
+        assert "qswap login" not in err
+        # --force writes it, and the note follows.
+        err = self._import(temp_home, capsys, _envelope(
+            _entry(1, "maya@example.com", _login("a")),
+        ), switcher=s, force=True)
+        assert "Overwrote maya@example.com (slot 1)" in err
+        assert err.rstrip("\n").endswith("  qswap login 1")
+
+
 class TestCrossPlatform:
     def test_export_macos_keychain_import_linux_files(self, temp_home: Path):
         """Export from a macOS switcher (Keychain-backed via the ``security``

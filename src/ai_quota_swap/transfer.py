@@ -58,6 +58,43 @@ def _enote(msg: str, command: str | None = None) -> None:
         _eprint(f"  {command}")
 
 
+def _renews(creds_text: str) -> bool:
+    """Whether a saved credential is a login that renews itself: one with a
+    refresh token, which every renewal replaces. An API key and a
+    setup-token never renew, so the same copy works on any number of
+    machines."""
+    try:
+        creds = json.loads(creds_text)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(creds, dict):
+        return False
+    login = creds.get("claudeAiOauth")
+    login = login if isinstance(login, dict) else creds  # the oldest shape: top-level tokens
+    return bool(login.get("refreshToken"))
+
+
+def _one_machine_note(switcher: ClaudeAccountSwitcher, slots: list[str]) -> None:
+    """After an import that saved subscription logins: each renewal replaces
+    a login, so a copy still in use on the machine it came from soon leaves
+    one of the two machines with a login the server refuses. Sign in on each
+    machine instead (docs/coming-from-claude-swap.md, "Move logins to
+    another machine")."""
+    if not slots:
+        return
+    if len(slots) == 1:
+        name = switcher.label(slots[0], long=False)
+        who, which, number = f"the login for {name}", "the account", slots[0]
+    else:
+        who, which, number = f"these {len(slots)} logins", "an account", "N"
+    _enote(
+        f"Use {who} on one machine only. Each renewal replaces a login, so when two "
+        f"machines use the same copy, one of them soon needs re-login. To use {which} "
+        "on both, sign in on each machine; on this one with:",
+        f"qswap login {number}",
+    )
+
+
 def _holds_no_login(creds: object) -> bool:
     """A credential object with no Claude login in any shape qswap knows: no
     ``claudeAiOauth`` and no top-level tokens (the oldest shape). Such as the
@@ -552,6 +589,9 @@ def import_accounts(
     written_slots: set[str] = set()
     # What each written slot received, for the note about the live login.
     written_creds: dict[str, str] = {}
+    # The slots that received a login that renews itself, for the note
+    # about using it on one machine.
+    renewing: list[str] = []
     live_creds, live_dead = _live_login_state(switcher)
     # The API-key account active through Claude Code's apiKeyHelper line
     # (docs/design/api-key-sessions.md): its slot keeps an API key, and the
@@ -729,6 +769,8 @@ def import_accounts(
             resolved_active_slot = target_num
         written_slots.add(target_num)
         written_creds[target_num] = entry["creds_text"]
+        if entry["kind"] != "api_key" and _renews(entry["creds_text"]):
+            renewing.append(target_num)
 
         if outcome == "overwrote":
             _eprint(f"Overwrote {shown_email(entry['email'])} (slot {target_num})")
@@ -848,6 +890,7 @@ def import_accounts(
                 # Under an active key the login is underneath it, not active,
                 # and nothing needs doing about it either: no line for it.
                 _enote(f"{name} is already the active account; nothing needs doing.")
+    _one_machine_note(switcher, renewing)
 
 
 def _live_login_state(switcher) -> tuple[str | None, bool]:

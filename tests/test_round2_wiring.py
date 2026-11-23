@@ -356,6 +356,29 @@ class TestNextBestSaysWhyTheEngineWouldNotUseAKey:
             "API key · budget reached earlier, not used"
         )
 
+    def test_a_key_held_after_another_keys_brake_says_so(self):
+        """Issue #14: after auto-switch left another key at its limit
+        (``keyLeft``, copied into the reading), Next best says the key is
+        not used until a subscription has room, as the auto log does."""
+        from ai_quota_swap.autoswitch import AutoSwitchSettings
+        from ai_quota_swap.models import AccountsSnapshot
+        from ai_quota_swap.tui import autoview
+        from ai_quota_swap.tui import data as tui_data
+
+        reading = _stale_budget(age=60)
+        reading["key_left"] = {"left": "5", "reason": "budget", "account": "7", "label": "#5 ci"}
+        view = tui_data.ProviderView(provider="claude", snapshot=AccountsSnapshot(
+            active_number="1", accounts=(_sub_snapshot(1, 100.0, active=True),
+                                         _key_snapshot(7, reading), _key_snapshot(8, _stale_budget(age=60))),
+            taken_at=time.time(),
+        ))
+        picked = autoview.next_best(view, AutoSwitchSettings(include_api_key_accounts=True))
+        words = {c.number: c.words for c in picked}
+        assert words["7"] == "API key · not used until a subscription has room"
+        assert words["8"] == "API key · only as a last resort"
+        order = [c.number for c in picked]
+        assert order.index("8") < order.index("7")  # the keys it would use come first
+
 
 # == B8 with A16: one way back, the same everywhere =====================================
 

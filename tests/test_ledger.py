@@ -561,6 +561,60 @@ class TestCodex:
         assert stats.missing_paths == [str(held)]
         assert env.sums("claude")["requests"] == 1
 
+    @pytest.mark.skipif(
+        os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+        reason="a directory's read bit keeps only a POSIX non-root reader out",
+    )
+    @pytest.mark.parametrize("mode", [0o000, 0o300])
+    def test_a_directory_it_may_not_list_is_missing(self, env, mode):
+        """Issue #18: a project directory the scan cannot list (mode 000, or
+        0300 with no read bit) was skipped without a word, so its session
+        files counted as neither missing nor vanished and the scan looked
+        complete. It counts as one unreadable entry, named first."""
+        write_lines(env.transcript("kept.jsonl"), [claude_line(mid="m-1", ts=T0)])
+        held = write_lines(
+            env.transcript("held.jsonl", slug="-work-other"), [claude_line(mid="m-2", ts=T0)]
+        )
+        held.parent.chmod(mode)
+        try:
+            stats = env.scan(("claude",))
+        finally:
+            held.parent.chmod(0o700)
+        assert (stats.missing, stats.missing_dirs, stats.vanished) == (1, 1, 0)
+        assert stats.missing_paths == [str(held.parent)]
+        assert (stats.to_json()["missing"], stats.to_json()["missingDirs"]) == (1, 1)
+        assert env.sums("claude")["requests"] == 1
+        # Once it can be listed again, its file is read.
+        stats = env.scan(("claude",))
+        assert (stats.missing, stats.missing_dirs) == (0, 0)
+        assert env.sums("claude")["requests"] == 2
+
+    def test_a_root_that_does_not_exist_is_not_missing(self, env):
+        """Codex never set up, a profile with no projects: nothing to read."""
+        write_lines(env.transcript("kept.jsonl"), [claude_line(mid="m-1", ts=T0)])
+        stats = env.scan()
+        assert (stats.missing, stats.missing_dirs, stats.vanished) == (0, 0, 0)
+
+    def test_a_directory_deleted_after_its_parent_was_listed_is_vanished(self, env, monkeypatch):
+        write_lines(env.transcript("kept.jsonl"), [claude_line(mid="m-1", ts=T0)])
+        gone = write_lines(
+            env.transcript("gone.jsonl", slug="-work-gone"), [claude_line(mid="m-2", ts=T0)]
+        ).parent
+        real_scandir, removed = os.scandir, []
+
+        def scandir(path):
+            if str(path) == str(gone) and not removed:
+                import shutil
+
+                removed.append(path)
+                shutil.rmtree(gone)  # Claude Code removed the project meanwhile
+            return real_scandir(path)
+
+        monkeypatch.setattr(scanner.os, "scandir", scandir)
+        stats = env.scan(("claude",))
+        assert (stats.missing, stats.missing_dirs, stats.vanished) == (0, 0, 1)
+        assert env.sums("claude")["requests"] == 1
+
     def test_symlinked_rollouts_are_read(self, env):
         real = write_lines(env.home / "archive" / rollout_name(THREAD_A), [
             codex_meta(T0, THREAD_A), codex_turn(T0), codex_record(T0, THREAD_A, "resp-1"),
@@ -1387,6 +1441,34 @@ def _history(env) -> None:
 
 
 class TestScanWindow:
+    def test_scan_recent_records_the_time_it_is_given(self, env):
+        """Issue #17: ``now`` is when the scan is recorded (the figure's
+        age) and the day its 7-day window ends on; the wall clock without it."""
+        import time
+
+        from ai_quota_swap.ledger.store import LAST_SCAN_META
+        from ai_quota_swap.ledger.usage import scan_recent
+
+        def last_scan() -> float:
+            store = env.store()
+            try:
+                return float(store.get_meta(LAST_SCAN_META))
+            finally:
+                store.close()
+
+        # A session from two days before ``now``: inside its 7-day window,
+        # whatever the wall clock's date.
+        _aged(write_lines(env.transcript("sess-then.jsonl"), [
+            claude_line(mid="msg_then", ts=T0 - 2 * D, session="sess-then"),
+        ]), T0 - 2 * D)
+        stats = scan_recent(env.data, now=T0)
+        assert last_scan() == T0
+        assert (stats.files_read, stats.files_skipped) == (1, 0)
+        assert env.sums("claude")["requests"] == 1
+        before = time.time()
+        scan_recent(env.data)
+        assert before <= last_scan() <= time.time()
+
     @pytest.mark.parametrize("wide", ["wider window", "all"])
     def test_a_narrow_scan_then_a_wider_one_matches_a_wide_scan_from_scratch(self, env, wide):
         _history(env)

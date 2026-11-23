@@ -6197,14 +6197,16 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         return collected
 
     def _api_spend_readings(
-        self, infos: dict[str, tuple], fetch: set[str] | None
+        self, infos: dict[str, tuple], fetch: set[str] | None, *, now: float | None = None,
     ) -> dict[str, dict]:
-        """Spend readings for API-key accounts (``api_spend.readings``).
-        Never raises: a failure here leaves the rows as they were."""
+        """Spend readings for API-key accounts (``api_spend.readings``), as
+        of ``now`` (the wall clock by default; a test's fake clock ages an
+        Admin figure with it, issue #17). Never raises: a failure here
+        leaves the rows as they were."""
         try:
             from ai_quota_swap import api_spend
 
-            return api_spend.readings(self, infos, fetch=fetch)
+            return api_spend.readings(self, infos, fetch=fetch, now=now)
         except Exception as e:
             from ai_quota_swap.admin_api import redact
 

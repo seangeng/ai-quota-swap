@@ -159,15 +159,17 @@ def test_a_failure_while_drawing_never_costs_the_menu(monkeypatch):
 
 
 def test_the_drawn_legend_shows_every_entry_inside_the_view():
-    # Long names in a 460 pt menu: each entry's dot is drawn where the
-    # fitted line puts it, the last one ("other") included, inside the insets.
+    # Long names in a menu of 460 pt or as wide as the chart asks for, if
+    # that is more: each entry's dot is drawn where the fitted line puts
+    # it, the last one ("other") included, inside the insets.
     chart = build_chart(_cost(LONG))
     _caption, _day, legend_font = view_mod._fonts()
     view = view_mod.make_view(chart)
-    view.setFrame_(((0, 0), (460.0, view.frame().size.height)))
+    width = max(460.0, view_mod.menu_width(chart))
+    view.setFrame_(((0, 0), (width, view.frame().size.height)))
     rep = _bitmap(view, dark=False)
     left = view_mod.TITLE_INSET + view_mod.STATE_COLUMN
-    inner = 460.0 - left - view_mod.RIGHT_INSET
+    inner = width - left - view_mod.RIGHT_INSET
     names = chart.fit_legend(lambda ns: view_mod._legend_width(chart, ns, legend_font) <= inner)
     assert names != [e.name for e in chart.legend]  # these names had to be cut
     y = view_mod._frame().legend_top + view_mod._line_height(legend_font) / 2
@@ -176,7 +178,7 @@ def test_the_drawn_legend_shows_every_entry_inside_the_view():
         assert _alpha(rep, x + menubar_chart.DOT / 2, y) > 0.5, name
         x += menubar_chart.DOT + menubar_chart.DOT_GAP
         x += view_mod._entry_text(name, entry.amount_text, legend_font).size().width + menubar_chart.ENTRY_GAP
-    assert x - menubar_chart.ENTRY_GAP <= 460.0 - view_mod.RIGHT_INSET
+    assert x - menubar_chart.ENTRY_GAP <= width - view_mod.RIGHT_INSET
 
 
 def test_a_failure_finding_the_check_marks_never_reaches_appkit(monkeypatch):
@@ -198,7 +200,7 @@ def test_a_failure_finding_the_check_marks_never_reaches_appkit(monkeypatch):
 def test_the_view_asks_for_the_part_of_the_check_mark_column_nsmenu_does_not_add():
     # Beside a checked row NSMenu widens the menu for a view by itself (14
     # points on macOS 27, 7 on macOS 26), so the view asks for its insets,
-    # the caption or the legend at its shortest forms, and the rest of the
+    # the caption or the legend at its narrowest forms, and the rest of the
     # column; with no check marks, none of it.
     caption_font, _day, legend_font = view_mod._fonts()
     added = view_mod.check_column_added()
@@ -270,7 +272,7 @@ def _legend_dots(view) -> list[bool]:
 
 
 def _shortest_fits(view) -> bool:
-    """Whether the legend at its shortest forms fits ``view``'s content
+    """Whether the legend at its narrowest forms fits ``view``'s content
     area, to the half point the view allows itself."""
     chart = view.chart
     inner = float(view.frame().size.width) - INSETS
@@ -287,7 +289,7 @@ def test_beside_a_short_checked_row_every_legend_entry_is_drawn(week):
     # The chart as the widest row of its menu, the only other row short and
     # checked: NSMenu.size on this system (never shown) gives the menu's
     # width, the menu gives the view that width, and the legend at its
-    # shortest forms fits inside the insets, every entry drawn. On macOS 26
+    # narrowest forms fits inside the insets, every entry drawn. On macOS 26
     # NSMenu adds 7 points, not 14; a view asking without the whole column
     # had 7 points too few there and left the last entry out.
     chart = build_chart(_cost(week), both=True)
@@ -413,19 +415,19 @@ INSETS = view_mod.TITLE_INSET + view_mod.STATE_COLUMN + view_mod.RIGHT_INSET
 
 
 def test_the_showcase_legend_with_the_views_own_fonts_from_360_to_600_points():
-    # Each width the view could be drawn at: names start at their shortest
-    # and grow in legend order, so no room is left a name could use, the
-    # first entry never gets shorter as the menu gets wider, and no entry
-    # is bare while its three-letter cut would fit.
+    # Each width the view could be drawn at: every name is cut the same
+    # way, to the most room after its number that fits, no entry gets
+    # shorter as the menu gets wider, and all go bare together only when
+    # their three-letter cuts do not fit.
     chart = build_chart(_cost(SHOWCASE), both=True)
     widths = range(360, 601, 4)
     shown = assert_legend_uses_its_room(chart, [w - INSETS for w in widths], _view_measure(chart))
     assert all("Codex #2" in names[3] for names in shown)
-    # The view is never narrower than the line at its shortest forms.
+    # The view is never narrower than the line at its narrowest forms.
     measure = _view_measure(chart)
     narrowest = view_mod.menu_width(chart) - INSETS
     shortest = chart.fit_legend(lambda _names: False)
-    assert shortest == ["#1", "#2", "#5", "Codex #2", "other"]
+    assert shortest == ["#1 per…", "#2 work", "#5 ci", "Codex #2 work", "other"]
     assert measure(shortest) == pytest.approx(narrowest)  # the legend sets the width, not the caption
     assert chart.fit_legend(lambda ns: measure(ns) <= narrowest) == shortest
 

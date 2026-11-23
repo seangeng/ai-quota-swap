@@ -49,6 +49,29 @@ def older_history_line(stats: ScanStats | None) -> str | None:
     )
 
 
+def unreadable_note(stats: ScanStats) -> str:
+    """What the scan could not read, for the report's notes. A directory it
+    could not list is named, since its files cannot be counted (issue #18)."""
+    dirs = min(stats.missing_dirs, stats.missing)
+    if not dirs:
+        return (
+            f"{stats.missing} session files could not be read (for example, links "
+            "to a volume that is not mounted); they are read once they are back."
+        )
+    files = stats.missing - dirs
+    what = [f"{dirs} session director{'y' if dirs == 1 else 'ies'}"]
+    if files:
+        what.append(f"{files} session file{'' if files == 1 else 's'}")
+    one = stats.missing == 1
+    where = f" ({'it' if one else 'one'} is {home_path(stats.missing_paths[0])})" if (
+        stats.missing_paths
+    ) else ""
+    return (
+        f"{' and '.join(what)} could not be read{where}; "
+        f"{'it is' if one else 'they are'} read once {'it' if one else 'they'} can be."
+    )
+
+
 def searched_dirs(config: ScanConfig, providers: tuple[str, ...]) -> tuple[str, ...]:
     """The directories a scan over ``providers`` looks in, home spelled ``~``."""
     dirs: list[Path] = []
@@ -99,6 +122,7 @@ def report_inputs(
 def scan_recent(
     data_root: Path, *, registry: dict | None = None, days: int = 7,
     provider: str = "claude", today: date | None = None, start: float | None = None,
+    now: float | None = None,
 ) -> ScanStats:
     """Bring the ledger up to date for the last ``days`` days and record when
     (``last_scan_at``), without building a report: the incremental scan the
@@ -108,9 +132,13 @@ def scan_recent(
     from the start of the period a key's limit is measured over (its budget
     month, its credit), from that hour (decision EM3). The scan is
     incremental, so a wide window costs once. Safe beside another scan
-    (every event is counted once). Raises what the scan raises; the engine
-    catches it."""
+    (every event is counted once). ``now`` is the time the scan is recorded
+    at, and the local day the ``days`` window ends on unless ``today`` is
+    given; the wall clock by default (a test passes its fake clock). Raises
+    what the scan raises; the engine catches it."""
     data_root = Path(data_root)
+    if today is None and now is not None:
+        today = date.fromtimestamp(now)
     since, until = resolve_range(days=days, since=None, until=None, today=today)
     store = LedgerStore(data_root / DB_FILENAME)
     try:
@@ -120,7 +148,7 @@ def scan_recent(
             window = day_bounds(since, until)[0] * 3600
         scanner = Scanner(store, default_config(data_root, registry), progress=None)
         stats = scanner.run((provider,), since=window)
-        store.set_meta(LAST_SCAN_META, f"{time.time():.3f}")
+        store.set_meta(LAST_SCAN_META, f"{time.time() if now is None else now:.3f}")
         return stats
     finally:
         store.close()
@@ -201,10 +229,7 @@ def run_usage(
                 else f"Skipped {stats.skipped_compressed} compressed Codex session files."
             )
         if stats.missing:
-            notes.append(
-                f"{stats.missing} session files could not be read (for example, links "
-                "to a volume that is not mounted); they are read once they are back."
-            )
+            notes.append(unreadable_note(stats))
     return UsageResult(
         report=report, scan=stats, notes=notes, older_history=older_history_line(stats)
     )

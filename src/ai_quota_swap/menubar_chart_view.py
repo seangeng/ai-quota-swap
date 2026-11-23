@@ -280,7 +280,7 @@ def check_column_added() -> float:
 
 def _own_width(chart: UsageChart) -> float:
     """The insets, and room for the caption and for the legend line at its
-    shortest forms."""
+    narrowest forms (every name cut to three letters)."""
     caption_font, _day, legend_font = _fonts()
     caption = float(_text(chart.caption, caption_font, AppKit.NSColor.labelColor()).size().width)
     shortest = chart.fit_legend(lambda _names: False)
@@ -290,7 +290,7 @@ def _own_width(chart: UsageChart) -> float:
 
 def min_width(chart: UsageChart, *, check_marks: bool = True) -> float:
     """The width the view asks its menu for: the insets, room for the
-    caption and for the legend line at its shortest forms, and, when
+    caption and for the legend line at its narrowest forms, and, when
     ``check_marks``, the part of the :data:`STATE_COLUMN` points the view
     draws further in that NSMenu does not add itself
     (:func:`check_column_added`): none on macOS 27, 7 points on macOS 26.

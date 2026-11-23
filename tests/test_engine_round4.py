@@ -98,6 +98,71 @@ class TestNoOtherKeyAfterABrake:
         rows = {v.number: v for v in held[0].context.accounts}
         assert account_facts(rows["4"])[0] == "API key, not used until a subscription has room"
 
+    @staticmethod
+    def _readings(h) -> dict[str, dict]:
+        """The keys' readings as list, status and the dashboard get them."""
+        infos = {n: (int(n), f"key{n}@token.local", "", "", False, "sk-ant-api03-fake", "")
+                 for n in ("2", "4")}
+        return api_spend.readings(h.switcher, infos, fetch=set(), now=h.clock.now, env={})
+
+    def _left_at_its_budget(self, temp_home):
+        from ai_quota_swap.settings import set_setting
+
+        h = _fleet(temp_home, keys=(2, 4))
+        set_setting(h.switcher.backup_dir, "autoswitch.includeApiKeyAccounts", "true")
+        _tick(h, ALL_OUT)
+        h.clock.advance(60)
+        _tick(h, ALL_OUT, {"2": _reading(h, used=600.0)})
+        assert h.switcher.current_account_number() == "1"
+        assert _state(h)["keyLeft"]["account"] == "2"
+        return h
+
+    def test_list_status_and_next_best_say_why_the_other_keys_are_held(self, temp_home):
+        """Issue #14: the rows of qswap list and qswap status (and the
+        dashboard's) and Next best read keyLeft, in the auto log's words."""
+        from ai_quota_swap.autoswitch import key_entry_hold
+
+        h = self._left_at_its_budget(temp_home)
+        readings = self._readings(h)
+        four = readings["4"]
+        assert four["key_left"] == {"left": "2", "reason": "budget", "account": "4", "label": "#2 ci"}
+        assert "key_left" not in readings["2"]  # the key left says its own limit
+        assert api_spend.spend_text(four, h.clock.now).endswith(
+            " · not used until a subscription has room")
+        assert api_spend.detail_text(four, h.clock.now).startswith(
+            "auto-switch left #2 ci at its monthly budget, and enters no other key until a "
+            "subscription has room; to use this key now: qswap switch 4 · ")
+        assert key_entry_hold(four, now=h.clock.now) == "key-left"
+        # One wording: the auto log's row for the same key.
+        from ai_quota_swap.autolog import _key_view_words
+
+        assert _key_view_words()["key-left"] == f"API key, {api_spend.KEY_LEFT_WORDS}"
+
+    def test_the_hold_ends_where_the_engines_does(self, temp_home, monkeypatch):
+        from ai_quota_swap.settings import set_setting
+
+        h = self._left_at_its_budget(temp_home)
+        # A key at its own limit says that limit, not the other key's.
+        over = {**_reading(h, used=600.0), "key_left": {"left": "2", "reason": "budget"}}
+        assert api_spend.key_left_of(over) is None
+        assert api_spend.key_left_of({"key_left": {"left": "2"}}) is None  # no budget or credit
+        # The key in use is not held.
+        monkeypatch.setattr(h.switcher, "current_account_number", lambda: "4")
+        assert "key_left" not in self._readings(h)["4"]
+        monkeypatch.undo()
+        # API keys turned off: no key is entered at all, and the record holds nothing.
+        set_setting(h.switcher.backup_dir, "autoswitch.includeApiKeyAccounts", "false")
+        assert "key_left" not in self._readings(h)["4"]
+        set_setting(h.switcher.backup_dir, "autoswitch.includeApiKeyAccounts", "true")
+        assert "key_left" in self._readings(h)["4"]
+        # A check that reads a subscription with room ends it, here too.
+        h.clock.advance(60)
+        _tick(h, {**ALL_OUT, "1": _usage(40)}, {"2": _reading(h, used=600.0)})
+        assert "keyLeft" not in _state(h)
+        four = self._readings(h)["4"]
+        assert "key_left" not in four
+        assert api_spend.KEY_LEFT_WORDS not in api_spend.spend_text(four, h.clock.now)
+
     def test_the_key_it_left_comes_back_when_its_figure_is_fresh_again(self, temp_home):
         h = _fleet(temp_home, keys=(2, 4))
         _tick(h, ALL_OUT)
@@ -674,6 +739,83 @@ class TestAFileDeletedDuringTheScan:
         assert (_state(h)["spendScan"]["ok"], _state(h)["spendScan"]["unreadable"]) == (
             False, 1,
         )
+
+    @pytest.mark.parametrize("mode", [0o000, 0o300])
+    def test_a_project_it_cannot_list_stops_the_key_and_is_named(
+        self, temp_home, monkeypatch, mode
+    ):
+        """Issue #18: a project directory the scan cannot list (mode 000, or
+        0300 with no read bit) was skipped, so the scan counted as covering
+        the period while its session files went unread: an understated
+        figure for the key's budget. Now it is no figure, and the words name
+        the directory."""
+        from ai_quota_swap.printer import abbreviate_path
+        from tests.ledger_fixtures import claude_line, write_lines
+
+        if os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0:
+            pytest.skip("permission bits keep only a POSIX non-root reader out")
+        h, project = self._world(temp_home, monkeypatch)
+        other = project.parent / "-work-other"
+        write_lines(other / "s.jsonl", [claude_line(mid="m-2", ts=h.clock.now - 30)])
+        other.chmod(mode)
+        try:
+            assert self._tick(h) is TickOutcome.BLOCKED
+        finally:
+            other.chmod(0o700)
+        assert h.switcher.current_account_number() == "1"
+        scan = _state(h)["spendScan"]
+        assert (scan["ok"], scan["unreadable"], scan["dirs"]) == (False, 1, 1)
+        held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
+        assert held.reason == "spend-unknown"
+        assert held.human() == (
+            "Not switching to #2 ci: its spend is not known (1 session directory on this "
+            "machine could not be read); make it readable, or move it away (it is "
+            f"{abbreviate_path(str(other))})"
+        )
+        # Readable again: the next scan covers the period and the key is used.
+        h.clock.advance(6 * 60)
+        assert self._tick(h) is TickOutcome.SWITCHED
+        assert _state(h)["spendScan"]["ok"] is True
+        assert h.switcher.current_account_number() == "2"
+
+
+def test_the_scan_failure_words_count_directories_apart():
+    record = {"unreadable": 3, "dirs": 1, "paths": ["/x/projects/-a", "/x/projects/-b/s.jsonl"]}
+    assert api_spend.scan_failure_words(record) == (
+        "1 session directory and 2 session files on this machine could not be read",
+        "make them readable, or move them away (one is /x/projects/-a)",
+    )
+    record = {"unreadable": 2, "dirs": 2, "paths": ["/x/projects/-a"]}
+    assert api_spend.scan_failure_words(record)[0] == (
+        "2 session directories on this machine could not be read"
+    )
+    # A record from before the count, or a bad one, reads as files.
+    for dirs in (None, "1", True, -1):
+        record = {"unreadable": 2, "paths": ["/x/a.jsonl"], **({"dirs": dirs} if dirs else {})}
+        assert api_spend.scan_failure_words(record)[0] == (
+            "2 session files on this machine could not be read"
+        )
+
+
+def test_qswap_usage_names_a_directory_it_cannot_list(temp_home):
+    from ai_quota_swap.ledger.scanner import ScanStats
+    from ai_quota_swap.ledger.usage import unreadable_note
+
+    files = ScanStats(missing=2, missing_paths=["/v/a.jsonl", "/v/b.jsonl"])
+    assert unreadable_note(files) == (
+        "2 session files could not be read (for example, links to a volume that is not "
+        "mounted); they are read once they are back."
+    )
+    one = ScanStats(missing=1, missing_dirs=1, missing_paths=[str(temp_home / ".claude" / "p")])
+    assert unreadable_note(one) == (
+        f"1 session directory could not be read (it is {'~' + os.sep + os.path.join('.claude', 'p')}); "
+        "it is read once it can be."
+    )
+    both = ScanStats(missing=3, missing_dirs=1, missing_paths=["/v/projects/-x", "/v/a.jsonl"])
+    assert unreadable_note(both) == (
+        "1 session directory and 2 session files could not be read (one is /v/projects/-x); "
+        "they are read once they can be."
+    )
 
 
 # == EM6: a dry run that would move to a key ===================================================

@@ -85,7 +85,11 @@ class ScanStats:
     events: int = 0  # new events counted (after dedupe)
     duplicates: int = 0
     missing: int = 0  # unreadable entries, such as symlinks to an unmounted volume
-    # The first few of them, to name in a message (not in the JSON).
+    # Of those, directories the scan could not list (mode 000 or 0300): the
+    # session files in them are neither read nor counted one by one.
+    missing_dirs: int = 0
+    # The first few of them, to name in a message (not in the JSON); the
+    # directories come first, as the walk finds them before any file is read.
     missing_paths: list = field(default_factory=list)
     # Entries gone when the scan came to read them (deleted between the
     # listing and the read): not unreadable, and not part of ``missing``.
@@ -107,6 +111,7 @@ class ScanStats:
             "newEvents": self.events,
             "duplicates": self.duplicates,
             "missing": self.missing,
+            "missingDirs": self.missing_dirs,
             "vanished": self.vanished,
             "skippedCompressed": self.skipped_compressed,
             "modifiedSince": (
@@ -184,17 +189,26 @@ def default_config(data_root: Path, registry: dict | None = None) -> ScanConfig:
     )
 
 
-def _walk(root: Path, accept: Callable[[str], bool]) -> Iterator[str]:
+def _walk(
+    root: Path, accept: Callable[[str], bool], unlisted: Callable[[str], None] | None = None,
+) -> Iterator[str]:
     """Files under ``root`` whose name passes ``accept``. Per-file symlinks are
     listed (and followed when read); symlinked directories are not entered,
-    so a link loop cannot hang the scan."""
-    stack = [str(root)]
+    so a link loop cannot hang the scan. ``unlisted(path)`` hears of each
+    directory that could not be listed: its files may hold usage, so the
+    scan cannot say it covered the period. A root that does not exist has
+    no files and is not one (Codex or a profile never set up)."""
+    top = str(root)
+    stack = [top]
     while stack:
         d = stack.pop()
         try:
             with os.scandir(d) as it:
                 entries = list(it)
-        except OSError:
+        except OSError as e:
+            absent = isinstance(e, (FileNotFoundError, NotADirectoryError))
+            if unlisted is not None and not (absent and d == top):
+                unlisted(d)
             continue
         for e in entries:
             try:
@@ -331,7 +345,7 @@ class Scanner:
             codex_threads: dict[str, list[str]] = {}
             if "claude" in providers:
                 for root in self.config.claude_roots:
-                    for path in _walk(root.path, lambda n: n.endswith(".jsonl")):
+                    for path in _walk(root.path, lambda n: n.endswith(".jsonl"), self._unlisted):
                         claude_files.append((path, root.account))
             if "codex" in providers:
                 for root in self.config.codex_roots:
@@ -339,6 +353,7 @@ class Scanner:
                         root,
                         lambda n: n.startswith("rollout-")
                         and (n.endswith(".jsonl") or n.endswith(".jsonl.zst")),
+                        self._unlisted,
                     ):
                         m = _THREAD_ID.search(os.path.basename(path))
                         key = f"codex-thread:{m.group(1)}" if m else f"codex-file:{path}"
@@ -384,6 +399,15 @@ class Scanner:
         finally:
             self.stats.seconds = time.monotonic() - start
         return self.stats
+
+    def _unlisted(self, path: str) -> None:
+        """Count a directory the walk could not list as unreadable (issue
+        #18), the way :meth:`_missing` counts a file: one deleted since its
+        parent was listed counts as vanished instead."""
+        missing = self.stats.missing
+        self._missing(path)
+        if self.stats.missing > missing:
+            self.stats.missing_dirs += 1
 
     def _missing(self, path: str) -> None:
         """Count an entry that could not be read, keeping the first few. One

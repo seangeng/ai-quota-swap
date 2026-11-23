@@ -42,6 +42,25 @@ If the account Claude Code is logged in to is in the file, the import ends with 
 
 If an account shows `needs re-login` in `qswap list` after the import, a refresh had already replaced the login it was exported with. Log in with that account in Claude Code and run `qswap add`.
 
+## Move logins to another machine
+
+`qswap export` and `qswap import` also move accounts from one machine running qswap to another. Use each login you move on one machine only. Claude Code and qswap renew a login now and then, and each renewal replaces it, so when two machines hold the same copy, the first renewal on one leaves the other with a login the server refuses: the account shows `needs re-login` there. API-key accounts and setup-tokens never renew, so they work on both machines.
+
+To use an account on both machines, sign in to it on each one. On the new machine, `qswap login N` signs in to account N in the browser and saves the new login over the imported one; the account Claude Code is using stays logged in:
+
+```bash
+qswap login 2
+```
+
+After an import that saved a subscription login, `qswap import` says the same:
+
+```
+Use the login for #2 work on one machine only. Each renewal replaces a login, so
+when two machines use the same copy, one of them soon needs re-login. To use the
+account on both, sign in on each machine; on this one with:
+  qswap login 2
+```
+
 ## Set your preferences again
 
 | In claude-swap | In qswap |
