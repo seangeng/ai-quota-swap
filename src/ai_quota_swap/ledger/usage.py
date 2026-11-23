@@ -49,6 +49,29 @@ def older_history_line(stats: ScanStats | None) -> str | None:
     )
 
 
+def unreadable_note(stats: ScanStats) -> str:
+    """What the scan could not read, for the report's notes. A directory it
+    could not list is named, since its files cannot be counted (issue #18)."""
+    dirs = min(stats.missing_dirs, stats.missing)
+    if not dirs:
+        return (
+            f"{stats.missing} session files could not be read (for example, links "
+            "to a volume that is not mounted); they are read once they are back."
+        )
+    files = stats.missing - dirs
+    what = [f"{dirs} session director{'y' if dirs == 1 else 'ies'}"]
+    if files:
+        what.append(f"{files} session file{'' if files == 1 else 's'}")
+    one = stats.missing == 1
+    where = f" ({'it' if one else 'one'} is {home_path(stats.missing_paths[0])})" if (
+        stats.missing_paths
+    ) else ""
+    return (
+        f"{' and '.join(what)} could not be read{where}; "
+        f"{'it is' if one else 'they are'} read once {'it' if one else 'they'} can be."
+    )
+
+
 def searched_dirs(config: ScanConfig, providers: tuple[str, ...]) -> tuple[str, ...]:
     """The directories a scan over ``providers`` looks in, home spelled ``~``."""
     dirs: list[Path] = []
@@ -201,10 +224,7 @@ def run_usage(
                 else f"Skipped {stats.skipped_compressed} compressed Codex session files."
             )
         if stats.missing:
-            notes.append(
-                f"{stats.missing} session files could not be read (for example, links "
-                "to a volume that is not mounted); they are read once they are back."
-            )
+            notes.append(unreadable_note(stats))
     return UsageResult(
         report=report, scan=stats, notes=notes, older_history=older_history_line(stats)
     )

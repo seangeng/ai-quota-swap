@@ -533,7 +533,9 @@ def failed_scan(root: Path, now: float) -> dict | None:
 def scan_failure_words(record: object) -> tuple[str, str]:
     """``(cause, next step)`` for a failed scan (:func:`failed_scan_record`):
     ``2 session files on this machine could not be read`` and ``make them
-    readable, or move them away (one is ~/.claude/projects/x.jsonl)``; or
+    readable, or move them away (one is ~/.claude/projects/x.jsonl)``, with
+    the directories it could not list counted as such (``1 session
+    directory and 2 session files ...``) and one of them named first; or
     that the scan failed, and that auto-switch tries again."""
     from ai_quota_swap.printer import abbreviate_path
 
@@ -542,9 +544,16 @@ def scan_failure_words(record: object) -> tuple[str, str]:
     if isinstance(count, int) and not isinstance(count, bool) and count > 0:
         one = count == 1
         them = "it" if one else "them"
-        cause = (
-            f"{count} session file{'' if one else 's'} on this machine could not be read"
-        )
+        dirs = record.get("dirs")
+        dirs = dirs if isinstance(dirs, int) and not isinstance(dirs, bool) else 0
+        dirs = max(0, min(dirs, count))
+        files = count - dirs
+        what = []
+        if dirs:
+            what.append(f"{dirs} session director{'y' if dirs == 1 else 'ies'}")
+        if files:
+            what.append(f"{files} session file{'' if files == 1 else 's'}")
+        cause = f"{' and '.join(what)} on this machine could not be read"
         paths = [p for p in record.get("paths") or () if isinstance(p, str) and p]
         where = f" ({'it' if one else 'one'} is {abbreviate_path(paths[0])})" if paths else ""
         return cause, f"make {them} readable, or move {them} away{where}"
@@ -1105,7 +1114,8 @@ def readings(
             # Auto-switch's last scan could not cover the period: the
             # ledger's figure may miss usage, so it holds nothing (EM3).
             reading["scan_failed"] = {
-                k: scan_failure[k] for k in ("at", "unreadable", "paths") if k in scan_failure
+                k: scan_failure[k] for k in ("at", "unreadable", "dirs", "paths")
+                if k in scan_failure
             }
         if credit is not None:
             reading["credit"] = credit_reading(

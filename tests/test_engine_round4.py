@@ -740,6 +740,83 @@ class TestAFileDeletedDuringTheScan:
             False, 1,
         )
 
+    @pytest.mark.parametrize("mode", [0o000, 0o300])
+    def test_a_project_it_cannot_list_stops_the_key_and_is_named(
+        self, temp_home, monkeypatch, mode
+    ):
+        """Issue #18: a project directory the scan cannot list (mode 000, or
+        0300 with no read bit) was skipped, so the scan counted as covering
+        the period while its session files went unread: an understated
+        figure for the key's budget. Now it is no figure, and the words name
+        the directory."""
+        from ai_quota_swap.printer import abbreviate_path
+        from tests.ledger_fixtures import claude_line, write_lines
+
+        if os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0:
+            pytest.skip("permission bits keep only a POSIX non-root reader out")
+        h, project = self._world(temp_home, monkeypatch)
+        other = project.parent / "-work-other"
+        write_lines(other / "s.jsonl", [claude_line(mid="m-2", ts=h.clock.now - 30)])
+        other.chmod(mode)
+        try:
+            assert self._tick(h) is TickOutcome.BLOCKED
+        finally:
+            other.chmod(0o700)
+        assert h.switcher.current_account_number() == "1"
+        scan = _state(h)["spendScan"]
+        assert (scan["ok"], scan["unreadable"], scan["dirs"]) == (False, 1, 1)
+        held = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
+        assert held.reason == "spend-unknown"
+        assert held.human() == (
+            "Not switching to #2 ci: its spend is not known (1 session directory on this "
+            "machine could not be read); make it readable, or move it away (it is "
+            f"{abbreviate_path(str(other))})"
+        )
+        # Readable again: the next scan covers the period and the key is used.
+        h.clock.advance(6 * 60)
+        assert self._tick(h) is TickOutcome.SWITCHED
+        assert _state(h)["spendScan"]["ok"] is True
+        assert h.switcher.current_account_number() == "2"
+
+
+def test_the_scan_failure_words_count_directories_apart():
+    record = {"unreadable": 3, "dirs": 1, "paths": ["/x/projects/-a", "/x/projects/-b/s.jsonl"]}
+    assert api_spend.scan_failure_words(record) == (
+        "1 session directory and 2 session files on this machine could not be read",
+        "make them readable, or move them away (one is /x/projects/-a)",
+    )
+    record = {"unreadable": 2, "dirs": 2, "paths": ["/x/projects/-a"]}
+    assert api_spend.scan_failure_words(record)[0] == (
+        "2 session directories on this machine could not be read"
+    )
+    # A record from before the count, or a bad one, reads as files.
+    for dirs in (None, "1", True, -1):
+        record = {"unreadable": 2, "paths": ["/x/a.jsonl"], **({"dirs": dirs} if dirs else {})}
+        assert api_spend.scan_failure_words(record)[0] == (
+            "2 session files on this machine could not be read"
+        )
+
+
+def test_qswap_usage_names_a_directory_it_cannot_list(temp_home):
+    from ai_quota_swap.ledger.scanner import ScanStats
+    from ai_quota_swap.ledger.usage import unreadable_note
+
+    files = ScanStats(missing=2, missing_paths=["/v/a.jsonl", "/v/b.jsonl"])
+    assert unreadable_note(files) == (
+        "2 session files could not be read (for example, links to a volume that is not "
+        "mounted); they are read once they are back."
+    )
+    one = ScanStats(missing=1, missing_dirs=1, missing_paths=[str(temp_home / ".claude" / "p")])
+    assert unreadable_note(one) == (
+        f"1 session directory could not be read (it is {'~' + os.sep + os.path.join('.claude', 'p')}); "
+        "it is read once it can be."
+    )
+    both = ScanStats(missing=3, missing_dirs=1, missing_paths=["/v/projects/-x", "/v/a.jsonl"])
+    assert unreadable_note(both) == (
+        "1 session directory and 2 session files could not be read (one is /v/projects/-x); "
+        "they are read once they can be."
+    )
+
 
 # == EM6: a dry run that would move to a key ===================================================
 

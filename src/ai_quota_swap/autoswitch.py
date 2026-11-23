@@ -5193,6 +5193,9 @@ class AutoSwitchEngine:
                     "spend counts as unknown", unreadable,
                 )
                 record["unreadable"] = unreadable
+                dirs = getattr(stats, "missing_dirs", 0)
+                if isinstance(dirs, int) and dirs > 0:
+                    record["dirs"] = dirs  # of them, directories it could not list (#18)
                 paths = getattr(stats, "missing_paths", None)
                 if isinstance(paths, (list, tuple)):
                     record["paths"] = [str(p) for p in paths[:3]]

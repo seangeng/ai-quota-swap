@@ -350,11 +350,12 @@ What the code does where this part leaves room, or where it had to differ:
   enters a key, from the earlier of the start of the UTC month and the start of the key's
   credit (`scan_recent(start=...)`; others keep the 7-day default). A scan that raises, or
   that finds session files it cannot read (`ScanStats.missing`: a broken link, a permission
-  error, a file in a directory the scan can list but not enter, any other read error; a file
-  deleted between the listing and the read, which `lstat` says is not there, is counted as
-  `vanished` instead and does not count), covers nothing: until one covers the period
-  (`spendScan` in the state file: when, from when, whether it did, and how many files it could
-  not read, the first named) the ledger's figure is `spend-unknown`, said with that cause and
+  error, a file in a directory the scan can list but not enter, a directory it cannot list at
+  all, counted once in `ScanStats.missing_dirs` since its files cannot be counted, any other
+  read error; a file or directory deleted between the listing and the read, which `lstat` says
+  is not there, is counted as `vanished` instead and does not count), covers nothing: until
+  one covers the period (`spendScan` in the state file: when, from when, whether it did, how
+  many entries it could not read and how many of them are directories, the first named) the ledger's figure is `spend-unknown`, said with that cause and
   its step rather than an age. For 20 minutes after such a scan every reading of a ledger
   figure carries `scan_failed`, so the rows say `limit not enforced` and a dry run agrees. For a key linked to an organization only Anthropic's figure counts: the
   ledger's is shown (`this machine only`) but never fresh. So for a key whose link this pass
