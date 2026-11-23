@@ -743,6 +743,54 @@ def parse_unified_ratelimit_headers(headers) -> dict:
     return data
 
 
+def _probe_request(access_token: str) -> urllib.request.Request:
+    """The header probe: one request for a single Haiku output token."""
+    body = json.dumps({
+        "model": USAGE_PROBE_MODEL,
+        "max_tokens": 1,
+        "system": USAGE_PROBE_SYSTEM,
+        "messages": [{"role": "user", "content": "hi"}],
+    }).encode()
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "anthropic-beta": OAUTH_BETA_HEADER,
+        "anthropic-version": USAGE_PROBE_API_VERSION,
+        "Content-Type": "application/json",
+        "User-Agent": user_agent(),
+    }
+    return urllib.request.Request(
+        USAGE_PROBE_URL, data=body, headers=headers, method="POST"
+    )
+
+
+#: The response header that names the organization a request ran under, when
+#: the API sends it (not assumed: the backup check reads it only if present).
+ORGANIZATION_HEADER = "anthropic-organization-id"
+
+
+def probe_token_account(access_token: str) -> tuple[dict, str | None]:
+    """Send the header probe once with ``access_token``: the raw usage
+    shape of its rate-limit headers (:func:`parse_unified_ratelimit_headers`)
+    and its :data:`ORGANIZATION_HEADER`, if any. ``qswap add-token
+    --backup-for`` compares them with the login's (``backup_token.compare``).
+
+    A 429 that carries rate-limit headers answers too (an account at its
+    limit still says when its windows reset); any other HTTP error, and a
+    network failure, raises as :func:`request_usage_via_probe`'s does.
+    """
+    req = _probe_request(access_token)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            headers = resp.headers
+    except urllib.error.HTTPError as e:
+        if e.code != 429 or not e.headers:
+            raise
+        headers = e.headers
+    org = headers.get(ORGANIZATION_HEADER) if headers is not None else None
+    org = org.strip() if isinstance(org, str) and org.strip() else None
+    return parse_unified_ratelimit_headers(headers), org
+
+
 def request_usage_via_probe(access_token: str) -> dict:
     """Read utilization from the rate-limit headers of a minimal model request.
 
@@ -761,22 +809,7 @@ def request_usage_via_probe(access_token: str) -> dict:
     re-raises like any other error, so it stays an ``http-429`` failure
     with its Retry-After.
     """
-    body = json.dumps({
-        "model": USAGE_PROBE_MODEL,
-        "max_tokens": 1,
-        "system": USAGE_PROBE_SYSTEM,
-        "messages": [{"role": "user", "content": "hi"}],
-    }).encode()
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "anthropic-beta": OAUTH_BETA_HEADER,
-        "anthropic-version": USAGE_PROBE_API_VERSION,
-        "Content-Type": "application/json",
-        "User-Agent": user_agent(),
-    }
-    req = urllib.request.Request(
-        USAGE_PROBE_URL, data=body, headers=headers, method="POST"
-    )
+    req = _probe_request(access_token)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return parse_unified_ratelimit_headers(resp.headers)

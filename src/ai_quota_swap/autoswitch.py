@@ -38,6 +38,7 @@ health counters and the daily reset brake are per provider.
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import json
 import logging
@@ -500,9 +501,13 @@ class AccountView:
       ``key_entry_hold`` names it or the limit that is reached, with
       ``latched-`` before a latched one);
     - ``"disabled"``: held out of rotation by its owner;
-    - ``"no-login"``: no saved login to switch to.
+    - ``"no-login"``: no saved login to switch to;
+    - ``"standing-by"``: a backup token whose login works, never read
+      (docs/design/backup-token.md).
 
     ``line`` / ``weekly_line`` are its switch lines this tick.
+    ``backup_for`` is a backup token's login (``#3 work``); ``covered_by``
+    the backup token of a login, for the words of one that needs re-login.
     """
 
     number: str
@@ -518,6 +523,8 @@ class AccountView:
     sentinel: str | None = None
     used: bool = False
     key_hold: str | None = None
+    backup_for: str = ""
+    covered_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -3213,7 +3220,10 @@ class AutoSwitchEngine:
         try:
             self._wanted_key = False
             self._key_wait_undecided = True
-            outcome = self._tick_inner()
+            scope = getattr(self.switcher, "check_scope", None)
+            # One check: the switcher works out its backup tokens' state once.
+            with scope() if callable(scope) else contextlib.nullcontext():
+                outcome = self._tick_inner()
             self._persist_health_counters(self._health_account)
             if not self._wanted_key and not self._key_wait_undecided:
                 # Only a check that read the active account and found no key
@@ -3585,6 +3595,14 @@ class AutoSwitchEngine:
                 current, key_mode, entries, usage, headroom, thresholds, settings,
                 quarantined, policies, state=state,
             )
+
+        # A backup token active while its login works again (docs/design/
+        # backup-token.md): back to the login, cooldown or not.
+        returned = self._return_from_backup(
+            current, entries, usage, headroom, thresholds, settings, quarantined, state,
+        )
+        if returned is not None:
+            return returned
 
         if (
             current_is_key
@@ -4185,6 +4203,11 @@ class AutoSwitchEngine:
                 )
                 return TickOutcome.BLOCKED
             return self._all_exhausted(usage)
+
+        # A login that needs re-login fails over to its backup token first.
+        ordered = self._backup_first(
+            current, ordered, usage, headroom, quarantined, thresholds, settings,
+        )
 
         # -- freshen + switch ----------------------------------------------
         # The departure snapshot of the account we are leaving, taken from the
@@ -5451,13 +5474,14 @@ class AutoSwitchEngine:
                 {str(n) for n in (*entries, *switchable, *disabled)},
                 key=lambda n: (0, int(n)) if n.isdigit() else (1, n),
             )
-            return tuple(
+            views = tuple(
                 self._account_view(
                     num, entries.get(num), usage.get(num), quarantine,
                     switchable, disabled, current, thresholds, settings, names,
                 )
                 for num in numbers
             )
+            return self._with_backup_labels(views)
         except Exception as e:  # labels only; never cost the tick
             _logger.debug("could not describe accounts for the auto log: %r", e)
             return ()
@@ -5487,6 +5511,10 @@ class AutoSwitchEngine:
             return replace(base, state="needs-relogin", set_aside=str(reason) if reason else None)
         if value == USAGE_RELOGIN_REQUIRED:
             return replace(base, state="needs-relogin")
+        from ai_quota_swap.json_output import USAGE_STANDING_BY
+
+        if value == USAGE_STANDING_BY:
+            return replace(base, state="standing-by")
         if num != current:
             if num in disabled:
                 return replace(base, state="disabled")
@@ -5520,6 +5548,155 @@ class AutoSwitchEngine:
         if error:
             return replace(base, state="unavailable", error=error)
         return replace(base, state="not-read")
+
+    # -- backup tokens (docs/design/backup-token.md) ------------------------------
+    #
+    # A setup-token kept as a login's backup (``qswap add-token --backup-for``).
+    # The switcher keeps it out of rotation while its login works and reads it
+    # only once the login needs re-login; the engine adds two moves: a login
+    # that ends while active fails over to its token first, and a token that is
+    # active while its login works again goes back to the login (trigger
+    # ``backup-return``, which no cooldown holds). Inert for a provider
+    # without ``backup_links`` and for anyone with no backup token.
+
+    def _backup_links(self) -> dict[str, str]:
+        """Backup token -> its login, as the switcher has them."""
+        getter = getattr(self.switcher, "backup_links", None)
+        if not callable(getter):
+            return {}
+        try:
+            return dict(getter())
+        except Exception as e:  # a link that cannot be read is no link
+            _logger.debug("could not read the backup tokens: %r", e)
+            return {}
+
+    def _backup_first(
+        self, current: str, ordered: list[str],
+        usage: Mapping[str, object], headroom: Mapping[str, float | None],
+        quarantined: Collection[str], thresholds: Mapping[str, float],
+        settings: AutoSwitchSettings,
+    ) -> list[str]:
+        """The targets with the active account's backup token first, when
+        the active login needs re-login and the token is among them under
+        its own lines: the same subscription and quota, so the failover goes
+        there first. Over a line, it keeps its place in the ranking."""
+        if not ordered:
+            return ordered
+        if current not in quarantined and usage.get(current) != USAGE_RELOGIN_REQUIRED:
+            return ordered
+        from ai_quota_swap.backup_token import backups_by_parent
+
+        backup = backups_by_parent(self._backup_links()).get(str(current))
+        if backup is None or backup not in ordered or not self._under_lines(
+            backup, usage, headroom, thresholds, settings,
+        ):
+            return ordered
+        return [backup, *(n for n in ordered if n != backup)]
+
+    def _under_lines(
+        self, num: str, usage: Mapping[str, object], headroom: Mapping[str, float | None],
+        thresholds: Mapping[str, float], settings: AutoSwitchSettings,
+    ) -> bool:
+        """Whether ``num`` reads under every one of its switch lines."""
+        room = headroom.get(num)
+        if room is None or room <= 0:
+            return False
+        binding = self._binding(usage.get(num), settings, thresholds[num])
+        return not (binding.over if binding is not None else (100.0 - room) >= thresholds[num])
+
+    def _return_from_backup(
+        self,
+        current: str,
+        entries: Mapping[str, object],
+        usage: Mapping[str, object],
+        headroom: Mapping[str, float | None],
+        thresholds: Mapping[str, float],
+        settings: AutoSwitchSettings,
+        quarantined: Collection[str],
+        state: Mapping,
+    ) -> TickOutcome | None:
+        """The active account is a backup token whose login works again (a
+        renewal by ``qswap login N``): back to the login now, whatever the
+        cooldown (trigger ``backup-return``).
+
+        On a read, never on a missing flag: the login must have been read
+        successfully since the move onto the token (``lastSwitchAt``; this
+        check, when the engine did not make that move). Without such a read
+        it is read now. Then it must read under every switch line; otherwise
+        (over a line, unread, disabled, set aside) the normal rules decide,
+        and None is returned."""
+        parent = self._backup_links().get(str(current))
+        if parent is None:
+            return None
+        if parent in quarantined or usage.get(parent) == USAGE_RELOGIN_REQUIRED:
+            return None
+        if parent not in self.switcher.switchable_account_numbers():
+            return None
+        moved = (
+            _number(state.get("lastSwitchAt"))
+            if str(state.get("lastSwitchTo")) == str(current) else None
+        )
+        fetched = _number(getattr(entries.get(parent), "fetched_at", None))
+        read_since = fetched is not None and (
+            fetched > moved if moved is not None
+            else self._collect_started is not None and fetched >= self._collect_started
+        )
+        if not read_since:
+            reader = getattr(self.switcher, "refresh_usage", None)
+            if not callable(reader):
+                return None
+            started = self.clock()
+            try:
+                entry = reader({parent}).get(parent)
+            except Exception as e:  # the next check reads again
+                _logger.debug("could not read account %s before going back: %r", parent, e)
+                return None
+            fetched = _number(getattr(entry, "fetched_at", None))
+            if entry is None or fetched is None or fetched < started:
+                return None  # no read now: the normal rules decide
+            value = entry.decision_value()
+            if value == USAGE_RELOGIN_REQUIRED or not isinstance(value, dict):
+                return None
+            usage = {**usage, parent: value}
+            headroom = {**headroom, parent: oauth.account_headroom(value, self._models)}
+        if not self._under_lines(parent, usage, headroom, thresholds, settings):
+            return None
+        email = self.switcher.account_email(parent)
+        if not self.dry_run:
+            status = self._freshen_target(parent, email)
+            if status in ("invalid_grant", "identity-conflict"):
+                self._quarantine(parent, email, status)
+                return None
+            if status != "ok":
+                return None  # tried again next check
+        left = (
+            headroom.get(current),
+            _binding_recovery_ts(
+                usage.get(current), self._models, self.clock(),
+                threshold=thresholds[current],
+                weekly_threshold=settings.weekly_threshold,
+                scale=settings.threshold,
+            ),
+        )
+        return self._perform(parent, email, "backup-return", left)
+
+    def _with_backup_labels(self, views: tuple[AccountView, ...]) -> tuple[AccountView, ...]:
+        """The views with each backup token's login, and each login's token,
+        named for the auto log's words."""
+        links = self._backup_links()
+        if not links:
+            return views
+        from ai_quota_swap.backup_token import backups_by_parent
+
+        covers = backups_by_parent(links)
+        return tuple(
+            replace(
+                v,
+                backup_for=self._label_of(links[v.number]) if v.number in links else "",
+                covered_by=self._label_of(covers[v.number]) if v.number in covers else "",
+            ) if v.number in links or v.number in covers else v
+            for v in views
+        )
 
     def _view_key_hold(self, num: str, entry: object) -> str | None:
         """Why the engine would not use the API key ``num`` this tick, for

@@ -260,6 +260,15 @@ class AccountSnapshot:
     #: Its saved login is a setup-token (``oauth.is_setup_token``): an
     #: "oauth" account with no sign-in to renew (``qswap login``).
     setup_token: bool = False
+    #: A backup token (docs/design/backup-token.md): its login's number, its
+    #: state (``backup_token.STATES``) and about when it stops working
+    #: (epoch seconds). On a login, ``backup_number`` is its backup token's.
+    backup_for: str | None = None
+    backup_state: str | None = None
+    backup_ends_at: float | None = None
+    backup_number: str | None = None
+    #: That backup token stands in for it now (not disabled, its token saved).
+    backup_covers: bool = False
 
     @property
     def display_tag(self) -> str:

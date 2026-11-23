@@ -166,11 +166,18 @@ def _add() -> ArgumentParser:
 
 def _add_token() -> ArgumentParser:
     p = _parser(
-        "add-token", "[TOKEN|-] [--email EMAIL] [--slot NUM] [--yes]",
+        "add-token",
+        "[TOKEN|-] [--email EMAIL] [--slot NUM] [--yes]\n"
+        "       qswap add-token [TOKEN|-] --backup-for ACCOUNT [--unverified] [--yes]",
         "Add an account from a Claude Code setup-token or a Console API key, "
-        "without logging in on this machine. The kind is detected.",
+        "without logging in on this machine. The kind is detected. With "
+        "--backup-for (experimental), a token from claude setup-token for a "
+        "saved subscription stands by while that login works and stands in "
+        "once it needs re-login; adding it sends one small request to check "
+        "whose it is.",
         ["qswap add-token sk-ant-oat01-... --email me@example.com",
-         "pbpaste | qswap add-token -"],
+         "pbpaste | qswap add-token -",
+         "qswap add-token --backup-for 3"],
     )
     p.add_argument("token", metavar="TOKEN|-", nargs="?",
                    help="the token; '-' reads it from stdin; omitted, asks for it")
@@ -178,8 +185,16 @@ def _add_token() -> ArgumentParser:
                    help="a label for it (default: setup-token-N@token.local "
                         "or api-key-N@token.local)")
     p.add_argument("--slot", metavar="NUM", help="store it as this account number")
+    p.add_argument("--backup-for", metavar="ACCOUNT",
+                   help="keep the setup-token as the backup of this subscription "
+                        "login (number, email or alias); one per login, a second "
+                        "replaces the first")
+    p.add_argument("--unverified", action="store_true",
+                   help="with --backup-for: save it even when qswap cannot check "
+                        "that the token is that login's account")
     p.add_argument("-y", "--yes", action="store_true",
-                   help="replace the account already in --slot without asking")
+                   help="replace the account already in --slot, or the backup "
+                        "already kept for --backup-for, without asking")
     return p
 
 

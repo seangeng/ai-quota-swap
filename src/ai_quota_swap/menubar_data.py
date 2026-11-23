@@ -107,6 +107,12 @@ def account_states(
     from ai_quota_swap.labels import account_label
 
     lines = lines or Lines()
+    labels = {
+        str(a.number): account_label(a.number, alias=a.alias or None, email=a.email, long=False)
+        for a in snapshot.accounts
+    }
+    # A row is short: a backup token names its login by number (and alias).
+    compact = {str(a.number): account_label(a.number, alias=a.alias or None) for a in snapshot.accounts}
     under = getattr(snapshot, "underneath_number", None)
     over = ""
     if under is not None:
@@ -136,9 +142,30 @@ def account_states(
             by_engine=bool(acc.is_active)
             and getattr(snapshot, "key_entered_by", None) == "engine",
             setup_token=bool(getattr(acc, "setup_token", False)),
+            backup=_backup_facts(acc, compact),
+            covered_by=(
+                labels.get(str(acc.backup_number), "")
+                if getattr(acc, "backup_covers", False) else ""
+            ),
         )
         for acc in snapshot.accounts
     )
+
+
+def _backup_facts(acc, labels: dict[str, str]):
+    """A backup token's link in ``display``'s words, or None
+    (docs/design/backup-token.md)."""
+    parent = getattr(acc, "backup_for", None)
+    if not parent:
+        return None
+    from ai_quota_swap import display
+    from ai_quota_swap.backup_token import STANDING_BY, Link
+
+    link = Link(
+        str(acc.number), str(parent), getattr(acc, "backup_state", None) or STANDING_BY,
+        ends_at=getattr(acc, "backup_ends_at", None),
+    )
+    return display.backup_facts(link, labels.get(str(parent), f"#{parent}"))
 
 
 def _quiet(fn, default=None):

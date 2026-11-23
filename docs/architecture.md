@@ -44,6 +44,7 @@ Sizes are rounded and move with every change; they are here so you know what you
 | `macos_keychain.py` | 200 | Keychain access through the `security` CLI |
 | `oauth.py` | 1,300 | Token parsing and refresh, the usage request and its normalization, window math |
 | `subscription.py` | 300 | The plan label (Max, Pro, Team) from the profile endpoint |
+| `backup_token.py` | 300 | A setup-token kept as a login's backup (`qswap add-token --backup-for`): the link on its record, its states and dates, and the identity check; pure ([design/backup-token.md](design/backup-token.md)) |
 | `login.py` | 500 | `qswap login`: a new sign-in made by `claude auth login` in a private profile under `sign-in/`, checked against the account and saved with `ClaudeAccountSwitcher.save_renewed_login`; the profile and its Keychain item deleted whatever happens |
 | `session.py` | 2,700 | `qswap run`: per-account Claude Code profiles and shared history; `qswap run N` on a key; the settings copies run profiles hold while a key is active |
 | `key_activation.py` | 1,100 | An API key made active through Claude Code's `apiKeyHelper`: who is active and who is underneath, who entered the key, entering and leaving it, and the one reconcile every switch and engine tick runs first |

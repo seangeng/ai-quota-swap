@@ -108,7 +108,12 @@ def next_best(
         a.number for a in view.accounts if a.usage.sentinel == USAGE_RELOGIN_REQUIRED
     }
     picked = rotation_candidates(
-        [a.number for a in view.accounts if a.switchable and not a.disabled],
+        # A backup token standing by is no candidate (docs/design/backup-token.md).
+        [
+            a.number for a in view.accounts
+            if a.switchable and not a.disabled
+            and getattr(a, "backup_state", None) != "standing-by"
+        ],
         view.active_number,
         set_aside=set_aside,
         kind_of=lambda n: accounts[n].kind,

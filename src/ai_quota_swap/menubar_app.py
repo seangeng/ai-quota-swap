@@ -83,6 +83,7 @@ from ai_quota_swap.menubar_engines import (
 from ai_quota_swap.menubar_notify import (
     Notification,
     Notifier,
+    backup_notices,
     login_notices,
     manual_switch_text,
     ref_labeler,
@@ -521,6 +522,13 @@ def run_app(switcher, rumps, AppKit) -> int:
                     notify_days=self._login_settings.notify_days,
                     said=self._ui_state.login_notices, both=self._both(),
                 )
+                # A backup token that starts standing in: one notice
+                # (docs/design/backup-token.md).
+                more, said = backup_notices(
+                    self._data.claude.accounts, now=time.time(), said=said,
+                    both=self._both(),
+                )
+                notes = [*notes, *more]
             except Exception:
                 logger.debug("menu bar: login notices could not be worked out", exc_info=True)
                 return
