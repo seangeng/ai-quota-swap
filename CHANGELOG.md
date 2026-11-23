@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.2
+
+Renewing a saved login takes one command or one click. Auto-switch knows when the machine is offline and when a login is about to end. Seven open issues are closed.
+
+### Logins
+
+- New: `qswap login N` signs a saved Claude Code account in again in the browser and saves the new login to its slot. The active login and running sessions are left alone. When N is the active account, its new login becomes the live one too, as after a switch. `qswap login` with no account renews every login that needs re-login or ends within 7 days, and `--all` renews every one.
+- The browser must be signed in to claude.ai as that account, or signed out. A sign-in that lands on another account saves nothing and says who signed in.
+- Messages about an account that needs re-login now name `qswap login N`. `/login` in Claude Code followed by `qswap add` still works.
+- `qswap import` says to use a moved login on one machine only, and names `qswap login N` for signing in on another. Each renewal replaces a login, so two machines that share one copy soon leave one of them needing re-login. The troubleshooting page no longer suggests importing a working login from another machine.
+- `qswap login` has been tested against a stand-in for `claude auth login`, not yet against a real sign-in.
+
+### Auto-switch
+
+- Auto-switch knows when the machine is offline. It holds without failing over, says `offline since 02:14, waiting for the network`, and writes one log line when that starts and one when it ends. It used to write a line for every failed read and a "dead refresh token?" warning every minute, and count the failures toward a failover.
+- A usage read that fails without reaching the server says what failed in the log: `network (dns)`, `network (connection refused)`, `network (unreachable)` or `network (tls)`.
+- The "dead refresh token?" warning is written once per hold, and only when the usage host answers.
+- The log says when an account stops being readable, why, and the command that fixes it, and again when it can be read.
+- A token refresh by qswap logs how long the server says the login lasts, next to its saved end date.
+- Auto-switch watches each saved login's end date. An account whose login ends within 2 hours, or whose date has passed, is picked last. The active account is left 15 minutes before its login ends when another account has room (`its login ends in 12m; qswap login 3 renews it`). `autoswitch.watchLoginExpiry` turns this off.
+- Two auto-switch engines started with different `--include-api-key-accounts` flags no longer take an API key in and out. The engine with keys off wins: it leaves the key once, and the other engine moves to no API key while the first one runs and says why once (#15).
+- With `resets.beforeSwitch` on and `resets.threshold` 100, a reset usable only once a limit is reached now holds the switch until the limit, where auto mode spends it. A refused claim moves on at once. At any other threshold nothing changes, and `qswap config` says so when the two settings are combined that way (#24).
+- Codex (experimental): the same offline handling, and its failure line names the account.
+
+### Menu bar
+
+- "Sign in again" lists the saved logins, the ones due first, and runs the same browser sign-in as `qswap login N`. Clicking the waiting row cancels it.
+- A notification 3 days before a login ends and again in its last day. `qswap config set login.notifyDays N` changes the first; `0` turns both off.
+- The chart's legend names every account the same way (`#2 work`, `#1 maya`) and cuts all names alike when the menu is narrow, never below three letters.
+
+### API keys
+
+- `qswap upgrade`: while an API key is active, the new build checks the key line in Claude Code's settings. A line that runs a qswap that is no longer there, or another install, is written again, and the upgrade says so in one line. If it cannot be written, it says why and gives the command that fixes it (#20).
+- `qswap run 5` on an API key gives Claude Code a session id and writes it down, so `qswap usage`, the menu bar and the key's budget count that conversation on the key and not on the login underneath (#21).
+- After auto-switch leaves an API key at its limit, `qswap list`, `qswap status` and the dashboard, Next best included, say on every other key's row that it is not used until a subscription has room, and why (#14).
+- A project directory the usage scan cannot list now counts as unreadable: auto-switch has no spend figure for a key's budget or credit until it can be read, the message names the directory, and `qswap usage --json` adds `missingDirs` (#18).
+
+The qswap package on PyPI is 0.1.2 too and asks for ai-quota-swap 0.1.2 or newer.
+
 ## 0.1.1
 
 A patch release: fixes for an install made under the name qswap, two wrong outputs, and packaging.
