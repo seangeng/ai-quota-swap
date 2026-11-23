@@ -1585,12 +1585,20 @@ def _say_unwatched_key(switcher, as_json: bool) -> None:
                   file=sys.stderr if as_json else sys.stdout)
 
 
+#: Said by ``qswap config`` when ``resets.beforeSwitch`` is on with
+#: ``resets.threshold`` under 100 (issue #24).
+LIMIT_ONLY_NOTE = "Resets usable once a limit is reached hold a switch only at resets.threshold 100"
+
+
 def _config_set_note(root, spec, value) -> str | None:
     """One line after ``qswap config set`` when the value it saved does
     nothing as the other settings stand, with the command that changes that;
     or when it leaves ``resets.beforeSwitch``, already on, doing nothing.
     ``resets.enabled`` is named before ``resets.auto``: it is the outer
-    switch."""
+    switch. With ``resets.beforeSwitch`` on and ``resets.threshold`` under
+    100, a reset usable only once a limit is reached holds no switch, and
+    turning the one on or moving the other there says so
+    (``LIMIT_ONLY_NOTE``)."""
     from ai_quota_swap.settings import RESET_BEFORE_SWITCH_MODES, load_reset_settings
 
     if spec.dotted == "resets.beforeSwitch" and value is True:
@@ -1599,7 +1607,9 @@ def _config_set_note(root, spec, value) -> str | None:
             return "No effect while resets.enabled is false: qswap config set resets.enabled true"
         if rs.auto not in RESET_BEFORE_SWITCH_MODES:
             return f"No effect while resets.auto is {rs.auto}: qswap config set resets.auto active"
-        return None
+        return LIMIT_ONLY_NOTE if rs.threshold < 100 else None
+    if spec.dotted == "resets.threshold":
+        return LIMIT_ONLY_NOTE if value < 100 and load_reset_settings(root).before_switch else None
     if spec.dotted == "resets.enabled" and value is False:
         idle = "resets.enabled is false"
     elif spec.dotted == "resets.auto" and value not in RESET_BEFORE_SWITCH_MODES:

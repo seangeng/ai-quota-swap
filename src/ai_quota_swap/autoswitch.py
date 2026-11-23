@@ -2067,7 +2067,8 @@ class AutoSwitchEngine:
         its line, so every other guard (the time left, the kind, the daily
         cap, a claim settling) still applies; a reset whose last claim failed
         or was refused never holds. Neither does a reading the account no
-        longer gives (``_reading_holds``). Never raises."""
+        longer gives (``_reading_holds``). A reset usable only once a limit
+        is reached holds only with ``resets.threshold`` 100. Never raises."""
         from ai_quota_swap import resets
         from ai_quota_swap.settings import RESET_BEFORE_SWITCH_MODES
 
@@ -2109,6 +2110,12 @@ class AutoSwitchEngine:
                     claims.get(n), getattr(entries.get(n), "fetched_at", None), now
                 )
             ]
+            if rs.threshold >= 100:
+                # A reset usable only once a limit is reached (#24): auto
+                # mode spends it at the limit, where resets.threshold 100
+                # spends anyway, so it holds as one usable now does. At any
+                # other line it stays banked, as with the setting off.
+                usage = {**usage, current: resets.as_at_limit(usage.get(current), now)}
             views = resets.views_from(
                 usage, claimable=rotation, thresholds=thresholds,
                 weekly_threshold=self.settings.weekly_threshold,

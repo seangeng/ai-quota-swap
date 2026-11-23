@@ -111,8 +111,16 @@ It changes when auto-switch moves, not the rules for spending: the reset is spen
 
 - A reset auto mode would keep: its window refills within `resets.minHoursLeft`, it is a kind that does not clear the window over the line ([Kinds](#kinds)), today's limit on automatic resets is reached, a claim on the account is still settling, or another window would stay over its line ([Guards](#guards)).
 - A reset whose last claim failed or was refused.
-- A reset marked `usable once a limit is reached`. Nothing can spend it below the limit, and the server may still refuse it there, so it stays banked as with the setting off.
+- A reset marked `usable once a limit is reached`, unless `resets.threshold` is 100. Nothing can spend it below the limit, so it stays banked as with the setting off.
 - An active account qswap cannot read again: no reading from the last five minutes, or a read that failed since the last one (the server answered 429, say). Auto mode spends a reset only on a fresh reading ([Guards](#guards)), so the last one is no reason to stay.
+
+A reset marked `usable once a limit is reached` holds only with `resets.threshold` 100. Auto mode spends it at the limit, once the server reports it usable there, so auto-switch stays past the line up to the limit, and the check that reads the account there spends it. If the server still reports it not usable, or refuses the claim, auto-switch moves on in that same check, as at any limit: the account has then run to its limit for nothing. With `resets.beforeSwitch` on and `resets.threshold` under 100, `qswap config` says so when you set either one:
+
+```text
+$ qswap config set resets.threshold 98
+resets.threshold = 98
+Resets usable once a limit is reached hold a switch only at resets.threshold 100
+```
 
 The cost: the active account runs past its switch line, up to `resets.threshold`. With `resets.threshold` 100 the account is at its limit until a check reads it there and spends the reset. That check needs a reading from the last two minutes, as every automatic spend does. Setting `resets.threshold` at or below the switch line avoids that, and then the reset comes first without this setting.
 
