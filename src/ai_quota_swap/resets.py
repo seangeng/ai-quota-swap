@@ -331,6 +331,10 @@ def use_by(ts: float | None, *, year: bool = False) -> str | None:
     return f"{dt.strftime('%b')} {dt.day}" + (f", {dt.year}" if year else "")
 
 
+#: :func:`grant_unusable_reason` of a grant usable only once a limit is reached.
+NEEDS_LIMIT = "needs a limit hit first"
+
+
 def grant_unusable_reason(grant: dict, now: float) -> str | None:
     """Why a grant cannot be claimed right now, or None when it can."""
     if grant.get("resets_left", 0) <= 0:
@@ -349,8 +353,28 @@ def grant_unusable_reason(grant: dict, now: float) -> str | None:
         labels = [WINDOW_LABELS.get(k) or k for k in grant["blocking"]]
         return "blocked by " + ", ".join(labels)
     if not grant.get("usable_now"):
-        return "needs a limit hit first" if grant.get("use_requires_limit") else "not usable now"
+        return NEEDS_LIMIT if grant.get("use_requires_limit") else "not usable now"
     return None
+
+
+def as_at_limit(usage: object, now: float) -> object:
+    """``usage`` with every grant whose only obstacle is a limit not yet
+    reached (:data:`NEEDS_LIMIT`) marked usable now, as the server marks it
+    once the account is at its limit. A copy; anything else comes back as it
+    is. Only for asking what auto mode would spend at the limit
+    (``resets.beforeSwitch`` with ``resets.threshold`` 100), never for a
+    claim, which waits for the server's own reading."""
+    if not isinstance(usage, dict):
+        return usage
+    status = usage.get("resets")
+    if not isinstance(status, dict) or not isinstance(status.get("grants"), list):
+        return usage
+    grants = [
+        {**g, "usable_now": True}
+        if isinstance(g, dict) and grant_unusable_reason(g, now) == NEEDS_LIMIT else g
+        for g in status["grants"]
+    ]
+    return {**usage, "resets": {**status, "grants": grants}}
 
 
 def _scope_from_clears(clears: Iterable[str]) -> str:

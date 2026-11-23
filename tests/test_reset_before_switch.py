@@ -362,32 +362,160 @@ class TestAFailedClaimDoesNotHold:
 # -- a reset usable only once a limit is reached ------------------------------------------
 
 
+def _at_limit_week(**kw):
+    """#1's weekly reset as the server marks it below the limit."""
+    return _week(usable=False, use_requires_limit=True, **kw)
+
+
 class TestAResetUsableOnlyAtTheLimit:
     """A reset the server marks usable only once a limit is reached cannot be
-    spent below the limit, so it never holds the switch: auto-switch moves at
-    the line and the reset stays banked, as with the setting off
-    (docs/resets.md, "Before switching"). Holding for it would run the
-    account to its limit for a reset the server may still refuse there."""
+    spent below the limit (issue #24). With resets.threshold 100 auto mode
+    would spend it at the limit anyway, so it holds the switch as a reset
+    usable now does: the engine stays past the line until the window is at
+    its limit, and the automatic spend there takes it from there. With any
+    other resets.threshold nothing could spend it at the threshold, so it
+    stays banked and auto-switch moves at the line, as with the setting off
+    (docs/resets.md, "Before switching")."""
 
     @pytest.mark.parametrize("auto", ["active", "on-limit"])
-    @pytest.mark.parametrize("before_switch", [True, False])
-    def test_it_does_not_hold_the_switch(self, temp_home, auto, before_switch):
+    def test_with_resets_threshold_100_it_holds_until_the_limit(self, temp_home, auto):
         h = _fleet(temp_home, threshold=98.0)
-        _settings(h, auto=auto, before_switch=before_switch)
-        grant = _week(usable=False, use_requires_limit=True)
-        outcome, claims = _tick_resets(h, _usage(99.0, grants=[grant]))
+        _settings(h, auto=auto)
+        for d7 in (98.0, 99.0, 99.9):
+            outcome, claims = _tick_resets(h, _usage(d7, grants=[_at_limit_week()]))
+            assert outcome is TickOutcome.NO_ACTION and claims == []
+            h.clock.advance(60)
+        assert h.switcher.current_account_number() == "1" and not _switches(h)
+        held = _held(h)
+        assert len(held) == 3
+        assert held[0].human() == (
+            "No switch yet: auto mode spends #1 a@example.com's own weekly reset when 7d "
+            "reaches 100%, rather than switching away (resets.beforeSwitch)"
+        )
+        # At the limit the server marks it usable, and auto mode spends it.
+        outcome, claims = _tick_resets(h, _usage(100.0), after=_usage(0.0))
+        assert claims == ["1"] and h.switcher.current_account_number() == "1"
+        assert not _switches(h)
+
+    @pytest.mark.parametrize("result", [
+        ClaimResult("not_limited"), ClaimResult("ineligible"), ClaimResult("cooldown"),
+        ClaimResult("error", detail="network"),
+    ], ids=["not-limited", "ineligible", "cooldown", "fails"])
+    def test_a_refused_claim_at_the_limit_moves_on_at_once(self, temp_home, result):
+        """The cost of the hold is an account run to its limit, so a claim
+        the server refuses there moves the engine on in that same check, as
+        at any limit, with no cooldown and no second claim."""
+        h = _fleet(temp_home, threshold=98.0, cooldown_seconds=3600)
+        _settings(h)
+        outcome, _ = _tick_resets(h, _usage(99.5, grants=[_at_limit_week()]))
+        assert outcome is TickOutcome.NO_ACTION and len(_held(h)) == 1
+        h.clock.advance(60)
+        outcome, claims = _tick_resets(h, _usage(100.0), result=result)
+        assert claims == ["1"]
+        assert outcome is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "3"
+        (switch,) = _switches(h)
+        assert switch.trigger == "at-limit"
+        assert len(_held(h)) == 1
+
+    def test_a_reset_still_not_usable_at_the_limit_moves_on_at_once(self, temp_home):
+        """At the limit the server still says the reset needs a limit hit:
+        nothing is claimed, and the engine moves as at any limit."""
+        h = _fleet(temp_home, threshold=98.0, cooldown_seconds=3600)
+        _settings(h)
+        assert _tick_resets(h, _usage(99.5, grants=[_at_limit_week()]))[0] is (
+            TickOutcome.NO_ACTION
+        )
+        h.clock.advance(60)
+        outcome, claims = _tick_resets(h, _usage(100.0, grants=[_at_limit_week()]))
+        assert claims == [] and outcome is TickOutcome.SWITCHED
+        assert h.switcher.current_account_number() == "3"
+        assert _switches(h)[-1].trigger == "at-limit"
+
+    @pytest.mark.parametrize("threshold", ["95", "98", "99.5"])
+    @pytest.mark.parametrize("auto", ["active", "on-limit"])
+    def test_with_any_other_resets_threshold_it_does_not_hold(self, temp_home, auto, threshold):
+        h = _fleet(temp_home, threshold=90.0)
+        _settings(h, auto=auto, threshold=threshold)
+        outcome, claims = _tick_resets(h, _usage(99.0, grants=[_at_limit_week()]))
         assert outcome is TickOutcome.SWITCHED and claims == []
         assert h.switcher.current_account_number() == "3" and not _held(h)
+
+    @pytest.mark.parametrize("auto", ["active", "on-limit"])
+    def test_with_the_setting_off_it_does_not_hold(self, temp_home, auto):
+        h = _fleet(temp_home, threshold=98.0)
+        _settings(h, auto=auto, before_switch=False)
+        outcome, claims = _tick_resets(h, _usage(99.0, grants=[_at_limit_week()]))
+        assert outcome is TickOutcome.SWITCHED and claims == []
+        assert h.switcher.current_account_number() == "3" and not _held(h)
+
+    @pytest.mark.parametrize("auto", ["last-resort", "off"])
+    def test_other_modes_ignore_it(self, temp_home, auto):
+        h = _fleet(temp_home, threshold=98.0)
+        _settings(h, auto=auto)
+        outcome, claims = _tick_resets(h, _usage(99.0, grants=[_at_limit_week()]))
+        assert outcome is TickOutcome.SWITCHED and claims == []
+        assert not _held(h)
+
+    def test_a_guard_that_keeps_it_at_the_limit_keeps_it_from_holding(self, temp_home):
+        """Its 7d window refills in 10 hours, under resets.minHoursLeft: auto
+        mode would keep it at the limit, so it holds nothing."""
+        h = _fleet(temp_home, threshold=98.0)
+        _settings(h)
+        outcome, _ = _tick_resets(
+            h, _usage(99.0, reset_in=10 * 3600, grants=[_at_limit_week()]))
+        assert outcome is TickOutcome.SWITCHED and not _held(h)
+
+    def test_after_a_refused_claim_on_it_the_line_stands(self, temp_home):
+        h = _fleet(temp_home, threshold=98.0)
+        _settings(h)
+        _record(h, resetClaims={"1": {
+            "at": h.clock.now - 2 * 3600, "grantId": "g-week", "requestId": "r-1",
+            "result": "not_limited", "settled": True, "auto": True,
+        }})
+        outcome, claims = _tick_resets(h, _usage(99.0, grants=[_at_limit_week()]))
+        assert outcome is TickOutcome.SWITCHED and claims == []
+        assert not _held(h)
+
+    @pytest.mark.parametrize("obstacle", [
+        {"paused": True}, {"unavailable_reason": "plan_change"},
+        {"blocking": ["five_hour"]}, {"use_requires_limit": False},
+    ], ids=["paused", "unavailable", "blocked", "not-usable-for-another-reason"])
+    def test_only_the_limit_is_lifted(self, temp_home, obstacle):
+        """A reset that waits on anything else than the limit never holds."""
+        h = _fleet(temp_home, threshold=98.0)
+        _settings(h)
+        grant = {**_at_limit_week(), **obstacle}
+        outcome, claims = _tick_resets(h, _usage(99.0, grants=[grant]))
+        assert outcome is TickOutcome.SWITCHED and claims == []
+        assert not _held(h)
 
     def test_the_documents_say_so(self):
         from ai_quota_swap.display import grant_state
         from ai_quota_swap.resets import grant_unusable_reason
 
-        state = grant_state(grant_unusable_reason(
-            _week(usable=False, use_requires_limit=True), 1_000_000.0))
+        state = grant_state(grant_unusable_reason(_at_limit_week(), 1_000_000.0))
         section = _page("docs/resets.md").split("### Before switching")[1].split("\n## ")[0]
         assert f"`{state}`" in section, state
-        assert "usable only once a limit is reached never holds" in _page("docs/settings.md")
+        assert "holds only with `resets.threshold` 100" in section
+        assert "usable only once a limit is reached holds the switch only with" in (
+            _page("docs/settings.md"))
+
+
+def test_as_at_limit_marks_only_grants_that_wait_for_a_limit():
+    from ai_quota_swap.resets import as_at_limit, grant_unusable_reason
+
+    now = 1_000_000.0
+    waiting, paused, usable = (
+        _at_limit_week(), _at_limit_week(paused=True), _five_hour())
+    usage = _rusage(d7=99, grants=[waiting, paused, usable])
+    lifted = as_at_limit(usage, now)
+    grants = lifted["resets"]["grants"]
+    assert [grant_unusable_reason(g, now) for g in grants] == [None, "paused", None]
+    assert grants[2] is usable
+    # A copy: the reading the engine claims on is left as the server sent it.
+    assert usage["resets"]["grants"][0]["usable_now"] is False
+    assert as_at_limit(None, now) is None and as_at_limit("api key", now) == "api key"
 
 
 # -- the hold needs a reading the reset could be spent on -------------------------------
@@ -547,8 +675,30 @@ class TestConfig:
     @pytest.mark.parametrize("auto", ["active", "on-limit"])
     def test_no_note_where_it_applies(self, temp_home, capsys, auto):
         self._run(["set", "resets.auto", auto], capsys)
+        self._run(["set", "resets.threshold", "100"], capsys)
         code, out, err = self._run(["set", "resets.beforeSwitch", "true"], capsys)
         assert (code, out, err) == (0, "resets.beforeSwitch = true\n", "")
+
+    @pytest.mark.parametrize("threshold", [None, "98", "99.5"])
+    @pytest.mark.parametrize("auto", ["active", "on-limit"])
+    def test_under_resets_threshold_100_it_names_resets_usable_only_at_a_limit(
+        self, temp_home, capsys, auto, threshold
+    ):
+        """Issue #24: such a reset holds the switch only at resets.threshold
+        100 (95 by default)."""
+        from ai_quota_swap.cli import LIMIT_ONLY_NOTE
+
+        self._run(["set", "resets.auto", auto], capsys)
+        if threshold is not None:
+            self._run(["set", "resets.threshold", threshold], capsys)
+        code, out, err = self._run(["set", "resets.beforeSwitch", "true"], capsys)
+        assert (code, out) == (0, "resets.beforeSwitch = true\n")
+        assert err == f"{LIMIT_ONLY_NOTE}\n"
+        assert err == (
+            "Resets usable once a limit is reached hold a switch only at "
+            "resets.threshold 100\n"
+        )
+        assert all(len(line) <= 80 for line in err.splitlines())
 
     def test_no_note_when_it_is_turned_off(self, temp_home, capsys):
         code, out, err = self._run(["set", "resets.beforeSwitch", "false"], capsys)
@@ -579,8 +729,20 @@ class TestConfigAfterItIsOn:
 
     def _on(self, capsys, auto: str = "active") -> None:
         assert self._run(["set", "resets.auto", auto], capsys)[0] == 0
+        assert self._run(["set", "resets.threshold", "100"], capsys)[0] == 0
         assert self._run(["set", "resets.beforeSwitch", "true"], capsys) == (
             0, "resets.beforeSwitch = true\n", "")
+
+    @pytest.mark.parametrize("argv", [
+        ["set", "resets.threshold", "98"], ["set", "resets.threshold", "99.9"],
+        ["unset", "resets.threshold"],
+    ])
+    def test_resets_threshold_away_from_100(self, temp_home, capsys, argv):
+        from ai_quota_swap.cli import LIMIT_ONLY_NOTE
+
+        self._on(capsys)
+        code, _out, err = self._run(argv, capsys)
+        assert (code, err) == (0, f"{LIMIT_ONLY_NOTE}\n")
 
     @pytest.mark.parametrize("auto", ["off", "last-resort"])
     def test_resets_auto_where_it_does_nothing(self, temp_home, capsys, auto):
@@ -614,6 +776,7 @@ class TestConfigAfterItIsOn:
     @pytest.mark.parametrize("argv", [
         ["set", "resets.auto", "off"], ["set", "resets.auto", "last-resort"],
         ["set", "resets.enabled", "false"], ["unset", "resets.auto"],
+        ["set", "resets.threshold", "98"],
     ])
     def test_no_note_while_it_is_off_or_unset(self, temp_home, capsys, before_switch, argv):
         self._run(["set", "resets.auto", "active"], capsys)
@@ -695,6 +858,17 @@ def test_the_documents_quote_the_note_after_it_is_on(tmp_path):
     note = _config_set_note(tmp_path, setting_spec("resets.auto"), "off")
     assert note and f"$ qswap config set resets.auto off\nresets.auto = off\n{note}\n" in (
         _page("docs/resets.md"))
+
+
+def test_the_documents_quote_the_note_for_resets_usable_only_at_a_limit(tmp_path):
+    from ai_quota_swap.cli import _config_set_note
+    from ai_quota_swap.settings import setting_spec
+
+    set_setting(tmp_path, "resets.beforeSwitch", "true")
+    note = _config_set_note(tmp_path, setting_spec("resets.threshold"), 98.0)
+    assert note and (
+        f"$ qswap config set resets.threshold 98\nresets.threshold = 98\n{note}\n"
+    ) in _page("docs/resets.md")
 
 
 def test_the_menu_bar_page_names_the_toggle():

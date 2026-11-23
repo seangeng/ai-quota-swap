@@ -430,7 +430,16 @@ What the code does where this part leaves room, or where it had to differ:
   when `autoswitch.includeApiKeyAccounts` is turned off (as when its budget is removed; a
   running engine reads that setting again at each check, cached by the file's stamp, unless
   a command-line flag set it);
-  a key the user entered is not touched. With no login under the key at its limit, the engine stays and
+  a key the user entered is not touched. Two engines on one data directory whose values differ (a flag
+  on one of them; two that follow the file read one value) would take a key in and out, so the
+  side that spends no money wins, once (issue #15): a keys-off leave is recorded (`keysOffLeft`:
+  account, when, and the engine by its heartbeat's `pid`, `startedAt` and `host`), and an engine
+  with keys off marks it seen every 5 minutes while it runs, taking it over from the engine
+  before it (a cron `--once`). Another engine that would enter a key enters none while the
+  record's engine was seen within the larger of 15 minutes and two of its check intervals (a
+  loop's process must also be alive) and the leave is under 24 hours old, and says so once in a
+  `config-warning` naming both ways out. The engine named in the record drops it once keys are
+  on for it again, so a single engine is never held by its own leave, and the leave never waits. With no login under the key at its limit, the engine stays and
   notifies once. When it stops while sessions are on a key it entered, it says that nothing
   watches the key's limit and how to go back, and moves nothing; `enteredBy` stays
   `engine`, so the next engine carries on. An engine watches a key when its loop ticks and
