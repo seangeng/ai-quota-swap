@@ -874,6 +874,7 @@ def block_from_entry(
     from ai_quota_swap.json_output import (
         USAGE_API_KEY,
         USAGE_RELOGIN_REQUIRED,
+        USAGE_STANDING_BY,
     )
 
     if reset_strings is None:
@@ -899,6 +900,10 @@ def block_from_entry(
             backup_due=backup.due(now),
         )
     sentinel = getattr(entry, "sentinel", None)
+    if backup is not None and sentinel not in (None, USAGE_STANDING_BY, USAGE_RELOGIN_REQUIRED):
+        # A token that cannot be used (no saved token, a locked Keychain):
+        # its own state, never "standing by" or "standing in".
+        base["backup_state"] = ""
     last_good = getattr(entry, "last_good", None)
     fetched_at = getattr(entry, "fetched_at", None)
     age_s = getattr(entry, "age_s", None)
@@ -923,7 +928,7 @@ def block_from_entry(
             **base, state="needs-relogin", windows=tuple(windows_of(last_good)),
             set_aside=reason, covered_by=covered_by,
         )
-    if backup is not None and backup.state == "standing-by":
+    if backup is not None and backup.state == "standing-by" and sentinel in (None, USAGE_STANDING_BY):
         # Never read while its login works: no usage, and no "unavailable".
         return AccountBlock(**base, state="standing-by")
     if sentinel == USAGE_API_KEY or kind == "api_key":

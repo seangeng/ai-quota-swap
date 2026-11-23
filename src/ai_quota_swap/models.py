@@ -267,6 +267,8 @@ class AccountSnapshot:
     backup_state: str | None = None
     backup_ends_at: float | None = None
     backup_number: str | None = None
+    #: That backup token stands in for it now (not disabled, its token saved).
+    backup_covers: bool = False
 
     @property
     def display_tag(self) -> str:

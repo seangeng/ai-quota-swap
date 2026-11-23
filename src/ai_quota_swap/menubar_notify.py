@@ -350,8 +350,8 @@ def backup_notices(
 
     ``said`` is :func:`login_notices`'s record; a token's entry is
     ``backup:claude:N`` with the token's end as its ``deadline`` (so that
-    record keeps it), dropped once the token stands by again, so the next
-    time its login ends there is a notice again. Pure."""
+    record keeps it), dropped once its login works again (renewed), so the
+    next time that login ends there is a notice again. Pure."""
     record = dict(said)
     notes: list[Notification] = []
     rows = [a for a in accounts if getattr(a, "provider", "claude") == "claude"]
@@ -360,20 +360,24 @@ def backup_notices(
                                 provider="claude" if both else None, long=False)
         for a in rows
     }
+    logins = {a.number: a for a in rows}
     for acc in rows:
         backup = getattr(acc, "backup", None)
         if backup is None:
             continue
         key = f"backup:claude:{acc.number}"
-        if backup.state != "standing-in":
+        login = logins.get(backup.parent)
+        if login is not None and not login.needs_relogin:
+            # Its login works again (renewed): the next time it ends, a
+            # notice again. A state that flaps meanwhile says nothing twice.
             record.pop(key, None)
             continue
-        if key in record:
+        if backup.state != "standing-in" or key in record:
             continue
         ends = backup.ends_at if isinstance(backup.ends_at, (int, float)) else now + 365 * 86400.0
         record[key] = {"deadline": int(max(ends, now + _NOTICE_KEEP_S)), "said": ["standing-in"]}
-        login = labels.get(backup.parent, f"#{backup.parent}")
-        notes.append(Notification(backup_notice_text(labels[acc.number], login, backup.parent)))
+        name = labels.get(backup.parent, f"#{backup.parent}")
+        notes.append(Notification(backup_notice_text(labels[acc.number], name, backup.parent)))
     return notes, record
 
 

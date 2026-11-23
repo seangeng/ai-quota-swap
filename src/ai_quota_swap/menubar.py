@@ -993,7 +993,8 @@ def account_row(
         parts.append("disabled")
     if block.backup_for:
         parts.append(display.backup_fact(block.backup_for))
-        parts.append(display.BACKUP_STATE_WORDS.get(block.backup_state, block.backup_state))
+        if block.backup_state:
+            parts.append(display.BACKUP_STATE_WORDS.get(block.backup_state, block.backup_state))
     state = block.state
     if state == "needs-relogin":
         parts.append(display.NEEDS_RELOGIN)

@@ -159,11 +159,12 @@ def _validate_imported_account(switcher: ClaudeAccountSwitcher, account: dict) -
         isinstance(parent, bool) or not isinstance(parent, int) or parent < 1
     ):
         raise TransferError(f"backupFor for {email} must be an account number, got {parent!r}")
-    added = account.get("backupAdded")
-    if added is not None and not isinstance(added, str):
-        raise TransferError(
-            f"backupAdded for {email} must be a string, got {type(added).__name__}"
-        )
+    for field in ("backupAdded", "backupForEmail", "backupForOrganizationUuid"):
+        value = account.get(field)
+        if value is not None and not isinstance(value, str):
+            raise TransferError(
+                f"{field} for {email} must be a string, got {type(value).__name__}"
+            )
 
     return email, str(raw_number)
 
@@ -394,6 +395,8 @@ def export_accounts(
             # login in this export, and when it was added. Import maps it
             # onto wherever that login lands.
             entry["backupFor"] = int(parent)
+            entry["backupForEmail"] = record.get(backup_token.BACKUP_FOR_EMAIL, "")
+            entry["backupForOrganizationUuid"] = record.get(backup_token.BACKUP_FOR_ORG, "")
             if record.get(backup_token.BACKUP_ADDED):
                 entry["backupAdded"] = record[backup_token.BACKUP_ADDED]
         accounts_payload.append(entry)
@@ -600,6 +603,8 @@ def import_accounts(
                     if raw.get("backupFor") is not None and not is_api_key else None
                 ),
                 "backup_added": raw.get("backupAdded"),
+                "backup_for_email": raw.get("backupForEmail") or "",
+                "backup_for_org": raw.get("backupForOrganizationUuid") or "",
             }
         )
 
@@ -795,7 +800,7 @@ def import_accounts(
         ):
             # An export without the field (an older qswap's) keeps the link
             # the slot had here.
-            for key in (backup_token.BACKUP_FOR, backup_token.BACKUP_ADDED):
+            for key in backup_token.LINK_KEYS:
                 if prior.get(key) is not None:
                     new_record[key] = prior[key]
         data["accounts"][target_num] = new_record
@@ -941,9 +946,12 @@ def import_accounts(
 def _link_imported_backups(
     switcher: ClaudeAccountSwitcher, linked: list[dict], landed: dict[str, str],
 ) -> None:
-    """Point each imported backup token at the slot its login landed in
-    (renumbered when the import moved it), or, when that login was not
-    imported and is not here, leave the token unlinked and say so."""
+    """Point each imported backup token at its login here: the account with
+    the email and organization the link names, wherever it is (imported or
+    already managed), or, for an export without them, the slot that
+    account's number landed in. When no subscription login here is that
+    account, the token stays unlinked, as an ordinary setup-token account,
+    and import says so."""
     if not linked:
         return
     data = switcher._get_sequence_data() or {}
@@ -953,21 +961,23 @@ def _link_imported_backups(
         record = accounts.get(entry["target"])
         if not isinstance(record, dict):
             continue
-        parent = landed.get(entry["backup_for"])
-        target = accounts.get(parent) if parent is not None else None
-        if (
-            parent is not None and parent != entry["target"]
-            and isinstance(target, dict) and target.get("kind") != "api_key"
-            and backup_token.parent_of(target) is None
-        ):
-            record[backup_token.BACKUP_FOR] = parent
-            record[backup_token.BACKUP_ADDED] = entry["backup_added"] or record.get("added")
+        if entry["backup_for_email"]:
+            parent = switcher._find_account_slot(
+                data, entry["backup_for_email"], entry["backup_for_org"],
+            )
         else:
-            record.pop(backup_token.BACKUP_FOR, None)
-            record.pop(backup_token.BACKUP_ADDED, None)
+            parent = landed.get(entry["backup_for"])
+        target = accounts.get(parent) if parent is not None else None
+        for key in backup_token.LINK_KEYS:
+            record.pop(key, None)
+        if parent is not None and parent != entry["target"] and backup_token.is_login(target):
+            record.update(backup_token.link_fields(
+                parent, target, entry["backup_added"] or record.get("added") or "",
+            ))
+        else:
             _eprint(
                 f"Note: {switcher.label(entry['target'], long=False)} was the backup of "
-                f"account {entry['backup_for']} in the export, which was not imported; "
+                f"account {entry['backup_for']} in the export, which is not managed here; "
                 "it stays as an ordinary setup-token account."
             )
         changed = True

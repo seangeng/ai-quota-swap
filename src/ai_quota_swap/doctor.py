@@ -1844,12 +1844,21 @@ def _backup_token_checks(p: Probes, f: _Facts) -> list[Check]:
     for num, parent in sorted(backup_token.dangling(registry).items()):
         checks.append(Check(
             "claude.backup", "claude", WARN,
-            f"{label(num)} is kept as the backup of #{parent}, which is not a "
-            "subscription login qswap manages, so it works as an ordinary setup-token account",
+            f"{label(num)} is kept as the backup of #{parent}, which is not that "
+            "subscription login any more (removed, renumbered or replaced), so it works "
+            "as an ordinary setup-token account",
             fix=f"qswap remove {num}, or add the token again for a login: "
                 "qswap add-token --backup-for N",
         ))
-    for num, parent in sorted(backup_token.links(registry).items()):
+    links = backup_token.links(registry)
+    for num, kept in sorted(backup_token.duplicates(registry).items()):
+        checks.append(Check(
+            "claude.backup", "claude", WARN,
+            f"{label(num)} is a second backup for {label(links[kept])}; only "
+            f"{label(kept)} is used, so {label(num)} works as an ordinary setup-token account",
+            fix=f"qswap remove {num}",
+        ))
+    for num, parent in sorted(links.items()):
         ends = backup_token.ends_at(accounts.get(num))
         words = backup_token.ends_words(ends)
         if backup_token.due(ends, now):

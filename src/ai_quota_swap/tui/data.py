@@ -461,7 +461,8 @@ def backup_facts_for(
         )
         facts = display.backup_facts(link, _short_label(view, str(parent)))
     cover = getattr(acc, "backup_number", None)
-    return facts, (_short_label(view, str(cover)) if cover else "")
+    covered = bool(cover) and bool(getattr(acc, "backup_covers", False))
+    return facts, (_short_label(view, str(cover)) if covered else "")
 
 
 def over_budget(acc: AccountSnapshot) -> bool:

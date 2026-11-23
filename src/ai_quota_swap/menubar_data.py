@@ -143,7 +143,10 @@ def account_states(
             and getattr(snapshot, "key_entered_by", None) == "engine",
             setup_token=bool(getattr(acc, "setup_token", False)),
             backup=_backup_facts(acc, compact),
-            covered_by=labels.get(str(getattr(acc, "backup_number", None) or ""), ""),
+            covered_by=(
+                labels.get(str(acc.backup_number), "")
+                if getattr(acc, "backup_covers", False) else ""
+            ),
         )
         for acc in snapshot.accounts
     )

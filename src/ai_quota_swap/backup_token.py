@@ -4,10 +4,12 @@ docs/design/backup-token.md. A Claude subscription login ends about a month
 after its sign-in; ``claude setup-token`` prints a token for the same
 subscription that lasts about a year. ``qswap add-token --backup-for N``
 stores such a token as an ordinary setup-token account whose record names
-its login: ``backupFor`` (the login's account number) and ``backupAdded``
-(when the token was added, ISO 8601). While the login works the token stands
-by: it is not a candidate and is never read. Once the login needs re-login
-for an auth reason, the token stands in for it.
+its login: ``backupFor`` (the login's account number), ``backupForEmail``
+and ``backupForOrganization`` (who that login is, so a link that ends up
+naming another account is dropped), and ``backupAdded`` (when the token was
+added, ISO 8601). While the login works the token stands by: it is not a
+candidate and is never read. Once the login needs re-login for an auth
+reason, the token stands in for it.
 
 Pure: plain data in, plain data out, no I/O. The switcher reads the registry
 and the usage store and asks these functions; the engine asks the switcher.
@@ -15,13 +17,17 @@ and the usage store and asks these functions; the engine asks the switcher.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 #: Record keys on the backup token's account.
 BACKUP_FOR = "backupFor"
+BACKUP_FOR_EMAIL = "backupForEmail"
+BACKUP_FOR_ORG = "backupForOrganization"
 BACKUP_ADDED = "backupAdded"
+LINK_KEYS = (BACKUP_FOR, BACKUP_FOR_EMAIL, BACKUP_FOR_ORG, BACKUP_ADDED)
 
 #: How long a setup-token works, as ``claude setup-token`` says ("about a
 #: year"). Nothing in the token says so; the date shown is an estimate.
@@ -30,14 +36,20 @@ TOKEN_LIFETIME_S = 365 * 86400.0
 #: new token.
 RENEW_WITHIN_S = 30 * 86400.0
 
-#: The identity check (``compare``): two reset times of one window agree
-#: within this. The usage endpoint stamps a reset with sub-second jitter and
-#: the rate-limit headers carry whole epoch seconds; two accounts' windows
-#: start when their own first request lands.
-RESET_TOLERANCE_S = 120.0
+#: The identity check (``compare``). Two reset times of one window agree
+#: within ``RESET_TOLERANCE_S``: the usage endpoint stamps a reset with
+#: sub-second jitter and the rate-limit headers carry whole epoch seconds.
+#: Windows seem to start on the hour, so two accounts first used in the same
+#: hour share their resets: the figures must agree too, within
+#: ``PCT_TOLERANCE`` points, and a window at or under ``NEAR_ZERO_PCT`` on
+#: both sides says nothing (an unused account and a barely used one look
+#: alike).
+RESET_TOLERANCE_S = 10.0
+PCT_TOLERANCE = 5.0
+NEAR_ZERO_PCT = 1.0
 
-#: The token's states. ``standing-by``: its login works and it is not the
-#: active account, so it is never read and never a candidate.
+#: The token's states. ``standing-by``: its login works (or is disabled) and
+#: it is not the active account, so it is never read and never a candidate.
 #: ``standing-in``: its login needs re-login; it takes the login's place.
 #: ``in-use``: it is the active account while its login works (switched to
 #: by hand, or auto-switch has not moved back yet).
@@ -52,24 +64,79 @@ def _accounts(data: Mapping | None) -> Mapping:
     return accounts if isinstance(accounts, Mapping) else {}
 
 
-def links(data: Mapping | None) -> dict[str, str]:
-    """Backup token's account number -> its login's, from a loaded
-    ``sequence.json``. A link whose login is not managed (or is itself a
-    token, a key or the token's own number) is left out: the token is then
-    an ordinary setup-token account (``qswap doctor`` warns about it)."""
+def _order(num: str) -> tuple[int, object]:
+    return (0, int(num)) if num.isdigit() else (1, num)
+
+
+def is_login(record: object) -> bool:
+    """Whether a record is a subscription login a backup can name: not an
+    API key, not a token's account (``add-token`` stores those without an
+    organization; every subscription login has one), and no backup itself."""
+    return (
+        isinstance(record, Mapping)
+        and record.get("kind") != "api_key"
+        and bool(record.get("organizationUuid"))
+        and parent_of(record) is None
+    )
+
+
+def names_login(record: Mapping, login: object) -> bool:
+    """Whether a token's record names this login record: the email and
+    organization stored with the link are the login's."""
+    if not isinstance(login, Mapping):
+        return False
+    return (
+        record.get(BACKUP_FOR_EMAIL) == login.get("email")
+        and (record.get(BACKUP_FOR_ORG) or "") == (login.get("organizationUuid") or "")
+    )
+
+
+def _candidates(data: Mapping | None) -> dict[str, str]:
+    """Every record whose link names a managed subscription login that is
+    the account it was made for: token -> login."""
     accounts = _accounts(data)
     out: dict[str, str] = {}
     for num, record in accounts.items():
         parent = parent_of(record)
         if parent is None or parent == str(num):
             continue
-        target = accounts.get(parent)
-        if not isinstance(target, Mapping) or target.get("kind") == "api_key":
-            continue
-        if parent_of(target) is not None:
-            continue  # a token's backup is no link
-        out[str(num)] = parent
+        login = accounts.get(parent)
+        if is_login(login) and names_login(record, login):
+            out[str(num)] = parent
     return out
+
+
+def _added_key(record: object) -> float:
+    added = added_at(record)
+    return added if added is not None else float("-inf")
+
+
+def links(data: Mapping | None) -> dict[str, str]:
+    """Backup token's account number -> its login's, from a loaded
+    ``sequence.json``. Left out: a link whose login is not managed, is not
+    a subscription login, or is not the account the link was made for (its
+    email and organization); and a second backup of one login, of which the
+    one added last is kept. Each such token is an ordinary setup-token
+    account (``qswap doctor`` warns about it)."""
+    accounts = _accounts(data)
+    best: dict[str, str] = {}
+    for token, parent in sorted(_candidates(data).items(), key=lambda kv: _order(kv[0])):
+        kept = best.get(parent)
+        if kept is None or _added_key(accounts.get(token)) > _added_key(accounts.get(kept)):
+            best[parent] = token
+    return {token: parent for parent, token in best.items()}
+
+
+def duplicates(data: Mapping | None) -> dict[str, str]:
+    """Tokens that name a login another backup already covers: token ->
+    the backup in use for that login."""
+    kept = links(data)
+    by_parent = backups_by_parent(kept)
+    return {
+        token: by_parent[parent]
+        for token, parent in _candidates(data).items()
+        if token not in kept
+    }
 
 
 def parent_of(record: object) -> str | None:
@@ -87,9 +154,10 @@ def parent_of(record: object) -> str | None:
 
 
 def dangling(data: Mapping | None) -> dict[str, str]:
-    """Records that name a login that is not a usable parent (not managed,
-    an API key, a token): number -> the number they name."""
-    good = links(data)
+    """Records whose link names no login it can use (not managed, not a
+    subscription login, or another account than the one it was made for):
+    number -> the number they name. Second backups are :func:`duplicates`."""
+    good = _candidates(data)
     out = {}
     for num, record in _accounts(data).items():
         parent = parent_of(record)
@@ -99,17 +167,8 @@ def dangling(data: Mapping | None) -> dict[str, str]:
 
 
 def backups_by_parent(link_map: Mapping[str, str]) -> dict[str, str]:
-    """Login number -> its backup token's, the inverse of :func:`links`.
-    One backup per login; a second record naming the same login (a hand
-    edit) loses to the lower number."""
-    out: dict[str, str] = {}
-    for backup in sorted(link_map, key=_order):
-        out.setdefault(link_map[backup], backup)
-    return out
-
-
-def _order(num: str) -> tuple[int, object]:
-    return (0, int(num)) if num.isdigit() else (1, num)
+    """Login number -> its backup token's, the inverse of :func:`links`."""
+    return {parent: token for token, parent in link_map.items()}
 
 
 def renumber(data: dict, moves: Mapping[str, str]) -> None:
@@ -130,8 +189,8 @@ def unlink(data: dict, parent: str) -> list[str]:
     out = []
     for num, record in _accounts(data).items():
         if parent_of(record) == str(parent):
-            record.pop(BACKUP_FOR, None)
-            record.pop(BACKUP_ADDED, None)
+            for key in LINK_KEYS:
+                record.pop(key, None)
             out.append(str(num))
     return sorted(out, key=_order)
 
@@ -179,6 +238,16 @@ def due(ends: float | None, now: float) -> bool:
     return ends is not None and ends - now <= RENEW_WITHIN_S
 
 
+def link_fields(parent: str, login: Mapping, added: str) -> dict:
+    """The keys a token's record carries to name ``login`` (in ``parent``)."""
+    return {
+        BACKUP_FOR: str(parent),
+        BACKUP_FOR_EMAIL: login.get("email", ""),
+        BACKUP_FOR_ORG: login.get("organizationUuid", "") or "",
+        BACKUP_ADDED: added,
+    }
+
+
 def state(*, parent_ended: bool, active: bool, standing_by_read: bool = False) -> str:
     """The token's state. ``standing_by_read``: the collector left it unread
     as standing by this pass, which the views follow so that one pass never
@@ -193,13 +262,16 @@ def state(*, parent_ended: bool, active: bool, standing_by_read: bool = False) -
 @dataclass(frozen=True)
 class Link:
     """One backup token as the views show it: its account number, its
-    login's, its state and its dates (epoch seconds)."""
+    login's, its state and its dates (epoch seconds). ``covers``: it can
+    take its login's place now (standing in, not disabled, its token saved),
+    which is what the login's row says."""
 
     number: str
     parent: str
     state: str
     added_at: float | None = None
     ends_at: float | None = None
+    covers: bool = False
 
     def to_json(self) -> dict:
         """The ``backupFor`` field of the token's ``--json`` row."""
@@ -224,12 +296,16 @@ def ends_words(ends: float | None) -> str:
 #: The windows compared, with their words.
 _WINDOWS = (("five_hour", "5-hour"), ("seven_day", "weekly"))
 
+#: An organization id as the API writes one elsewhere. A header in another
+#: form is not compared: its form is not known from a real response.
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
 
 @dataclass(frozen=True)
 class Match:
-    """What :func:`compare` found. ``verdict`` is ``same`` (at least one
-    window agrees and nothing disagrees), ``other`` (something disagrees) or
-    ``unknown`` (nothing could be compared); ``why`` says it in words;
+    """What :func:`compare` found. ``verdict`` is ``same`` (the weekly
+    window agrees and nothing disagrees), ``other`` (the token is another
+    account's) or ``unknown`` (it cannot be told); ``why`` says it in words;
     ``agreed`` names the windows that agreed."""
 
     verdict: str
@@ -237,13 +313,47 @@ class Match:
     agreed: tuple[str, ...] = ()
 
 
-def _reset(usage: object, key: str) -> float | None:
+def _window(usage: object, key: str) -> Mapping | None:
     if not isinstance(usage, Mapping):
         return None
     window = usage.get(key)
-    if not isinstance(window, Mapping):
+    return window if isinstance(window, Mapping) else None
+
+
+def _reset(usage: object, key: str) -> float | None:
+    window = _window(usage, key)
+    return parse_iso(window.get("resets_at")) if window is not None else None
+
+
+def _pct(usage: object, key: str) -> float | None:
+    window = _window(usage, key)
+    pct = window.get("pct") if window is not None else None
+    if isinstance(pct, bool) or not isinstance(pct, (int, float)):
         return None
-    return parse_iso(window.get("resets_at"))
+    return float(pct)
+
+
+def nothing_to_compare(parent: object, *, now: float) -> str:
+    """Why a login's reading cannot make a match, or ``""`` when it can.
+    A match needs its weekly window: running (its reset ahead) and used
+    (over :data:`NEAR_ZERO_PCT`). Checked before any request is sent."""
+    reset = _reset(parent, "seven_day")
+    pct = _pct(parent, "seven_day")
+    if reset is None or pct is None:
+        return "there is no weekly usage reading of the login to compare with"
+    if reset <= now:
+        return "the login's weekly window has ended since its last reading"
+    if pct <= NEAR_ZERO_PCT:
+        return "the login's weekly window shows no use yet"
+    return ""
+
+
+def organization_differs(parent_org: str, token_org: str | None) -> bool:
+    """Whether the response names, in the form of an organization id,
+    another organization than the login's."""
+    if not token_org or not parent_org or not _UUID.match(token_org.strip()):
+        return False
+    return token_org.strip().lower() != parent_org.strip().lower()
 
 
 def compare(
@@ -251,39 +361,53 @@ def compare(
     token: object,
     *,
     now: float,
+    fresh: bool,
     parent_org: str = "",
     token_org: str | None = None,
-    tolerance: float = RESET_TOLERANCE_S,
 ) -> Match:
     """Whether a token's reading (``token``, normalized as
-    ``oauth.build_usage_result`` returns it) is the same account as a
-    login's reading (``parent``, its last good one, of any age).
+    ``oauth.build_usage_result`` returns it) is the same account as its
+    login's reading (``parent``).
 
-    One account has one 5-hour and one weekly window, so the same reset
-    times. A window counts on the login's side only while its reset is
-    still ahead (a window that has ended says nothing about the next one,
-    and the token's request may have started a new one). An organization
-    header (``token_org``) that names another organization than the login's
-    refuses on its own; one that matches proves nothing alone (a team's
-    members share an organization).
+    One account has one 5-hour and one weekly window: the same reset times
+    and the same figures. A window counts while its reset on the login's
+    side is ahead (an ended window says nothing about the next, and the
+    token's request may have started one), and not when both sides are at
+    or under :data:`NEAR_ZERO_PCT`. ``same`` needs the weekly window to
+    agree. A disagreement is ``other`` only against a ``fresh`` reading of
+    the login, taken for this check; against an older one a reset spent
+    since, or a slow clock, could explain it, so it is ``unknown``. An
+    organization header (:func:`organization_differs`) that names another
+    organization makes a match ``unknown`` and a disagreement ``other``; one
+    that matches proves nothing alone (a team's members share one).
     """
-    if token_org and parent_org and token_org.strip().lower() != parent_org.strip().lower():
-        return Match("other", "it belongs to another organization")
     agreed: list[str] = []
+    disagreed = ""
     for key, words in _WINDOWS:
-        mine = _reset(parent, key)
-        theirs = _reset(token, key)
-        if mine is None or mine <= now or theirs is None:
+        mine, theirs = _reset(parent, key), _reset(token, key)
+        mine_pct, theirs_pct = _pct(parent, key), _pct(token, key)
+        if mine is None or mine <= now or theirs is None or mine_pct is None or theirs_pct is None:
             continue
-        if abs(mine - theirs) > tolerance:
-            return Match("other", f"its {words} window resets at another time")
-        agreed.append(words)
-    if agreed:
+        if mine_pct <= NEAR_ZERO_PCT and theirs_pct <= NEAR_ZERO_PCT:
+            continue  # unused on both sides: no evidence either way
+        if abs(mine - theirs) > RESET_TOLERANCE_S:
+            disagreed = disagreed or f"its {words} window resets at another time"
+        elif abs(mine_pct - theirs_pct) > PCT_TOLERANCE:
+            disagreed = disagreed or (
+                f"its {words} window is {theirs_pct:.0f}% used, the login's {mine_pct:.0f}%"
+            )
+        else:
+            agreed.append(words)
+    org = organization_differs(parent_org, token_org)
+    if disagreed:
+        if fresh or org:
+            return Match("other", disagreed + ("; it names another organization" if org else ""))
+        return Match("unknown", f"{disagreed}, but the login's reading is not from now")
+    if org:
+        return Match("unknown", "the response names another organization than the login's")
+    if "weekly" in agreed:
         return Match("same", agreed=tuple(agreed))
-    if not isinstance(parent, Mapping) or not any(
-        _reset(parent, key) is not None for key, _ in _WINDOWS
-    ):
-        return Match("unknown", "there is no usage reading of the login to compare with")
-    if not any((_reset(parent, key) or 0) > now for key, _ in _WINDOWS):
-        return Match("unknown", "no usage window of the login is running")
-    return Match("unknown", "the check request carried no reset times")
+    return Match(
+        "unknown",
+        nothing_to_compare(parent, now=now) or "the check request carried no weekly figures",
+    )
