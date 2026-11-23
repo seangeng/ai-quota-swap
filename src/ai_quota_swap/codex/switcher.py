@@ -186,6 +186,8 @@ class CodexSwitcher:
     # engine's event text quotes. Claude Code's are the engine's defaults.
     add_command = "qswap codex add"
     recover_hint = "Log in to it again: qswap codex login"
+    #: Where the usage read goes: the auto engine's reachability check.
+    usage_host = codex_usage.USAGE_HOST
 
     def __init__(
         self,
@@ -676,7 +678,8 @@ class CodexSwitcher:
         login = info.login
         assert login is not None
         outcome = codex_usage.fetch_usage(
-            login.access_token, login.account_id, read_credits=read_credits
+            login.access_token, login.account_id, read_credits=read_credits,
+            account=info.number,
         )
         if outcome.error == "http-401":
             # Live: the token expired while Codex was idle; Codex renews it.
@@ -687,7 +690,8 @@ class CodexSwitcher:
                 rejected_fp=codex_auth.token_fingerprint(login.access_token),
             )
         return FetchRecord(
-            usage=outcome.usage, error=outcome.error, retry_after_s=outcome.retry_after_s
+            usage=outcome.usage, error=outcome.error, retry_after_s=outcome.retry_after_s,
+            error_detail=outcome.detail,
         )
 
     def _plans_after_fetch(
@@ -783,6 +787,19 @@ class CodexSwitcher:
     def refresh_account_usage(self, account_num: str) -> UsageEntry | None:
         """:meth:`refresh_usage` for one account; its entry, None if no such account."""
         return self.refresh_usage({str(account_num)}).get(str(account_num))
+
+    def lift_network_backoff(self, account_nums: set[str], *, attempted_before: float) -> set[str]:
+        """Let accounts whose last usage read failed for want of a network be
+        read again now (``UsageStore.lift_network_backoff``); those lifted."""
+        data = self._read_registry() or {}
+        identities = {
+            num: (record.get("email", ""), record.get("organizationUuid", "") or "")
+            for num, record in (data.get("accounts") or {}).items()
+            if isinstance(record, dict)
+        }
+        return self._usage_store.lift_network_backoff(
+            {str(n) for n in account_nums}, identities, attempted_before=attempted_before,
+        )
 
     def _plan_record(self, info: _Info, entry: UsageEntry) -> dict | None:
         """The plan as a ``subscription.PlanStore`` record, for the shared renderers.

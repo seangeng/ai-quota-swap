@@ -549,3 +549,61 @@ class TestEngineResetCredits:
         h.answer("acct-a", reading(100, now=h.clock.now))
         h.tick()
         assert h.consumed == []
+
+
+class TestOffline:
+    """The same offline rules for Codex: one line for the episode, nothing
+    counted toward failover, and back to normal on the first read that works."""
+
+    def test_an_offline_hour_then_back(self, pair, caplog, monkeypatch):
+        import logging
+
+        caplog.set_level(logging.INFO, logger="ai-quota-swap")
+        hosts: list[str] = []
+
+        def unreachable(host, port=443):
+            hosts.append(host)
+            return "network (dns)"
+
+        monkeypatch.setattr(autoswitch, "host_unreachable", unreachable)
+        # No answers: every read fails the way FakeFetch fails, with "network".
+        for _ in range(60):
+            assert pair.tick() is TickOutcome.NO_ACTION
+            assert pair.engine._unhealthy_ticks == 0
+            pair.clock.advance(60)
+        assert pair.of(SwitchEvent) == []
+        assert set(pair.reasons()) == {"offline"}
+        lines = [r.getMessage() for r in caplog.records]
+        assert [m for m in lines if m.startswith("Offline")] == [
+            "Offline: Codex usage reads are failing (network); auto-switch waits for the "
+            "network and does not fail over meanwhile"
+        ]
+        assert set(hosts) <= {codex_usage.USAGE_HOST}
+        # Back: both accounts answer, and the next check reads them.
+        pair.answer("acct-a", reading(30, now=pair.clock.now))
+        pair.answer("acct-b", reading(10, now=pair.clock.now))
+        monkeypatch.setattr(autoswitch, "host_unreachable", lambda host, port=443: None)
+        pair.tick()
+        back = [m for m in (r.getMessage() for r in caplog.records) if m.startswith("Back online")]
+        assert len(back) == 1 and back[0].startswith(
+            "Back online: Codex usage reads work again after 1h 0m offline; "
+        )
+        assert "offline" not in pair.state()
+
+    def test_the_failure_line_names_the_account_and_what_failed(self, caplog):
+        import logging
+        import socket
+        import urllib.error
+        from unittest.mock import patch
+
+        caplog.set_level(logging.WARNING, logger="ai-quota-swap")
+        err = urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided"))
+        with patch.object(codex_usage.urllib.request, "urlopen", side_effect=err):
+            outcome = codex_usage.fetch_usage("tok-a", "acct-a", account="2")
+        assert (outcome.error, outcome.detail) == ("network", "network (dns)")
+        (record,) = caplog.records
+        assert record.getMessage() == "Codex usage fetch failed for account 2: network (dns)"
+        assert "acct-a" not in record.getMessage()
+        from ai_quota_swap import oauth
+
+        assert getattr(record, oauth.FAILURE_LINE) == ("codex", "2")

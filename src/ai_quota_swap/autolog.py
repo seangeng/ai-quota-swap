@@ -72,6 +72,15 @@ _UNQUARANTINE_WORDS = {
     "account-replaced": "account replaced",
 }
 
+# What failed while offline (``oauth.usage_error_detail``), in words.
+_OFFLINE_WORDS = {
+    "network (dns)": "DNS lookups fail",
+    "network (connection refused)": "connections are refused",
+    "network (unreachable)": "the network is unreachable",
+    "network (tls)": "secure connections fail",
+    "timeout": "requests time out",
+}
+
 
 # -- percentages -------------------------------------------------------------------
 
@@ -668,6 +677,18 @@ def _cooldown_left(event: object) -> str:
     return f", {duration_text(wait)} left" if isinstance(wait, (int, float)) and wait > 0 else ""
 
 
+def _offline_since(event: object) -> str:
+    """`` since 02:14`` for an offline event, or ``""``."""
+    when = clock_at(getattr(event, "since", None), getattr(event, "ts", None))
+    return f" since {when[0]}" if when else ""
+
+
+def _offline_words(event: object) -> str:
+    """What failed while offline, in words: ``DNS lookups fail``."""
+    cause = getattr(event, "cause", None) or ""
+    return _OFFLINE_WORDS.get(cause, f"usage reads fail ({cause})" if cause else "usage reads fail")
+
+
 def _failover_counts(event: object) -> tuple[int, int] | None:
     """``(done, needed)`` from an active-usage-unknown detail (``"1/3 …"``)."""
     counts = re.match(r"\s*(\d+)\s*/\s*(\d+)", getattr(event, "detail", "") or "")
@@ -733,6 +754,8 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
     if reason == "active-idle":
         name = display.provider_name(getattr(context, "provider", None))
         return f"{name} is idle, resumes on next use", "routine"
+    if reason == "offline":
+        return f"offline{_offline_since(event)}, waiting for the network", "wait"
     if reason == "active-usage-unknown":
         counts = _failover_counts(event)
         if counts:
@@ -946,6 +969,11 @@ def no_switch_sentence(event: object) -> str:
         )
     if reason == "active-idle":
         return f"No switch: the active account's {detail}" if detail else "No switch: the active login is idle"
+    if reason == "offline":
+        return (
+            f"No switch: offline{_offline_since(event)} ({_offline_words(event)}); "
+            "auto-switch waits for the network and does not fail over meanwhile"
+        )
     if reason == "active-usage-unknown":
         counts = _failover_counts(event)
         if counts:

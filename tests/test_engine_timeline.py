@@ -40,7 +40,11 @@ brake (``key-left``), so that it checks something on every timeline.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
+import socket
+import urllib.error
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,8 +53,11 @@ from unittest.mock import patch
 
 import pytest
 
-from ai_quota_swap import api_spend, claude_settings, resets
+from ai_quota_swap import api_spend, autoswitch, claude_settings, oauth, resets
 from ai_quota_swap.autoswitch import (
+    IDLE_HOLD_MAX_S,
+    OFFLINE_RETRY_S,
+    REACHABILITY_TTL_S,
     RETURN_ROOM_PCT,
     SPEND_SCAN_INTERVAL_S,
     SPEND_SCAN_MIN_GAP_S,
@@ -59,8 +66,15 @@ from ai_quota_swap.autoswitch import (
     ResetEvent,
     SwitchEvent,
     TickOutcome,
+    RepeatFailureFilter,
     kept_resets_now,
     preview_reset_plan,
+)
+from ai_quota_swap.json_output import (
+    USAGE_FOREIGN_CREDENTIAL,
+    USAGE_KEYCHAIN_UNAVAILABLE,
+    USAGE_RELOGIN_REQUIRED,
+    USAGE_TOKEN_EXPIRED,
 )
 from ai_quota_swap.ledger import usage as ledger_usage
 from ai_quota_swap.ledger.store import DB_FILENAME, LAST_SCAN_META, LedgerStore
@@ -1538,3 +1552,453 @@ def admin_api_stale_max() -> float:
     from ai_quota_swap import admin_api
 
     return admin_api.STALE_MAX_S
+
+
+# == Offline nights, dead tokens, accounts that stop being read ============================
+#
+# These drive the real collector, usage store, backoff and token refresh: only
+# the network is fake (``FakeNet``: the token endpoint, the usage endpoint and
+# the engine's reachability check), so what the log says and how often each
+# account is tried are the production code's.
+
+
+NIGHT = {"1": "night1@example.com", "2": "night2@example.com", "3": "night3@example.com"}
+
+
+class _Answer:
+    """What ``urlopen`` hands back: a body and no headers."""
+
+    def __init__(self, body: dict):
+        self._body = json.dumps(body).encode()
+        self.headers: dict = {}
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+class FakeNet:
+    """The network the engine's reads and its reachability check meet.
+
+    While ``up`` is false every request and every check fails the way a
+    machine without DNS does. While up, the token endpoint renews any refresh
+    token and the usage endpoint answers each account's ``pct`` (by the
+    access token's prefix); anything else (the plan read) answers 404.
+    ``requests`` records ``(now, account, what, ok)`` for every request."""
+
+    def __init__(self, h: EngineHarness, monkeypatch, pct: dict[str, float]):
+        self.h = h
+        self.up = True
+        self.pct = dict(pct)
+        self.requests: list[tuple[float, str, str, bool]] = []
+        self.probes: list[float] = []
+        self.renewed = 0
+        monkeypatch.setattr(oauth.urllib.request, "urlopen", self.urlopen)
+        monkeypatch.setattr(autoswitch, "host_unreachable", self.probe)
+
+    @staticmethod
+    def _account(token: str) -> str:
+        for num in ("1", "2", "3"):
+            if token.startswith(f"sk-{num}"):
+                return num
+        return "1" if token.startswith("sk-live") else "?"
+
+    def probe(self, host: str, port: int = 443) -> str | None:
+        assert host == oauth.USAGE_HOST
+        self.probes.append(self.h.clock.now)
+        return None if self.up else "network (dns)"
+
+    def urlopen(self, req, timeout=None):
+        url = req.full_url
+        if url == oauth.OAUTH_TOKEN_URL:
+            token = json.loads(req.data.decode())["refresh_token"]
+            num, what = ("1" if token.startswith("rt-live") else token[3:4]), "refresh"
+        elif url.startswith(f"https://{oauth.USAGE_HOST}/api/oauth/usage"):
+            token = req.get_header("Authorization").removeprefix("Bearer ")
+            num, what = self._account(token), "usage"
+        else:
+            num, what = "-", "other"
+        self.requests.append((self.h.clock.now, num, what, self.up))
+        if not self.up:
+            raise urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided"))
+        if what == "refresh":
+            self.renewed += 1
+            return _Answer({
+                "access_token": f"sk-{num}-r{self.renewed}",
+                "refresh_token": f"rt-{num}-r{self.renewed}",
+                "expires_in": 8 * 3600,
+            })
+        if what == "usage":
+            return _Answer({
+                "five_hour": {"utilization": self.pct[num], "resets_at": _iso_at(T0 + 4 * HOUR)},
+                "seven_day": {"utilization": 5.0, "resets_at": _iso_at(T0 + 5 * DAY)},
+            })
+        raise urllib.error.HTTPError(url, 404, "not here", hdrs=None, fp=None)
+
+    def failed(self, num: str | None = None) -> list[tuple[float, str, str, bool]]:
+        return [r for r in self.requests if not r[3] and (num is None or r[1] == num)]
+
+
+def _night_fleet(temp_home, monkeypatch, *, accounts=("1", "2", "3"), expired=True):
+    """Three subscriptions on the suite's fake home; #1 is the live login and,
+    with ``expired``, its token ran out while Claude Code owned it (the live
+    copy and the backup both, so the engine's own refresh must POST)."""
+    monkeypatch.setattr("ai_quota_swap.switcher._FETCH_STAGGER_S", 0)
+    h = EngineHarness(temp_home)
+    h.clock.now = T0
+    for num in accounts:
+        h.seed(int(num), NIGHT[num], expires_at=1000 if (num == "1" and expired) else None)
+    live = {"accessToken": "sk-live", "refreshToken": "rt-live"}
+    if expired:
+        live["expiresAt"] = 1000
+    (temp_home / ".claude" / ".credentials.json").write_text(json.dumps({"claudeAiOauth": live}))
+    (temp_home / ".claude.json").write_text(json.dumps({
+        "oauthAccount": {"emailAddress": NIGHT["1"], "accountUuid": "uuid-1"},
+    }))
+    monkeypatch.setattr(h.switcher, "_live_session_pids", lambda *a: [])
+    net = FakeNet(h, monkeypatch, {"1": 40.0, "2": 10.0, "3": 20.0})
+    return h, net
+
+
+def _lines(caplog, pattern: str) -> list[str]:
+    return [r.getMessage() for r in caplog.records if re.search(pattern, r.getMessage())]
+
+
+class TestOfflineNight:
+    """The owner's log: 12 hours without a network, 1,650 "dead refresh
+    token?" warnings, the per-account failure line once a minute, and the
+    failures counted toward failover. None of that should happen."""
+
+    def test_twelve_hours_offline_then_back(self, temp_home, monkeypatch, caplog):
+        caplog.set_level(logging.INFO, logger="ai-quota-swap")
+        h, net = _night_fleet(temp_home, monkeypatch)
+        net.up = False
+        for minute in range(12 * 60):
+            outcome = h.engine.tick()
+            assert outcome is TickOutcome.NO_ACTION, f"minute {minute}: {h.kinds()[-3:]}"
+            assert h.engine._unhealthy_ticks == 0, f"minute {minute}"
+            assert h.engine._next_delay(outcome) < 2 * MINUTE, "offline keeps the normal cadence"
+            h.clock.advance(MINUTE)
+        assert not [e for e in h.events if isinstance(e, SwitchEvent)]
+        holds = [e for e in h.events if isinstance(e, NoSwitchEvent)]
+        assert {e.reason for e in holds} == {"offline"}
+        # Says since when: the first check of the night.
+        assert holds[-1].since == _iso_at(T0)
+        assert re.fullmatch(
+            r"No switch: offline since [A-Z][a-z]{2} \d+ \d\d:\d\d \(DNS lookups fail\); "
+            r"auto-switch waits for the network and does not fail over meanwhile",
+            holds[-1].human(),
+        ), holds[-1].human()
+        assert holds[-1].detail == f"network (dns) since {_iso_at(T0)}"
+        # The log: one line for the episode, one failure line per account, no
+        # dead-token warning.
+        assert _lines(caplog, "dead refresh token") == []
+        assert _lines(caplog, r"^Offline") == [
+            "Offline: Claude Code usage reads are failing (network (dns)); auto-switch "
+            "waits for the network and does not fail over meanwhile"
+        ]
+        assert _lines(caplog, r"Usage fetch failed") == [
+            "Usage fetch failed for account 2: network (dns)",
+            "Usage fetch failed for account 3: network (dns)",
+        ]
+        assert _lines(caplog, "Back online") == []
+        # The per-row backoff paces the night: never twice a minute.
+        for num in ("1", "2", "3"):
+            times = [t for t, n, _what, _ok in net.failed() if n == num]
+            assert times, num
+            assert all(b - a >= OFFLINE_RETRY_S for a, b in zip(times, times[1:])), num
+            assert len(times) < 12 * 6 + 10, (num, len(times))  # about every 10 minutes
+        # The reachability check: about once a minute at most.
+        assert all(b - a >= REACHABILITY_TTL_S for a, b in zip(net.probes, net.probes[1:]))
+        # A failed read is one request here: a usage request, or the refresh
+        # of #1's expired token (the plan reads are not usage reads).
+        failed_overnight = len([r for r in net.failed() if r[2] in ("usage", "refresh")])
+
+        # The network comes back: the first check reads again at once.
+        net.up = True
+        back_at = h.clock.now
+        h.events.clear()
+        assert h.engine.tick() is TickOutcome.NO_ACTION
+        (back,) = _lines(caplog, "Back online")
+        assert back == (
+            "Back online: Claude Code usage reads work again after 12h 0m offline; "
+            f"{failed_overnight} reads failed meanwhile"
+        )
+        assert [r for r in net.requests if r[0] >= back_at and r[2] == "refresh"], "renewed"
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == ["below-threshold"]
+        assert "offline" not in h.state()
+
+        # And switching works again: #1 climbs past its line.
+        net.pct["1"] = 95.0
+        for _ in range(3):
+            h.clock.advance(MINUTE)
+            if h.engine.tick() is TickOutcome.SWITCHED:
+                break
+        switch = next(e for e in h.events if isinstance(e, SwitchEvent))
+        assert (switch.trigger, h.active_number()) == ("proactive", 2)
+
+    def test_a_fresh_engine_per_check_writes_each_line_once(self, temp_home, monkeypatch, caplog):
+        """`qswap auto --once` from cron builds a new engine every check: the
+        episode is shared through the state file."""
+        caplog.set_level(logging.INFO, logger="ai-quota-swap")
+        h, net = _night_fleet(temp_home, monkeypatch)
+        net.up = False
+        for _ in range(90):
+            h.engine = h._make_engine()
+            assert h.engine.tick() is TickOutcome.NO_ACTION
+            h.clock.advance(MINUTE)
+        assert len(_lines(caplog, r"^Offline")) == 1
+        assert h.state()["offline"]["detail"] == "network (dns)"
+        net.up = True
+        h.engine = h._make_engine()
+        h.engine.tick()
+        h.engine = h._make_engine()
+        h.clock.advance(MINUTE)
+        h.engine.tick()
+        assert len(_lines(caplog, "Back online")) == 1
+        assert "after 1h 30m offline" in _lines(caplog, "Back online")[0]
+
+    def test_a_connection_without_working_reads_does_not_end_the_episode(
+        self, temp_home, monkeypatch, caplog,
+    ):
+        """The host takes a TCP connection (a captive portal, say) but every
+        read still fails: the episode stays open, each account is retried
+        about once a minute, and the log does not flap."""
+        caplog.set_level(logging.INFO, logger="ai-quota-swap")
+        h, net = _night_fleet(temp_home, monkeypatch)
+        net.up = False
+        monkeypatch.setattr(autoswitch, "host_unreachable", lambda host, port=443: None)
+        for _ in range(60):
+            assert h.engine.tick() is TickOutcome.NO_ACTION
+            h.clock.advance(MINUTE)
+        assert len(_lines(caplog, r"^Offline")) == 1
+        assert _lines(caplog, "Back online") == []
+        for num in ("1", "2", "3"):
+            times = [t for t, n, _what, _ok in net.failed() if n == num]
+            assert all(b - a >= OFFLINE_RETRY_S for a, b in zip(times, times[1:])), num
+
+
+class TestExpiredAndOwnedOneAccount:
+    """One account, its token expired while Claude Code owns it, and nothing
+    the engine can read to tell an idle machine from a dead token."""
+
+    @pytest.fixture
+    def h(self, temp_home):
+        h = EngineHarness(temp_home)
+        h.seed(1, "solo@example.com")
+        h.make_live("solo@example.com", 1)
+        return h
+
+    def test_unreachable_host_holds_as_offline(self, h, monkeypatch, caplog):
+        caplog.set_level(logging.INFO, logger="ai-quota-swap")
+        probes: list[float] = []
+
+        def unreachable(host, port=443):
+            probes.append(h.clock.now)
+            return "network (dns)"
+
+        monkeypatch.setattr(autoswitch, "host_unreachable", unreachable)
+        for _ in range(int(2 * IDLE_HOLD_MAX_S / MINUTE)):
+            assert h.tick_with_usage({"1": USAGE_TOKEN_EXPIRED}) is TickOutcome.NO_ACTION
+            assert h.engine._unhealthy_ticks == 0
+            assert h.engine._idle_hold_since is None
+            h.clock.advance(MINUTE)
+        assert {e.reason for e in h.events if isinstance(e, NoSwitchEvent)} == {"offline"}
+        assert _lines(caplog, "dead refresh token") == []
+        assert len(_lines(caplog, r"^Offline")) == 1
+        assert len(probes) <= 2 * IDLE_HOLD_MAX_S / REACHABILITY_TTL_S + 1
+
+    def test_reachable_host_is_the_old_path_with_one_warning(self, h, caplog):
+        caplog.set_level(logging.INFO, logger="ai-quota-swap")
+        reasons = []
+        for _ in range(int(IDLE_HOLD_MAX_S / NO_RESET) + 12):
+            outcome = h.tick_with_usage({"1": USAGE_TOKEN_EXPIRED})
+            reasons.append([e.reason for e in h.events if isinstance(e, NoSwitchEvent)][-1])
+            h.clock.advance(NO_RESET)
+        # Held as idle for the cap, then counted toward failover, which with
+        # no other account has nowhere to go.
+        assert reasons[0] == "active-idle"
+        assert reasons[: int(IDLE_HOLD_MAX_S / NO_RESET) + 1] == ["active-idle"] * (
+            int(IDLE_HOLD_MAX_S / NO_RESET) + 1
+        )
+        tail = reasons[int(IDLE_HOLD_MAX_S / NO_RESET) + 1:]
+        assert tail[:2] == ["active-usage-unknown", "active-usage-unknown"]
+        assert set(tail[2:]) == {"no-candidates"}
+        assert outcome is TickOutcome.BLOCKED
+        assert _lines(caplog, "dead refresh token") == [
+            "Active token of account 1 expired and owned for over 30 minutes while the usage "
+            "host answers; resuming unhealthy counting (dead refresh token?)"
+        ]
+        assert _lines(caplog, r"^Offline") == []
+
+
+NO_RESET = autoswitch.NO_RESET_FALLBACK_S
+
+
+class TestDeadTokenWhileOnline:
+    def test_still_fails_over_and_the_reads_outrank_the_check(self, temp_home, monkeypatch):
+        """A refused login on the active account while the others read fine
+        fails over after three checks, as before, even if the reachability
+        check says the host is down: a read that worked is the better word."""
+        h = EngineHarness(temp_home)
+        for num, email in ((1, "a@example.com"), (2, "b@example.com"), (3, "c@example.com")):
+            h.seed(num, email)
+        h.make_live("a@example.com", 1)
+        monkeypatch.setattr(autoswitch, "host_unreachable", lambda host, port=443: "network (dns)")
+        dead = {"1": USAGE_RELOGIN_REQUIRED, "2": _usage_now(h, 10), "3": _usage_now(h, 50)}
+        assert h.tick_with_usage(dead) is TickOutcome.NO_ACTION
+        assert h.tick_with_usage(dead) is TickOutcome.NO_ACTION
+        assert h.tick_with_usage(dead) is TickOutcome.SWITCHED
+        switch = next(e for e in h.events if isinstance(e, SwitchEvent))
+        assert (switch.trigger, h.active_number()) == ("failover", 2)
+        assert not [e for e in h.events if isinstance(e, NoSwitchEvent) and e.reason == "offline"]
+
+
+def _usage_now(h: EngineHarness, pct: float) -> dict:
+    return {"five_hour": {"pct": pct}, "seven_day": {"pct": 0.0}}
+
+
+class TestAccountsThatStopBeingRead:
+    """One line when an account stops being readable for a reason that will
+    not clear by itself, with the step that fixes it; one when it is read
+    again. Account numbers only: no email reaches these lines."""
+
+    @pytest.fixture
+    def h(self, temp_home):
+        h = EngineHarness(temp_home)
+        for num, email in ((1, "a@example.com"), (2, "b@example.com"), (3, "c@example.com")):
+            h.seed(num, email)
+        h.make_live("a@example.com", 1)
+        return h
+
+    def _tick(self, h, two: UsageEntry) -> None:
+        now = h.clock.now
+        healthy = UsageEntry(last_good=_usage_now(h, 10), fetched_at=now, age_s=0.0)
+        h.tick_with_entries({"1": healthy, "2": two, "3": healthy})
+        h.clock.advance(MINUTE)
+
+    @pytest.mark.parametrize(
+        ("entry", "line"),
+        [
+            (
+                UsageEntry(sentinel=USAGE_RELOGIN_REQUIRED, last_error="invalid_grant"),
+                "Account 2 is no longer readable: its token refresh was refused "
+                "(invalid_grant). To fix it, run: qswap login 2",
+            ),
+            (
+                UsageEntry(sentinel=USAGE_RELOGIN_REQUIRED, last_error="no_refresh_token"),
+                "Account 2 is no longer readable: its saved login has no refresh token. "
+                "To fix it, run: qswap login 2",
+            ),
+            (
+                UsageEntry(
+                    last_error="http-401", error_detail=oauth.REFUSED_AFTER_REFRESH,
+                    consecutive_failures=1,
+                ),
+                "Account 2 is no longer readable: the usage endpoint refused a freshly "
+                "renewed token (HTTP 401). To fix it, run: qswap login 2",
+            ),
+            (
+                UsageEntry(sentinel=USAGE_KEYCHAIN_UNAVAILABLE),
+                "Account 2 is no longer readable: the Keychain could not be read (locked "
+                "or busy). Reads resume by themselves once the Keychain can be read",
+            ),
+            (
+                UsageEntry(sentinel=USAGE_FOREIGN_CREDENTIAL),
+                "Account 2 is no longer readable: the live login belongs to another "
+                "account. Switching to it repairs it: qswap switch 2",
+            ),
+            (
+                UsageEntry(
+                    last_error="refresh-failed", error_detail="http-400",
+                    login_expires_at=T0 - DAY,
+                ),
+                "Account 2 is no longer readable: its login reached its end date "
+                f"({_iso_at(T0 - DAY)}). To fix it, run: qswap login 2",
+            ),
+            (
+                UsageEntry(
+                    sentinel=USAGE_RELOGIN_REQUIRED, last_error="invalid_grant",
+                    login_expires_at=T0 - HOUR,
+                ),
+                "Account 2 is no longer readable: its token refresh was refused "
+                f"(invalid_grant); its login reached its end date ({_iso_at(T0 - HOUR)}). "
+                "To fix it, run: qswap login 2",
+            ),
+        ],
+    )
+    def test_one_line_each_way(self, h, caplog, entry, line):
+        caplog.set_level(logging.INFO, logger="ai-quota-swap")
+        h.clock.now = T0
+        self._tick(h, UsageEntry(last_good=_usage_now(h, 10), fetched_at=h.clock.now, age_s=0.0))
+        for _ in range(5):
+            self._tick(h, entry)
+        written = _lines(caplog, "readable")
+        assert written == [line]
+        assert not any("@example.com" in w for w in written)
+        assert h.state()["unreadable"]["2"][0]
+        # A fresh engine (a `--once` run) does not say it again.
+        h.engine = h._make_engine()
+        self._tick(h, entry)
+        assert _lines(caplog, "readable") == [line]
+        # Cleared but not read since: not yet.
+        self._tick(h, UsageEntry(last_good=_usage_now(h, 10), fetched_at=T0, age_s=60.0))
+        assert len(_lines(caplog, "readable")) == 1
+        # Read again.
+        self._tick(h, UsageEntry(last_good=_usage_now(h, 10), fetched_at=h.clock.now, age_s=0.0))
+        assert _lines(caplog, "readable")[1:] == ["Account 2 is readable again"]
+        assert "unreadable" not in h.state()
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            UsageEntry(last_error="network", error_detail="network (dns)", consecutive_failures=4),
+            UsageEntry(last_error="http-429", retry_after_s=None, consecutive_failures=1)
+            if False else UsageEntry(last_error="http-429", consecutive_failures=1),
+            UsageEntry(sentinel=USAGE_TOKEN_EXPIRED),
+            UsageEntry(last_error="http-503", consecutive_failures=2, login_expires_at=None),
+        ],
+    )
+    def test_states_that_clear_by_themselves_write_nothing(self, h, caplog, entry):
+        caplog.set_level(logging.INFO, logger="ai-quota-swap")
+        for _ in range(4):
+            self._tick(h, entry)
+        assert _lines(caplog, "readable") == []
+
+
+class TestRepeatFailureFilter:
+    @staticmethod
+    def _record(tag=None) -> logging.LogRecord:
+        record = logging.LogRecord("ai-quota-swap", logging.WARNING, __file__, 1, "x", None, None)
+        if tag is not None:
+            setattr(record, oauth.FAILURE_LINE, tag)
+        return record
+
+    def test_first_line_per_account_then_counted(self):
+        quiet = RepeatFailureFilter("claude", logged={"3"})
+        assert quiet.filter(self._record(("claude", "2"))) is True
+        assert quiet.filter(self._record(("claude", "2"))) is False
+        assert quiet.filter(self._record(("claude", "3"))) is False
+        assert quiet.filter(self._record(("codex", "2"))) is True  # another provider's
+        assert quiet.filter(self._record()) is True  # any other line
+        assert quiet.held == 2
+
+    def test_a_filter_nobody_touches_lets_everything_through(self, monkeypatch):
+        quiet = RepeatFailureFilter("claude", logged={"2"})
+        later = autoswitch.time.monotonic() + autoswitch.QUIET_STALE_S + 1
+        monkeypatch.setattr(autoswitch.time, "monotonic", lambda: later)
+        assert quiet.filter(self._record(("claude", "2"))) is True
+
+    def test_stop_lets_the_lines_through_again(self, temp_home, monkeypatch, caplog):
+        h, net = _night_fleet(temp_home, monkeypatch)
+        net.up = False
+        h.engine.tick()
+        logger = logging.getLogger("ai-quota-swap")
+        assert any(isinstance(f, RepeatFailureFilter) for f in logger.filters)
+        h.engine.stop()
+        assert not any(isinstance(f, RepeatFailureFilter) for f in logger.filters)

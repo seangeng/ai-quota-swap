@@ -50,7 +50,10 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger("ai-quota-swap")
 
-BASE_URL = "https://chatgpt.com/backend-api"
+#: The host the usage read goes to: what the auto engine's reachability
+#: check connects to when no read said whether the network works.
+USAGE_HOST = "chatgpt.com"
+BASE_URL = f"https://{USAGE_HOST}/backend-api"
 USAGE_URL = f"{BASE_URL}/wham/usage"
 CREDITS_URL = f"{BASE_URL}/wham/rate-limit-reset-credits"
 CONSUME_URL = f"{CREDITS_URL}/consume"
@@ -126,32 +129,41 @@ class UsageOutcome:
     usage: dict | None = None
     error: str | None = None
     retry_after_s: float | None = None
+    # The failure as the log says it (``oauth.usage_error_detail``:
+    # ``network (dns)``), kept beside ``error`` in the usage store.
+    detail: str | None = None
 
 
 def fetch_usage(
-    access_token: str, account_id: str, *, read_credits: bool = True
+    access_token: str, account_id: str, *, read_credits: bool = True,
+    account: str | None = None,
 ) -> UsageOutcome:
     """Read one account's usage (and, when it holds any, its reset credits).
 
     ``read_credits`` is the shared ``resets.enabled`` setting: off, no credit
     list is read and the reading carries no ``resets`` status, the way the
-    Claude read then sends the plain usage request.
+    Claude read then sends the plain usage request. ``account`` is the
+    account's number, named in a failure's log line (never its id).
     """
+    where = f" for account {account}" if account else ""
+    tag = oauth.failure_line_tag("codex", account)
     try:
         data = request_json(USAGE_URL, access_token, account_id)
         usage = normalize_usage(data)
     except InvalidUsageResponse as e:
-        _logger.warning("Codex usage fetch failed: bad-response")
+        _logger.warning("Codex usage fetch failed%s: bad-response", where, extra=tag)
         _logger.debug("Codex usage response rejected: %s", e)
-        return UsageOutcome(error="bad-response")
+        return UsageOutcome(error="bad-response", detail="bad-response")
     except Exception as e:  # HTTP, network, timeout, JSON: classified below
         kind, retry_after = oauth._classify_usage_error(e)
+        detail = oauth.usage_error_detail(e, kind)
         _logger.warning(
-            "Codex usage fetch failed: %s%s", kind,
+            "Codex usage fetch failed%s: %s%s", where, detail,
             "" if retry_after is None else f", retry-after {retry_after:.0f}s",
+            extra=tag,
         )
         _logger.debug("Codex usage fetch failure detail: %r", e)
-        return UsageOutcome(error=kind, retry_after_s=retry_after)
+        return UsageOutcome(error=kind, retry_after_s=retry_after, detail=detail)
 
     if usage is not None and not read_credits:
         usage.pop("resets", None)
