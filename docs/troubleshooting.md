@@ -58,7 +58,7 @@ claude          # then /login, and sign in as maya@northwind.example.com
 qswap add
 ```
 
-If another machine still has a working login for the account, export it there (`qswap export accounts.json`); a plain `qswap import accounts.json` here replaces the dead one and says `Replaced maya@northwind.example.com (slot 2 was quarantined: refresh token dead)`. Export files hold logins in plain JSON; delete the file afterwards.
+A common cause is the same saved login on two machines, for example one moved with `qswap export` and `qswap import`. Each renewal replaces a login, so the first machine to renew it leaves the other holding a copy the server refuses. Do not fix it by importing the login from the other machine again: the two copies go on replacing each other. Sign in to the account on each machine that uses it. On this machine, `qswap login 2` signs in again in the browser and leaves the account Claude Code is using alone ([Move logins to another machine](coming-from-claude-swap.md#move-logins-to-another-machine)).
 
 A direct switch is refused until then:
 

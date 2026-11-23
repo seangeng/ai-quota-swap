@@ -7,7 +7,7 @@ Start with the [quick start](quickstart.md). Each page below opens with what it 
 | Page | Read it to |
 |---|---|
 | [quickstart.md](quickstart.md) | install qswap, save two accounts, see their usage and switch |
-| [coming-from-claude-swap.md](coming-from-claude-swap.md) | move your accounts over from claude-swap |
+| [coming-from-claude-swap.md](coming-from-claude-swap.md) | move your accounts over from claude-swap, or to another machine |
 
 ## Watch your accounts
 
