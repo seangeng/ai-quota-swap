@@ -5,11 +5,11 @@
 
 [project]
 name = "qswap"
-version = "0.1.1"
+version = "0.1.2"
 description = "Installs ai-quota-swap, the Claude Code and Codex account switcher behind the qswap command"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["ai-quota-swap>=0.1.1"]
+dependencies = ["ai-quota-swap>=0.1.2"]
 authors = [{name = "seangeng"}]
 license = {text = "MIT"}
 classifiers = [
@@ -29,7 +29,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-menubar = ["ai-quota-swap[menubar]>=0.1.1"]
+menubar = ["ai-quota-swap[menubar]>=0.1.2"]
 
 [project.urls]
 Homepage = "https://github.com/seangeng/ai-quota-swap"
