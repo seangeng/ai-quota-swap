@@ -418,6 +418,7 @@ def block_for(
             over = display.account_label(
                 below.number, alias=below.alias or None, email=below.email, long=False,
             )
+    backup, covered_by = backup_facts_for(view, acc)
     return display.block_from_entry(
         acc.number, acc.usage,
         email=acc.email, alias=acc.alias, provider=view.provider,
@@ -429,9 +430,38 @@ def block_for(
         kind="api_key" if acc.kind == "api_key" else "oauth",
         lines=display.Lines(five_hour=line, weekly=view.lines.weekly),
         set_aside=held_out, sentinel_notes=_sentinel_notes(view.provider),
-        login_row=login_row, now=now, stale_after_s=_USAGE_AGE_NOTE_S,
+        login_row=login_row, backup=backup, covered_by=covered_by,
+        now=now, stale_after_s=_USAGE_AGE_NOTE_S,
         api_lines=api_lines,
     )
+
+
+def _short_label(view: ProviderView, number: str) -> str:
+    other = view.account(number)
+    if other is None:
+        return f"#{number}"
+    return display.account_label(
+        other.number, alias=other.alias or None, email=other.email, long=False,
+    )
+
+
+def backup_facts_for(
+    view: ProviderView, acc: AccountSnapshot,
+) -> tuple[display.BackupFacts | None, str]:
+    """``(the backup token's facts, the label of the token covering it)``
+    for ``acc``, from the snapshot (docs/design/backup-token.md)."""
+    facts = None
+    parent = getattr(acc, "backup_for", None)
+    if parent:
+        from ai_quota_swap.backup_token import STANDING_BY, Link
+
+        link = Link(
+            acc.number, str(parent), acc.backup_state or STANDING_BY,
+            ends_at=acc.backup_ends_at,
+        )
+        facts = display.backup_facts(link, _short_label(view, str(parent)))
+    cover = getattr(acc, "backup_number", None)
+    return facts, (_short_label(view, str(cover)) if cover else "")
 
 
 def over_budget(acc: AccountSnapshot) -> bool:

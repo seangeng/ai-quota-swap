@@ -47,6 +47,10 @@ USAGE_FOREIGN_CREDENTIAL = "foreign credential"
 # renews it the first time it runs on it, so its usage is unknown until then.
 # Distinct from "token expired", which is the live login's state.
 USAGE_UNKNOWN_UNTIL_USED = "usage unknown until used"
+# A setup-token kept as a login's backup (``qswap add-token --backup-for``)
+# while that login works: it is not read and not a candidate, so it has no
+# usage, and no failure to report either (backup_token.py).
+USAGE_STANDING_BY = "standing by"
 
 
 def _window_to_json(entry: dict) -> dict:
@@ -296,6 +300,8 @@ def usage_fields(
         return "foreign_credential", None
     if entry == USAGE_UNKNOWN_UNTIL_USED:
         return "unknown_until_used", None
+    if entry == USAGE_STANDING_BY:
+        return "standing_by", None
     if isinstance(entry, str):
         return "no_credentials", None
     return "unavailable", None

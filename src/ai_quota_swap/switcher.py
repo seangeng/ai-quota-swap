@@ -11,6 +11,7 @@ import shutil
 import threading
 import sys
 import time
+import urllib.error
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -28,7 +29,7 @@ from ai_quota_swap.exceptions import (
     SwitchError,
     ValidationError,
 )
-from ai_quota_swap import claude_settings, clis, display, oauth, pace, prompts, subscription
+from ai_quota_swap import backup_token, claude_settings, clis, display, oauth, pace, prompts, subscription
 from ai_quota_swap.claude_locks import claude_config_lock, claude_credentials_lock
 from ai_quota_swap.json_output import (
     SCHEMA_VERSION,
@@ -37,6 +38,7 @@ from ai_quota_swap.json_output import (
     USAGE_KEYCHAIN_UNAVAILABLE,
     USAGE_NO_CREDENTIALS,
     USAGE_RELOGIN_REQUIRED,
+    USAGE_STANDING_BY,
     USAGE_TOKEN_EXPIRED,
     account_ref,
     account_row,
@@ -314,6 +316,7 @@ SENTINEL_NOTES = {
     USAGE_API_KEY: "API key — no usage recorded on this machine",
     USAGE_KEYCHAIN_UNAVAILABLE: "Keychain unavailable — it is locked or busy; unlock it and try again",
     USAGE_RELOGIN_REQUIRED: "needs re-login — sign in to it again: qswap login",
+    USAGE_STANDING_BY: "standing by — its login works, so it is not read",
     USAGE_NO_CREDENTIALS: "no saved login — sign in to it again: qswap login",
 }
 
@@ -1438,6 +1441,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 self._delete_config_backup(num_a, email_b)
 
             data["accounts"][num_a], data["accounts"][num_b] = record_b, record_a
+            backup_token.renumber(data, {num_a: num_b, num_b: num_a})
             int_a, int_b = int(num_a), int(num_b)
             # Renumber, then sort: sequence is kept sorted everywhere (add
             # sorts on insert), so rotation and list order follow the new
@@ -1886,6 +1890,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
 
             data["accounts"][target] = record
             del data["accounts"][num_src]
+            backup_token.renumber(data, {num_src: target})
             int_src, int_target = int(num_src), int(target)
             # Renumber, then sort: sequence is kept sorted everywhere (add
             # sorts on insert), so rotation and list order follow the new
@@ -2229,9 +2234,15 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         """
         store = self._subscription_store()
         records = store.load()
-        accounts = (self._get_sequence_data() or {}).get("accounts", {})
+        data = self._get_sequence_data() or {}
+        accounts = data.get("accounts", {})
+        # A backup token has its login's plan and asks for none of its own:
+        # standing by, it sends nothing at all.
+        tokens = backup_token.links(data)
         updates: dict[str, dict] = {}
         for num, email, _org_name, org_uuid, is_active, creds, _alias in accounts_info:
+            if str(num) in tokens:
+                continue
             key = subscription.identity_key(email, org_uuid)
             if not subscription.is_due(records.get(key), store.clock()):
                 continue
@@ -2284,12 +2295,18 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         active_number: str | None = None
         accounts: list[AccountSnapshot] = []
         key, under = self.active_view()
+        backups = self.backup_view(
+            entries, data=seq_data,
+            active=key or next((str(i[0]) for i in accounts_info if i[4]), None),
+        )
+        covers = backup_token.backups_by_parent({b: link.parent for b, link in backups.items()})
         for num, email, org_name, org_uuid, is_active, creds, alias in accounts_info:
             n = str(num)
             if key is not None:
                 is_active = n == key
             if is_active:
                 active_number = n
+            link = backups.get(n)
             accounts.append(
                 AccountSnapshot(
                     number=n,
@@ -2307,6 +2324,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     subscription_plan=plans.get(n),
                     underneath=key is not None and n == under,
                     setup_token=oauth.is_setup_token(oauth.extract_oauth_data(creds or "")),
+                    backup_for=link.parent if link is not None else None,
+                    backup_state=link.state if link is not None else None,
+                    backup_ends_at=link.ends_at if link is not None else None,
+                    backup_number=covers.get(n),
                 )
             )
         return AccountsSnapshot(
@@ -2411,14 +2432,18 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         Excludes slots without usable stored backups and slots the user has
         disabled (``qswap disable``). Disabled slots stay managed and remain
         valid explicit ``qswap switch <num|email>`` targets — they are only
-        held out of automatic rotation and the usage-aware strategies.
+        held out of automatic rotation and the usage-aware strategies. A
+        backup token is in rotation only while its login needs re-login
+        (``qswap add-token --backup-for``); standing by, it is not.
         """
         data = self._get_sequence_data() or {}
+        standing_by = self._standing_by_backups(data)
         return [
             str(num)
             for num in data.get("sequence", [])
             if self._account_is_switchable(str(num))
             and not self._disabled_from_data(data, str(num))
+            and str(num) not in standing_by
         ]
 
     @staticmethod
@@ -2494,6 +2519,15 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             priority = normalize_account_priority(record.get("priority", 0))
         except ValueError:
             priority = 0
+        parent = backup_token.links(data).get(str(account_num))
+        if parent is not None and (threshold is None or record.get("priority") is None):
+            # A backup token stands in for its login: without lines of its
+            # own it keeps the login's (docs/design/backup-token.md).
+            inherited = ClaudeAccountSwitcher._policy_from_data(data, parent)
+            if threshold is None:
+                threshold = inherited.threshold
+            if record.get("priority") is None:
+                priority = inherited.priority
         return AccountPolicy(threshold=threshold, priority=priority)
 
     def account_policies(self) -> dict[str, AccountPolicy]:
@@ -4643,6 +4677,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if int(d_num) in data["sequence"]:
                 data["sequence"].remove(int(d_num))
             del data["accounts"][d_num]
+            # Another account takes the slot: a backup token of the one it
+            # held is no backup of the newcomer.
+            self._say_unlinked(backup_token.unlink(data, d_num))
             self._write_json(self.sequence_file, data)
             self._prune_mappings(d_email, d_org)
 
@@ -4653,6 +4690,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if int(migrate_from) in data["sequence"]:
                 data["sequence"].remove(int(migrate_from))
             del data["accounts"][migrate_from]
+            backup_token.renumber(data, {migrate_from: account_num})
             self._write_json(self.sequence_file, data)
 
         # Store backups
@@ -4803,6 +4841,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 f"browser, or switch it to {email}, and run it again: qswap login {account_num}"
             ) from e
         key = self.helper_account()
+        # A backup token standing in for this login goes back to standing by
+        # once the renewal is saved; the result says so.
+        stand_in = self._standing_in_backup(account_num)
         provenance = (
             self._prefetch_live_identity()
             if self.login_account_number() == account_num
@@ -4858,7 +4899,36 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             + (" (the live login too)" if live else "")
             + (f" (the live login left as it was: {live_left})" if live_left else "")
         )
+        if stand_in is not None:
+            notes.append(self._back_to_standing_by(stand_in, account_num))
         return {"live": live, "key": key, "live_left": live_left, "notes": notes}
+
+    def _standing_in_backup(self, login: str) -> str | None:
+        """The backup token standing in for ``login`` now (or active over
+        it), or None. Best effort: a renewal never fails over it."""
+        try:
+            data = self._get_sequence_data() or {}
+            backup = backup_token.backups_by_parent(backup_token.links(data)).get(str(login))
+            if backup is None:
+                return None
+            if backup == self.current_account_number():
+                return backup
+            ended = self._ended_logins({str(login)}, data=data)
+            return backup if str(login) in ended else None
+        except Exception as e:
+            self._logger.debug(f"backup state before renewal failed: {e!r}")
+            return None
+
+    def _back_to_standing_by(self, backup: str, login: str) -> str:
+        """What a renewal of ``login`` means for its backup token."""
+        name = self.label(backup, long=False)
+        if backup == self.current_account_number():
+            return (
+                f"{name}, its backup, is still the active account; auto-switch moves "
+                f"back to {self.label(login, long=False)} at its next check, or switch "
+                f"now: qswap switch {login}"
+            )
+        return f"{name}, its backup, goes back to standing by."
 
     def _require_renewal_identity(
         self, account_num: str, record: dict | None, oauth_account: dict, data: dict
@@ -5013,6 +5083,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         email: str | None = None,
         slot: int | None = None,
         assume_yes: bool = False,
+        backup_for: str | None = None,
+        unverified: bool = False,
     ) -> None:
         """Register a raw OAuth setup-token or managed API key as a new account.
 
@@ -5037,6 +5109,11 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                    priority.
             assume_yes: Skip the occupied-slot overwrite prompt (callers with
                    their own confirmation UI, e.g. the TUI, confirm first).
+            backup_for: A subscription login (number, alias or email): the
+                   setup-token is stored as its backup (experimental,
+                   :meth:`_add_backup_token`); ``slot`` must then be None.
+            unverified: With ``backup_for``: save the token even when the
+                   check cannot tell whose it is.
         """
         self._refuse_session_shell()
         from ai_quota_swap import prompts
@@ -5053,6 +5130,12 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         token = token.strip()
         if not token:
             raise ValidationError("Token cannot be empty")
+
+        if backup_for is not None:
+            self._add_backup_token(
+                token, backup_for, email=email, assume_yes=assume_yes, unverified=unverified,
+            )
+            return
 
         is_api_key = looks_like_api_key(token)
 
@@ -5205,6 +5288,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if int(d_num) in data["sequence"]:
                 data["sequence"].remove(int(d_num))
             del data["accounts"][d_num]
+            self._say_unlinked(backup_token.unlink(data, d_num))
             self._write_json(self.sequence_file, data)
             self._prune_mappings(d_email, d_org)
 
@@ -5215,6 +5299,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if int(migrate_from) in data["sequence"]:
                 data["sequence"].remove(int(migrate_from))
             del data["accounts"][migrate_from]
+            backup_token.renumber(data, {migrate_from: account_num})
             self._write_json(self.sequence_file, data)
 
         # Under the account lock, as above.
@@ -5251,6 +5336,252 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             print(dimmed(f"Moved from slot {migrate_from} → {slot}"))
         print(f"{accent('Added')} {self.label(account_num)} {muted(f'(from {source_label})')}")
         self._say_key_refresh(account_num, is_api_key)
+
+    def _add_backup_token(
+        self,
+        token: str,
+        identifier: str,
+        *,
+        email: str | None = None,
+        assume_yes: bool = False,
+        unverified: bool = False,
+    ) -> None:
+        """``qswap add-token TOKEN --backup-for N`` (docs/design/backup-token.md).
+
+        The token is stored as an ordinary setup-token account whose record
+        names login ``N`` (``backupFor``) and when it was added
+        (``backupAdded``). One backup per login: a second replaces the first
+        in its slot, after the usual confirmation. A token already saved as
+        its own account is linked where it is. Before anything is saved, one
+        header probe with the token is compared with the login's last
+        reading (:meth:`_check_backup_identity`).
+        """
+        if looks_like_api_key(token):
+            raise ValidationError(
+                "An API key cannot be a backup: --backup-for takes a setup-token "
+                "from claude setup-token."
+            )
+        if email and not self._validate_email(email):
+            raise ValidationError(f"Invalid email format: {email}")
+        self._setup_directories()
+        self._init_sequence_file()
+        self._migrate_org_fields()
+        data = self._get_sequence_data() or {}
+        accounts = data.get("accounts") or {}
+        parent = self._resolve_account_identifier(identifier) if accounts else None
+        if parent is None or parent not in accounts:
+            raise AccountNotFoundError(
+                f"No account matches {identifier}; qswap list shows the accounts"
+            )
+        parent_record = accounts[parent]
+        parent_name = self.label(parent, long=False)
+        parent_creds = self._read_account_credentials(parent, parent_record.get("email", ""))
+        if (
+            parent_record.get("kind") == "api_key"
+            or backup_token.parent_of(parent_record) is not None
+            or oauth.is_setup_token(oauth.extract_oauth_data(parent_creds or ""))
+        ):
+            raise ValidationError(
+                f"{parent_name} is not a subscription login, so it cannot have a backup "
+                "(--backup-for takes an account saved with qswap add)."
+            )
+
+        links = backup_token.links(data)
+        current = backup_token.backups_by_parent(links).get(parent)
+        same = self._slot_holding_token(token, data)
+        if same is not None and same == current:
+            print(f"{self.label(same, long=False)} is already the backup for {parent_name}; "
+                  "nothing was changed.")
+            return
+        if same is not None and same in links:
+            raise ValidationError(
+                f"That token is already the backup for {self.label(links[same], long=False)} "
+                f"as {self.label(same, long=False)}."
+            )
+        if same is None and email:
+            holder = self._find_account_slot(data, email, "")
+            if holder is not None and holder != current:
+                raise ValidationError(
+                    f"{self.label(holder, long=False)} already uses {email}; pick another --email."
+                )
+            self._reject_cross_kind_collision(email, False)
+        if current is not None:
+            if current == self.current_account_number():
+                raise ConfigError(
+                    f"{self.label(current, long=False)}, the backup for {parent_name}, is the "
+                    f"active account; switch away first (qswap switch {parent}), then add "
+                    "the new token."
+                )
+            if not assume_yes and not prompts.interactive():
+                raise prompts.needs_confirmation(f"qswap add-token --backup-for {parent}")
+            if not prompts.confirm(
+                f"Replace {self.label(current, long=False)}, the backup for {parent_name}?",
+                assume_yes=assume_yes, command=f"qswap add-token --backup-for {parent}",
+            ):
+                print(dimmed("Cancelled; nothing was changed."))
+                return
+
+        for line in display.wrap(
+            f"Checking that the token is {parent_name}'s, with one small request to "
+            "Anthropic (one output token)."
+        ):
+            print(dimmed(line))
+        self._check_backup_identity(parent, token, unverified=unverified)
+
+        added = get_timestamp()
+        credentials = json.dumps({
+            "claudeAiOauth": {"accessToken": token, "scopes": list(SETUP_TOKEN_SCOPES)},
+        })
+        with FileLock(self.lock_file):
+            data = self._get_sequence_data() or {}
+            accounts = data.setdefault("accounts", {})
+            if same is not None:
+                # Linked where it already is; its record keeps everything.
+                target = same
+                record = accounts[target]
+                verb = "Linked"
+            elif current is not None:
+                # The new token replaces the old one in its slot.
+                target = current
+                record = accounts[target]
+                verb = "Replaced"
+            else:
+                target = str(self._get_next_account_number())
+                label_email = email or f"setup-token-{target}@token.local"
+                record = {
+                    "email": label_email,
+                    "uuid": "",
+                    "organizationUuid": "",
+                    "organizationName": "",
+                    "added": added,
+                }
+                accounts[target] = record
+                verb = "Added"
+            target_email = record.get("email", "")
+            if same is None:
+                self._write_account_credentials(target, target_email, credentials)
+                self._write_account_config(target, target_email, json.dumps({
+                    "oauthAccount": {
+                        "emailAddress": target_email, "accountUuid": "",
+                        "organizationUuid": None, "organizationName": None,
+                    },
+                }))
+            replaced = None
+            if current is not None and same is not None and current != same:
+                # The token saved as its own account becomes the backup; the
+                # old backup goes, as a second token replaces the first.
+                replaced = self.label(current, long=False)
+                old = accounts.pop(current)
+                self._delete_account_files(current, old.get("email", ""))
+                data["sequence"] = [n for n in data.get("sequence", []) if n != int(current)]
+            record[backup_token.BACKUP_FOR] = parent
+            record[backup_token.BACKUP_ADDED] = added
+            if int(target) not in data.setdefault("sequence", []):
+                data["sequence"].append(int(target))
+                data["sequence"].sort()
+            data["lastUpdated"] = get_timestamp()
+            self._write_json(self.sequence_file, data)
+        self._usage_store.clear_dead_token([target], {target: (target_email, "")})
+        self._logger.info(f"Backup token for account {parent} saved in account {target}")
+        name = self.label(target, long=False)
+        if verb == "Added":
+            print(f"{accent('Added')} {name} {muted('(from token)')} as the backup for {parent_name}")
+        elif verb == "Replaced":
+            print(f"{accent('Replaced')} the token of {name}, the backup for {parent_name}")
+        else:
+            print(f"{accent('Linked')} {name} as the backup for {parent_name}")
+            if replaced:
+                print(f"{accent('Removed')} {replaced}, the backup it replaces")
+        ends = backup_token.ends_words(backup_token.ends_at({backup_token.BACKUP_ADDED: added}))
+        for line in display.wrap(
+            f"It stands by while the login of {parent_name} works, and stands in when "
+            f"that login needs re-login. The token ends {ends}; then make a new one "
+            f"with `claude setup-token` and add it the same way."
+        ):
+            print(dimmed(line))
+
+    def _slot_holding_token(self, token: str, data: dict) -> str | None:
+        """The account whose saved login is this setup-token, or None."""
+        for num, record in (data.get("accounts") or {}).items():
+            if record.get("kind") == "api_key":
+                continue
+            try:
+                creds = self._read_account_credentials(num, record.get("email", ""))
+            except Exception:
+                continue
+            blob = oauth.extract_oauth_data(creds or "")
+            if oauth.is_setup_token(blob) and blob.get("accessToken") == token:
+                return str(num)
+        return None
+
+    def _check_backup_identity(self, parent: str, token: str, *, unverified: bool) -> None:
+        """Refuse a token that is not login ``parent``'s account: one header
+        probe with it, compared with the login's reading
+        (``backup_token.compare``). Nothing to compare refuses unless
+        ``unverified``; a disagreement always refuses."""
+        data = self._get_sequence_data() or {}
+        record = (data.get("accounts") or {}).get(parent) or {}
+        name = self.label(parent, long=False)
+        email = record.get("email", "")
+        org = record.get("organizationUuid", "") or ""
+        reading = None
+        try:
+            if parent in self._ended_logins({parent}, data=data):
+                entry = self._usage_store.entries({parent: (email, org)}).get(parent)
+            else:
+                entry = self.refresh_usage({parent}).get(parent)
+            reading = entry.last_good if entry is not None else None
+        except Exception as e:
+            self._logger.debug(f"backup check: reading {parent} failed: {e!r}")
+        why = ""
+        try:
+            raw, token_org = oauth.probe_token_account(token)
+            try:
+                usage = oauth.build_usage_result(raw) or {}
+            except Exception:
+                usage = {}
+            match = backup_token.compare(
+                reading, usage, now=time.time(), parent_org=org, token_org=token_org,
+            )
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                raise ValidationError(
+                    f"Anthropic refused the token (HTTP {e.code}), so nothing was saved. "
+                    "Make a new one with: claude setup-token"
+                ) from e
+            match = backup_token.Match("unknown")
+            why = f"the check request failed (HTTP {e.code})"
+        except Exception as e:
+            kind, _retry = oauth._classify_usage_error(e)
+            match = backup_token.Match("unknown")
+            why = f"the check request failed ({display.error_label(kind) or kind})"
+        if match.verdict == "same":
+            return
+        if match.verdict == "other":
+            raise ValidationError(
+                f"The token belongs to another account than {name} ({match.why}), so "
+                "nothing was saved."
+            )
+        why = why or match.why
+        if not unverified:
+            raise ValidationError(
+                f"qswap could not check that the token is {name}'s ({why}), so nothing "
+                f"was saved. Use {name} for a moment and try again, or add it unchecked "
+                f"with --unverified: if the token is another account's, auto-switch "
+                f"spends that account's quota under {name}'s name."
+            )
+        warning(
+            f"Not checked ({why}): if the token is another account's, auto-switch "
+            f"spends that account's quota under {name}'s name."
+        )
+
+    def _say_unlinked(self, numbers: list[str]) -> None:
+        """Backup tokens whose login left their slot: they stay, unlinked."""
+        for num in numbers:
+            say(
+                f"{self.label(num, long=False)} was the backup of the account that held "
+                "that slot and stays as an ordinary setup-token account."
+            )
 
     def _say_key_refresh(self, number: str, is_api_key: bool) -> None:
         """Decision B7 (F60): a new saved key for the key the line names
@@ -5395,10 +5726,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         del data["accounts"][account_num]
         data["sequence"] = [n for n in data["sequence"] if n != int(account_num)]
         data["lastUpdated"] = get_timestamp()
+        # Its backup token stays, as an ordinary setup-token account.
+        unlinked = backup_token.unlink(data, account_num)
 
         self._write_json(self.sequence_file, data)
         self._logger.info(f"Removed account {account_num}: {email}")
         print(f"{accent('Removed')} {name}")
+        for num in unlinked:
+            say(
+                f"{self.label(num, long=False)} was its backup and stays as an ordinary "
+                "setup-token account."
+            )
 
         self._prune_mappings(email, account_info.get("organizationUuid", ""))
 
@@ -5449,7 +5787,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         return accounts_info
 
     def _fetch_active_usage(
-        self, account_num: str, email: str, creds: str, org_uuid: str = ""
+        self, account_num: str, email: str, creds: str, org_uuid: str = "",
+        probe: bool = False,
     ) -> FetchRecord:
         """Usage fetch for the active/default account, refreshing an expired
         token under Claude Code's own lock protocol.
@@ -5520,7 +5859,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if not oauth.is_oauth_token_expired(oauth_data.get("expiresAt")):
             outcome = oauth.try_fetch_usage_for_account(
                 account_num, email, creds, is_active=True,
-                header_probe=self._header_probe_enabled(),
+                header_probe=probe or self._header_probe_enabled(),
                 resets=self.reset_settings().enabled,
             )
             if outcome.error != "http-401":
@@ -6023,7 +6362,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
 
         outcome = oauth.try_fetch_usage_for_account(
             account_num, email, working, is_active=True,
-            header_probe=self._header_probe_enabled(),
+            header_probe=probe or self._header_probe_enabled(),
             resets=self.reset_settings().enabled,
         )
         return FetchRecord(
@@ -6224,16 +6563,19 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         self,
         account_info: tuple[int, str, str, str, bool, str, str],
         rejected_fp: str | None = None,
+        probe: bool = False,
     ) -> FetchRecord:
         """One network fetch for one account. Never raises. ``rejected_fp``
-        is the row's refused-credential stamp, if any."""
+        is the row's refused-credential stamp, if any. ``probe``: a
+        setup-token is read by the header probe whatever ``usage.headerProbe``
+        says (a backup token standing in for its login)."""
         num, email, _, org_uuid, is_active, creds, _alias = account_info
 
         # The active/default account owns the live credential — route it
         # through the locked-refresh path (refreshes an expired token under
         # Claude Code's own lock protocol, owner or not).
         if is_active:
-            return self._fetch_active_usage(str(num), email, creds, org_uuid)
+            return self._fetch_active_usage(str(num), email, creds, org_uuid, probe=probe)
 
         from ai_quota_swap.session import (
             read_session_credentials,
@@ -6308,7 +6650,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 # active account in _fetch_active_usage).
                 if oauth.is_oauth_token_expired(session_oauth.get("expiresAt")):
                     return FetchRecord(sentinel=USAGE_TOKEN_EXPIRED)
-                return self._read_only_fetch(str(num), email, session_creds, rejected_fp)
+                return self._read_only_fetch(
+                    str(num), email, session_creds, rejected_fp, probe=probe
+                )
 
         if has_live_session:
             # No profile credential to read (wiped under the session, or
@@ -6318,13 +6662,13 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             backup_oauth = oauth.extract_oauth_data(creds) or {}
             if oauth.is_oauth_token_expired(backup_oauth.get("expiresAt")):
                 return FetchRecord(sentinel=USAGE_TOKEN_EXPIRED)
-            return self._read_only_fetch(str(num), email, creds, rejected_fp)
+            return self._read_only_fetch(str(num), email, creds, rejected_fp, probe=probe)
 
         outcome = oauth.try_fetch_usage_for_account(
             str(num), email, creds,
             is_active=False,
             refresh_via=self.consume_backup_grant,
-            header_probe=self._header_probe_enabled(),
+            header_probe=probe or self._header_probe_enabled(),
             resets=self.reset_settings().enabled,
         )
         return FetchRecord(
@@ -6336,7 +6680,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         )
 
     def _read_only_fetch(
-        self, num: str, email: str, creds: str, rejected_fp: str | None
+        self, num: str, email: str, creds: str, rejected_fp: str | None,
+        probe: bool = False,
     ) -> FetchRecord:
         """A fetch with a live session's credential, which qswap must never
         refresh. A 401 is the live claude having rotated past the copy we
@@ -6350,7 +6695,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             return FetchRecord(sentinel=USAGE_TOKEN_EXPIRED)
         outcome = oauth.try_fetch_usage_for_account(
             num, email, creds, is_active=True,
-            header_probe=self._header_probe_enabled(),
+            header_probe=probe or self._header_probe_enabled(),
             resets=self.reset_settings().enabled,
         )
         if outcome.error == "http-401":
@@ -6366,10 +6711,13 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         self,
         infos: list[tuple[int, str, str, str, bool, str, str]],
         entries: dict[str, UsageEntry] | None = None,
+        probe: frozenset[str] = frozenset(),
     ) -> dict[str, FetchRecord]:
         """Fetch the given accounts in parallel, staggering request starts so
         N accounts never hit the endpoint in the same instant. ``entries``
-        is the pre-fetch snapshot, for each row's refused-credential stamp."""
+        is the pre-fetch snapshot, for each row's refused-credential stamp;
+        ``probe`` the accounts read by the header probe whatever the setting
+        says (backup tokens standing in)."""
         def fetch_one(
             idx_info: tuple[int, tuple[int, str, str, str, bool, str, str]]
         ) -> tuple[str, FetchRecord]:
@@ -6378,8 +6726,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 time.sleep(idx * _FETCH_STAGGER_S)
             num = str(info[0])
             entry = entries.get(num) if entries else None
+            extra = {"probe": True} if num in probe else {}
             return num, self._fetch_account_usage(
-                info, entry.rejected_fingerprint if entry else None
+                info, entry.rejected_fingerprint if entry else None, **extra
             )
 
         with ThreadPoolExecutor() as executor:
@@ -6446,6 +6795,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     [num], {num: identities[num]}
                 )
                 entries = store.entries(identities, models)
+        probe = self._place_backup_tokens(info_by_num, sentinels)
         requested = [
             num
             for num in info_by_num
@@ -6498,7 +6848,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if claims:
             pre = entries
             records = self._run_usage_fetches(
-                [info_by_num[num] for num in claims], pre
+                [info_by_num[num] for num in claims], pre,
+                **({"probe": probe} if probe else {}),
             )
             plans = self._plans_after_fetch(records, pre, info_by_num)
             accepted = store.record(records, identities, claims, plans)
@@ -6544,6 +6895,36 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             for num, reading in self._api_spend_readings(api_infos, fetch).items():
                 collected[num] = dataclasses.replace(collected[num], api_spend=reading)
         return collected
+
+    def _place_backup_tokens(
+        self, info_by_num: dict[str, tuple], sentinels: dict[str, str],
+    ) -> frozenset[str]:
+        """Where a collect pass puts each backup token in it
+        (docs/design/backup-token.md): while its login works and it is not
+        the active account it stands by, marked ``standing by`` in
+        ``sentinels`` so it is never read; otherwise it is read, by the
+        header probe whatever ``usage.headerProbe`` says. Returns the tokens
+        to probe. A login this pass reads is judged by ``sentinels`` (its
+        "re-login needed"); any other by the usage store."""
+        data = self._get_sequence_data() or {}
+        links = {
+            b: p for b, p in backup_token.links(data).items()
+            if b in info_by_num and b not in sentinels
+        }
+        if not links:
+            return frozenset()
+        relogin = {
+            p: sentinels.get(p) == USAGE_RELOGIN_REQUIRED
+            for p in links.values() if p in info_by_num
+        }
+        ended = self._ended_logins(set(links.values()), data=data, relogin=relogin)
+        probe = set()
+        for b, p in links.items():
+            if p in ended or info_by_num[b][4]:  # info[4]: the active account
+                probe.add(b)
+            else:
+                sentinels[b] = USAGE_STANDING_BY
+        return frozenset(probe)
 
     def _api_spend_readings(
         self, infos: dict[str, tuple], fetch: set[str] | None, *, now: float | None = None,
@@ -6930,6 +7311,11 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         """
         rows: list[tuple[str, object, float, object, float]] = []
         out: list[str] = []
+        # A backup token and its login are one account by design.
+        linked = {
+            frozenset(pair)
+            for pair in backup_token.links(self._get_sequence_data() or {}).items()
+        }
         for num, _email, _org_name, _org_uuid, _is_active, _creds, _alias in accounts_info:
             snum = str(num)
             entry = entries.get(snum)
@@ -6952,6 +7338,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         # several earlier slots match it, as the keyed lookup it replaces did.
         for i, (snum, h5_pct, h5_ts, d7_pct, d7_ts) in enumerate(rows):
             for other, o_h5_pct, o_h5_ts, o_d7_pct, o_d7_ts in rows[:i]:
+                if frozenset((snum, other)) in linked:
+                    continue
                 if (
                     h5_pct == o_h5_pct
                     and d7_pct == o_d7_pct
@@ -6981,6 +7369,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         now = self._usage_store.clock()
         set_aside = self.set_aside_accounts()
         key, under = self.active_view()
+        backups = self.backup_view(
+            entries, data=seq_data, set_aside=set_aside,
+            active=key or next((str(i[0]) for i in accounts_info if i[4]), None),
+        )
         for num, email, org_name, org_uuid, is_active, creds, alias in accounts_info:
             if key is not None:
                 is_active = str(num) == key
@@ -7028,6 +7420,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             credit = _record_credit(seq_data, str(num))
             if credit is not None:
                 accounts[-1]["credit"] = credit
+            accounts[-1].update(self._backup_json(str(num), backups))
         payload = {
             "schemaVersion": SCHEMA_VERSION,
             "activeAccountNumber": active_num,
@@ -7100,13 +7493,17 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         set_aside = self.set_aside_accounts()
         settings = load_settings(self.backup_dir)
         view = self.active_view()
+        backups = self.backup_view(
+            entries, data=seq_data, set_aside=set_aside,
+            active=view[0] or next((str(i[0]) for i in accounts_info if i[4]), None),
+        )
         print(bolded(display.provider_heading("claude", both=False)))
         for line in self.key_helper_notes(entries=entries):
             warning(line)
         for i, info in enumerate(accounts_info):
             block = self._account_block(
                 info, entries[str(info[0])], seq_data=seq_data, plans=plans,
-                set_aside=set_aside, settings=settings, view=view,
+                set_aside=set_aside, settings=settings, view=view, backups=backups,
             )
             for line in display.render_block(block):
                 print(line)
@@ -7228,12 +7625,14 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         show_provider: bool = False,
         login_expires_at: float | None | object = ...,
         view: tuple[str | None, str | None] | None = None,
+        backups: dict[str, backup_token.Link] | None = None,
     ):
         """One account's :class:`display.AccountBlock` for ``list``/``status``.
 
         ``login_expires_at`` overrides the expiry read from ``info``'s
         credentials (``status`` has it from the live login already).
-        ``view`` is :meth:`active_view` read once for the whole pass."""
+        ``view`` is :meth:`active_view` read once for the whole pass;
+        ``backups`` is :meth:`backup_view` for the same pass."""
         from ai_quota_swap import api_spend, display
 
         num, email, org_name, org_uuid, is_active, creds, alias = info
@@ -7261,6 +7660,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         if login_expires_at is ...:
             login_expires_at = oauth.login_expires_at_epoch(creds)
         login_row = self._login_window(login_expires_at, relogin)
+        backup, covered_by = self._backup_block_facts(str(num), backups)
 
         def api_lines(reading: dict) -> list[str]:
             text = api_spend.spend_text(reading)
@@ -7280,9 +7680,45 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             lines=display.Lines(five_hour=line, weekly=settings.weekly_threshold),
             set_aside=held_out, underneath=underneath, over=over, by_engine=by_engine,
             sentinel_notes={k: v.replace(" — ", ": ") for k, v in SENTINEL_NOTES.items()},
-            login_row=login_row, now=now, stale_after_s=_USAGE_AGE_NOTE_S,
+            login_row=login_row, backup=backup, covered_by=covered_by,
+            now=now, stale_after_s=_USAGE_AGE_NOTE_S,
             api_lines=api_lines,
         )
+
+    @staticmethod
+    def _backup_json(num: str, backups: dict[str, backup_token.Link]) -> dict:
+        """The additive ``--json`` fields of account ``num``: ``backupFor``
+        on a backup token (its login, state and dates), and
+        ``backupAccountNumber`` on a login that has one."""
+        out: dict = {}
+        if not backups:
+            return out
+        link = backups.get(num)
+        if link is not None:
+            out["backupFor"] = link.to_json()
+        cover = backup_token.backups_by_parent(
+            {b: other.parent for b, other in backups.items()}
+        ).get(num)
+        if cover is not None:
+            out["backupAccountNumber"] = int(cover) if cover.isdigit() else cover
+        return out
+
+    def _backup_block_facts(
+        self, num: str, backups: dict[str, backup_token.Link] | None,
+    ) -> tuple[display.BackupFacts | None, str]:
+        """``(the token's facts, the label of the token covering it)`` for
+        account ``num``'s block; ``(None, "")`` with no link either way."""
+        if not backups:
+            return None, ""
+        link = backups.get(num)
+        facts = (
+            display.backup_facts(link, self.label(link.parent, long=False))
+            if link is not None else None
+        )
+        cover = backup_token.backups_by_parent(
+            {b: other.parent for b, other in backups.items()}
+        ).get(num)
+        return facts, (self.label(cover, long=False) if cover is not None else "")
 
     def active_view(self) -> tuple[str | None, str | None]:
         """``(key, underneath)``: the API-key account active through the
@@ -7635,10 +8071,14 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         }
         if alias:
             active["alias"] = alias
-        held = self.set_aside_accounts().get(str(account_num))
+        set_aside = self.set_aside_accounts()
+        held = set_aside.get(str(account_num))
         active["needsRelogin"] = held is not None or entry.sentinel == USAGE_RELOGIN_REQUIRED
         if held is not None:
             active["setAside"] = {"reason": held}
+        active.update(self._backup_json(str(account_num), self.backup_view(
+            {str(account_num): entry}, data=data, active=str(account_num), set_aside=set_aside,
+        )))
         budget = _record_budget(data, account_num)
         if budget is not None:
             active["budget"] = budget
@@ -7764,10 +8204,14 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         # The same collector as `list`, for one slot (freshness, backoff and
         # the shared usage table behave the same).
         entry = self._collect_usage_entries([info])[str(account_num)]
+        set_aside = self.set_aside_accounts()
         block = self._account_block(
             info, entry, seq_data=data, plans=self._plans_for_pass([info], None),
-            set_aside=self.set_aside_accounts(), settings=load_settings(self.backup_dir),
-            view=view,
+            set_aside=set_aside, settings=load_settings(self.backup_dir),
+            view=view, backups=self.backup_view(
+                {str(account_num): entry}, data=data, active=str(account_num),
+                set_aside=set_aside,
+            ),
         )
         out.extend(display.render_block(block))
         return out
@@ -8068,12 +8512,14 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         # account is provably better; otherwise stays put (never moves onto a
         # worse or unverifiable account). Bare `qswap --switch` rotates anyway.
         relogin = self.relogin_reasons()
+        # A backup token is no rotation target while its login works.
+        standing_by = self._standing_by_backups(data)
         if strategy == "best":
             best_usage = self._usage_by_account()
             self._warn_inert_models(best_usage, models, json_output, warnings)
             target, note = self._select_best_switchable(
                 current_num, models, best_usage,
-                exclude=set(relogin) | self._api_key_numbers(),
+                exclude=set(relogin) | self._api_key_numbers() | standing_by,
             )
             if note != "none":
                 # "none" falls through to rotation, which says it itself.
@@ -8226,6 +8672,13 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 skipped["relogin"].append(candidate)
                 self._skip_line(warnings, json_output, candidate, "(needs re-login)",
                                 "needs re-login")
+                continue
+            if candidate in standing_by:
+                parent = backup_token.links(data).get(candidate, "")
+                self._skip_line(
+                    warnings, json_output, candidate, "(standing by)",
+                    f"{display.backup_fact(self.label(parent, long=False))}, standing by",
+                )
                 continue
             if strategy == "next-available":
                 headroom = oauth.account_headroom(usage.get(candidate), models)
@@ -9010,6 +9463,104 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 self._logger.debug(f"token-dead check failed for {num}: {e!r}")
         return out
 
+    # -- backup tokens (backup_token.py, docs/design/backup-token.md) ------------------
+
+    def backup_links(self) -> dict[str, str]:
+        """Backup token -> the subscription login it backs up (``qswap
+        add-token --backup-for``); empty when none, which keeps the feature
+        inert. The engine asks this (a provider without it has none)."""
+        return backup_token.links(self._get_sequence_data() or {})
+
+    def _ended_logins(
+        self,
+        logins: set[str],
+        *,
+        data: dict | None = None,
+        relogin: dict[str, bool] | None = None,
+        set_aside: dict[str, str] | None = None,
+    ) -> set[str]:
+        """Which of ``logins`` need re-login for an auth reason: set aside by
+        the engine, or their saved login refused (the dead-login state). A
+        passed end date alone does not count: an account that still reads is
+        still used. ``relogin`` holds the verdict of a collect pass that read
+        a login ("re-login needed" or not); any other is asked of the usage
+        store, which reads a credential only when a strike is recorded."""
+        logins = {str(n) for n in logins}
+        if not logins:
+            return set()
+        data = data if data is not None else (self._get_sequence_data() or {})
+        held = self.set_aside_accounts() if set_aside is None else set_aside
+        ended = logins & set(held)
+        accounts = data.get("accounts") or {}
+        for num in logins - ended:
+            if relogin is not None and num in relogin:
+                if relogin[num]:
+                    ended.add(num)
+                continue
+            record = accounts.get(num) or {}
+            email = record.get("email", "")
+            org = record.get("organizationUuid", "") or ""
+            try:
+                entry = self._usage_store.entries({num: (email, org)}).get(num)
+                if entry is not None and entry.token_dead() and self._slot_token_dead(num, email):
+                    ended.add(num)
+            except Exception as e:  # never fail a pass over it; the login counts as working
+                self._logger.debug(f"dead-login check failed for {num}: {e!r}")
+        return ended
+
+    def _standing_by_backups(self, data: dict) -> set[str]:
+        """Backup tokens that are no candidate now: their login works. (A
+        token's own disabled flag holds it out as any account's does.)"""
+        links = backup_token.links(data)
+        if not links:
+            return set()
+        ended = self._ended_logins(set(links.values()), data=data)
+        return {b for b, p in links.items() if p not in ended}
+
+    def backup_view(
+        self,
+        entries: dict[str, UsageEntry] | None = None,
+        *,
+        data: dict | None = None,
+        active: str | None = None,
+        set_aside: dict[str, str] | None = None,
+    ) -> dict[str, backup_token.Link]:
+        """Every backup token's link and state, as every view shows it.
+
+        ``entries`` is a collect pass's: a token it left unread as standing
+        by is standing by, and a login whose entry says "re-login needed"
+        has ended. ``active`` is the active account's number."""
+        data = data if data is not None else (self._get_sequence_data() or {})
+        links = backup_token.links(data)
+        if not links:
+            return {}
+        entries = entries or {}
+        held = self.set_aside_accounts() if set_aside is None else set_aside
+        relogin = {
+            p: entries[p].sentinel == USAGE_RELOGIN_REQUIRED
+            for p in links.values() if p in entries
+        }
+        ended = self._ended_logins(
+            set(links.values()), data=data, relogin=relogin, set_aside=held,
+        )
+        accounts = data.get("accounts") or {}
+        out = {}
+        for b, p in links.items():
+            record = accounts.get(b) or {}
+            entry = entries.get(b)
+            out[b] = backup_token.Link(
+                number=b,
+                parent=p,
+                state=backup_token.state(
+                    parent_ended=p in ended,
+                    active=active is not None and str(active) == b,
+                    standing_by_read=entry is not None and entry.sentinel == USAGE_STANDING_BY,
+                ),
+                added_at=backup_token.added_at(record),
+                ends_at=backup_token.ends_at(record),
+            )
+        return out
+
     def _skip_line(
         self, warnings: list[str], json_output: bool, number: str, json_why: str, text_why: str
     ) -> None:
@@ -9096,8 +9647,15 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         name = self.label(number, long=False)
         if verdict == "relogin":
             if not anyway:
+                backup = backup_token.backups_by_parent(self.backup_links()).get(str(number))
+                cover = (
+                    f"Its backup {self.label(backup, long=False)} covers it; switch to "
+                    f"that with: qswap switch {backup}\n"
+                    if backup is not None else ""
+                )
                 raise SwitchError(
                     f"{name} {display.NEEDS_RELOGIN} ({why}); not switched.\n"
+                    f"{cover}"
                     f"Sign in to it again: qswap login {number}\n"
                     f"To switch to it anyway: qswap switch {number} --anyway"
                 )

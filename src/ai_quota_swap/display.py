@@ -52,6 +52,16 @@ API_KEY_NO_USAGE_SHORT = "no usage recorded"
 #: row says this much; the block adds why and the next step.
 API_KEY_SPEND_UNKNOWN = "spend unknown"
 
+#: A backup token's states in words (``backup_token.STATES``; docs/design/
+#: backup-token.md): its login works and it waits; its login needs re-login
+#: and it takes the login's place; it is the active account while its login
+#: works.
+BACKUP_STATE_WORDS = {
+    "standing-by": "standing by",
+    "standing-in": "standing in",
+    "in-use": "in use",
+}
+
 #: Provider ids to the names a sentence uses.
 PROVIDER_NAMES = {"claude": "Claude Code", "codex": "Codex"}
 #: The command that saves the live login, per provider.
@@ -167,6 +177,32 @@ def relogin_step(provider: str | None = "claude", number: int | str | None = Non
     if number is None:
         return "sign in to it again: qswap login"
     return f"sign in to it again: qswap login {number}"
+
+
+def backup_fact(parent: str) -> str:
+    """A backup token's header fact: ``backup for #3 work``."""
+    return f"backup for {parent}"
+
+
+def backup_covers(backup: str) -> str:
+    """On a login that needs re-login: ``its backup #7 setup-token-7 covers it``."""
+    return f"its backup {backup} covers it"
+
+
+def login_back_step(number: int | str) -> str:
+    """How a login a backup token covers comes back, as a sentence."""
+    return f"Bring the login back with: qswap login {number}"
+
+
+def backup_ends_text(ends: str) -> str:
+    """``token ends about Nov 23, 2027``: when a backup token stops working,
+    a year after it was added (an estimate: the token does not say)."""
+    return f"token ends {ends}" if ends else ""
+
+
+def backup_renew_step(number: int | str) -> str:
+    """The way to a new backup token for login ``number``."""
+    return f"make a new one with `claude setup-token`, then: qswap add-token --backup-for {number}"
 
 
 def set_aside_reason(reason: str | None) -> str:
@@ -363,8 +399,9 @@ class AccountBlock:
     """Everything one account's block shows, already in words.
 
     ``state`` is one of ``"ok"``, ``"needs-relogin"``, ``"unavailable"``,
-    ``"api-key"``, ``"not-read"`` or ``"note"`` (a provider-specific note in
-    ``notes``). ``windows`` render under the header; ``notes`` are sentences
+    ``"api-key"``, ``"not-read"``, ``"standing-by"`` (a backup token whose
+    login works: no usage, nothing to retry) or ``"note"`` (a
+    provider-specific note in ``notes``). ``windows`` render under the header; ``notes`` are sentences
     after them; ``held`` is the usage-reset line. ``stale_s`` is the age of a
     reading old enough to say so.
     """
@@ -395,6 +432,45 @@ class AccountBlock:
     over: str = ""
     #: On an active key: auto-switch entered it (``by auto-switch``).
     by_engine: bool = False
+    #: A backup token (docs/design/backup-token.md): its login's short label
+    #: (``#3 work``) and number, its state (``standing-by``, ``standing-in``,
+    #: ``in-use``), about when it stops working (``about Nov 23, 2027``),
+    #: and whether that is within a month (``due``).
+    backup_for: str = ""
+    backup_for_number: str = ""
+    backup_state: str = ""
+    backup_ends: str = ""
+    backup_due: bool = False
+    #: On a login that needs re-login: the backup token that covers it.
+    covered_by: str = ""
+
+
+@dataclass(frozen=True)
+class BackupFacts:
+    """What a backup token's block says about its link: its login's number
+    and short label, its state (``backup_token.STATES``), about when it
+    stops working in words and as epoch seconds."""
+
+    parent: str
+    parent_label: str
+    state: str
+    ends: str = ""
+    ends_at: float | None = None
+
+    def due(self, now: float) -> bool:
+        from ai_quota_swap.backup_token import due
+
+        return due(self.ends_at, now)
+
+
+def backup_facts(link, parent_label: str) -> BackupFacts:
+    """:class:`BackupFacts` from a ``backup_token.Link``."""
+    from ai_quota_swap.backup_token import ends_words
+
+    return BackupFacts(
+        parent=str(link.parent), parent_label=parent_label, state=link.state,
+        ends=ends_words(link.ends_at), ends_at=link.ends_at,
+    )
 
 
 def label_for(block: AccountBlock, *, long: bool = True) -> str:
@@ -443,6 +519,11 @@ def header_parts(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ")
         facts.append(("disabled", "disabled"))
     if block.kind == "api_key":
         facts.append(("API key", "api-key"))
+    if block.backup_for:
+        facts.append((backup_fact(block.backup_for), "backup"))
+        if block.backup_state:
+            words = BACKUP_STATE_WORDS.get(block.backup_state, block.backup_state)
+            facts.append((words, "backup"))
     if block.over:
         facts.append((over_fact(block.over), "over"))
     if block.by_engine:
@@ -499,7 +580,7 @@ def header_line(block: AccountBlock, *, width: int = WIDTH, indent: str = "  ") 
     styles: dict[str, Callable[[str], str]] = {
         "active": bolded, "disabled": muted, "api-key": muted,
         "plan": muted, "plan-lapsed": yellowed, "org": muted,
-        "underneath": muted, "over": muted,
+        "underneath": muted, "over": muted, "backup": muted,
     }
     parts = header_parts(block, width=width, indent=indent)
     styled_name = accent(parts.name) if parts.alias else parts.name
@@ -573,7 +654,16 @@ def state_parts(block: AccountBlock) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     if block.state == "needs-relogin":
         why = f" ({block.set_aside})" if block.set_aside else ""
-        out.append((f"{NEEDS_RELOGIN}{why}: {relogin_step(block.provider, block.number)}", "warn"))
+        if block.covered_by:
+            out.append((
+                f"{NEEDS_RELOGIN}{why}; {backup_covers(block.covered_by)}. "
+                f"{login_back_step(block.number)}",
+                "warn",
+            ))
+        else:
+            out.append((f"{NEEDS_RELOGIN}{why}: {relogin_step(block.provider, block.number)}", "warn"))
+    elif block.state == "standing-by":
+        pass  # no usage, and nothing that will retry: only the token's end, below
     elif block.state == "unavailable":
         retrying = block.error not in ("store-unmirrored", "invalid_client", "setup-token")
         out.append((
@@ -592,6 +682,12 @@ def state_parts(block: AccountBlock) -> list[tuple[str, str]]:
         out.append((text, "dim"))
     if block.held:
         out.append((block.held, "muted"))
+    if block.backup_for and block.backup_ends:
+        text = backup_ends_text(block.backup_ends)
+        if block.backup_due:
+            out.append((f"{text}; {backup_renew_step(block.backup_for_number)}", "warn"))
+        else:
+            out.append((text, "dim"))
     return out
 
 
@@ -754,6 +850,8 @@ def block_from_entry(
     by_engine: bool = False,
     sentinel_notes: dict[str, str] | None = None,
     login_row: WindowRow | None = None,
+    backup: BackupFacts | None = None,
+    covered_by: str = "",
     now: float,
     stale_after_s: float,
     reset_strings: Callable[[dict], tuple[str, str] | None] | None = None,
@@ -767,6 +865,9 @@ def block_from_entry(
     the account out (``needs re-login`` wins over any reading).
     ``sentinel_notes`` words the provider's own sentinel states;
     ``stale_after_s`` is the age past which a reading says "as of …".
+    ``backup`` makes the block a backup token's (standing by: no usage at
+    all); ``covered_by`` names the backup token of a login that needs
+    re-login.
     ``reset_strings`` and ``ahead_of_pace`` default to the ones ``oauth`` and
     ``pace`` provide.
     """
@@ -791,6 +892,12 @@ def block_from_entry(
         underneath=underneath and not active, over=over if active else "",
         by_engine=by_engine and active,
     )
+    if backup is not None:
+        base.update(
+            backup_for=backup.parent_label, backup_for_number=str(backup.parent),
+            backup_state=backup.state, backup_ends=backup.ends,
+            backup_due=backup.due(now),
+        )
     sentinel = getattr(entry, "sentinel", None)
     last_good = getattr(entry, "last_good", None)
     fetched_at = getattr(entry, "fetched_at", None)
@@ -814,8 +921,11 @@ def block_from_entry(
         reason = set_aside_reason(set_aside) if set_aside is not None else None
         return AccountBlock(
             **base, state="needs-relogin", windows=tuple(windows_of(last_good)),
-            set_aside=reason,
+            set_aside=reason, covered_by=covered_by,
         )
+    if backup is not None and backup.state == "standing-by":
+        # Never read while its login works: no usage, and no "unavailable".
+        return AccountBlock(**base, state="standing-by")
     if sentinel == USAGE_API_KEY or kind == "api_key":
         spend = getattr(entry, "api_spend", None)
         notes = tuple(api_lines(spend)) if api_lines is not None and isinstance(spend, dict) else ()

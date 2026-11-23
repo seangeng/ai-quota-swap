@@ -130,6 +130,8 @@ A failure that never reached the server says what failed in the log: `Usage fetc
 
 An account added with `qswap add-token` from a setup-token shows `usage unavailable (setup-tokens cannot read usage; ...)`: the usage endpoint refuses setup-tokens. `qswap config set usage.headerProbe true` reads its usage from the headers of a one-token Haiku request instead. Each reading is a real request on that account and uses a little of its quota.
 
+A setup-token kept as a login's backup (`qswap add-token --backup-for N`, experimental) shows `standing by` and no usage while its login works: qswap does not read it until the login needs re-login ([api-accounts.md](api-accounts.md#a-backup-for-a-login-experimental)).
+
 ## The macOS Keychain asks for access
 
 On macOS, qswap keeps each saved login as a Keychain item under the service `ai-quota-swap`, and writes the login in use to Claude Code's own item, `Claude Code-credentials`. It reads and writes both with the system tool `/usr/bin/security`. Claude Code uses the same tool, and macOS lets the program that created an item read it without asking, so you should rarely see a prompt. To look at one of qswap's items without printing its secret:

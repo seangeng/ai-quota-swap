@@ -37,6 +37,43 @@ The usage endpoint does not answer setup-tokens, so by default their row reads:
 
 With `usage.headerProbe` on, qswap reads the 5-hour, weekly and Fable windows from the rate-limit headers of a request for one Haiku output token, sent at the normal polling pace. Each probe is a real request that counts against that account's quota, which is why it is off by default.
 
+#### A backup for a login (experimental)
+
+From 0.1.3. A subscription login ends about a month after you sign in, and then the account needs `qswap login N` before qswap uses it again. A setup-token for the same subscription lasts about a year. Keep one as the login's backup and the account stays in rotation when its login ends:
+
+```text
+$ claude setup-token
+$ qswap add-token --backup-for 3
+Token (input hidden):
+Checking that the token is #3 work's, with one small request to Anthropic
+(one output token).
+Added #7 setup-token-7 (from token) as the backup for #3 work
+It stands by while the login of #3 work works, and stands in when that login
+needs re-login. The token ends about Nov 23, 2027; then make a new one with
+`claude setup-token` and add it the same way.
+```
+
+Run `claude setup-token` yourself. It opens a browser, and you must sign in there as the same account as `#3 work`. Then paste the token it prints into `qswap add-token --backup-for 3` (a number, alias or email names the login).
+
+What the backup does:
+
+- While the login works, the backup stands by. Auto-switch never picks it and qswap never reads its usage, so it sends nothing and its row shows no usage: `#7 setup-token-7 · backup for #3 work · standing by`.
+- Once the login needs re-login (its saved login was refused, or auto-switch set it aside), the backup stands in. It is in rotation in the login's place, with the login's switch line and priority unless you give it its own, and its usage is read from the header probe at the normal pace, whether or not `usage.headerProbe` is on. The login's row says `its backup #7 setup-token-7 covers it`. A login that only passed its end date but still reads is still used, and the backup keeps standing by.
+- When the active login is the one that ends, auto-switch fails over to its backup first: it is the same subscription and the same quota.
+- After `qswap login 3`, the backup goes back to standing by. If the backup is the active account then, auto-switch moves back to `#3 work` at its next check, cooldown or not (`its login works again`, trigger `backup-return`), unless the login is over its switch line; then the usual rules decide.
+- `qswap switch 3` to a login that needs re-login names the backup and `qswap switch 7`. Switching to the backup by hand works like any setup-token account; while the login works, auto-switch then moves back to it.
+
+Adding a backup sends one request with the token, for one output token, and compares its reset times with the login's last reading: one account has one 5-hour and one weekly window. The token is refused when a reset time disagrees, or when the response names another organization. When nothing can be compared (no reading of the login, or no window running), it is refused too; use the login for a moment and try again, or add it with `--unverified`. That saves it unchecked: if the token belongs to another account, auto-switch spends that account's quota under `#3 work`'s name.
+
+One backup per login: adding another replaces the first, after a question (`--yes` skips it). `--slot` does not apply. A token already saved as its own account is linked where it is. Removing the login leaves the backup as an ordinary setup-token account. `qswap export` carries the link, `qswap import` follows the login to its new number, and drops the link (with a note) when the login is not imported. `qswap doctor` warns about a backup whose login is gone, and about one within a month of a year old: make a new token with `claude setup-token` and add it again the same way.
+
+Limits:
+
+- While a backup stands in, each read of its usage is a real one-token request on the subscription.
+- A setup-token can only do inference, so usage resets, Remote Control and claude.ai connectors have not been checked on it. qswap does not spend a usage reset with a setup-token.
+- The year is an estimate from when you added it: the token does not say when it ends.
+- It has not yet been run against a real setup-token. The check, the probe's headers and the move back are tested against stand-ins.
+
 ## Switch to an API key
 
 ```text

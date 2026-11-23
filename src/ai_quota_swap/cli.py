@@ -2726,6 +2726,23 @@ def _dispatch(argv: list[str]) -> None:
         ),
     )
     parser.add_argument(
+        "--backup-for",
+        dest="backup_for",
+        metavar="ACCOUNT",
+        help=(
+            "With 'add-token': store the setup-token as the backup of this "
+            "subscription login (experimental)"
+        ),
+    )
+    parser.add_argument(
+        "--unverified",
+        action="store_true",
+        help=(
+            "With 'add-token --backup-for': save the token even when qswap "
+            "cannot check that it is that login's account"
+        ),
+    )
+    parser.add_argument(
         "--account",
         metavar="NUM|EMAIL",
         help="Limit export to one account (use with 'export')",
@@ -3002,6 +3019,19 @@ def _dispatch(argv: list[str]) -> None:
     if args.email is not None and args.add_token is None:
         parser.error("--email can only be used with 'add-token'")
 
+    if args.backup_for is not None and args.add_token is None:
+        parser.error("--backup-for can only be used with 'add-token'")
+
+    if args.backup_for is not None and not args.backup_for:
+        parser.error("'add-token --backup-for' requires a non-empty ACCOUNT")
+
+    if args.backup_for is not None and args.slot is not None:
+        # A backup goes in its own slot: the one it replaces, or a new one.
+        parser.error("--slot cannot be used with --backup-for")
+
+    if args.unverified and args.backup_for is None:
+        parser.error("--unverified can only be used with 'add-token --backup-for'")
+
     if args.account is not None and not args.export:
         parser.error("--account can only be used with 'export'")
 
@@ -3087,15 +3117,21 @@ def _dispatch(argv: list[str]) -> None:
                 switcher.add_account(slot=args.slot, alias=args.alias)
             _after_add(switcher)
         elif args.add_token is not None:
+            backup = (
+                {"backup_for": args.backup_for, "unverified": args.unverified}
+                if args.backup_for is not None else {}
+            )
             if args.yes:
                 switcher.add_account_from_token(
                     token=args.add_token, email=args.email, slot=args.slot, assume_yes=True,
+                    **backup,
                 )
             else:
                 switcher.add_account_from_token(
                     token=args.add_token,
                     email=args.email,
                     slot=args.slot,
+                    **backup,
                 )
         elif args.remove_account:
             if args.yes:

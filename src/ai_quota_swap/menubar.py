@@ -659,6 +659,11 @@ class AccountState:
     by_engine: bool = False
     #: Its saved login is a setup-token, which no sign-in renews.
     setup_token: bool = False
+    #: A backup token's link (``display.BackupFacts``), and on a login that
+    #: needs re-login, the label of the backup token covering it
+    #: (docs/design/backup-token.md).
+    backup: display.BackupFacts | None = None
+    covered_by: str = ""
 
     def label(self, *, provider_prefix: bool = False, long: bool = True) -> str:
         """``#2 work (maya@example.com)``; ``Claude #2 work (…)`` with the prefix."""
@@ -948,6 +953,7 @@ def account_block(acc: AccountState, *, now: float, stale_after_s: float, show_p
         active=acc.active, disabled=acc.disabled, plan=acc.plan, org=acc.org,
         kind=acc.kind, lines=acc.lines, set_aside=acc.set_aside, sentinel_notes=notes,
         underneath=acc.underneath, over=acc.over, by_engine=acc.by_engine,
+        backup=acc.backup, covered_by=acc.covered_by,
         now=now, stale_after_s=stale_after_s, reset_strings=_reset_strings(now),
         api_lines=_api_lines,
     )
@@ -985,10 +991,20 @@ def account_row(
         parts.append(display.UNDERNEATH)
     if acc.disabled:
         parts.append("disabled")
+    if block.backup_for:
+        parts.append(display.backup_fact(block.backup_for))
+        parts.append(display.BACKUP_STATE_WORDS.get(block.backup_state, block.backup_state))
     state = block.state
     if state == "needs-relogin":
         parts.append(display.NEEDS_RELOGIN)
+        if block.covered_by:
+            parts.append(display.backup_covers(block.covered_by))
         attention = True
+    elif state == "standing-by":
+        # Never read while its login works: the row says when it ends.
+        if block.backup_ends:
+            parts.append(display.backup_ends_text(block.backup_ends))
+        attention = block.backup_due
     elif state == "unavailable":
         retrying = block.error not in ("store-unmirrored", "invalid_client", "setup-token")
         parts.append(display.usage_unavailable(block.error, retry_in_s=block.retry_in_s, retrying=retrying))

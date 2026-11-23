@@ -333,6 +333,50 @@ def login_notices(
     return notes, record
 
 
+def backup_notice_text(backup: str, login: str, number: str) -> str:
+    """``#3 work needs re-login; its backup #7 setup-token-7 stands in for it.
+    Bring the login back with Sign in again in the menu, or run: qswap login 3``."""
+    return (
+        f"{login} needs re-login; its backup {backup} stands in for it. Bring the login "
+        f"back with Sign in again in the menu, or run: qswap login {number}"
+    )
+
+
+def backup_notices(
+    accounts, *, now: float, said: Mapping, both: bool = False,
+) -> tuple[list[Notification], dict]:
+    """One notice when a backup token starts standing in for its login
+    (docs/design/backup-token.md), and the record of what was said.
+
+    ``said`` is :func:`login_notices`'s record; a token's entry is
+    ``backup:claude:N`` with the token's end as its ``deadline`` (so that
+    record keeps it), dropped once the token stands by again, so the next
+    time its login ends there is a notice again. Pure."""
+    record = dict(said)
+    notes: list[Notification] = []
+    rows = [a for a in accounts if getattr(a, "provider", "claude") == "claude"]
+    labels = {
+        a.number: account_label(a.number, alias=a.alias or None, email=a.email,
+                                provider="claude" if both else None, long=False)
+        for a in rows
+    }
+    for acc in rows:
+        backup = getattr(acc, "backup", None)
+        if backup is None:
+            continue
+        key = f"backup:claude:{acc.number}"
+        if backup.state != "standing-in":
+            record.pop(key, None)
+            continue
+        if key in record:
+            continue
+        ends = backup.ends_at if isinstance(backup.ends_at, (int, float)) else now + 365 * 86400.0
+        record[key] = {"deadline": int(max(ends, now + _NOTICE_KEEP_S)), "said": ["standing-in"]}
+        login = labels.get(backup.parent, f"#{backup.parent}")
+        notes.append(Notification(backup_notice_text(labels[acc.number], login, backup.parent)))
+    return notes, record
+
+
 def ref_labeler(accounts: Mapping[str, Mapping[str, str]]) -> Callable[[Mapping | None], str]:
     """A labeller for switch results' ``{number, email}`` refs, with the
     aliases the menu knows (``accounts``: number → ``{"alias", "email"}``)."""

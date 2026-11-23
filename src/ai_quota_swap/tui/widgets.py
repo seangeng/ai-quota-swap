@@ -344,7 +344,14 @@ def summary_parts(
 def _summary_core(block: display.AccountBlock, *, over_budget: bool) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     if block.state == "needs-relogin":
+        if block.covered_by:
+            return [(display.NEEDS_RELOGIN, "warn-text"), (" · ", "sep"),
+                    (display.backup_covers(block.covered_by), "dim")]
         return [(display.NEEDS_RELOGIN, "warn-text")]
+    if block.state == "standing-by":
+        # The header says whose backup it is; nothing is read meanwhile.
+        text = display.backup_ends_text(block.backup_ends) or display.BACKUP_STATE_WORDS["standing-by"]
+        return [(text, "warn-text" if block.backup_due else "dim")]
     if block.state == "unavailable":
         retrying = block.error not in ("store-unmirrored", "invalid_client", "setup-token")
         return [(display.usage_unavailable(block.error, retry_in_s=block.retry_in_s,

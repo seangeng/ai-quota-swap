@@ -65,6 +65,7 @@ _SENTINEL_WORDS = {
     "no credentials": {"*": "no saved login"},
     "re-login needed": {"*": display.NEEDS_RELOGIN},
     "api key": {"*": "API key"},
+    "standing by": {"*": display.BACKUP_STATE_WORDS["standing-by"]},
 }
 
 _UNQUARANTINE_WORDS = {
@@ -261,7 +262,15 @@ def account_facts(
     age = getattr(view, "age_s", None)
     error = getattr(view, "error", None)
     if state == "needs-relogin":
+        covered = getattr(view, "covered_by", "") or ""
+        if covered:
+            return f"{display.NEEDS_RELOGIN}, {display.backup_covers(covered)}", "relogin"
         return display.NEEDS_RELOGIN, "relogin"
+    if state == "standing-by":
+        # A backup token whose login works: never read (docs/design/backup-token.md).
+        parent = getattr(view, "backup_for", "") or ""
+        words = display.BACKUP_STATE_WORDS["standing-by"]
+        return (f"{display.backup_fact(parent)}, {words}" if parent else words), "dim"
     if state == "no-login":
         return "no saved login", "relogin"
     if state == "disabled":
@@ -505,6 +514,9 @@ def switch_reason(event: object) -> str:
     )
     if trigger == "key-return":
         return "a subscription has room again"
+    if trigger == "backup-return":
+        # Off a backup token, back to its login (docs/design/backup-token.md).
+        return "its login works again"
     if trigger == "at-limit":
         if getattr(event, "over_budget", False):
             from ai_quota_swap import api_spend

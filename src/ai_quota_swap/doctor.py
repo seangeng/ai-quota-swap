@@ -1817,8 +1817,59 @@ def _gather_facts(p: Probes) -> _Facts:
     return facts
 
 
+def _backup_token_checks(p: Probes, f: _Facts) -> list[Check]:
+    """Backup tokens (``qswap add-token --backup-for``, docs/design/
+    backup-token.md): one whose login is gone, and one within a month of
+    the end of its year. Nothing at all when no account has one."""
+    from ai_quota_swap import backup_token
+
+    if f.data_dir is None:
+        return []
+    registry, err = _read_json(p, f.data_dir / "sequence.json")
+    if err is not None or not registry:
+        return []
+    accounts = _accounts(registry)
+
+    def label(num: str) -> str:
+        record = accounts.get(num) if isinstance(accounts.get(num), dict) else {}
+        from ai_quota_swap.labels import account_label
+
+        alias = record.get("alias") if isinstance(record.get("alias"), str) else None
+        email = record.get("email") if isinstance(record.get("email"), str) else ""
+        return account_label(num, alias=alias or None, email=email, long=False)
+
+    now = _now(p)
+    renew = "claude setup-token, then qswap add-token --backup-for {n}"
+    checks: list[Check] = []
+    for num, parent in sorted(backup_token.dangling(registry).items()):
+        checks.append(Check(
+            "claude.backup", "claude", WARN,
+            f"{label(num)} is kept as the backup of #{parent}, which is not a "
+            "subscription login qswap manages, so it works as an ordinary setup-token account",
+            fix=f"qswap remove {num}, or add the token again for a login: "
+                "qswap add-token --backup-for N",
+        ))
+    for num, parent in sorted(backup_token.links(registry).items()):
+        ends = backup_token.ends_at(accounts.get(num))
+        words = backup_token.ends_words(ends)
+        if backup_token.due(ends, now):
+            checks.append(Check(
+                "claude.backup", "claude", WARN,
+                f"the token of {label(num)}, the backup for {label(parent)}, ends {words}",
+                fix=renew.format(n=parent),
+            ))
+        else:
+            tail = f"; its token ends {words}" if words else ""
+            checks.append(Check(
+                "claude.backup", "claude", PASS,
+                f"{label(num)} is the backup for {label(parent)}{tail}",
+            ))
+    return checks
+
+
 _SECTIONS: tuple[tuple[str, Callable[[Probes, _Facts], list[Check]]], ...] = (
     ("claude", _claude_checks),
+    ("claude", _backup_token_checks),
     ("claude", _claude_override_checks),
     ("codex", _codex_checks),
     ("data", _data_checks),
