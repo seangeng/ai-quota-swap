@@ -2002,3 +2002,320 @@ class TestRepeatFailureFilter:
         assert any(isinstance(f, RepeatFailureFilter) for f in logger.filters)
         h.engine.stop()
         assert not any(isinstance(f, RepeatFailureFilter) for f in logger.filters)
+
+
+# == Saved logins that end (autoswitch.watchLoginExpiry) =====================================
+
+from ai_quota_swap.autoswitch import LOGIN_ENDING_S, LOGIN_LEAVE_S  # noqa: E402
+
+
+def _reading(now: float, pct: float, *, weekly: float = 0.0, weekly_in: float = 5 * DAY,
+             ends_in: float | None = None) -> UsageEntry:
+    """A fresh reading; ``ends_in`` puts the saved login's end date that
+    many seconds from ``now`` (negative: already past)."""
+    usage = {
+        "five_hour": {"pct": pct, "resets_at": _iso_at(now + 3 * HOUR)},
+        "seven_day": {"pct": weekly, "resets_at": _iso_at(now + weekly_in)},
+    }
+    return UsageEntry(
+        last_good=usage, fetched_at=now, age_s=0.0,
+        login_expires_at=None if ends_in is None else now + ends_in,
+    )
+
+
+def _fleet(temp_home, **settings) -> EngineHarness:
+    h = EngineHarness(temp_home, **settings)
+    for num, email in ((1, "a@example.com"), (2, "b@example.com"), (3, "c@example.com")):
+        h.seed(num, email)
+    h.make_live("a@example.com", 1)
+    return h
+
+
+def _switches(h: EngineHarness) -> list[SwitchEvent]:
+    return [e for e in h.events if isinstance(e, SwitchEvent)]
+
+
+class TestChoosingAroundAnEndingLogin:
+    """Rule 1: a candidate whose login ends within LOGIN_ENDING_S (or has
+    passed its end date) ranks behind every other, in every strategy, and is
+    still taken when nothing else will do."""
+
+    @staticmethod
+    def _picks(h: EngineHarness, strategy: str, ending: bool) -> SwitchEvent:
+        now = h.clock.now
+        two_ends = 1 * HOUR if ending else None
+        if strategy in ("best", "weekly-first"):
+            entries = {
+                "1": _reading(now, 95.0),
+                # best's pick is #2 (most room); weekly-first's is #2 too (its
+                # weekly window resets first).
+                "2": _reading(now, 10.0, weekly_in=1 * DAY, ends_in=two_ends),
+                "3": _reading(now, 30.0, weekly_in=3 * DAY),
+            }
+        else:
+            # Below the line: consume-first moves to a sooner weekly reset,
+            # priority-consume-first to a higher tier; both pick #2.
+            entries = {
+                "1": _reading(now, 40.0, weekly_in=6 * DAY),
+                "2": _reading(now, 20.0, weekly_in=1 * DAY, ends_in=two_ends),
+                "3": _reading(now, 20.0, weekly_in=2 * DAY),
+            }
+            if strategy == "priority-consume-first":
+                h.switcher.set_account_priority("2", 3)
+                h.switcher.set_account_priority("3", 2)
+        assert h.tick_with_entries(entries) is TickOutcome.SWITCHED, [
+            (e.kind, getattr(e, "reason", "")) for e in h.events
+        ]
+        return _switches(h)[-1]
+
+    @pytest.mark.parametrize("ending", [False, True])
+    @pytest.mark.parametrize(
+        "strategy", ["best", "weekly-first", "consume-first", "priority-consume-first"]
+    )
+    def test_a_layer_above_every_strategy(self, temp_home, strategy, ending):
+        h = _fleet(temp_home, strategy=strategy)
+        assert self._picks(h, strategy, ending=ending).to_ref["number"] == (3 if ending else 2)
+
+    def test_a_passed_end_date_ranks_last_too(self, temp_home):
+        h = _fleet(temp_home)
+        now = h.clock.now
+        assert h.tick_with_entries({
+            "1": _reading(now, 95.0),
+            "2": _reading(now, 10.0, ends_in=-DAY),
+            "3": _reading(now, 30.0),
+        }) is TickOutcome.SWITCHED
+        assert _switches(h)[-1].to_ref["number"] == 3
+
+    def test_still_taken_when_nothing_else_has_room(self, temp_home):
+        h = _fleet(temp_home)
+        now = h.clock.now
+        # At the limit, the only account with room has an hour of login left.
+        assert h.tick_with_entries({
+            "1": _reading(now, 100.0),
+            "2": _reading(now, 10.0, ends_in=HOUR),
+            "3": _reading(now, 100.0),
+        }) is TickOutcome.SWITCHED
+        assert (_switches(h)[-1].trigger, h.active_number()) == ("at-limit", 2)
+
+    def test_a_move_at_the_line_takes_it_as_the_last_choice(self, temp_home):
+        h = _fleet(temp_home)
+        now = h.clock.now
+        assert h.tick_with_entries({
+            "1": _reading(now, 95.0),
+            "2": _reading(now, 10.0, ends_in=HOUR),
+            "3": _reading(now, 96.0),
+        }) is TickOutcome.SWITCHED
+        assert (_switches(h)[-1].trigger, h.active_number()) == ("proactive", 2)
+
+    def test_a_move_at_the_line_never_lands_on_a_login_about_to_end(self, temp_home):
+        h = _fleet(temp_home)
+        now = h.clock.now
+        outcome = h.tick_with_entries({
+            "1": _reading(now, 95.0),
+            "2": _reading(now, 10.0, ends_in=LOGIN_LEAVE_S - 60),
+            "3": _reading(now, 96.0),
+        })
+        assert outcome is TickOutcome.BLOCKED
+        assert _switches(h) == []
+
+    def test_an_escape_may_land_on_one(self, temp_home):
+        h = _fleet(temp_home)
+        now = h.clock.now
+        assert h.tick_with_entries({
+            "1": _reading(now, 100.0),
+            "2": _reading(now, 10.0, ends_in=LOGIN_LEAVE_S - 60),
+            "3": _reading(now, 100.0),
+        }) is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_accounts_without_an_end_date_are_unaffected(self, temp_home):
+        h = _fleet(temp_home)
+        now = h.clock.now
+        assert h.tick_with_entries({
+            "1": _reading(now, 95.0), "2": _reading(now, 10.0), "3": _reading(now, 30.0),
+        }) is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_off_ranks_as_before(self, temp_home):
+        h = _fleet(temp_home, watch_login_expiry=False)
+        now = h.clock.now
+        assert h.tick_with_entries({
+            "1": _reading(now, 95.0),
+            "2": _reading(now, 10.0, ends_in=LOGIN_LEAVE_S - 60),
+            "3": _reading(now, 30.0),
+        }) is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+
+class TestLeavingAnEndingLogin:
+    """Rule 2: the active account is left LOGIN_LEAVE_S before its login
+    ends (or once its end date has passed) for an account with room whose
+    login lasts; with nowhere better to go it stays and says why."""
+
+    def test_leaves_with_a_trigger_of_its_own(self, temp_home):
+        h = _fleet(temp_home)
+        now = h.clock.now
+        assert h.tick_with_entries({
+            "1": _reading(now, 40.0, ends_in=12 * MINUTE),
+            "2": _reading(now, 60.0),
+            "3": _reading(now, 95.0),
+        }) is TickOutcome.SWITCHED
+        (switch,) = _switches(h)
+        assert (switch.trigger, h.active_number()) == ("login-expiry", 2)
+        assert switch.to_json()["trigger"] == "login-expiry"
+        assert switch.human() == (
+            "Switched #1 a@example.com → #2 b@example.com · its login ends in 12m; "
+            "qswap login 1 renews it"
+        )
+        assert h.state()["leftTrigger"] == "login-expiry"
+
+    def test_the_words_for_the_time_left(self):
+        from ai_quota_swap import autolog
+
+        assert autolog.login_end_words(T0 + 12 * MINUTE, 12 * MINUTE) == "its login ends in 12m"
+        assert autolog.login_end_words(T0 - HOUR, -HOUR, _iso_at(T0)).startswith(
+            "its login reached its end date ("
+        )
+        assert autolog.login_end_words(None, None) == "its login is about to end"
+
+    def test_a_passed_end_date_is_left_too(self, temp_home):
+        h = _fleet(temp_home)
+        now = h.clock.now
+        assert h.tick_with_entries({
+            "1": _reading(now, 40.0, ends_in=-HOUR),
+            "2": _reading(now, 60.0),
+            "3": _reading(now, 95.0),
+        }) is TickOutcome.SWITCHED
+        text = _switches(h)[0].human()
+        assert "· its login reached its end date (" in text, text
+        assert text.endswith("; qswap login 1 renews it")
+
+    def test_over_its_line_the_login_decides(self, temp_home):
+        """Over its line with its login about to end: any healthy account
+        whose login lasts will do, though it would not beat the active by the
+        hysteresis margin at the line."""
+        h = _fleet(temp_home)
+        now = h.clock.now
+        assert h.tick_with_entries({
+            "1": _reading(now, 91.0, ends_in=5 * MINUTE),
+            "2": _reading(now, 85.0),
+            "3": _reading(now, 97.0),
+        }) is TickOutcome.SWITCHED
+        assert (_switches(h)[0].trigger, h.active_number()) == ("login-expiry", 2)
+
+    def test_nowhere_better_to_go(self, temp_home):
+        h = _fleet(temp_home)
+        now = h.clock.now
+        for _ in range(5):
+            assert h.tick_with_entries({
+                "1": _reading(now, 40.0, ends_in=12 * MINUTE),
+                "2": _reading(now, 10.0, ends_in=LOGIN_ENDING_S - MINUTE),  # ending too
+                "3": _reading(now, 95.0),                                   # over its line
+            }) is TickOutcome.NO_ACTION
+        assert _switches(h) == []
+        hold = [e for e in h.events if isinstance(e, NoSwitchEvent)][-1]
+        assert hold.reason == "login-ending"
+        assert hold.human() == (
+            "No switch: #1 a@example.com's login ends in 12m, and no account with room "
+            "has a login that lasts longer; qswap login 1 renews it"
+        )
+        assert hold.to_json()["detail"].startswith("account 1's login ends at ")
+
+    def test_only_account(self, temp_home):
+        h = EngineHarness(temp_home)
+        h.seed(1, "a@example.com")
+        h.make_live("a@example.com", 1)
+        now = h.clock.now
+        assert h.tick_with_entries({"1": _reading(now, 40.0, ends_in=MINUTE)}) is TickOutcome.NO_ACTION
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == ["login-ending"]
+
+    def test_waits_out_the_cooldown(self, temp_home):
+        h = _fleet(temp_home)
+        h.engine._mutate_state(lambda s: s.update(lastSwitchAt=h.clock.now - 60))
+        now = h.clock.now
+        entries = {
+            "1": _reading(now, 40.0, ends_in=12 * MINUTE),
+            "2": _reading(now, 60.0),
+            "3": _reading(now, 95.0),
+        }
+        assert h.tick_with_entries(entries) is TickOutcome.NO_ACTION
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == ["cooldown"]
+        h.clock.advance(COOLDOWN)
+        now = h.clock.now
+        assert h.tick_with_entries({
+            "1": _reading(now, 40.0, ends_in=12 * MINUTE - COOLDOWN),
+            "2": _reading(now, 60.0),
+            "3": _reading(now, 95.0),
+        }) is TickOutcome.SWITCHED
+
+    @pytest.mark.parametrize("strategy", ["best", "consume-first", "priority-consume-first"])
+    def test_no_ping_pong(self, temp_home, strategy):
+        """#1's login ends; it is left for #2, then for an hour #2 burns and
+        #1 is the account every strategy would otherwise go back to: the most
+        room, the sooner weekly reset, the higher tier. It never goes back."""
+        h = _fleet(temp_home, strategy=strategy)
+        h.switcher.set_account_disabled("3", True)
+        if strategy == "priority-consume-first":
+            h.switcher.set_account_priority("1", 5)
+        start = h.clock.now
+        ends = start + 10 * MINUTE
+        two = 50.0
+        for _minute in range(60):
+            now = h.clock.now
+            two = min(two + 1.0, 99.0) if h.active_number() == 2 else two
+            h.tick_with_entries({
+                "1": UsageEntry(
+                    last_good=_reading(now, 5.0, weekly_in=1 * DAY).last_good,
+                    fetched_at=now, age_s=0.0, login_expires_at=ends,
+                ),
+                "2": _reading(now, two, weekly_in=4 * DAY),
+                "3": _reading(now, 95.0),
+            })
+            h.clock.advance(MINUTE)
+        moves = [(s.from_ref["number"], s.to_ref["number"], s.trigger) for s in _switches(h)]
+        assert moves == [(1, 2, "login-expiry")], moves
+
+    def test_off_stays_as_before(self, temp_home):
+        h = _fleet(temp_home, watch_login_expiry=False)
+        now = h.clock.now
+        assert h.tick_with_entries({
+            "1": _reading(now, 40.0, ends_in=-HOUR),
+            "2": _reading(now, 60.0),
+            "3": _reading(now, 95.0),
+        }) is TickOutcome.NO_ACTION
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == ["below-threshold"]
+
+    def test_the_setting_is_a_documented_autoswitch_key(self, temp_home):
+        from ai_quota_swap.settings import SETTING_SPECS, load_settings
+
+        spec = SETTING_SPECS["autoswitch.watchLoginExpiry"]
+        assert (spec.kind, spec.default) == ("bool", True)
+        root = temp_home / "settings-root"
+        root.mkdir()
+        set_setting(root, "autoswitch.watchLoginExpiry", "false")
+        assert load_settings(root).watch_login_expiry is False
+
+
+class TestTheCollectorCarriesTheEndDate:
+    """The end date comes from the credential each pass already reads: the
+    live store's for the active account, the backup's for the others."""
+
+    def test_live_and_backup(self, temp_home, monkeypatch):
+        h = EngineHarness(temp_home)
+        h.seed(1, "a@example.com")
+        h.seed(2, "b@example.com")
+        backup = json.loads(h.switcher._read_account_credentials("2", "b@example.com"))
+        backup["claudeAiOauth"]["refreshTokenExpiresAt"] = 1_799_000_000_000
+        h.switcher._write_account_credentials("2", "b@example.com", json.dumps(backup))
+        (temp_home / ".claude" / ".credentials.json").write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "sk-live", "refreshToken": "rt-live",
+                "refreshTokenExpiresAt": 1_798_000_000_000,
+            },
+        }))
+        (temp_home / ".claude.json").write_text(json.dumps({
+            "oauthAccount": {"emailAddress": "a@example.com", "accountUuid": "uuid-1"},
+        }))
+        entries = h.switcher.usage_entries_by_account(fetch=set())
+        assert entries["1"].login_expires_at == 1_798_000_000.0
+        assert entries["2"].login_expires_at == 1_799_000_000.0

@@ -461,10 +461,39 @@ def poll_sentence(poll: object) -> str:
 # -- why a switch, in words ------------------------------------------------------------
 
 
+def login_end_words(ends_at: object, left_s: object, at: object = None) -> str:
+    """``its login ends in 12m`` / ``its login reached its end date
+    (14:02)``: ``left_s`` is how long the login had left when the engine
+    decided (its own clock), ``ends_at`` the end date (epoch seconds), shown
+    as a clock seen from ``at`` (an ISO instant; default now)."""
+    from ai_quota_swap.oauth import format_countdown
+
+    if not isinstance(left_s, (int, float)) or isinstance(left_s, bool):
+        return "its login is about to end"
+    if left_s > 0:
+        return f"its login ends in {format_countdown(left_s)}"
+    if isinstance(ends_at, (int, float)) and not isinstance(ends_at, bool):
+        shown = clock_at(datetime.fromtimestamp(ends_at, tz=timezone.utc).isoformat(), at)
+        if shown is not None:
+            return f"its login reached its end date ({shown[0]})"
+    return "its login reached its end date"
+
+
+def _login_fix(number: object) -> str:
+    return f"qswap login {number} renews it" if number not in (None, "") else "qswap login renews it"
+
+
 def switch_reason(event: object) -> str:
     """``5h reached 91%``, ``limit reached``, ``usage unreadable``, ..."""
     trigger = getattr(event, "trigger", "")
     binding = getattr(event, "binding", None)
+    if trigger == "login-expiry":
+        number = (getattr(event, "from_ref", None) or {}).get("number")
+        words = login_end_words(
+            getattr(event, "login_ends_at", None), getattr(event, "login_left_s", None),
+            getattr(event, "ts", None),
+        )
+        return f"{words}; {_login_fix(number)}"
     if trigger == "proactive":
         if binding is not None:
             value = pct_text(binding.pct, pct_decimals(binding.line))
@@ -756,6 +785,8 @@ def no_switch_fragment(event: object) -> tuple[str, str]:
         return f"{name} is idle, resumes on next use", "routine"
     if reason == "offline":
         return f"offline{_offline_since(event)}, waiting for the network", "wait"
+    # login-ending needs the user: the line is the whole sentence, with its
+    # command.
     if reason == "active-usage-unknown":
         counts = _failover_counts(event)
         if counts:
@@ -973,6 +1004,17 @@ def no_switch_sentence(event: object) -> str:
         return (
             f"No switch: offline{_offline_since(event)} ({_offline_words(event)}); "
             "auto-switch waits for the network and does not fail over meanwhile"
+        )
+    if reason == "login-ending":
+        account = getattr(event, "account", None)
+        who = context_label(account, context) if account else "the active account"
+        words = login_end_words(
+            getattr(event, "login_ends_at", None), getattr(event, "login_left_s", None),
+            getattr(event, "ts", None),
+        ).removeprefix("its ")
+        return (
+            f"No switch: {who}'s {words}, and no account with room has a login that "
+            f"lasts longer; {_login_fix(account)}"
         )
     if reason == "active-usage-unknown":
         counts = _failover_counts(event)

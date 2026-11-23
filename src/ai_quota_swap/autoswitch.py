@@ -162,6 +162,25 @@ OFFLINE_RETRY_S = 50.0
 # engine dropped without stop()) lets every line through after this long.
 QUIET_STALE_S = 30 * 60.0
 
+# Saved logins end (``refreshTokenExpiresAt``; autoswitch.watchLoginExpiry).
+# Whether the server holds to that date exactly is not known, so both rules
+# are preferences, never exclusions.
+#
+# Choosing: a candidate whose login ends within this, or has passed its end
+# date, ranks behind every candidate whose login does not, in every strategy
+# (a layer above the strategy's own order). It is still chosen when nothing
+# else qualifies. Two hours leaves the user a working session on the account
+# and time to renew it.
+LOGIN_ENDING_S = 2 * 3600.0
+# Leaving: the active account is left this long before its login ends (or
+# once its end date has passed) for a candidate with room whose login is not
+# ending (trigger ``login-expiry``). A move by choice (at the line, to a
+# sooner reset, to a higher tier) never lands on a login this close to its
+# end: the next check would leave it again, which is how two accounts would
+# ping-pong. Fifteen minutes is three default cooldowns' worth of checks,
+# and leaves the move time to wait out a cooldown.
+LOGIN_LEAVE_S = 15 * 60.0
+
 # Margin on the reset axis for the no-return bar's release
 # (`_left_account_recovered`): the account we left counts as recovered only
 # once its binding reset has moved at least this much nearer. Five minutes is
@@ -544,6 +563,7 @@ class SwitchEvent(AutoSwitchEvent):
     kind: ClassVar[str] = "switch"
     # "proactive" | "at-limit" | "failover" | "consume-first" | "priority" |
     # "key-return" (a key the engine entered is left: a subscription has room)
+    # | "login-expiry" (the active account's saved login is about to end)
     trigger: str
     from_ref: dict | None
     to_ref: dict | None
@@ -582,6 +602,10 @@ class SwitchEvent(AutoSwitchEvent):
     # A dry run moving to a key on this machine's figure, which a real run
     # measures first and may then not move (decision EM6).
     measures_first: bool = _human_only(False)
+    # login-expiry: when the login of the account left ends (epoch seconds),
+    # and how long that was from the decision, on the engine's clock.
+    login_ends_at: float | None = _human_only()
+    login_left_s: float | None = _human_only()
 
     def _fields(self) -> dict:
         fields = {
@@ -636,6 +660,10 @@ class NoSwitchEvent(AutoSwitchEvent):
     # (``network (dns)``).
     since: str | None = _human_only()
     cause: str | None = _human_only()
+    # login-ending: when the active account's login ends (epoch seconds),
+    # and how long that is from the decision, on the engine's clock.
+    login_ends_at: float | None = _human_only()
+    login_left_s: float | None = _human_only()
 
     def _fields(self) -> dict:
         return {"reason": self.reason, "detail": self.detail}
@@ -1728,6 +1756,27 @@ def _binding_recovery_ts(
     return ts if ts is not None and ts > now else float("inf")
 
 
+def _login_ending(login_left: Mapping[str, float] | None, num: str) -> bool:
+    """Whether ``num``'s saved login ends within ``LOGIN_ENDING_S`` or has
+    passed its end date (``login_left`` is seconds left, negative once
+    past; an account without an end date is absent)."""
+    left = login_left.get(num) if login_left else None
+    return left is not None and left <= LOGIN_ENDING_S
+
+
+def _login_leaving(login_left: Mapping[str, float] | None, num: str) -> bool:
+    """Whether ``num``'s saved login ends within ``LOGIN_LEAVE_S`` or has
+    passed its end date: the account rule 2 leaves."""
+    left = login_left.get(num) if login_left else None
+    return left is not None and left <= LOGIN_LEAVE_S
+
+
+#: Moves made by choice, while the active account still has room: they never
+#: land on a login about to end (``LOGIN_LEAVE_S``), which the next check
+#: would leave again. The escapes (at-limit, failover) may, last.
+_CHOSEN_MOVES = frozenset({"proactive", "consume-first", "priority"})
+
+
 class ThresholdMap(dict):
     """Effective switch threshold per account number — total by construction.
 
@@ -2781,6 +2830,45 @@ class AutoSwitchEngine:
             cause=str(episode["detail"]),
         )
 
+    # -- saved logins that end ---------------------------------------------------
+
+    def _login_left(
+        self, entries: Mapping[str, object], settings: AutoSwitchSettings
+    ) -> dict[str, float]:
+        """Seconds until each account's saved login ends (negative once its
+        end date has passed), from ``UsageEntry.login_expires_at``, which the
+        collector reads from the credentials it already holds. Empty with
+        autoswitch.watchLoginExpiry off; an account without an end date (an
+        API key, a setup-token, Codex) is absent. No clock read of its own:
+        the collection's instant."""
+        if not getattr(settings, "watch_login_expiry", True):
+            return {}
+        now = self._collect_started if self._collect_started is not None else self.clock()
+        left: dict[str, float] = {}
+        for num, entry in entries.items():
+            ends = _number(getattr(entry, "login_expires_at", None))
+            if ends is not None:
+                left[str(num)] = ends - now
+        return left
+
+    def _login_ending_hold(self, current: str, entries: Mapping[str, object]) -> TickOutcome:
+        """The active account's login is about to end and no account with
+        room has a login that lasts: stay, and say why and what renews it."""
+        ends = _number(getattr(entries.get(current), "login_expires_at", None))
+        when = f" at {_iso_at(ends)}" if ends is not None else ""
+        now = self._collect_started if self._collect_started is not None else self.clock()
+        self._emit(NoSwitchEvent(
+            reason="login-ending",
+            detail=(
+                f"account {current}'s login ends{when}, and no account with room has "
+                "a login that lasts longer"
+            ),
+            account=str(current),
+            login_ends_at=ends,
+            login_left_s=ends - now if ends is not None else None,
+        ))
+        return TickOutcome.NO_ACTION
+
     # -- accounts that stop being readable ---------------------------------------
     #
     # One log line when an account stops being readable for a reason that
@@ -3301,6 +3389,12 @@ class AutoSwitchEngine:
         active_headroom = headroom.get(current)
         active_binding: BindingWindow | None = None
         self._key_wait_undecided = not active_over_budget and active_headroom is None
+        # Each saved login's end date (autoswitch.watchLoginExpiry): seconds
+        # left per account, read from the credentials this check's collection
+        # already holds. ``leaving``: the active account's login ends within
+        # LOGIN_LEAVE_S or has passed its end date.
+        login_left = self._login_left(entries, settings)
+        leaving = not current_is_key and _login_leaving(login_left, current)
         if active_over_budget:
             # The budget is this account's limit: leave it like an exhausted
             # one (at-limit skips the cooldown and the landing hysteresis).
@@ -3321,7 +3415,11 @@ class AutoSwitchEngine:
                 if active_binding is not None
                 else (100.0 - active_headroom) < thresholds[current]
             )
-            if below:
+            if below and leaving:
+                # Its login is about to end: leave it while it still works,
+                # for an account whose login lasts (rule 2).
+                trigger = "login-expiry"
+            elif below:
                 if settings.strategy != "consume-first" and not priority_mode:
                     self._emit(
                         NoSwitchEvent(
@@ -3345,6 +3443,11 @@ class AutoSwitchEngine:
             else:
                 # Exhaustion is physical: at-limit reads the raw headroom.
                 trigger = "at-limit" if active_headroom <= 0 else "proactive"
+                if trigger == "proactive" and leaving:
+                    # Over its line with its login about to end: the login
+                    # decides where to go. Its landing rule takes any healthy
+                    # account whose login lasts, hysteresis or not.
+                    trigger = "login-expiry"
                 ahead = (
                     self._own_reset_ahead(
                         state, current, entries, usage, thresholds, quarantined,
@@ -3442,9 +3545,18 @@ class AutoSwitchEngine:
             "limit_reason": active_limit,
             "limit_source": self._spend_source(current, entries),
             "scan_failure": self._scan_failure_of(current, active_limit, entries),
+            "login_ends_at": (
+                _number(getattr(entries.get(current), "login_expires_at", None))
+                if trigger == "login-expiry" else None
+            ),
+            "login_left_s": login_left.get(current) if trigger == "login-expiry" else None,
         }
 
-        if trigger in ("proactive", "consume-first", "priority") and self._in_cooldown(state):
+        # login-expiry waits out the cooldown too: LOGIN_LEAVE_S leaves room
+        # for one, and it is what bounds a move by choice.
+        if trigger in (
+            "proactive", "consume-first", "priority", "login-expiry",
+        ) and self._in_cooldown(state):
             self._emit(NoSwitchEvent(reason="cooldown", wait_s=self._cooldown_left(state)))
             return TickOutcome.NO_ACTION
 
@@ -3492,6 +3604,8 @@ class AutoSwitchEngine:
                 )
             )
             return TickOutcome.NO_ACTION
+        if trigger == "login-expiry" and not oauth_candidates:
+            return self._login_ending_hold(current, entries)
         if not oauth_candidates and not api_key_candidates:
             # Won't change until the user adds/recovers an account — no point
             # re-polling at full cadence.
@@ -3553,7 +3667,8 @@ class AutoSwitchEngine:
                     usage=kw["usage"], headroom=kw["headroom"],
                     current=current, active_enabled=current in switchable,
                     settings=settings, now=kw["now"], thresholds=thresholds,
-                    policies=policies,
+                    policies=policies, trigger=kw["trigger"],
+                    login_left=kw.get("login_left"),
                 )
             # Recomputed per snapshot, never once per tick: the consume-first
             # two-phase commit replaces `headroom` and `active_headroom` and
@@ -3601,9 +3716,12 @@ class AutoSwitchEngine:
             settings=settings,
             now=decided_now,
             thresholds=thresholds,
+            login_left=login_left,
         )
 
-        if (trigger == "consume-first" or priority_mode) and ordered:
+        # login-expiry decides below the escalation band too, on readings up
+        # to a candidate interval old: re-read before a move it would make.
+        if (trigger in ("consume-first", "login-expiry") or priority_mode) and ordered:
             # Two-phase commit: the provisional pick may have ridden a
             # snapshot up to CANDIDATE_MAX_INTERVAL_S stale — consume-first
             # decides below the threshold, where the collector only escalates
@@ -3633,6 +3751,7 @@ class AutoSwitchEngine:
                 settings=settings,
                 now=decided_now,
                 thresholds=thresholds,
+                login_left=login_left,
             )
 
         priority_active_ready = priority_mode and current in switchable and self._priority_ready(
@@ -3644,7 +3763,9 @@ class AutoSwitchEngine:
             and trigger == "at-limit"
             and not priority_active_ready
         )
-        takers = self._session_takers(oauth_candidates, headroom) if key_branch else []
+        takers = (
+            self._session_takers(oauth_candidates, headroom, login_left) if key_branch else []
+        )
         if takers:
             # No key while a subscription could take the sessions (decision
             # EM9): readable, with RETURN_ROOM_PCT points of room in every
@@ -3748,6 +3869,8 @@ class AutoSwitchEngine:
             return self._all_exhausted(usage)
 
         if not ordered:
+            if trigger == "login-expiry":
+                return self._login_ending_hold(current, entries)
             if priority_active_ready:
                 self._emit(NoSwitchEvent(
                     reason="already-consuming-priority",
@@ -3844,7 +3967,9 @@ class AutoSwitchEngine:
         systemic = ""
         for num in ordered:
             email = self.switcher.account_email(num)
-            if trigger == "consume-first" or (priority_mode and num in oauth_candidates):
+            if trigger in ("consume-first", "login-expiry") or (
+                priority_mode and num in oauth_candidates
+            ):
                 # The phase-2 refetch is best-effort: the collector refuses
                 # accounts in failure backoff or claimed by a concurrent
                 # poller, which then serve their stored entries. Consume-first
@@ -3866,7 +3991,7 @@ class AutoSwitchEngine:
                             account=num,
                         )
                     )
-                    if priority_mode and not priority_active_ready:
+                    if trigger == "login-expiry" or (priority_mode and not priority_active_ready):
                         continue
                     return TickOutcome.NO_ACTION
             if self.dry_run:
@@ -4368,6 +4493,8 @@ class AutoSwitchEngine:
         current: str, active_enabled: bool, settings: AutoSwitchSettings,
         now: float, thresholds: Mapping[str, float],
         policies: Mapping[str, AccountPolicy],
+        trigger: str = "priority",
+        login_left: Mapping[str, float] | None = None,
     ) -> tuple[list[str], bool, float | None]:
         """Highest usable tier, then earliest weekly reset, with stable ties.
 
@@ -4376,6 +4503,12 @@ class AutoSwitchEngine:
         equal keys, so changing usage alone cannot cause ping-pong. Unlike the
         existing strategies, even at-limit/failover never selects an account
         at its switch line. Priorities do not bypass eligibility checks.
+
+        A login about to end ranks behind every other (``LOGIN_ENDING_S``),
+        a layer above the tiers. Leaving the active account for its login
+        (``login-expiry``) takes any ready account whose login is not ending,
+        whatever its tier; a move by choice never lands on a login within
+        ``LOGIN_LEAVE_S`` of its end.
         """
         def key(num: str) -> tuple[int, float]:
             reset = _seven_day_reset_ts(usage.get(num), now)
@@ -4384,7 +4517,7 @@ class AutoSwitchEngine:
 
         active_key = (
             key(current)
-            if active_enabled and self._priority_ready(
+            if trigger != "login-expiry" and active_enabled and self._priority_ready(
                 usage.get(current), headroom.get(current), settings, thresholds[current]
             ) else None
         )
@@ -4392,8 +4525,11 @@ class AutoSwitchEngine:
             num for num in oauth_candidates
             if self._priority_ready(usage.get(num), headroom.get(num), settings, thresholds[num])
             and (active_key is None or key(num) < active_key)
+            and not (trigger == "login-expiry" and _login_ending(login_left, num))
+            and not (trigger in _CHOSEN_MOVES and _login_leaving(login_left, num))
         ]
-        ordered.sort(key=key)  # Sequence order breaks candidate ties.
+        # Sequence order breaks candidate ties.
+        ordered.sort(key=lambda num: (_login_ending(login_left, num), *key(num)))
         return (
             ordered,
             any(headroom.get(num) is not None for num in oauth_candidates),
@@ -4417,6 +4553,10 @@ class AutoSwitchEngine:
         # for every account, so a caller without per-account context behaves
         # exactly as this function did before per-account thresholds existed.
         thresholds: Mapping[str, float] | None = None,
+        # Seconds until each account's saved login ends (negative once past;
+        # absent without an end date, or with autoswitch.watchLoginExpiry
+        # off). Optional for the same reason as ``thresholds``.
+        login_left: Mapping[str, float] | None = None,
     ) -> tuple[list[str], bool, float | None]:
         """Filter and rank OAuth candidates for this tick's trigger.
 
@@ -4424,6 +4564,11 @@ class AutoSwitchEngine:
         no state writes — so the consume-first two-phase commit can run it
         twice per tick: on the stored snapshot to decide provisionally, then
         on the escalated refetch to re-verify before switching.
+
+        A candidate whose login ends within ``LOGIN_ENDING_S`` (or has
+        passed its end date) sorts behind every other, whatever the strategy;
+        a move by choice never lands on one within ``LOGIN_LEAVE_S``; and
+        ``login-expiry`` takes only candidates whose login is not ending.
         """
         if thresholds is None:
             thresholds = ThresholdMap({}, settings.threshold)
@@ -4517,6 +4662,10 @@ class AutoSwitchEngine:
                 continue  # itself at its limit — never a target
             if num == no_return:
                 continue  # the account we just left; see _no_return_account
+            if trigger == "login-expiry" and _login_ending(login_left, num):
+                continue  # leaving one login about to end for another is no move
+            if trigger in _CHOSEN_MOVES and _login_leaving(login_left, num):
+                continue  # the next check would leave it again (ping-pong)
             binding = bindings[num]
             # Policy headroom against the candidate's own lines, and whether
             # any of them is reached; raw `h` / the single line when it
@@ -4532,7 +4681,7 @@ class AutoSwitchEngine:
                 if consume_first or weekly_first
                 else None
             )
-            if trigger in ("proactive", "consume-first"):
+            if trigger in ("proactive", "consume-first", "login-expiry"):
                 # Landing must be healthy: an account at/over any of its own
                 # lines would re-trigger on the very next tick. At-limit and
                 # failover are escapes that skip this whole block — any account
@@ -4551,6 +4700,11 @@ class AutoSwitchEngine:
                     # left consume-first users with no anti-flap guard at all.)
                     if not _all_above_margin_met(h, active_headroom or 0.0):
                         continue
+                elif trigger == "login-expiry":
+                    # The login, not usage, is why: any healthy landing will
+                    # do, with no hysteresis against the active account and no
+                    # sooner-reset rule.
+                    pass
                 elif consume_first:
                     # Purely proactive on reset ordering: below the threshold,
                     # only move to accounts whose weekly window resets sooner
@@ -4585,7 +4739,7 @@ class AutoSwitchEngine:
                     -h,
                     _binding_recovery_ts(usage.get(num), self._models, now),
                 )
-            elif consume_first or (weekly_first and trigger == "proactive"):
+            elif consume_first or (weekly_first and trigger in ("proactive", "login-expiry")):
                 # Soonest weekly reset first (unknown resets sort last), most
                 # policy headroom breaks ties, then sequence order. weekly-first
                 # keeps `best`'s headroom order for the at-limit and failover
@@ -4593,7 +4747,9 @@ class AutoSwitchEngine:
                 key = (reset_ts if reset_ts is not None else float("inf"), -lh)
             else:
                 key = (-lh,)
-            qualifying.append((key, num))
+            # A login about to end sorts behind every other: a layer above
+            # the strategy's own order.
+            qualifying.append(((_login_ending(login_left, num), *key), num))
         # Ascending by the strategy's key; list order (sequence order) breaks ties.
         qualifying.sort(key=lambda t: t[0])
         return [num for _, num in qualifying], any_known, active_reset_ts
@@ -4806,7 +4962,7 @@ class AutoSwitchEngine:
         with self._state_lock():
             state = self._read_state()
             if trigger in (
-                "proactive", "consume-first", "priority", "key-return",
+                "proactive", "consume-first", "priority", "key-return", "login-expiry",
             ) and self._in_cooldown(state):
                 self._emit(
                     NoSwitchEvent(reason="cooldown", wait_s=self._cooldown_left(state))
@@ -5022,6 +5178,8 @@ class AutoSwitchEngine:
             "target_binding": (cause.get("target_bindings") or {}).get(number),
             "scan_failure": cause.get("scan_failure"),
             "measures_first": self.dry_run and number in (cause.get("ledger_keys") or ()),
+            "login_ends_at": cause.get("login_ends_at"),
+            "login_left_s": cause.get("login_left_s"),
         }
 
     def _account_views(
@@ -5464,15 +5622,16 @@ class AutoSwitchEngine:
 
     def _session_takers(
         self, candidates: Sequence[str], headroom: Mapping[str, float | None],
+        login_left: Mapping[str, float] | None = None,
     ) -> list[str]:
         """The subscriptions among ``candidates`` that could take the
         sessions instead of a key, the most room first (rotation order breaks
-        ties)."""
+        ties), a login about to end last."""
         room = {
             n: h for n in candidates
             if (h := headroom.get(n)) is not None and h >= RETURN_ROOM_PCT
         }
-        return sorted(room, key=lambda n: -room[n])
+        return sorted(room, key=lambda n: (_login_ending(login_left, n), -room[n]))
 
     def _unreadable_hold(
         self, candidates: Sequence[str], usage: Mapping[str, object],
@@ -6154,7 +6313,11 @@ class AutoSwitchEngine:
             if binding is not None and binding.over:
                 continue
             roomy.append((room, num))
-        roomy.sort(key=lambda r: (-r[0], int(r[1]) if r[1].isdigit() else 0))
+        # A login about to end last (autoswitch.watchLoginExpiry).
+        login_left = self._login_left(entries, settings)
+        roomy.sort(key=lambda r: (
+            _login_ending(login_left, r[1]), -r[0], int(r[1]) if r[1].isdigit() else 0,
+        ))
         ordered = [num for _room, num in roomy]
         if ordered and reason is None:
             # A minimum stay: not back before the cooldown has run since the

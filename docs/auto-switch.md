@@ -49,6 +49,15 @@ Choose a strategy with `--strategy NAME` or `qswap config set autoswitch.strateg
 
 `priority-consume-first` follows the tiers you set with `qswap priority`: the highest tier that has an account under all of its lines, then the soonest weekly reset within that tier. It moves back up as soon as a higher-tier account is usable again, after the cooldown. It never lands on an account at or over a switch line, even when the active account is at its limit; it holds and keeps checking instead.
 
+### Logins that end
+
+Each saved login has a date it ends (`re-login in 5d 12h` in the menu bar and `qswap list`). Auto-switch watches it in every strategy. Anthropic's server has not been seen to hold to that date exactly, so these are preferences, never exclusions:
+
+- An account whose login ends within 2 hours, or has passed that date, ranks behind every other account. It is still picked when nothing else qualifies, and an escape (the active account at its limit or unreadable) may land on it. A switch by choice (at the line, to a sooner reset, to a higher tier) never lands on a login within 15 minutes of its end, since the next check would leave it again.
+- The active account is left 15 minutes before its login ends, or once the date has passed, for an account with room under its lines whose login does not end within 2 hours. The switch says why: `Switched #3 night → #2 work · its login ends in 12m; qswap login 3 renews it`. It waits out the cooldown. With nowhere better to go it stays and says so: `No switch: #3 night's login ends in 12m, and no account with room has a login that lasts longer; qswap login 3 renews it`.
+
+API keys, setup-tokens, Codex accounts and logins that record no end date are not affected. `qswap config set autoswitch.watchLoginExpiry false` turns both rules off.
+
 For a one-off pick by hand, `qswap switch --strategy best` jumps to the account with the most quota left (and stays put if it cannot prove one has more), and `qswap switch --strategy next-available` moves to the next account in order, skipping any at their limit. Both skip disabled accounts and accounts that need re-login, and both count the per-model limits in `autoswitch.model` unless you pass `--model`.
 
 ## Switch lines
@@ -170,7 +179,7 @@ $ qswap auto --once
 
 ## Reading the log
 
-Each check prints one line: the time, the active account, the window closest to its line against that line, and the decision. A switch gives its reason in words: `5h reached 91%` (a line), `limit reached`, `usage unreadable` (failover), `its weekly window resets sooner` (`consume-first`), `higher priority` (`priority-consume-first`), and for an API key `a subscription has room again`, `monthly budget reached`, `credit spent`, `credit expired` or `its spend could not be measured for 20 minutes`; `(estimate)` follows a figure worked out on this machine.
+Each check prints one line: the time, the active account, the window closest to its line against that line, and the decision. A switch gives its reason in words: `5h reached 91%` (a line), `limit reached`, `usage unreadable` (failover), `its weekly window resets sooner` (`consume-first`), `higher priority` (`priority-consume-first`), `its login ends in 12m; qswap login 3 renews it` (`login-expiry`), and for an API key `a subscription has room again`, `monthly budget reached`, `credit spent`, `credit expired` or `its spend could not be measured for 20 minutes`; `(estimate)` follows a figure worked out on this machine.
 
 The indented lines under a check give each other account's windows, or why it cannot be used: `over its switch line`, `limit reached`, `needs re-login`, `disabled`, `usage unavailable (HTTP 503), retrying`, `API key, not used`, `API key, used as a last resort`; with `--include-api-key-accounts`, a key the engine would not move to says why: `API key, no budget or credit, not used`, `API key, monthly budget reached`, `API key, credit spent`, `API key, credit expired`, `API key, budget reached earlier, not used`, or (a dry run, which does not measure the spend) `API key, limit not enforced: no spend figure`. They print on the first check, whenever a switch is being decided (the active account at or over its line, a switch, or no account able to take over), and on every check with `--verbose`.
 
@@ -270,6 +279,7 @@ Change one with `qswap config set autoswitch.cooldownSeconds 600`; remove it wit
 | `autoswitch.strategy` | `best` | `best`, `weekly-first`, `consume-first` or `priority-consume-first`. `--strategy` |
 | `autoswitch.includeApiKeyAccounts` | `false` | Allow an API-key account with a budget or credit as a last resort, when every subscription is at its limit. `--include-api-key-accounts` |
 | `autoswitch.unhealthyTicks` | `3` | Checks in a row without a reading of the active account before failover (1 to 100) |
+| `autoswitch.watchLoginExpiry` | `true` | Rank accounts whose login ends within 2 hours last, and leave the active account 15 minutes before its login ends ([Logins that end](#logins-that-end)) |
 | `autoswitch.model` | (none) | Per-model limits that also count, comma-separated, or `all`. `--model` |
 | `codex.threshold` | `99` | `qswap codex auto`'s switch line, in place of `autoswitch.threshold` (50 to 99.9) |
 
