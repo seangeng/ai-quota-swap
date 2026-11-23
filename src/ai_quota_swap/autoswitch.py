@@ -774,6 +774,20 @@ KEYS_OFF = "keys-off"
 #: never the way to another key through a full subscription (A10); the key it
 #: left may come back once its own figure allows it.
 KEY_LEFT = "keyLeft"
+#: The state file's record of a key an engine left because API keys are off
+#: for it (issue #15): ``{"account", "at", "seenAt", "engine", "interval",
+#: "loop", "pinned"}``. ``engine`` is that engine's heartbeat identity
+#: (``pid``, ``startedAt``, ``host``); an engine still running with keys off
+#: marks it seen every KEYS_OFF_SEEN_S. While it does, another engine that
+#: may use keys enters none: two engines whose flags disagree would otherwise
+#: take a key in and out, and the side that spends no money wins.
+KEYS_OFF_LEFT = "keysOffLeft"
+#: The record holds keys back for at most this long after the leave.
+KEYS_OFF_HOLD_S = 24 * 3600.0
+#: How often an engine still running with keys off marks the record seen.
+KEYS_OFF_SEEN_S = 5 * 60.0
+#: A record dated more than this ahead of the clock counts as old.
+KEYS_OFF_SKEW_S = 5 * 60.0
 #: A subscription's usage that could not be read this check (no reading, a
 #: token mid-renewal, a locked Keychain): it may have room, so it holds key
 #: entry for a while (decision EM9). Needing re-login is no such state.
@@ -1828,6 +1842,10 @@ class AutoSwitchEngine:
         # Who runs this engine, for the heartbeat (`qswap status`, `doctor`).
         self.host_label = "qswap auto"
         self._started_at = clock()
+        # Whether run_loop drives this engine (a `--once` tick does not), and
+        # the keys-off record (its leave time) already warned about (#15).
+        self._looping = False
+        self._keys_off_warned: float | None = None
         # What this tick's events need for their human text (aliases, how
         # each account stood), attached by `_emit`; and the facts a switch's
         # reason quotes. Neither is ever serialized or read by a decision.
@@ -2590,6 +2608,7 @@ class AutoSwitchEngine:
         if held is not None:
             return held
         self._reconcile_key_line()
+        self._keep_keys_off_record(state, settings)
 
         current = self.switcher.current_account_number()
         # A tick with no managed active account keeps the current context;
@@ -3116,6 +3135,11 @@ class AutoSwitchEngine:
                 self._emit(_api_key_sessions_event(
                     api_key_candidates[0], running, self._unreadable_session_records(),
                 ))
+                held_for_sessions = True
+            elif (off := self._keys_off_elsewhere(state, settings)) is not None:
+                # Another engine left a key because keys are off for it, and
+                # still runs (#15): the side that spends no money wins.
+                self._warn_keys_off(off)
                 held_for_sessions = True
             else:
                 # After one key's brake only that key may come back (A10).
@@ -4308,6 +4332,9 @@ class AutoSwitchEngine:
             left_key = self._key_left_record(result, trigger, cause)
             if left_key is not None:
                 state[KEY_LEFT] = left_key
+            source = (result.get("from") or {}).get("number")
+            if trigger == "at-limit" and cause.get("limit_reason") == KEYS_OFF and source:
+                state[KEYS_OFF_LEFT] = self._keys_off_record(str(source))
             atomic_write_json(self.state_path, state)
 
         self._emit(
@@ -4966,6 +4993,147 @@ class AutoSwitchEngine:
         except Exception as e:
             _logger.debug("Could not clear the record of a key left at its limit: %r", e)
 
+    # -- two engines that disagree about API keys (issue #15) -------------------
+    #
+    # A command-line flag pins autoswitch.includeApiKeyAccounts for its engine,
+    # so two engines on one data directory can disagree: one enters a key, the
+    # other leaves it (keys-off), and round again. The leave is recorded
+    # (``keysOffLeft``) with the engine that made it, which marks it seen while
+    # it runs with keys off. An engine that may use keys and finds such a
+    # record from another engine still running enters no key, and says why
+    # once. A single engine is never held by its own record, and the leave
+    # itself never waits.
+
+    def _engine_identity(self) -> dict:
+        """What tells this engine from another: its heartbeat's ``pid``,
+        ``startedAt`` and ``host``."""
+        import os
+
+        return {"pid": os.getpid(), "startedAt": self._started_at, "host": self.host_label}
+
+    @staticmethod
+    def _keys_pinned(settings: AutoSwitchSettings) -> bool:
+        """Whether ``settings`` hold autoswitch.includeApiKeyAccounts apart
+        from the settings file: a flag set it, or there is no file to follow
+        (``_follow_settings_file``)."""
+        return not settings.settings_root or "include_api_key_accounts" in settings.pinned
+
+    def _keys_off_record(self, account: str) -> dict:
+        """``keysOffLeft`` for the key ``account`` this engine just left
+        because API keys are off for it."""
+        now = self.clock()
+        return {
+            "account": account, "at": now, "seenAt": now,
+            "engine": self._engine_identity(),
+            "interval": self.settings.interval_seconds, "loop": self._looping,
+            "pinned": self._keys_pinned(self.settings),
+        }
+
+    def _keep_keys_off_record(self, state: dict, settings: AutoSwitchSettings) -> None:
+        """Keep ``keysOffLeft`` true to what this engine can tell, once per
+        check: with keys off it marks the record seen (every KEYS_OFF_SEEN_S,
+        taking it over from an engine before it, such as the last cron
+        ``--once``); the engine named in it drops it once keys are on for it
+        again; any engine drops one older than KEYS_OFF_HOLD_S. Never in a
+        dry run, and never costs the tick."""
+        record = state.get(KEYS_OFF_LEFT)
+        if self.dry_run or not isinstance(record, dict):
+            return
+        now = self.clock()
+        me = self._engine_identity()
+        at, seen = _number(record.get("at")), _number(record.get("seenAt"))
+        fresh: dict | None
+        if at is None or not -KEYS_OFF_SKEW_S <= now - at <= KEYS_OFF_HOLD_S:
+            fresh = None
+        elif settings.include_api_key_accounts:
+            if record.get("engine") != me:
+                return
+            fresh = None
+        elif (
+            record.get("engine") == me and seen is not None
+            and 0 <= now - seen < KEYS_OFF_SEEN_S
+            and record.get("pinned") == self._keys_pinned(settings)
+        ):
+            return
+        else:
+            fresh = {
+                **record, "seenAt": now, "engine": me,
+                "interval": settings.interval_seconds, "loop": self._looping,
+                "pinned": self._keys_pinned(settings),
+            }
+
+        def store(s: dict) -> None:
+            if s.get(KEYS_OFF_LEFT) != record:
+                return  # another engine changed it since this check read it
+            if fresh is None:
+                s.pop(KEYS_OFF_LEFT, None)
+            else:
+                s[KEYS_OFF_LEFT] = fresh
+
+        try:
+            self._mutate_state(store)
+        except Exception as e:
+            _logger.debug("Could not keep the record of a key left with keys off: %r", e)
+
+    def _keys_off_elsewhere(self, state: dict, settings: AutoSwitchSettings) -> dict | None:
+        """``keysOffLeft`` when it holds this engine off API keys: made by
+        another engine (``_engine_identity``), at most KEYS_OFF_HOLD_S ago,
+        with a flag on either side (two engines that follow the settings file
+        agree), and that engine still running with keys off: seen within the
+        gap an engine that stopped leaves (the larger of ONCE_WATCH_S and two
+        of its check intervals), and, for a loop, its process alive. None
+        otherwise. Reads only."""
+        record = state.get(KEYS_OFF_LEFT)
+        if not isinstance(record, dict):
+            return None
+        engine = record.get("engine")
+        me = self._engine_identity()
+        if not isinstance(engine, dict) or engine == me:
+            return None
+        if not (record.get("pinned") or self._keys_pinned(settings)):
+            return None
+        now = self.clock()
+        at, seen = _number(record.get("at")), _number(record.get("seenAt"))
+        if at is None or seen is None or not -KEYS_OFF_SKEW_S <= now - at <= KEYS_OFF_HOLD_S:
+            return None
+        interval = _number(record.get("interval")) or 0.0
+        if now - seen > max(ONCE_WATCH_S, 2 * interval):
+            return None
+        pid = engine.get("pid")
+        if (
+            record.get("loop") is True and isinstance(pid, int) and not isinstance(pid, bool)
+            and pid != me["pid"]
+        ):
+            from ai_quota_swap.process_detection import is_pid_alive
+
+            try:
+                if not is_pid_alive(pid):
+                    return None
+            except Exception:
+                pass  # cannot tell: it may still run
+        return record
+
+    def _warn_keys_off(self, record: dict) -> None:
+        """Say once per record why this engine does not enter an API key:
+        another engine left one because keys are off for it (a config
+        warning, with both ways out)."""
+        at = _number(record.get("at"))
+        if at is None or at == self._keys_off_warned:
+            return
+        self._keys_off_warned = at
+        engine = record.get("engine") if isinstance(record.get("engine"), dict) else {}
+        host = engine.get("host") if isinstance(engine.get("host"), str) else "qswap auto"
+        pid = engine.get("pid")
+        who = f"{host}, pid {pid}" if isinstance(pid, int) and not isinstance(pid, bool) else host
+        account = record.get("account")
+        key = self._label_of(str(account)) if account is not None else "an API key"
+        self._emit(ConfigWarningEvent(message=(
+            f"another auto-switch engine ({who}) left {key} because API keys are off "
+            "for it, so this one does not move to an API key while that one runs. "
+            "Start both with the same --include-api-key-accounts flag, or set "
+            "autoswitch.includeApiKeyAccounts in the settings file and drop the flags"
+        )))
+
     def _reset_deferred_hold(self, settings: AutoSwitchSettings, since: float) -> bool:
         """Whether key entry waits for a usage reset the planner wanted this
         check and put off because its account could not be read again
@@ -5562,6 +5730,8 @@ class AutoSwitchEngine:
             state["lastSwitchFrom"] = current
             state["leftHeadroom"], state["leftRecoveryAt"] = None, None
             state["leftTrigger"] = "at-limit"
+            if reason == KEYS_OFF:
+                state[KEYS_OFF_LEFT] = self._keys_off_record(str(current))
             atomic_write_json(self.state_path, state)
         self._emit(SwitchEvent(
             trigger="at-limit", from_ref=result.get("from"), to_ref=result.get("to"),
@@ -5709,6 +5879,7 @@ class AutoSwitchEngine:
             self._wake.clear()
             if self._stop.is_set():
                 return 0
+            self._looping = True
             try:
                 outcome = self.tick()
             except Exception as e:  # pragma: no cover - tick() already guards
