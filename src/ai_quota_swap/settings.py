@@ -202,6 +202,19 @@ class CodexSettings:
     threshold: float = 99.0
 
 
+@dataclass(frozen=True)
+class LoginSettings:
+    """Saved logins (``login`` section).
+
+    ``notify_days``: the menu bar posts a notification once a subscription
+    login comes within this many days of the deadline its sign-in set
+    (``refreshTokenExpiresAt``), and one more inside its last day, each
+    naming ``qswap login N``. 0 turns both off.
+    """
+
+    notify_days: int = 3
+
+
 _SECTION_DEFAULT_SOURCES = {
     "autoswitch": AutoSwitchSettings,
     "ui": UiSettings,
@@ -210,6 +223,7 @@ _SECTION_DEFAULT_SOURCES = {
     "usage": UsageSettings,
     "resets": ResetSettings,
     "codex": CodexSettings,
+    "login": LoginSettings,
 }
 
 
@@ -343,6 +357,10 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "codex", "threshold", "threshold", "float", 50.0, 99.9,
             help="qswap codex auto's switch line (in place of autoswitch.threshold; a switch interrupts Codex)",
+        ),
+        SettingSpec(
+            "login", "notifyDays", "notify_days", "int", 0, 30,
+            help="The menu bar warns this many days before a login runs out, and again in its last day (0: never)",
         ),
     )
 }
@@ -614,6 +632,28 @@ def load_codex_settings(backup_root: Path) -> CodexSettings:
     return dataclasses.replace(default, **kwargs)
 
 
+def load_login_settings(backup_root: Path) -> LoginSettings:
+    """Load the login section; a bad value reverts to its default."""
+    raw = _read_raw(settings_path(backup_root))
+    section = raw.get("login")
+    default = LoginSettings()
+    if not isinstance(section, dict) or "notifyDays" not in section:
+        return default
+    value = section["notifyDays"]
+    spec = SETTING_SPECS["login.notifyDays"]
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or (isinstance(value, float) and not math.isfinite(value))
+    ):
+        _logger.warning(
+            "settings.json: login.notifyDays expects a whole number, got %r; using %r",
+            value, default.notify_days,
+        )
+        return default
+    return LoginSettings(notify_days=int(min(max(value, spec.lo), spec.hi)))
+
+
 def load_engine_settings(backup_root: Path, provider_id: str = "claude") -> AutoSwitchSettings:
     """The ``autoswitch`` settings one provider's engine runs on.
 
@@ -812,6 +852,7 @@ def effective_settings(backup_root: Path) -> list[tuple[SettingSpec, object, boo
         "usage": load_usage_settings(backup_root),
         "resets": load_reset_settings(backup_root),
         "codex": load_codex_settings(backup_root),
+        "login": load_login_settings(backup_root),
     }
     rows = []
     for spec in SETTING_SPECS.values():

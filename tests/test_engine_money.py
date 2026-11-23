@@ -991,7 +991,7 @@ class TestOffTheKeyAtItsLimit:
         assert failed[0].human().startswith("Could not switch to #3")
         assert failed[0].human().endswith(
             ", so the next account was tried (Switch failed and was rolled back). To "
-            "repair it, log in to it in Claude Code (/login), then run: qswap add"
+            "repair it, sign in to it again: qswap login 3"
         )
 
     def test_on_the_way_back_the_next_subscription_is_tried(self, temp_home, monkeypatch):

@@ -232,8 +232,7 @@ class TestABlockedTick:
             "No account to switch to: #2 work and #4 side need re-login; "
             "#3 night-shift usage unavailable (HTTP 503), retrying; "
             "#5 spare as of 3h 5m ago (timed out). "
-            "To use #2 work and #4 side again, log in to each in Claude Code (/login), "
-            "then run: qswap add"
+            "To use #2 work and #4 side again, renew their logins: qswap login"
         )
         assert "no-comparison" not in hold.human()
 
@@ -248,8 +247,7 @@ class TestABlockedTick:
             "            #3 night-shift  usage unavailable (HTTP 503), retrying",
             "            #4 side         needs re-login",
             "            #5 spare        5h 40% · 7d 55% · as of 3h 5m ago (timed out)",
-            "            To use #2 work and #4 side again, log in to each in Claude Code",
-            "            (/login), then run: qswap add",
+            "            To use #2 work and #4 side again, renew their logins: qswap login",
         ]
 
     def test_an_account_set_aside_mid_tick_reads_as_needing_re_login(self):
@@ -264,12 +262,11 @@ class TestABlockedTick:
         log(QuarantineEvent(number="2", email="b@example.com", reason="invalid_grant"))
         log(NoSwitchEvent(reason="no-viable-target"))
         assert out == [
-            "14:20:00  #2 b@example.com needs re-login: its saved login was refused. Log in",
-            "          to it in Claude Code (/login), then run: qswap add",
+            "14:20:00  #2 b@example.com needs re-login: its saved login was refused. Sign in",
+            "          to it again: qswap login 2",
             "14:20:00  #1 maya@example.com at 5h 100% (limit reached) · nothing to switch to",
             "            #2  needs re-login",
-            "            To use #2 again, log in to it in Claude Code (/login), then run:",
-            "            qswap add",
+            "            To use #2 again, renew its login: qswap login 2",
         ]
 
 
@@ -633,7 +630,7 @@ class TestEventWords:
         assert QuarantineEvent(number="4", email="sam@example.org", reason="invalid_grant",
                                context=ctx).human() == (
             "#4 side needs re-login: its saved login was refused. "
-            "Log in to it in Claude Code (/login), then run: qswap add"
+            "Sign in to it again: qswap login 4"
         )
         assert QuarantineEvent(number="4", email="sam@example.org",
                                reason="identity-conflict").human().startswith(

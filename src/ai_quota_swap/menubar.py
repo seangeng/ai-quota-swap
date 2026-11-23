@@ -227,6 +227,39 @@ class MenuBarSettings:
             self.auto_switch_enabled = value
 
 
+@dataclass
+class MenuBarState:
+    """What the menu bar remembers that is not a preference,
+    ``menubar_state.json`` in the data directory: the login notices it has
+    posted (:func:`menubar_notify.login_notices`), so a restart does not post
+    them again. Only the menu bar writes it. Keys this build does not know are
+    kept, like :class:`MenuBarSettings`'s."""
+
+    login_notices: dict = field(default_factory=dict)
+    extra: dict = field(default_factory=dict, compare=False, repr=False)
+
+    @classmethod
+    def load(cls, path: Path) -> "MenuBarState":
+        """The state, or an empty one when the file is missing or unreadable."""
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return cls()
+        if not isinstance(raw, dict):
+            return cls()
+        notices = raw.get("loginNotices")
+        return cls(
+            login_notices=notices if isinstance(notices, dict) else {},
+            extra={k: v for k, v in raw.items() if k != "loginNotices"},
+        )
+
+    def save(self, path: Path) -> None:
+        data = dict(self.extra)
+        data["loginNotices"] = self.login_notices
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, json.dumps(data, indent=2), mode=0o600)
+
+
 # -- usage windows (the shape oauth.build_usage_result and UsageEntry.last_good use) --
 
 
@@ -624,6 +657,8 @@ class AccountState:
     over: str = ""
     #: On the active key: auto-switch entered it (decision B8).
     by_engine: bool = False
+    #: Its saved login is a setup-token, which no sign-in renews.
+    setup_token: bool = False
 
     def label(self, *, provider_prefix: bool = False, long: bool = True) -> str:
         """``#2 work (maya@example.com)``; ``Claude #2 work (…)`` with the prefix."""
@@ -719,6 +754,8 @@ class MenuInput:
     resets: ResetSettings = field(default_factory=ResetSettings)
     #: Accounts with a *Use a reset* claim in flight, as ``(provider, number)``.
     resets_busy: frozenset = frozenset()
+    #: The Claude Code account a *Sign in again* is waiting on the browser for.
+    login_busy: str | None = None
 
     def provider(self, provider: str) -> ProviderState:
         return self.codex if provider == "codex" else self.claude
@@ -1621,6 +1658,90 @@ def use_reset(inp: MenuInput, action: Action, *, confirm, run) -> bool:
     ))
 
 
+SIGN_IN_TITLE = "Sign in again"
+#: What a *Sign in again* row reads while its sign-in runs; clicking it then
+#: cancels the sign-in.
+SIGN_IN_WAITING = "waiting for the browser… (click to cancel)"
+
+
+def sign_in_accounts(inp: MenuInput) -> list[AccountState]:
+    """Claude Code's subscription logins: not API keys, not setup-tokens."""
+    return [a for a in inp.claude.accounts if a.kind != "api_key" and not a.setup_token]
+
+
+def _needs_sign_in(acc: AccountState) -> bool:
+    """Needs re-login, or has no saved login at all: ``qswap login``'s
+    "needs re-login" (``login.subscription_logins``)."""
+    from ai_quota_swap.json_output import USAGE_NO_CREDENTIALS
+
+    return acc.needs_relogin or getattr(acc.entry, "sentinel", None) == USAGE_NO_CREDENTIALS
+
+
+def sign_in_rows(inp: MenuInput) -> list[Row]:
+    """*Sign in again*'s rows: ``#3 work · due in 13h``, due ones first
+    (needs re-login, then the soonest), the rest in account order. A click
+    runs ``qswap login N``'s sign-in (:func:`sign_in`). While one runs, its
+    row reads ``waiting for the browser… (click to cancel)`` and cancels it,
+    and the others cannot be clicked."""
+    from ai_quota_swap import login
+
+    def key(item: tuple[int, AccountState]):
+        i, acc = item
+        if _needs_sign_in(acc):
+            return (0, 0.0, i)
+        if login.is_due(acc.login_expires_at, False, inp.now):
+            return (1, acc.login_expires_at or 0.0, i)
+        return (2, 0.0, i)
+
+    rows: list[Row] = []
+    for _, acc in sorted(enumerate(sign_in_accounts(inp)), key=key):
+        label = acc.label(provider_prefix=inp.codex_shown, long=False)
+        note = login.due_note(acc.login_expires_at, _needs_sign_in(acc), inp.now)
+        if inp.login_busy == acc.number:
+            note = SIGN_IN_WAITING
+        tail = f" · {note}" if note else ""
+        room = ROW_LIMIT - len(tail)
+        text = (label if len(label) <= room else display.fit(label, max(room, LABEL_FLOOR))) + tail
+        if inp.login_busy == acc.number:
+            action = Action("cancel-sign-in", "claude", acc.number)
+            tooltip = "Click to cancel this sign-in; nothing is saved."
+        else:
+            action = None if inp.login_busy is not None else Action("sign-in", "claude", acc.number)
+            tooltip = login.browser_note(label, acc.email, active=acc.active or acc.underneath)
+        rows.append(Row(
+            text, action=action, attention=note == display.NEEDS_RELOGIN, tooltip=tooltip,
+        ))
+    return rows
+
+
+def _sign_in_menu(inp: MenuInput) -> Row | None:
+    """*Sign in again*, ``(1 due)`` while logins are due; shown while Claude
+    Code manages a subscription login."""
+    from ai_quota_swap import login
+
+    accounts = sign_in_accounts(inp)
+    if not accounts:
+        return None
+    due = sum(login.is_due(a.login_expires_at, _needs_sign_in(a), inp.now) for a in accounts)
+    title = f"{SIGN_IN_TITLE} ({due} due)" if due else SIGN_IN_TITLE
+    return Row(title, children=tuple(sign_in_rows(inp)))
+
+
+def sign_in(inp: MenuInput, action: Action, *, run) -> bool:
+    """A click on a *Sign in again* row: hand the sign-in to ``run(number,
+    who=…)`` (:class:`menubar_engines.LoginRunner`), which runs ``qswap
+    login N``'s sign-in with no terminal and posts the result. Nothing
+    happens while a sign-in runs, or for an account the menu no longer
+    lists. Returns whether one started."""
+    if inp.login_busy is not None:
+        return False
+    number = str(action.number)
+    acc = next((a for a in sign_in_accounts(inp) if a.number == number), None)
+    if acc is None:
+        return False
+    return bool(run(number, who=acc.label(provider_prefix=inp.codex_shown, long=False)))
+
+
 def _settings_menu(inp: MenuInput) -> Row:
     s = inp.settings
     rows: list[Row] = [
@@ -1704,6 +1825,7 @@ def build_menu(inp: MenuInput) -> Menu:
     use_reset_menu = _use_reset_menu(inp)
     sections.append(Section("manage", tuple(row for row in (
         _add_menu(inp),
+        _sign_in_menu(inp),
         _accounts_submenu(inp, "Disable / enable account", "toggle-disabled"),
         _accounts_submenu(inp, "Remove account", "remove"),
         use_reset_menu,
@@ -1889,6 +2011,7 @@ ACTION_KINDS = frozenset({
     "title-follows", "title-pct", "toggle-scoped", "toggle-chart", "interval", "toggle-auto",
     "threshold", "toggle-login", "refresh-now", "quit",
     "resets-auto", "toggle-weekly-for-model", "toggle-before-switch", "use-reset",
+    "sign-in", "cancel-sign-in",
 })
 
 

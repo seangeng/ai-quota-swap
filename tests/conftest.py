@@ -1016,6 +1016,21 @@ def _fake_codex_processes(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_claude_sign_in(monkeypatch):
+    """Safety net: no test runs ``claude auth login``, which opens a browser
+    and signs in for real (``qswap login`` and the menu bar's *Sign in
+    again*). Tests pass ``renew`` a runner of their own; the real runner's
+    tests point it at a stand-in program, taking the function from
+    ``ai_quota_swap.login`` before this fixture runs."""
+    from ai_quota_swap import login
+
+    def _no_sign_in(profile, email, **kwargs):
+        raise AssertionError("a test reached `claude auth login` unfaked")
+
+    monkeypatch.setattr(login, "run_claude_login", _no_sign_in)
+
+
+@pytest.fixture(autouse=True)
 def _no_key_line_runs(monkeypatch):
     """Safety net: no test runs the command of qswap's key line for real.
 

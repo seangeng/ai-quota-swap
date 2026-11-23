@@ -81,6 +81,17 @@ def run(cmd: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(cmd, **kwargs)
 
 
+def popen(cmd: Sequence[str], **kwargs: Any) -> subprocess.Popen[Any]:
+    """``subprocess.Popen`` for an argv list, by :func:`run`'s rule: for a
+    child the caller keeps a handle on (``qswap login``'s, which the menu bar
+    can cancel)."""
+    if _spawn_path_applies(cmd, kwargs):
+        executable = _resolve(cmd[0], kwargs.get("env"))
+        if executable is not None and not _inheritable_fds_above_stdio():
+            return subprocess.Popen([executable, *cmd[1:]], close_fds=False, **kwargs)
+    return subprocess.Popen(cmd, **kwargs)
+
+
 def _spawn_path_applies(cmd: Any, kwargs: dict[str, Any]) -> bool:
     return (
         sys.platform == "darwin"

@@ -611,7 +611,9 @@ def blocked_advice(views: Sequence, *, context: object = None, provider: str | N
         it = "it" if len(relogin) == 1 else "each"
         if provider == "codex":
             return f"To use {who} again, log in to {it} again: qswap codex login"
-        return f"To use {who} again, log in to {it} in Claude Code (/login), then run: qswap add"
+        if len(relogin) == 1 and getattr(relogin[0], "number", None) is not None:
+            return f"To use {who} again, renew its login: qswap login {relogin[0].number}"
+        return f"To use {who} again, renew their logins: qswap login"
     unread = [
         v for v in views
         if getattr(v, "state", "") == "sentinel"
@@ -852,7 +854,7 @@ def no_switch_sentence(event: object) -> str:
         account = getattr(event, "account", None)
         who = number_label(account, "", context) if account else "a subscription"
         why = (detail or "the switch failed").rstrip(".")
-        step = display.relogin_step(provider)
+        step = display.relogin_step(provider, account)
         return f"Could not switch to {who}, so the next account was tried ({why}). To repair it, {step}"
     if reason == "settings-unreadable":
         # The sentence every surface shows for this state (decision B5).
@@ -976,15 +978,15 @@ def no_switch_sentence(event: object) -> str:
 
 
 def quarantine_sentence(event: object) -> str:
-    """``#4 side needs re-login: its saved login was refused. Log in to it
-    in Claude Code (/login), then run: qswap add``."""
+    """``#4 side needs re-login: its saved login was refused. Sign in to it
+    again: qswap login 4``."""
     context = getattr(event, "context", None)
     label = number_label(getattr(event, "number", None), getattr(event, "email", ""), context)
     why = display.set_aside_reason(getattr(event, "reason", None))
     step = getattr(event, "recover", "") or ""
     if not step:
         provider = getattr(context, "provider", None) or "claude"
-        step = display.relogin_step(provider)
+        step = display.relogin_step(provider, getattr(event, "number", None))
         step = step[:1].upper() + step[1:]
     return f"{label} {display.NEEDS_RELOGIN}: {why}. {step}"
 

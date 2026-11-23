@@ -104,7 +104,7 @@ One row per account, with the active account checked. Codex gets its own section
 - the usage resets held: `1 Fable reset`, `1 five-hour reset`, `1 reset credit` for Codex, and several kinds as one phrase, `resets: 3 Fable, 1 weekly`;
 - or a state in place of the figures: `needs re-login`, `usage unavailable (HTTP 503), retrying`, `usage not read yet`, an API-key account's spend (`API key · no usage recorded` while this machine has recorded none, `API key · $0 of $500 this month` with a budget, `API key · $1,150 of $1,187 credit left` with a credit, `API key · spend unknown` when the usage ledger could not be read, `est.` after an estimate, and `limit not enforced` after the figure while a budget or credit has no spend figure from the last 20 minutes, without today's spend; the tooltip says why);
 - on the active key, `over #1 personal`, the subscription logged in under it, whose own row says `underneath`, and `by auto-switch` when the engine entered the key. Short of room, the row drops `over #1 personal` first, then today's spend, then `by auto-switch`, then a credit shown after a budget reached (whole, never cut inside its figure), and never the figure or its reason: `✓ #5 ci · API key · by auto-switch · $2.06 today · $25.22/$40 (63%) est.` The tooltip keeps everything;
-- `as of 3h 4m ago` after an old reading, and `re-login in 5d 12h` while a saved login nears its expiry.
+- `as of 3h 4m ago` after an old reading, and `re-login in 5d 12h` while a saved login nears its expiry ([Sign in again](#sign-in-again) renews it).
 
 A row is orange when it needs you: needs re-login, a window at or past the account's switch line, or an API-key account over its budget, with its credit spent or expired, or whose limit is not enforced. Hover a row for its full `qswap list` block.
 
@@ -154,9 +154,10 @@ With *Settings → Show usage chart* on, as it is by default, the same sentence 
 
 - *Rotate to next*, *Switch to best*, *Next available*: Claude Code's rotation strategies (`qswap switch`, `--strategy best`, `--strategy next-available`).
 - *Add account*: *Add the current Claude Code login (…)* or *Add the current Codex login (…)* when a provider is signed in with a login qswap does not manage; *Add from a setup-token or API key…*, one dialog with the token and an optional email ([api-accounts.md](api-accounts.md)); *Log in another Codex account…*, which shows `qswap codex login` to run in a terminal and copies it if you click *Copy command*.
+- *Sign in again*, while Claude Code manages a subscription login: signs an account in again in the browser without touching the active login ([below](#sign-in-again)).
 - *Disable / enable account* and *Remove account*: every account, named with its provider (`Codex #2 work`) when both are managed. A check mark in *Disable / enable account* marks a disabled one. Removing asks what `qswap remove` asks.
 - *Use a reset*, while some account holds a usage reset or reset credit ([below](#use-a-reset)).
-- *Refresh current credentials*: saves the login Claude Code is signed in with into its account again.
+- *Refresh current credentials*: saves the login Claude Code is signed in with into its account again, after a `/login` in Claude Code.
 - *Switch history*: the last ten switches, newest first, and *Open full log…*.
 - *Settings*: the title, the refresh interval, auto-switch and its lines, automatic resets and *Start at login* ([Settings](#settings)).
 - *Refresh now*: read usage again now.
@@ -181,6 +182,24 @@ A row that can be used says what it clears (`#1 personal · Fable reset · clear
 Clicking a row runs what `qswap reset N --grant ID` runs, in the background: it reads the account again, then asks, Cancel being the default, with what `qswap reset` prints before it asks (the trade when a broad reset would meet a narrow limit, `Usage as of 12m ago; it could not be refreshed` when the reading is old, and that a used reset cannot be undone). *Use reset* then claims it with a retry-safe request id, reserved like the engine's own claims, so it is refused while another claim on that account is in flight (`A reset on #1 personal is already being used; try again in a moment.`). If anything was recorded for the account after the reading the dialog showed (the engine used a reset meanwhile), nothing is sent. The account's rows read `in progress` until a notification says how it went; a failure once the request was sent reads `… may have been used: why. Run qswap reset to see where things stand.`, never `Did not use`.
 
 When the engines spend resets by themselves is *Settings → Use resets automatically* ([below](#automatic-resets)).
+
+### Sign in again
+
+Each Claude subscription login runs out about a month after it was signed in. *Sign in again* lists Claude Code's subscription logins (not API keys, not setup-tokens), the ones that are due first: those that need re-login, then those that run out within 7 days, soonest first. Each row says when, and the title counts the due ones:
+
+```text
+  Sign in again (2 due) ▸
+      ⚠ #4 side · needs re-login
+      #3 night-shift · due in 13h 0m
+      #1 personal · due in 20d 0h
+      #2 work
+```
+
+A row without a date is a login that does not record one (saved by an older Claude Code). Clicking a row runs what `qswap login N` runs, in the background: Claude Code's own sign-in (`claude auth login`) in a private profile under the data directory, so the active login and running sessions are not disturbed. The browser opens on claude.ai and must be signed in there as that account, or signed out; a notification says so as it opens. While it waits, the row reads `#3 night-shift · waiting for the browser… (click to cancel)`, and clicking it stops the sign-in; the other rows cannot be clicked, since one sign-in runs at a time. It gives up after 5 minutes, and *Quit* stops it too. Nothing is saved then.
+
+A notification gives the result: `Renewed the login of #3 night-shift; the next sign-in is due Dec 23 14:02 · in 30d`. When the account is the active one, its new login becomes the live login too, as a switch writes one; when its live login has to be left as it was, the notification says why and gives `qswap switch N --force` ([troubleshooting.md](troubleshooting.md#an-account-needs-re-login)). A failure is an alert, with the reason `qswap login` gives (`The browser signed in as #1 personal, not #3 night-shift (ops@example.net), so nothing was saved. Sign out of claude.ai in the browser, or switch it to ops@example.net, and run it again: qswap login 3. ...`), and goes into the log.
+
+Before a login runs out, the menu bar posts a notification 3 days ahead and one more in its last day, each naming both ways to renew it ([Notifications](#notifications)). `qswap config set login.notifyDays 5` warns 5 days ahead instead, and `0` turns both off. Each is posted once per login: a restart does not repeat it, and a renewed login starts over.
 
 ### With nothing managed
 
@@ -249,7 +268,9 @@ Every notification is titled `ai-quota-swap`. With both providers managed, the a
 | A usage reset was used | `Used a Fable reset on #1 personal · Fable reached 100%, 3d before it resets on its own · 0 left on this grant` | every reset |
 | A reset was not used | `Did not use a Fable reset on #1 personal: refused` | once per account and result |
 | You used a reset from the menu | `Used a Fable reset on #1 personal · Fable refilled · 2 left on this grant`; `A Fable reset on #1 personal was already used: an earlier attempt went through. Run qswap reset to see where things stand.` (a retry the server had already counted); `A Fable reset on #1 personal may have been used: why. Run qswap reset to see where things stand.`; `Usage on #1 personal changed while this was open; nothing was used. Open the menu again.`; or `Did not use …: why` | every use |
-| An account needs re-login | `#4 side needs re-login: its saved login was refused. Log in to it in Claude Code (/login), then run: qswap add` | once per account and reason |
+| An account needs re-login | `#4 side needs re-login: its saved login was refused. Sign in to it again: qswap login 4` | once per account and reason |
+| A login runs out soon | `The login of #3 night-shift runs out in 2d 23h (Nov 26 14:00). Renew it with Sign in again in the menu, or run: qswap login 3` | once `login.notifyDays` (3) days before, and once more in the last day |
+| You signed in again from the menu | `The browser opens to sign in #3 night-shift (ops@example.net). It must be signed in to claude.ai as ops@example.net, or signed out. The active login is not touched.`, then `Renewed the login of #3 night-shift; the next sign-in is due Dec 23 14:02 · in 30d`, or `Cancelled the sign-in of #3 night-shift; nothing was saved.` (a failure is an alert) | every sign-in |
 | Every account is at its limit | `All accounts are at their limit; the first resets 15:32 · in 1h 12m` | once per provider until the next switch or reset time |
 | An API-key budget nears | `#5 ci has spent $410.00 of its $500.00 monthly budget (82%)` | once per account and month |
 | A setting matches nothing | `Warning: autoswitch.model 'Fabel' matches no limit any account reports` | once, whichever engine noticed |
@@ -257,7 +278,7 @@ Every notification is titled `ai-quota-swap`. With both providers managed, the a
 | An engine stopped | `Auto-switch stopped: the engine loop ended on its own. Open the menu to restart it.` | every time |
 | An engine did not start | `Codex auto-switch did not start: No Codex accounts are managed yet.` | every attempt |
 
-A failed action (a switch, an add, a remove) shows the command line's error in an alert.
+A failed action (a switch, an add, a remove, a sign-in) shows the command line's error in an alert.
 
 ## Files
 
@@ -266,6 +287,7 @@ A failed action (a switch, an add, a remove) shows the command line's error in a
 | `~/Library/LaunchAgents/com.aiquotaswap.menubar.plist` | the LaunchAgent while Start at login is on; in the data directory while it is off |
 | `~/Library/Logs/com.aiquotaswap.menubar.log`, `.err` | the service's output |
 | `~/.ai-quota-swap/ai-quota-swap.log` | the switch log that *Switch history* reads |
+| `~/.ai-quota-swap/menubar_state.json` | the login notices already posted, so a restart does not post them again |
 | `/Applications/AI Quota Swap Menubar.app` | the wrapper app, rebuilt on every start |
 
 The wrapper app gives the process the bundle identifier `com.ai-quota-swap.menubar`, which menu bar managers (Dimble, Ice, Bartender, SaneBar) need to list, hide and order the icon. `AI_QUOTA_SWAP_NO_BUNDLE=1 qswap menubar --foreground` runs without it; the service does not pass that variable on. The service does take the `CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, `XDG_DATA_HOME`, proxy and certificate variables (`HTTPS_PROXY`, `SSL_CERT_FILE` and the like) of the shell that set it up, and `--install-service` from a shell with other values says what changed.

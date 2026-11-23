@@ -109,7 +109,7 @@ A notification says `Switched to …`, along with any warning the command line w
 
 ```text
 #2 work needs re-login (its saved login was refused); not switched.
-Log in to it in Claude Code (/login), then run: qswap add
+Sign in to it again: qswap login 2
 ```
 
 The dialog starts on Cancel. Its other button, Switch anyway, does what `qswap switch 2 --anyway` does.

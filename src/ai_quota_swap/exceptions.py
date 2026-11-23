@@ -171,6 +171,14 @@ class SessionError(ClaudeSwitchError):
     pass
 
 
+class LoginError(ClaudeSwitchError):
+    """``qswap login`` could not renew a saved login: the browser sign-in
+    did not finish, failed, or signed in as another account. Nothing was
+    saved, and the private profile it used is gone."""
+
+    pass
+
+
 class LockError(ClaudeSwitchError):
     """Error acquiring lock."""
 

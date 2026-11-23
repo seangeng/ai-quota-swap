@@ -31,6 +31,7 @@ resets.weeklyForModelLimit        false        (default)
 resets.beforeSwitch               false        (default)
 codex.restartDaemon               true         (default)
 codex.threshold                   99           (default)
+login.notifyDays                  3            (default)
 ```
 
 Change one, read it back, and return it to its default:
@@ -100,6 +101,12 @@ Flags override settings for one run. `qswap auto --threshold 80` switches at 80%
 |---|---|---|---|
 | `codex.restartDaemon` | `true` | After `qswap codex switch`, restart Codex's background server so new sessions use the new account. The restart interrupts work in progress on it. `true` or `false`. | `qswap config set codex.restartDaemon false` |
 | `codex.threshold` | `99` | `qswap codex auto`'s switch line, in place of `autoswitch.threshold`. High by default because a Codex switch interrupts work in progress. A number from 50 to 99.9. | `qswap config set codex.threshold 90` |
+
+### Saved logins
+
+| Setting | Default | Meaning | Change it |
+|---|---|---|---|
+| `login.notifyDays` | `3` | The menu bar posts a notification when a subscription login comes within this many days of running out, and one more in its last day. Each names the account and both ways to renew it: *Sign in again* in the menu, and `qswap login N`. `0` turns them off. A whole number from 0 to 30. | `qswap config set login.notifyDays 5` |
 
 ### Sessions
 

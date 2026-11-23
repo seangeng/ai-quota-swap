@@ -153,7 +153,7 @@ The engine keeps running through failures and does not switch on a guess.
 - **Stale readings.** A reading counts while it is under 5 minutes old. While refreshing it fails, or while qswap has scheduled the next read for later, it keeps counting for up to an hour (when the usage endpoint is rate limiting, until the window resets). Past that the account's usage is unknown and it cannot be picked; the log shows the old figures with their age, as in `as of 3h 4m ago (timed out)`.
 - **The active account unreadable.** After `autoswitch.unhealthyTicks` checks in a row without a reading (default 3), the engine fails over to any account with room, without waiting for the cooldown. Until then the log counts down: `failover in 2 more checks`.
 - **An expired token on an idle machine.** Claude Code refreshes its token when you next send a message, so an expired token on the active account usually means nobody is working. The engine holds (`Claude Code is idle, resumes on next use`) and checks every 5 minutes. After 30 minutes of this it treats the account as unreadable, in case its refresh token is dead.
-- **A saved login that was refused.** Before switching, the engine refreshes the target's token if it expires within 10 minutes. If the refresh is refused, the account is set aside and shows `needs re-login` in the log, `qswap list`, `qswap status`, the dashboard and the menu bar. Log in to it in Claude Code (`/login`) and run `qswap add`; the engine puts it back by itself and logs `#4 side is back in rotation (login replaced)`.
+- **A saved login that was refused.** Before switching, the engine refreshes the target's token if it expires within 10 minutes. If the refresh is refused, the account is set aside and shows `needs re-login` in the log, `qswap list`, `qswap status`, the dashboard and the menu bar. Sign it in again with `qswap login 4`, which leaves the active login alone (or log in to it in Claude Code with `/login` and run `qswap add`); the engine puts it back by itself and logs `#4 side is back in rotation (login replaced)`.
 - **No account can take over.** The check names each account's reason and the next step:
 
 ```text
@@ -163,8 +163,7 @@ $ qswap auto --once
             #3 night-shift  usage unavailable (HTTP 503), retrying
             #4 side         needs re-login
             #5 spare        5h 40% · 7d 55% · as of 3h 4m ago (timed out)
-            To use #2 work and #4 side again, log in to each in Claude Code
-            (/login), then run: qswap add
+            To use #2 work and #4 side again, renew their logins: qswap login
 ```
 
 ## Reading the log

@@ -44,6 +44,7 @@ Sizes are rounded and move with every change; they are here so you know what you
 | `macos_keychain.py` | 200 | Keychain access through the `security` CLI |
 | `oauth.py` | 1,300 | Token parsing and refresh, the usage request and its normalization, window math |
 | `subscription.py` | 300 | The plan label (Max, Pro, Team) from the profile endpoint |
+| `login.py` | 500 | `qswap login`: a new sign-in made by `claude auth login` in a private profile under `sign-in/`, checked against the account and saved with `ClaudeAccountSwitcher.save_renewed_login`; the profile and its Keychain item deleted whatever happens |
 | `session.py` | 2,700 | `qswap run`: per-account Claude Code profiles and shared history; `qswap run N` on a key; the settings copies run profiles hold while a key is active |
 | `key_activation.py` | 1,100 | An API key made active through Claude Code's `apiKeyHelper`: who is active and who is underneath, who entered the key, entering and leaving it, and the one reconcile every switch and engine tick runs first |
 | `claude_settings.py` | 850 | Reads Claude Code's user settings and edits its one `apiKeyHelper` key, keeping everything else as it was; reads qswap's line back and checks that it answers |
@@ -112,8 +113,8 @@ Sizes are rounded and move with every change; they are here so you know what you
 | `menubar.py` | 1,700 | The menu bar's settings, its typed menu description and `build_menu`, the one pure function that turns both providers' state into the whole menu; the title, the health row, the dialogs' words |
 | `menubar_app.py` | 800 | The rumps glue: draws a `Menu`, maps each `Action` to a handler; only loaded with rumps |
 | `menubar_data.py` | 300 | The menu bar's blocking reads (both providers, the ledger's cost totals, the log, heartbeats), always off the main thread |
-| `menubar_engines.py` | 300 | One auto-switch engine per provider, each in its own thread; noticing switches made outside the menu bar |
-| `menubar_notify.py` | 300 | Notification texts and their de-duplication across the two engines |
+| `menubar_engines.py` | 300 | One auto-switch engine per provider, each in its own thread; noticing switches made outside the menu bar; *Use a reset* and *Sign in again* in a worker |
+| `menubar_notify.py` | 300 | Notification texts and their de-duplication across the two engines; the notices before a login runs out |
 | `launch_agent.py` | 900 | Running the menu bar under launchd |
 | `app_bundle.py` | 300 | The wrapper `.app` that gives the menu bar a bundle id |
 
@@ -138,6 +139,8 @@ credentials/             saved logins as base64 .enc files (all platforms but ma
                          Keychain is unusable); Admin keys the same way
 configs/                 each account's saved Claude Code config
 sessions/<n>-<email>/    `qswap run` profiles
+sign-in/                 `qswap login`'s private Claude Code profile while a sign-in runs, and its .lock;
+                         emptied afterwards
 history-conflicts/       transcripts a history merge kept rather than overwrite
 cache/                   usage store (usage.json), plans, the update check, Admin API answers
 settings.json            `qswap config`
@@ -149,6 +152,7 @@ activations.jsonl        which Claude account was live when
 pricing.json             your own prices (optional)
 api_orgs.json            registered organizations, without keys
 menubar_settings.json    menu bar preferences and its auto-switch toggles
+menubar_state.json       the login notices the menu bar has posted
 ai-quota-swap.log        the log
 .lock, .migrations.json  the registry lock, and the migrations already applied
 codex/                   the Codex provider's data root
