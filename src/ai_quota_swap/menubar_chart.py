@@ -13,11 +13,14 @@ The chart: seven columns, oldest left, today right, each stacked by account
 at the estimated cost ``qswap usage --by account`` reports; a weekday letter
 under each; the cost row's sentence above as its caption; one legend line
 below with at most four accounts by their seven-day amount, the rest merged
-into "other". No axis, no grid: the tallest day fills the height. Legend
-names read as the account rows read (``#2 work``). When the menu shows both
-providers, every Codex entry starts with ``Codex`` (``Codex #2 work``, down
-to ``Codex #2`` when cut) and a Claude Code entry never has a provider
-word, so even an entry cut to its number names one account.
+into "other". No axis, no grid: the tallest day fills the height. Every
+legend name has one form: the account's number and its short name, the
+alias (``#2 work``) or, without one, the part of its email before ``@``
+(``#1 maya``), the name the menu bar's title gives it. Short of room, every
+name is cut the same way. When the menu shows both providers, every Codex
+entry starts with ``Codex`` (``Codex #2 work``, ``Codex #1 may…`` when cut)
+and a Claude Code entry never has a provider word, so even a cut entry
+names one account.
 """
 
 from __future__ import annotations
@@ -53,8 +56,8 @@ UNATTRIBUTED = "unattributed"
 WEEKDAY_LETTERS = ("M", "T", "W", "T", "F", "S", "S")
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 #: A legend name cut with an ellipsis keeps its number and at least this
-#: many characters after it (``#3 nig…``); with less room it is its number
-#: alone (``#3``).
+#: many characters after it (``#3 nig…``); every name is cut to the same
+#: length, and the chart is made wide enough for this one.
 NAME_KEEP = 3
 #: The legend line's width in characters, for the outline and the tests;
 #: the view fits the line to its real width with the same rule.
@@ -196,7 +199,8 @@ class UsageChart:
         """The legend's names, cut so the line fits: ``fits(names)`` says
         whether a line with these names fits (by default
         :data:`LEGEND_LIMIT` characters). See :func:`fit_names`. With a
-        ``fits`` that always says no, every name at its shortest."""
+        ``fits`` that always says no, every name at its narrowest, which
+        the chart view makes room for."""
         if fits is None:
             def fits(names: list[str]) -> bool:
                 return len(self.legend_text(names)) <= LEGEND_LIMIT
@@ -228,24 +232,36 @@ def _cut(name: str, width: int) -> str:
 
 def shortest_name(name: str, head: int) -> str:
     """The shortest a legend name gets: its number (``#3``, ``Codex #3``),
-    the first ``head`` characters. A name with no number (``unattributed``,
-    ``… (not managed)``) keeps twice :data:`NAME_KEEP` characters
-    (``unattr…``), so a short one such as "other" is never cut."""
+    the first ``head`` characters, for a name whose cut would keep fewer
+    than :data:`NAME_KEEP` characters (``#3 ab.cd`` cut before its dot). A
+    name with no number (``unattributed``, ``… (not managed)``) keeps
+    twice :data:`NAME_KEEP` characters (``unattr…``), so a short one such
+    as "other" is never cut."""
     return name[:head] if head else _cut(name, 2 * NAME_KEEP + 1)
 
 
-def name_cuts(name: str, head: int) -> list[str]:
-    """Every cut of ``name`` with an ellipsis, shortest first: each keeps
-    its number and at least :data:`NAME_KEEP` characters after it (twice
-    as many with no number), and none ends in punctuation before the
-    ellipsis. Empty when the name is too short to cut."""
-    keep = head + 1 + NAME_KEEP if head else 2 * NAME_KEEP
-    out: list[str] = []
-    for width in range(keep + 1, len(name)):
-        cut = _cut(name, width)
-        if len(cut) - 1 >= keep and (not out or cut != out[-1]):
-            out.append(cut)
-    return out
+def _tail(name: str, head: int) -> str:
+    """What follows the number (and the space after it); the whole name
+    when it has no number."""
+    return name[head + 1:] if head else name
+
+
+def cut_name(name: str, head: int, room: int) -> str:
+    """``name`` with at most ``room`` characters after its number (the
+    whole name for one with no number), the ellipsis included: whole when
+    that part fits, else cut with an ellipsis. A cut keeps at least
+    :data:`NAME_KEEP` characters (twice as many with no number), and none
+    ends in punctuation before the ellipsis; below that the name is at its
+    shortest (:func:`shortest_name`)."""
+    tail = _tail(name, head)
+    if len(tail) <= room:
+        return name
+    if not head:
+        return _cut(name, max(room, 2 * NAME_KEEP + 1))
+    cut = _cut(tail, room)
+    if len(cut) - 1 < NAME_KEEP:
+        return shortest_name(name, head)
+    return name[: head + 1] + cut
 
 
 def fit_names(
@@ -255,36 +271,32 @@ def fit_names(
     wraps. ``heads[i]`` is how much of ``names[i]`` is its number (0 for
     none); ``fits(names)`` says whether a line with these names fits.
 
-    Every name starts at its shortest form (:func:`shortest_name`). Then,
-    in legend order (the largest amount first), each grows to the longest
-    form that still fits: the whole name if that fits, else its longest
-    cut (:func:`name_cuts`), else it stays at its shortest. So no room is
-    left that a name could have used, and a wider line never shows a
-    shorter name for the first entry. When even the shortest forms do not
-    fit, returns them. ``fits`` must say yes to a narrower line whenever it
-    says yes to a wider one."""
-    out = [shortest_name(n, h) for n, h in zip(names, heads)]
-    for i, (name, head) in enumerate(zip(names, heads)):
-        if out[i] == name:
-            continue
+    Every name is cut the same way: each keeps at most the same number of
+    characters after its number (:func:`cut_name`), the most that lets the
+    line fit, so a name short enough stays whole while a longer one is
+    cut, and a wider line never shows a shorter name. At the least, each
+    keeps :data:`NAME_KEEP` characters (``#1 per…``), never its number
+    alone while another keeps its name. When even that does not fit,
+    returns those narrowest forms: the chart view is made wide enough for
+    them (``menubar_chart_view.min_width``), so the line never needs less.
+    ``fits`` must say yes to a narrower line whenever it says yes to a
+    wider one."""
+    def at(room: int) -> list[str]:
+        return [cut_name(n, h, room) for n, h in zip(names, heads)]
 
-        def fits_with(form: str, i: int = i) -> bool:
-            return fits([*out[:i], form, *out[i + 1:]])
-
-        if fits_with(name):
-            out[i] = name
-            continue
-        cuts = name_cuts(name, head)
-        lo, hi = 0, len(cuts)  # every cut before lo fits, none from hi on
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if fits_with(cuts[mid]):
-                lo = mid + 1
-            else:
-                hi = mid
-        if lo:
-            out[i] = cuts[lo - 1]
-    return out
+    longest = max((len(_tail(n, h)) for n, h in zip(names, heads)), default=0)
+    if fits(at(longest)):
+        return list(names)
+    lo, hi = NAME_KEEP + 1, longest  # the most room that fits is in [lo, hi)
+    if lo >= hi or not fits(at(lo)):
+        return at(lo)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if fits(at(mid)):
+            lo = mid
+        else:
+            hi = mid
+    return at(lo)
 
 
 # -- where it goes ---------------------------------------------------------------------------
@@ -512,14 +524,20 @@ def _segment_key(acc: CostAccount) -> str:
 
 
 def _legend_name(acc: CostAccount, names: Mapping[tuple[str, str], str]) -> tuple[str, int]:
-    """The account's name as its row shows it (``#2 work``), and how much
-    of it is the number."""
+    """The account's name in the legend, and how much of it is the number.
+    A managed account's is its number and short name: ``#2 work``, or
+    ``#1 maya`` for ``#1 maya@example.com`` (an alias never holds ``@``,
+    so only an email is shortened). Others are named as ``qswap usage``
+    names them."""
     if acc.provider is None:
         return acc.name or UNATTRIBUTED, 0
     name = acc.name
     if acc.number is not None:
         name = names.get((acc.provider, str(acc.number))) or name or f"#{acc.number}"
     head = len(f"#{acc.number}") if acc.number is not None and name.startswith(f"#{acc.number}") else 0
+    if head and "@" in name[head:]:
+        local = name[head:].split("@", 1)[0].rstrip()
+        name = name[:head] + local if local.strip() else name[:head]
     return name, head
 
 
@@ -538,11 +556,12 @@ def build_chart(
 
     ``names`` maps ``(provider, number)`` to the name the account's row
     shows (``#2 work``), which wins over the one the ledger read carried;
-    without it the legend uses ``qswap usage``'s.
+    without it the legend uses ``qswap usage``'s. Either is shortened to
+    its number and short name (:func:`_legend_name`).
 
     ``both``: whether the menu shows both providers (``MenuInput.codex_shown``,
     which also gives Codex its own section). Then every Codex account's
-    entry starts with ``Codex`` (``Codex #2 work``, ``Codex #2`` when cut)
+    entry starts with ``Codex`` (``Codex #2 work``, ``Codex #1 may…`` when cut)
     and a Claude Code account's has no provider word. Without it no entry
     of an account qswap manages has one."""
     names = names or {}
