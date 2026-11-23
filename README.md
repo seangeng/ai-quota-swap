@@ -4,7 +4,7 @@ ai-quota-swap (the `qswap` command) is an account switcher for Claude Code and t
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero-light.png">
-  <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero.png" alt="The qswap menu bar, titled personal · 46% · 38%, with its menu open in front of the terminal dashboard. The menu lists five Claude Code accounts and two Codex accounts with their 5-hour and weekly usage and held resets, the API key #5 ci at $25.22 of its $40 budget, and a chart of the last seven days of estimated cost by account: today $5.16, 7 days $78.25. Auto-switch is running for both." width="900">
+  <img src="https://raw.githubusercontent.com/seangeng/ai-quota-swap/main/assets/screenshots/raw/hero.png" alt="The qswap menu bar, titled personal · 46% · 38%, with its menu open in front of the terminal dashboard. The menu lists five Claude Code accounts and two Codex accounts with their 5-hour and weekly usage and held resets, the API key #5 ci at $25.22 of its $40 budget, and a chart of the last seven days of estimated cost by account: today $5.16, 7 days $78.25, its legend naming every account the same way (#1 per…, #2 work, #5 ci). Auto-switch is running for both." width="900">
 </picture>
 
 Every screenshot and recording on this page shows made-up accounts and comes from the [demo harness](https://github.com/seangeng/ai-quota-swap/blob/main/scripts/demo/README.md). The terminal pictures are qswap's own output. The menu bar pictures are drawings of the menu rows, cost chart and notification text the app produces.
