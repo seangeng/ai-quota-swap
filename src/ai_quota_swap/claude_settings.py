@@ -627,6 +627,26 @@ def _read(path: Path) -> str | None:
         return None
 
 
+def transcript_days(path: Path | None = None) -> float:
+    """How many days Claude Code keeps a session's transcript after its last
+    change: ``cleanupPeriodDays`` in its user settings (or in ``path``) when
+    that is a number of 0 or more, else its default (30). The launch records
+    of ``qswap run`` on a key are kept as long (``ledger.activations``).
+    Never raises."""
+    from ai_quota_swap.ledger.activations import TRANSCRIPT_DAYS
+
+    try:
+        text = _split_bom(_read(settings_path() if path is None else path) or "")[1]
+        obj, _err = _parse(text or "")
+    except (OSError, UnicodeDecodeError, ValueError):
+        return TRANSCRIPT_DAYS
+    value = (obj or {}).get("cleanupPeriodDays")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return TRANSCRIPT_DAYS
+    days = float(value)
+    return days if 0 <= days < 1e9 else TRANSCRIPT_DAYS
+
+
 def read_state(path: Path | None = None, *, data_dir: Path | str | None = None) -> HelperState:
     """The state of Claude Code's user settings (or of ``path``), for the
     qswap whose data directory is ``data_dir`` (:func:`state_of_text`). A

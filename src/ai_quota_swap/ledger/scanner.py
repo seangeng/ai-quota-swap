@@ -35,7 +35,12 @@ from datetime import datetime
 from pathlib import Path
 
 from ai_quota_swap import paths
-from ai_quota_swap.ledger.activations import ActivationLog, identity_key
+from ai_quota_swap.ledger.activations import (
+    ActivationLog,
+    identity_key,
+    launches_path,
+    log_path,
+)
 from ai_quota_swap.ledger.readers import (
     Event,
     OwnerNote,
@@ -280,7 +285,7 @@ class Scanner:
         self.batch_bytes = batch_bytes
         self.stats = ScanStats()
         self._log_roots = {"claude": config.data_root, "codex": config.data_root / "codex"}
-        self._log_stamps: dict[str, tuple | None] = {}
+        self._log_stamps: dict[str, tuple] = {}
         self.logs: dict[str, ActivationLog] = {}
         self._refresh_logs()
         self._batch = _Batch()
@@ -291,11 +296,14 @@ class Scanner:
         self._counted: set[str] | None = None
 
     def _refresh_logs(self) -> None:
-        """(Re)load an activation log whose file changed, so a switch made
-        while a long scan runs attributes the events after it correctly."""
+        """(Re)load an activation log whose file changed, or whose launch
+        records did, so a switch or a ``qswap run`` launch made while a long
+        scan runs attributes the events after it correctly."""
         for provider, root in self._log_roots.items():
-            st = _stat(str(root / "activations.jsonl"))
-            stamp = (st.st_size, st.st_mtime_ns) if st is not None else None
+            stamp = tuple(
+                (st.st_size, st.st_mtime_ns) if st is not None else None
+                for st in (_stat(str(log_path(root))), _stat(str(launches_path(root))))
+            )
             if provider not in self.logs or stamp != self._log_stamps.get(provider):
                 self.logs[provider] = ActivationLog.load(root)
                 self._log_stamps[provider] = stamp
@@ -651,6 +659,10 @@ class Scanner:
                     continue
                 seen_rows.append((key, ev.output))
                 account = ev.account
+                if account is None:
+                    # A qswap run session on a key, by its launch record;
+                    # else the account the log says was live.
+                    account = self.logs[provider].launch_account(ev.session, ev.ts)
                 if account is None:
                     account = self.logs[provider].account_at(ev.ts)
                 bkey = (

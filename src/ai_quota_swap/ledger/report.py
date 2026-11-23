@@ -2,7 +2,9 @@
 
 Attribution at report time
     Buckets carry the account the activation log gave each event (or a
-    preset one: a ``run`` profile's own history, the desktop app). One more
+    preset one: a ``run`` profile's own history, the desktop app; or the
+    account of the launch record of a ``qswap run`` session on a key, which
+    no rule here changes). One more
     rule runs here, for ``qswap run`` sessions whose history is shared into
     the default tree: Claude Code stamps each session with the account that
     started it (``session-owner``). A session started on the default login
@@ -251,12 +253,16 @@ def _profile_sessions(
     before the engine entered the key. ``qswap run`` for that login is
     refused while the key is active, so such a stamp is no run profile's,
     and attribution stays by time. A stamp naming any other login still
-    wins."""
+    wins.
+
+    A session a launch record names (``qswap run N`` on a key) is never
+    one: the scan gave its usage the record's account, and the record wins
+    over the stamp."""
     out: dict[str, str] = {}
     if not len(log):
         return out
     for session, (owner, first_ts, *rest) in store.sessions("claude").items():
-        if first_ts is None:
+        if first_ts is None or log.launched(session):
             continue
         if rest and rest[0] == 0:
             continue  # stamped late: attribution by time
@@ -312,7 +318,10 @@ def attribute(
         if prov == "claude" and session in overrides and account not in (DESKTOP_ACCOUNT,):
             account = overrides[session]
             used_profile_sessions.add(session)
-        elif saved_key and prov == "claude" and account not in (DESKTOP_ACCOUNT, UNATTRIBUTED):
+        elif (
+            saved_key and prov == "claude" and account not in (DESKTOP_ACCOUNT, UNATTRIBUTED)
+            and not claude_log.launched(session)
+        ):
             moved = claude_log.saved_key_owner(account, hour, session_starts.get(session))
             if moved is not None:
                 account = moved or UNATTRIBUTED

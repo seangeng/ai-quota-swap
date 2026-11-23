@@ -59,7 +59,8 @@ KEY_NOTE_CODES = (
     "unwatched", "watched-once", "profiles-linked", "profiles-stale", "env-outranks",
     "other-helper", "other-data-dir", "reset-kept", "limit-latched",
 )
-#: ``qswap run N`` sessions on a key: one JSON line per launch (pid, number).
+#: ``qswap run N`` sessions on a key: one JSON line per launch (pid, number,
+#: and the session id: ``ledger.activations.LAUNCHES_FILENAME``).
 KEY_RUNS_FILENAME = "key_runs.jsonl"
 ENTERED_BY = ("user", "engine")
 
@@ -675,14 +676,22 @@ class KeyActivationMixin:
 
     # -- qswap run on a key ---------------------------------------------------------
 
-    def record_key_run(self, number: str, pid: int) -> None:
-        """Remember a ``qswap run N`` session on a key (its pid survives the
-        exec into claude), so removing the account can name it. Never raises."""
+    def record_key_run(self, number: str, pid: int, *, session: str | None = None) -> None:
+        """Write the launch record of a ``qswap run N`` session on a key
+        (``ledger.activations``, "Launch records"): its pid, which survives
+        the exec into claude, so removing the account can name it, and the
+        Claude Code session id it was started with, so ``qswap usage`` gives
+        that session's usage to the key. Records older than Claude Code keeps
+        its transcripts are dropped on the way. Never raises."""
         try:
-            path = Path(self.backup_dir) / KEY_RUNS_FILENAME
-            line = json.dumps({"pid": int(pid), "number": str(number), "ts": time.time()})
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            from ai_quota_swap.ledger.activations import record_launch
+
+            row = ((self._get_sequence_data() or {}).get("accounts") or {}).get(str(number)) or {}
+            record_launch(
+                Path(self.backup_dir), pid=pid, number=number, email=row.get("email", ""),
+                org=row.get("organizationUuid") or "", session=session,
+                keep_days=claude_settings.transcript_days(), lock=Path(self.lock_file),
+            )
         except Exception as e:
             self._logger.debug(f"Could not record the key run: {e!r}")
 

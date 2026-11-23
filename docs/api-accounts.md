@@ -361,7 +361,7 @@ The link is stored on the account and checked against its key on every read, wit
 | Source | Row | What it counts |
 |---|---|---|
 | Anthropic's usage report | no tag | Every request made with the key, anywhere, about five minutes behind. Read at most once every five minutes per organization |
-| This machine's session files | `estimate` | Claude Code requests from this machine while the account was active, as of the last `qswap usage` run |
+| This machine's session files | `estimate` | Claude Code requests from this machine while the account was active, and from `qswap run 5` sessions on it, as of the last `qswap usage` run |
 
 Both are tokens priced with the table behind `qswap usage` ([usage.md](usage.md#the-cost-is-an-estimate)), so neither is your invoice to the cent. Fast mode is priced; discounts, credits and long-context tiers are not, and charges that are not tokens (web search, code execution) are left out.
 

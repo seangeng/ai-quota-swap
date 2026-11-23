@@ -21,6 +21,35 @@ The writers here are called from the switch path and from a cheap observation
 point, so they must never raise into the caller and never block: no locks, one
 ``O_APPEND`` write of one short line. Two processes racing can at worst write
 two lines for the same account, which reads the same.
+
+Launch records
+    ``qswap run N`` on an API-key account runs one Claude Code process on the
+    shared profile with the key, while the activation log names the login
+    every other session uses. So each such launch appends a line to
+    ``key_runs.jsonl`` beside the log::
+
+        {"pid": 4242, "number": "5", "ts": 1794225600.0,
+         "session": "6f1c...", "email": "api-key-5@token.local", "org": ""}
+
+    ``session`` is the Claude Code session id the launch gave claude
+    (``--session-id``), which every transcript line of that conversation
+    carries: an event of that session at or after ``ts`` belongs to the
+    account the line names (:meth:`ActivationLog.launch_account`), whatever
+    the log or the session's owner stamp says. A launch that let claude pick
+    its session (``--resume``, ``--continue``) records none, and its usage is
+    attributed as before. No key or token is ever written; the account is
+    named as the log names it, so a later ``qswap swap`` cannot move the
+    usage. Lines from before the field existed carry only ``pid``,
+    ``number`` and ``ts`` (``remove`` names the running ones).
+
+    A record is dropped once Claude Code would have removed the transcript
+    it explains (``cleanupPeriodDays``, 30 days by default, counted from the
+    launch, plus a day) and its process is gone, when the next launch is
+    recorded (:func:`record_launch`). That rewrite, unlike the appends
+    above, runs under the account lock, which a launch also holds while it
+    appends (when it can get it within a second; else it only appends).
+    The ledger keeps what the record gave each event it counted
+    (scanner.py), so dropping it changes no report.
 """
 
 from __future__ import annotations
@@ -37,6 +66,15 @@ from pathlib import Path
 FILENAME = "activations.jsonl"
 SOURCES = ("switch", "observed")
 HOWS = ("login", "helper", "saved-key")
+#: ``qswap run N`` sessions on an API key: one JSON line per launch (module
+#: docstring, "Launch records").
+LAUNCHES_FILENAME = "key_runs.jsonl"
+#: How many days Claude Code keeps a transcript after its last change when
+#: its settings do not say (``cleanupPeriodDays``).
+TRANSCRIPT_DAYS = 30
+#: How long a lock for dropping old launch records is waited for. A launch
+#: that cannot get it appends its record and leaves the old ones for later.
+LAUNCH_LOCK_WAIT_S = 1.0
 
 # Per-process memory of the last line seen per log file, keyed by path:
 # ((size, mtime_ns), (email, org)). Lets the observation point skip the tail
@@ -207,6 +245,146 @@ def observe_live_login(
         return False
 
 
+# -- launch records ------------------------------------------------------------
+
+
+def launches_path(root: Path) -> Path:
+    """The launch records inside a provider data root."""
+    return Path(root) / LAUNCHES_FILENAME
+
+
+def record_launch(
+    root: Path,
+    *,
+    pid: int,
+    number: int | str,
+    email: str,
+    org: str | None,
+    session: str | None,
+    keep_days: float = TRANSCRIPT_DAYS,
+    lock: Path | None = None,
+    now: float | None = None,
+    alive=None,
+) -> bool:
+    """Append the record of a ``qswap run N`` launch on a key (the module
+    docstring), then drop the records past ``keep_days`` (:func:`prune_launches`).
+    Both run under ``lock`` when it is given and free within
+    ``LAUNCH_LOCK_WAIT_S``; otherwise the record is appended alone, and the
+    old ones wait for the next launch. ``alive`` stands in for the pid check
+    (tests). Returns True when the record was written. Never raises."""
+    try:
+        record: dict = {
+            "pid": int(pid), "number": str(number),
+            "ts": time.time() if now is None else float(now),
+        }
+        if session:
+            record.update(session=str(session), email=email or "", org=org or "")
+        path = launches_path(root)
+        held = None
+        if lock is not None:
+            from ai_quota_swap.locking import FileLock
+
+            held = FileLock(Path(lock), timeout=LAUNCH_LOCK_WAIT_S)
+            if not held.acquire():
+                held = None
+        try:
+            _append(path, record)
+            if held is not None:
+                prune_launches(root, keep_days=keep_days, now=record["ts"], alive=alive)
+        finally:
+            if held is not None:
+                held.release()
+        return True
+    except Exception:
+        return False
+
+
+def prune_launches(
+    root: Path, *, keep_days: float = TRANSCRIPT_DAYS, now: float | None = None, alive=None
+) -> int:
+    """Drop the launch records older than ``keep_days`` plus one day whose
+    process is gone, and lines that cannot be read. Returns how many lines
+    went. The file is replaced only when one goes; the caller holds the lock
+    every writer takes (:func:`record_launch`). Never raises."""
+    try:
+        path = launches_path(root)
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return 0
+        if alive is None:
+            from ai_quota_swap.process_detection import is_pid_alive
+
+            alive = is_pid_alive
+        cutoff = (time.time() if now is None else now) - (max(0.0, keep_days) + 1) * 86400
+        kept: list[bytes] = []
+        dropped = 0
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                obj = None
+            if not isinstance(obj, dict):
+                dropped += 1
+                continue
+            ts = parse_ts(obj.get("ts"))
+            if ts is None or ts < cutoff:
+                pid = obj.get("pid")
+                if not (isinstance(pid, int) and not isinstance(pid, bool) and alive(pid)):
+                    dropped += 1
+                    continue
+            kept.append(line + b"\n")
+        if dropped:
+            from ai_quota_swap.fsutil import atomic_write_bytes
+
+            atomic_write_bytes(path, b"".join(kept))
+        return dropped
+    except Exception:
+        return 0
+
+
+@dataclass(frozen=True)
+class Launch:
+    """A launch record the ledger can use: one that names its session."""
+
+    ts: float
+    session: str
+    account: str  # identity_key
+    number: int | None
+
+
+def load_launches(root: Path) -> list[Launch]:
+    """The launch records under ``root`` that name a session and an
+    account; a missing or torn file reads as empty."""
+    out: list[Launch] = []
+    try:
+        with open(launches_path(root), "rb") as f:
+            for raw in f:
+                try:
+                    obj = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                ts = parse_ts(obj.get("ts"))
+                session, email = obj.get("session"), obj.get("email")
+                if ts is None or not isinstance(session, str) or not session:
+                    continue
+                if not isinstance(email, str) or not email:
+                    continue
+                num, org = str(obj.get("number")), obj.get("org")
+                out.append(Launch(
+                    ts=ts, session=session,
+                    account=identity_key(email, org if isinstance(org, str) else ""),
+                    number=int(num) if num.isascii() and num.isdigit() else None,
+                ))
+    except OSError:
+        pass
+    return out
+
+
 @dataclass(frozen=True)
 class Activation:
     ts: float
@@ -217,18 +395,40 @@ class Activation:
 
 
 class ActivationLog:
-    """The parsed log, ready for interval lookups."""
+    """The parsed log, ready for interval lookups, with the launch records
+    of the same root (the module docstring)."""
 
-    def __init__(self, activations: list[Activation]):
+    def __init__(self, activations: list[Activation], launches: list[Launch] | tuple = ()):
         self.activations = sorted(activations, key=lambda a: a.ts)
         self._times = [a.ts for a in self.activations]
         # Worked out from the whole log once, on first use (_periods).
         self._period_cache: tuple[list[str], list[int]] | None = None
         self._has_saved_key: bool | None = None
+        # session -> its launch records, oldest first.
+        self._launches: dict[str, list[Launch]] = {}
+        for launch in sorted(launches, key=lambda x: x.ts):
+            self._launches.setdefault(launch.session, []).append(launch)
+
+    def launch_account(self, session: str, ts: float) -> str | None:
+        """The account a launch record gives an event of ``session`` at
+        ``ts``: the latest record's launched at or before ``ts``; None when
+        no record names the session, or the event came before its launch."""
+        found = None
+        for launch in self._launches.get(session, ()) if session else ():
+            if launch.ts > ts:
+                break
+            found = launch.account
+        return found
+
+    def launched(self, session: str) -> bool:
+        """Whether a launch record names ``session`` (its usage then follows
+        the record, not the owner stamp or the saved-key rule)."""
+        return bool(session) and session in self._launches
 
     @classmethod
     def load(cls, root: Path) -> ActivationLog:
-        """Read ``<root>/activations.jsonl``; a missing or torn file reads as empty."""
+        """Read ``<root>/activations.jsonl`` and the launch records beside it;
+        a missing or torn file reads as empty."""
         out: list[Activation] = []
         try:
             with open(log_path(root), "rb") as f:
@@ -255,7 +455,7 @@ class ActivationLog:
                     )
         except OSError:
             pass
-        return cls(out)
+        return cls(out, load_launches(root))
 
     def __len__(self) -> int:
         return len(self.activations)

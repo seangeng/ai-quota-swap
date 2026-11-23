@@ -215,6 +215,12 @@ return to it when the key is left.
 `--settings '{"apiKeyHelper": "<qswap> key-helper N"}'`. Only that process uses the key, for
 as long as it lives. Arguments after `--` go to `claude` as for any `run`.
 
+The launch also gives claude a session id of its own (`--session-id`) and records it with the
+account and the time (`key_runs.jsonl`), so the ledger gives that conversation's usage to the
+key ([ledger.md](ledger.md#attribution-to-accounts)). Arguments that pick the conversation
+(`--resume`, `--continue` and the like) get no id, and that session's usage is attributed as
+before.
+
 ### Credit
 
 `qswap credit N AMOUNT [--expires DATE]` records a balance for an API-key account as of now;
@@ -240,7 +246,9 @@ stays on the key. Nor does a stamp naming the login under the key mark one when 
 session's first counted event falls while the key is active through the line (a session
 opened as the subscription ran out, just before the engine entered the key): `qswap run`
 for that login is refused while the key is active, so its usage stays by time, on the key.
-A stamp naming another login still marks a `qswap run` session.
+A stamp naming another login still marks a `qswap run` session. A `qswap run N` session on
+a key is the key's by its launch record (issue #21), whatever the time or a stamp says;
+before the record existed it went by time, to the login.
 
 ### As built
 
@@ -457,3 +465,17 @@ What the code does where this part leaves room, or where it had to differ:
   the new key within 5 minutes (at once after a rejected request), and never moves the key to
   another slot; **remove** takes the line out first and names `qswap run N` sessions on that
   key, which qswap records at launch.
+- **The launch record** (issue #21). What is exact at launch is the session id: claude takes
+  one (`--session-id`, listed by `claude --help` on 2.1.330) and writes it on every
+  transcript line. The pid is known too (exec keeps it), and Claude Code's
+  `sessions/<pid>.json` names the session while the process runs, but it is gone once the
+  process exits, so matching by it would depend on qswap looking while the session runs;
+  the record keeps the pid only for `remove`. A conversation started with `/clear` inside
+  the process gets a new id the record does not know, and its usage goes by time, as before.
+  The other way round, a recorded conversation resumed later with plain `claude --resume`
+  on a login stays the key's: the record has no end, and counting the key high is the side
+  a budget wants. Not run against a real Claude Code: that `--session-id` sets the
+  transcript's `sessionId` in an interactive and a print-mode session, that claude accepts
+  it beside `--settings` and the arguments users pass after `--` (a subcommand among them),
+  and what `/clear` does to the id. The suite fakes claude at exec and builds the
+  transcripts it reads.
