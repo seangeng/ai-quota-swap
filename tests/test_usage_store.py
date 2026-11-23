@@ -2001,6 +2001,19 @@ class TestLiftNetworkBackoff:
         assert entries["2"].in_backoff(clock.now)  # a Retry-After is never cut short
         assert entries["3"].in_backoff(clock.now)  # tried under the bound ago
 
+    def test_a_timeout_is_never_lifted(self, store, clock):
+        """A host that takes the connection and does not answer is not back:
+        its reads wait out their backoff, whatever the reachability check says."""
+        store.record({"1": FetchRecord(error="timeout", error_detail="timeout")}, IDENT)
+        store.record({"2": FetchRecord(error="refresh-failed", error_detail="timeout")}, IDENT)
+        clock.advance(BACKOFF_BASE_S / 2)
+        assert store.lift_network_backoff({"1", "2"}, IDENT, attempted_before=clock.now) == set()
+        store.record(
+            {"2": FetchRecord(error="refresh-failed", error_detail="network (dns)")}, IDENT
+        )
+        clock.advance(BACKOFF_BASE_S / 2)
+        assert store.lift_network_backoff({"1", "2"}, IDENT, attempted_before=clock.now) == {"2"}
+
     def test_nothing_to_lift_outside_backoff(self, store, clock):
         store.record({"1": FetchRecord(error="network", error_detail="network (dns)")}, IDENT)
         clock.advance(BACKOFF_CAP_S)

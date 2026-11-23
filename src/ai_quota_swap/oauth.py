@@ -815,7 +815,7 @@ def _usage_from_probe(
         cause = detail if retry_after is None else f"{detail}, retry-after {retry_after:.0f}s"
         _logger.warning(
             "Usage header probe failed %s: %s", context, cause,
-            extra=failure_line_tag("claude", account),
+            extra=failure_line_tag("claude", account, kind),
         )
         _logger.debug("Usage header probe failure detail %s: %r", context, e)
         return UsageOutcome(None, error=kind, retry_after_s=retry_after, detail=detail)
@@ -992,15 +992,15 @@ def is_network_failure(kind: str | None, detail: str | None = None) -> bool:
 
 
 #: Attribute a usage-fetch failure line carries (``extra``):
-#: ``(provider, account number)``. While an offline episode is open the auto
-#: engine writes each account's first such line and counts the rest
-#: (``autoswitch.RepeatFailureFilter``).
+#: ``(provider, account number, kind)``. While an offline episode is open the
+#: auto engine writes each account's first such line of a network kind and
+#: counts the rest (``autoswitch.RepeatFailureFilter``).
 FAILURE_LINE = "qswap_usage_failure"
 
 
-def failure_line_tag(provider: str, account: str | None) -> dict:
+def failure_line_tag(provider: str, account: str | None, kind: str | None) -> dict:
     """The ``extra`` of a usage-fetch failure line; empty without an account."""
-    return {FAILURE_LINE: (provider, str(account))} if account else {}
+    return {FAILURE_LINE: (provider, str(account), kind)} if account else {}
 
 
 def _log_usage_failure(
@@ -1028,7 +1028,8 @@ def _log_usage_failure(
         # and backoff plus the adaptive cadence are the recovery.
         cause += " (usage-endpoint budget reached; backing off)"
     _logger.warning(
-        "Usage fetch failed%s: %s", where, cause, extra=failure_line_tag("claude", account)
+        "Usage fetch failed%s: %s", where, cause,
+        extra=failure_line_tag("claude", account, kind),
     )
     _logger.debug("Usage fetch failure detail%s: %r", where, e)
 

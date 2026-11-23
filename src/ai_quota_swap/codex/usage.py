@@ -146,12 +146,14 @@ def fetch_usage(
     account's number, named in a failure's log line (never its id).
     """
     where = f" for account {account}" if account else ""
-    tag = oauth.failure_line_tag("codex", account)
     try:
         data = request_json(USAGE_URL, access_token, account_id)
         usage = normalize_usage(data)
     except InvalidUsageResponse as e:
-        _logger.warning("Codex usage fetch failed%s: bad-response", where, extra=tag)
+        _logger.warning(
+            "Codex usage fetch failed%s: bad-response", where,
+            extra=oauth.failure_line_tag("codex", account, "bad-response"),
+        )
         _logger.debug("Codex usage response rejected: %s", e)
         return UsageOutcome(error="bad-response", detail="bad-response")
     except Exception as e:  # HTTP, network, timeout, JSON: classified below
@@ -160,7 +162,7 @@ def fetch_usage(
         _logger.warning(
             "Codex usage fetch failed%s: %s%s", where, detail,
             "" if retry_after is None else f", retry-after {retry_after:.0f}s",
-            extra=tag,
+            extra=oauth.failure_line_tag("codex", account, kind),
         )
         _logger.debug("Codex usage fetch failure detail: %r", e)
         return UsageOutcome(error=kind, retry_after_s=retry_after, detail=detail)

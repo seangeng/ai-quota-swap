@@ -606,4 +606,4 @@ class TestOffline:
         assert "acct-a" not in record.getMessage()
         from ai_quota_swap import oauth
 
-        assert getattr(record, oauth.FAILURE_LINE) == ("codex", "2")
+        assert getattr(record, oauth.FAILURE_LINE) == ("codex", "2", "network")

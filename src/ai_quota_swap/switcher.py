@@ -6524,8 +6524,12 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             num: with_login_expiry(
                 with_sentinel(entries[num], sentinels.get(num)),
                 # The credential this pass already read (no extra Keychain
-                # read): the live store's for the active account.
-                oauth.login_expires_at_epoch(info_by_num[num][5] or ""),
+                # read): the live store's for the active account. Not from a
+                # degraded live read: the fallback copy can be the login from
+                # before a renewal, whose old end date would send the engine
+                # off a login just renewed.
+                None if info_by_num[num][4] and self._active_read_degraded
+                else oauth.login_expires_at_epoch(info_by_num[num][5] or ""),
             )
             for num in info_by_num
         }

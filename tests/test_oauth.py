@@ -2022,7 +2022,7 @@ class TestUsageErrorDetail:
         assert (outcome.error, outcome.detail) == ("network", "network (dns)")
         (record,) = [r for r in caplog.records if "Usage fetch failed" in r.getMessage()]
         assert record.getMessage() == "Usage fetch failed for account 2: network (dns)"
-        assert getattr(record, oauth.FAILURE_LINE) == ("claude", "2")
+        assert getattr(record, oauth.FAILURE_LINE) == ("claude", "2", "network")
 
     def test_a_401_on_a_freshly_renewed_token_says_so(self):
         creds = TestTryFetchUsageOutcome._make_credentials()

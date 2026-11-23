@@ -161,6 +161,15 @@ OFFLINE_RETRY_S = 50.0
 # A held-back failure line filter that its engine stopped touching (an
 # engine dropped without stop()) lets every line through after this long.
 QUIET_STALE_S = 30 * 60.0
+# When no read was due, a read that worked this recently outranks a
+# reachability check that says the host is down: the check is a TCP connect,
+# a read is the real thing. As long as such a reading counts for decisions.
+RECENT_READ_S = STALE_OK_S
+# An open offline record (and a count of suspect checks) is stamped again at
+# least this often; one not stamped for twice the idle-hold cap is dropped
+# when an engine loads it, as the health counters are, so a restart days
+# later never reads "back online after 7d".
+RECORD_TOUCH_S = 10 * 60.0
 
 # Saved logins end (``refreshTokenExpiresAt``; autoswitch.watchLoginExpiry).
 # Whether the server holds to that date exactly is not known, so both rules
@@ -172,13 +181,15 @@ QUIET_STALE_S = 30 * 60.0
 # else qualifies. Two hours leaves the user a working session on the account
 # and time to renew it.
 LOGIN_ENDING_S = 2 * 3600.0
-# Leaving: the active account is left this long before its login ends (or
-# once its end date has passed) for a candidate with room whose login is not
-# ending (trigger ``login-expiry``). A move by choice (at the line, to a
-# sooner reset, to a higher tier) never lands on a login this close to its
-# end: the next check would leave it again, which is how two accounts would
-# ping-pong. Fifteen minutes is three default cooldowns' worth of checks,
-# and leaves the move time to wait out a cooldown.
+# Leaving: in this window before its login's end date the active account is
+# left for a candidate with room whose login is not ending (trigger
+# ``login-expiry``); when there is none, the check does what usage alone
+# would. A date already passed is not in the window: saved dates go stale on
+# logins that keep working, and a login that really stopped is failover's.
+# A move by choice (at the line, to a sooner reset, to a higher tier) never
+# lands on a login inside this window: the next check would leave it again,
+# which is how two accounts would ping-pong. Fifteen minutes leaves the move
+# time to wait out a default cooldown.
 LOGIN_LEAVE_S = 15 * 60.0
 
 # Margin on the reset axis for the no-return bar's release
@@ -331,27 +342,42 @@ def host_unreachable(host: str, port: int = 443) -> str | None:
 
     The seam the engine's reachability check goes through, looked up at
     call time: tests replace it (``tests/conftest.py`` answers "reachable"
-    unless a test says otherwise), so no test opens a socket. Through a
-    configured HTTPS proxy, the proxy is what is checked.
+    unless a test says otherwise), so no test opens a socket to anything but
+    loopback. Through a configured HTTPS proxy, the proxy is what is checked.
+    The whole check is bounded, the name lookup included, which a socket
+    timeout does not cover: it runs on a daemon thread the caller waits for
+    at most ``REACHABILITY_TIMEOUT_S``.
     """
-    target = _https_proxy_for(host) or (host, port)
-    try:
-        with socket.create_connection(target, timeout=REACHABILITY_TIMEOUT_S):
-            return None
-    except OSError as e:
-        # The same words as a read that failed this way (oauth wraps the
-        # socket error the way urllib does).
-        return oauth.usage_error_detail(urllib.error.URLError(e))
+    answer: list[str | None] = []
+
+    def connect() -> None:
+        try:
+            target = _https_proxy_for(host) or (host, port)
+            with socket.create_connection(target, timeout=REACHABILITY_TIMEOUT_S):
+                answer.append(None)
+        except OSError as e:
+            # The same words as a read that failed this way (oauth wraps the
+            # socket error the way urllib does).
+            answer.append(oauth.usage_error_detail(urllib.error.URLError(e)))
+        except Exception as e:  # noqa: BLE001 - an answer, never a raise
+            answer.append(type(e).__name__)
+
+    worker = threading.Thread(target=connect, name="qswap-reachability", daemon=True)
+    worker.start()
+    worker.join(REACHABILITY_TIMEOUT_S)
+    return answer[0] if answer else "timeout"
 
 
 class RepeatFailureFilter(logging.Filter):
     """While an offline episode is open: each account's first usage-fetch
-    failure line is written and its repeats are counted, not written.
+    failure line for want of a network is written, and its repeats are
+    counted, not written.
 
     Installed on the ``ai-quota-swap`` logger by the engine that opened the
     episode and removed when it ends (or the engine stops). It acts only on
-    lines tagged ``oauth.FAILURE_LINE`` for its own provider; every other
-    line passes. Accounts in ``logged`` already had their line written. One
+    lines tagged ``oauth.FAILURE_LINE`` for its own provider whose kind is a
+    network failure; every other line passes, so the first 429 after an
+    outage is written. Accounts in ``logged`` already had their line. One
     its engine stopped touching for ``QUIET_STALE_S`` lets everything through,
     so a dropped engine never silences the log for good. Thread-safe: the
     collector logs from its worker threads.
@@ -370,7 +396,10 @@ class RepeatFailureFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         tag = getattr(record, oauth.FAILURE_LINE, None)
-        if not isinstance(tag, tuple) or len(tag) != 2 or tag[0] != self.provider:
+        if (
+            not isinstance(tag, tuple) or len(tag) != 3 or tag[0] != self.provider
+            or tag[2] not in oauth.NETWORK_ERRORS
+        ):
             return True
         with self._lock:
             if time.monotonic() - self._touched > QUIET_STALE_S:
@@ -384,7 +413,27 @@ class RepeatFailureFilter(logging.Filter):
 
 # Failure kinds that carry the server's own answer, which a machine without a
 # network cannot get: proof the network works, whatever the account's state.
-_ANSWERED_ERRORS = frozenset({"bad-response", "invalid_grant", "invalid_client"})
+# (A refused grant is not here: the collector turns it into the "re-login
+# needed" state, which no read observation counts.)
+_ANSWERED_ERRORS = frozenset({"bad-response", "invalid_client"})
+
+# Answers that refuse the login itself, as opposed to a busy or broken server:
+# what a login past its end date gets. HTTP 400 counts only as a refresh's
+# answer (the token endpoint refusing the grant).
+_AUTH_ERRORS = frozenset({"http-401", "http-403", "invalid_grant", "no_refresh_token"})
+
+
+def _auth_refusal(kind: str | None, detail: str | None) -> bool:
+    if kind in _AUTH_ERRORS:
+        return True
+    return kind == "refresh-failed" and detail in ("http-400", "http-401", "http-403")
+
+
+def _fresh_record(record: Mapping, now: float) -> bool:
+    """Whether a stored offline record was stamped within ``2 *
+    IDLE_HOLD_MAX_S`` (``at``); one without a stamp is not."""
+    at = _number(record.get("at"))
+    return at is not None and 0 <= now - at <= 2 * IDLE_HOLD_MAX_S
 
 
 def _server_answered(kind: str | None, detail: str | None) -> bool:
@@ -1765,10 +1814,14 @@ def _login_ending(login_left: Mapping[str, float] | None, num: str) -> bool:
 
 
 def _login_leaving(login_left: Mapping[str, float] | None, num: str) -> bool:
-    """Whether ``num``'s saved login ends within ``LOGIN_LEAVE_S`` or has
-    passed its end date: the account rule 2 leaves."""
+    """Whether ``num``'s saved login ends within the next ``LOGIN_LEAVE_S``:
+    the window rule 2 leaves in, and a move by choice keeps out of. A date
+    already passed is not in it: stored dates go stale on logins that keep
+    working (a refresh never rewrites them, and the server has not been
+    seen to hold to them), so a passed date only ranks last
+    (``_login_ending``); a login that really stopped is the failover path's."""
     left = login_left.get(num) if login_left else None
-    return left is not None and left <= LOGIN_LEAVE_S
+    return left is not None and 0 < left <= LOGIN_LEAVE_S
 
 
 #: Moves made by choice, while the active account still has room: they never
@@ -2028,6 +2081,11 @@ class AutoSwitchEngine:
         # "offline", or None while no read said either way.
         self._offline: dict | None = None
         self._offline_loaded = False
+        # Checks in a row whose reads failed while the host took a connection,
+        # before an episode opens on the second: ``{"count", "failures",
+        # "detail", "at"}``, persisted as ``offlineSuspect``.
+        self._suspect: dict | None = None
+        self._records_unchecked = False
         self._net: str | None = None
         self._collect_started: float | None = None
         # This check's reads, gathered after each collection call: whether
@@ -2600,20 +2658,31 @@ class AutoSwitchEngine:
 
     # -- the network ------------------------------------------------------------
     #
-    # Offline or not, from this check's reads (``_pass_network``), and when
-    # they say neither, from the usage host (``host_unreachable``). The
+    # Offline or not, from this check's usage reads (``_observe_reads``), and
+    # when they say neither, from the usage host (``host_unreachable``). The
     # episode, its two log lines and the held-back failure lines live here;
     # what the tick does while offline is in ``_tick_inner``'s unreadable
     # branch.
+    #
+    # An episode opens at once when reads fail and the host takes no
+    # connection, or when no read was due and it takes none (unless a read
+    # worked within RECENT_READ_S); when the host does take a connection, it
+    # opens on the second check in a row whose reads fail (``offlineSuspect``).
+    # It ends on a read that works, or on the host answering when no read it
+    # failed is still waiting out its backoff. Reads it failed skip the rest
+    # of their backoff once, when the host answers again after it did not.
 
     def _observe_reads(self, entries: Mapping[str, object]) -> None:
-        """Gather what this check's reads said, after each collection call.
+        """Gather what this check's usage reads said, after each collection
+        call.
 
         A read is this check's when it was attempted since collection began;
         one another process still has in flight is not counted. Gathered per
         call, not judged on the last call's entries alone: a later call can
         overlay a state (an expired active token) on a row whose read failed
-        moments earlier in the same check.
+        moments earlier in the same check. A token refresh that failed
+        (``refresh-failed``) is no usage read, and says nothing either way:
+        the token host is not the usage host.
         """
         started = self._collect_started
         if started is None:
@@ -2626,6 +2695,8 @@ class AutoSwitchEngine:
                 fetched = _number(getattr(entry, "fetched_at", None))
                 if fetched is not None and fetched >= started:
                     self._pass_answered = True
+                continue
+            if last_error == "refresh-failed":
                 continue
             attempted = _number(getattr(entry, "last_attempt_at", None))
             if attempted is None or attempted < started:
@@ -2654,47 +2725,97 @@ class AutoSwitchEngine:
             return "offline", self._pass_failed[first], len(self._pass_failed)
         return None, None, 0
 
+    def _check_instant(self) -> float:
+        return self._collect_started if self._collect_started is not None else self.clock()
+
     def _follow_network(self, entries: Mapping[str, object], *, again: bool = False) -> bool:
         """Note this check's verdict (``_net``) and open or end the offline
-        episode. True when the episode's host answers again and reads it
-        failed were let through: the caller reads once more, now, and calls
-        again with ``again``."""
+        episode. True when the host answers again after it did not and reads
+        the episode failed were let through: the caller reads once more, now,
+        and calls again with ``again``."""
+        self._drop_stale_records()
         verdict, detail, failed = self._pass_network()
-        if verdict is None and self._offline is not None:
-            problem = self._usage_host_problem()
-            waiting = self._network_failed(entries)
-            if problem is not None:
-                verdict, detail = "offline", problem
-            elif not waiting:
-                # Nothing the episode failed is waiting to be read again:
-                # the host taking a connection is the evidence.
-                verdict = "online"
-            elif not again and self._lift_network_backoff(waiting):
-                return True
-            else:
-                # The host takes a connection but no read has worked yet (or
-                # the reads it failed were tried under a minute ago): a TCP
-                # connect is not a read, so the episode ends on a read.
-                verdict, detail = "offline", str(self._offline.get("detail") or "network")
-        self._net = verdict
         if verdict == "online":
+            self._forget_reach(problem=True)  # a read worked: the host is there
+            self._net = "online"
             self._end_offline()
-        elif verdict == "offline":
-            self._note_offline(detail or "network", failed, entries)
+            self._clear_suspect()
+            return False
+        if verdict == "offline":
+            self._forget_reach(problem=False)  # a read failed: ask the host again
+            problem = self._usage_host_problem()
+            detail = detail or "network"
+            if self._offline is not None:
+                self._note_offline(detail, failed, entries, probe_failed=problem is not None)
+            elif problem is not None:
+                # Reads fail and the host takes no connection: offline now.
+                self._note_offline(detail, failed, entries, probe_failed=True)
+            elif self._suspect_check(detail, failed) >= 2:
+                # The host takes a connection but reads have failed on two
+                # checks in a row: a half-open network, offline all the same.
+                suspect = self._suspect or {}
+                self._clear_suspect()
+                self._note_offline(
+                    detail, int(suspect.get("failures") or failed), entries,
+                    probe_failed=False,
+                )
+            else:
+                # One failing check, the host answering: not offline yet.
+                self._net = None
+                return False
+            self._net = "offline"
+            return False
+        if self._offline is None:
+            self._net = None  # the unreadable branch asks the host if it must
+            return False
+        problem = self._usage_host_problem()
+        if problem is not None:
+            self._note_offline(self._offline["detail"], 0, entries, probe_failed=True)
+            self._net = "offline"
+            return False
+        waiting = self._network_waiting(entries)
+        if not waiting:
+            # Nothing the episode failed is waiting out a backoff: the host
+            # taking a connection is the evidence.
+            self._net = "online"
+            self._end_offline()
+            return False
+        if not again and self._offline.get("probeFailed"):
+            # The host answers again after it did not: the reads it failed are
+            # taken now, once, rather than at the end of their backoff.
+            self._offline["probeFailed"] = False
+            self._save_offline()
+            if self._lift_network_backoff(waiting):
+                return True
+        # A TCP connection is not a read: the episode ends on a read.
+        self._note_offline(self._offline["detail"], 0, entries, probe_failed=False)
+        self._net = "offline"
         return False
 
     def _offline_now(self, entries: Mapping[str, object]) -> bool:
         """Whether this check is offline, asking the usage host when no read
         said either way: before an unreadable active account counts toward
-        failover, or a long idle hold is taken for a dead token."""
+        failover, or a long idle hold is taken for a dead token. A read that
+        worked within ``RECENT_READ_S`` outranks the host's silence."""
         if self._net is None:
             problem = self._usage_host_problem()
-            if problem is None:
+            if problem is None or self._read_worked_recently(entries):
                 self._net = "online"
             else:
                 self._net = "offline"
-                self._note_offline(problem, 0, entries)
+                self._note_offline(problem, 0, entries, probe_failed=True)
         return self._net == "offline"
+
+    def _read_worked_recently(self, entries: Mapping[str, object]) -> bool:
+        """Whether an account's latest read worked within ``RECENT_READ_S``."""
+        cutoff = self._check_instant() - RECENT_READ_S
+        for entry in entries.values():
+            if getattr(entry, "sentinel", None) is not None or getattr(entry, "last_error", None):
+                continue
+            fetched = _number(getattr(entry, "fetched_at", None))
+            if fetched is not None and fetched >= cutoff:
+                return True
+        return False
 
     def _usage_host_problem(self) -> str | None:
         """``host_unreachable`` for the provider's usage host, its answer
@@ -2713,9 +2834,27 @@ class AutoSwitchEngine:
         self._reach = (now, host, problem)
         return problem
 
+    def _forget_reach(self, *, problem: bool) -> None:
+        """Drop the reachability check's cached answer when a read just said
+        the opposite: ``problem`` True drops a cached "unreachable"."""
+        if self._reach is not None and (self._reach[2] is not None) == problem:
+            self._reach = None
+
+    def _network_waiting(self, entries: Mapping[str, object]) -> set[str]:
+        """The accounts whose last read failed for want of a network and
+        that are still waiting out its backoff: what a lift could release."""
+        now = self._check_instant()
+        return {
+            num for num in self._network_failed(entries)
+            if getattr(entries[num], "in_backoff", None) is not None
+            and entries[num].in_backoff(now)
+        }
+
     @staticmethod
     def _network_failed(entries: Mapping[str, object]) -> set[str]:
-        """The accounts whose last read failed for want of a network."""
+        """The accounts whose last read failed for want of a network. A state
+        laid over the row (an expired active token) does not hide it: that
+        row's refresh is what the network has to come back for."""
         return {
             str(num) for num, entry in entries.items()
             if getattr(entry, "sentinel", None) != USAGE_API_KEY
@@ -2725,7 +2864,9 @@ class AutoSwitchEngine:
 
     def _lift_network_backoff(self, nums: set[str]) -> bool:
         """Let the reads the episode failed be taken now, at most one per
-        account a minute (``OFFLINE_RETRY_S``); whether any was let through."""
+        account a minute (``OFFLINE_RETRY_S``); whether any was let through.
+        A timed-out read is never let through early (the store's rule): a
+        host that takes connections but times out reads is not back."""
         lift = getattr(self.switcher, "lift_network_backoff", None)
         if not callable(lift) or not nums:
             return False
@@ -2735,42 +2876,111 @@ class AutoSwitchEngine:
             _logger.debug("could not lift the network backoff: %r", e)
             return False
 
+    def _suspect_check(self, detail: str, failed: int) -> int:
+        """Count a check whose reads failed while the host takes a
+        connection; how many in a row now (``offlineSuspect``)."""
+        suspect = self._suspect or {"count": 0, "failures": 0}
+        suspect = {
+            "count": int(suspect.get("count") or 0) + 1,
+            "failures": int(suspect.get("failures") or 0) + failed,
+            "detail": detail,
+            "at": self._check_instant(),
+        }
+        self._suspect = suspect
+        self._save_state_key("offlineSuspect", suspect)
+        return suspect["count"]
+
+    def _clear_suspect(self) -> None:
+        if self._suspect is not None:
+            self._suspect = None
+            self._save_state_key("offlineSuspect", None)
+
     def _load_offline(self, state: dict) -> None:
         """Take over an episode the state file holds (an earlier ``--once``
-        run, or this engine's previous process), once per engine."""
+        run, or this engine's previous process), once per engine, before the
+        check's reads: its held-back failure lines stay held back. A record
+        not touched for ``2 * IDLE_HOLD_MAX_S`` is dropped, as the health
+        counters are: it describes a network long since back or gone."""
         if self._offline_loaded:
+            if self._offline is not None:
+                self._quiet_repeats(self._offline.get("logged") or ())
             return
         self._offline_loaded = True
+        # No clock read here (a tick's clock reads are its decision snapshot):
+        # whether a loaded record is still fresh is checked after the check's
+        # collection, on its instant (``_drop_stale_records``).
+        self._records_unchecked = True
+        stored = state.get("offlineSuspect")
+        if isinstance(stored, dict) and self._suspect is None:
+            self._suspect = dict(stored)
         stored = state.get("offline")
-        if self._offline is not None or not isinstance(stored, dict):
-            return
-        since = _number(stored.get("since"))
-        failures = stored.get("failures")
-        detail = stored.get("detail")
-        if since is None:
-            return
-        self._offline = {
-            "since": since,
-            "detail": detail if isinstance(detail, str) and detail else "network",
-            "failures": failures if isinstance(failures, int) and not isinstance(failures, bool)
-            and failures >= 0 else 0,
-        }
+        if self._offline is None and isinstance(stored, dict):
+            since = _number(stored.get("since"))
+            if since is not None:
+                failures = stored.get("failures")
+                detail = stored.get("detail")
+                logged = stored.get("logged")
+                self._offline = {
+                    "since": since,
+                    "detail": detail if isinstance(detail, str) and detail else "network",
+                    "failures": failures if isinstance(failures, int)
+                    and not isinstance(failures, bool) and failures >= 0 else 0,
+                    "logged": sorted(str(n) for n in logged) if isinstance(logged, list) else [],
+                    "probeFailed": stored.get("probeFailed") is True,
+                    "at": _number(stored.get("at")),
+                }
+        if self._offline is not None:
+            self._quiet_repeats(self._offline.get("logged") or ())
 
-    def _note_offline(self, detail: str, failed: int, entries: Mapping[str, object]) -> None:
+    def _drop_stale_records(self) -> None:
+        """Drop a loaded offline record (or suspect count) not stamped for
+        ``2 * IDLE_HOLD_MAX_S``, without a line: it describes a network long
+        since back, or gone with a process that stopped."""
+        if not self._records_unchecked:
+            return
+        self._records_unchecked = False
+        now = self._check_instant()
+        if self._suspect is not None and not _fresh_record(self._suspect, now):
+            self._clear_suspect()
+        if self._offline is not None and not _fresh_record(self._offline, now):
+            self._offline = None
+            self._release_quiet()
+            self._save_offline()
+
+    def _note_offline(
+        self, detail: str, failed: int, entries: Mapping[str, object], *, probe_failed: bool,
+    ) -> None:
         """Open the offline episode (its one WARNING line), or count this
         check's failed reads toward the open one."""
+        now = self._check_instant()
         if self._offline is None:
-            self._offline = {"since": self.clock(), "detail": detail, "failures": failed}
+            # Accounts whose failure line is already written: this check's,
+            # and any whose last read failed the same way before.
+            logged = sorted(set(self._pass_failed) | self._network_failed(entries))
+            self._offline = {
+                "since": now, "detail": detail, "failures": failed, "logged": logged,
+                "probeFailed": probe_failed, "at": now,
+            }
             _logger.warning(
                 "Offline: %s usage reads are failing (%s); auto-switch waits for "
                 "the network and does not fail over meanwhile",
                 self._display_name(), detail,
             )
+            self._quiet_repeats(logged)
             self._save_offline()
-        elif failed:
-            self._offline["failures"] += failed
+            return
+        episode = self._offline
+        changed = bool(failed) or (probe_failed and not episode.get("probeFailed"))
+        episode["failures"] = int(episode.get("failures") or 0) + failed
+        if probe_failed:
+            episode["probeFailed"] = True
+        self._quiet_repeats(episode.get("logged") or ())
+        if self._quiet is not None and set(self._quiet.logged) != set(episode.get("logged") or ()):
+            episode["logged"] = sorted(self._quiet.logged)
+            changed = True
+        if changed or now - float(episode.get("at") or now) >= RECORD_TOUCH_S:
+            episode["at"] = now
             self._save_offline()
-        self._quiet_repeats(entries)
 
     def _end_offline(self) -> None:
         """End the open offline episode with its one INFO line: how long it
@@ -2791,27 +3001,30 @@ class AutoSwitchEngine:
         self._save_offline()
 
     def _save_offline(self) -> None:
+        self._save_state_key("offline", dict(self._offline) if self._offline is not None else None)
+
+    def _save_state_key(self, key: str, value: object) -> None:
+        """Set (or, with None, drop) one key of the state file; bookkeeping
+        that never costs the tick, and that a dry run keeps in memory."""
         if self.dry_run:
             return
-        episode = dict(self._offline) if self._offline is not None else None
 
         def store(state: dict) -> None:
-            if episode is None:
-                state.pop("offline", None)
+            if value is None:
+                state.pop(key, None)
             else:
-                state["offline"] = episode
+                state[key] = value
 
         try:
             self._mutate_state(store)
-        except Exception as e:  # bookkeeping; the episode lives on in memory
-            _logger.debug("could not record the offline episode: %r", e)
+        except Exception as e:  # the record lives on in memory
+            _logger.debug("could not record %s: %r", key, e)
 
-    def _quiet_repeats(self, entries: Mapping[str, object]) -> None:
-        """Hold back repeated failure lines while the episode is open. An
-        account whose last read already failed this way had its line
-        written, here or by the process that opened the episode."""
+    def _quiet_repeats(self, logged: Collection[str]) -> None:
+        """Hold back repeated failure lines while the episode is open:
+        ``logged`` are the accounts whose line is already written."""
         if self._quiet is None:
-            self._quiet = RepeatFailureFilter(self._provider_id(), self._network_failed(entries))
+            self._quiet = RepeatFailureFilter(self._provider_id(), logged)
             _logger.addFilter(self._quiet)
         self._quiet.touch()
 
@@ -2929,10 +3142,8 @@ class AutoSwitchEngine:
             code, seen = "refused-after-refresh", (
                 "the usage endpoint refused a freshly renewed token (HTTP 401)"
             )
-        elif (
-            lapsed and sentinel is None and last_error is not None
-            and last_error != "http-429"
-            and not oauth.is_network_failure(last_error, getattr(entry, "error_detail", None))
+        elif lapsed and sentinel is None and _auth_refusal(
+            last_error, getattr(entry, "error_detail", None)
         ):
             code, seen, lapsed = "lapsed", lapsed, ""
         else:
@@ -3281,6 +3492,9 @@ class AutoSwitchEngine:
         # Cadence follows the same snapshot, and does so BEFORE collection is
         # planned below — see `_refresh_poll_policy_inputs`.
         self._refresh_poll_policy_inputs(thresholds)
+        # An open offline episode holds back repeated failure lines from the
+        # first read of the check, in a fresh `--once` process too.
+        self._load_offline(state)
         entries, usage, headroom = self._collect_scheduled_usage(
             current,
             quarantined,
@@ -3290,7 +3504,6 @@ class AutoSwitchEngine:
         # Offline or not (docs/auto-switch.md, "When something fails"): the
         # network came back during an episode, so the reads it failed are
         # taken again now rather than at the end of their backoff.
-        self._load_offline(state)
         if self._follow_network(entries):
             entries, usage, headroom = self._collect_scheduled_usage(
                 current,
@@ -3392,9 +3605,14 @@ class AutoSwitchEngine:
         # Each saved login's end date (autoswitch.watchLoginExpiry): seconds
         # left per account, read from the credentials this check's collection
         # already holds. ``leaving``: the active account's login ends within
-        # LOGIN_LEAVE_S or has passed its end date.
+        # the next LOGIN_LEAVE_S.
         login_left = self._login_left(entries, settings)
         leaving = not current_is_key and _login_leaving(login_left, current)
+        # What usage alone decides on a readable active account, for when
+        # login-expiry cannot move (``fall_back``): a trigger, or None with the
+        # event that says why it stays.
+        usage_trigger: str | None = None
+        stay_event: NoSwitchEvent | None = None
         if active_over_budget:
             # The budget is this account's limit: leave it like an exhausted
             # one (at-limit skips the cooldown and the landing hysteresis).
@@ -3415,51 +3633,42 @@ class AutoSwitchEngine:
                 if active_binding is not None
                 else (100.0 - active_headroom) < thresholds[current]
             )
-            if below and leaving:
-                # Its login is about to end: leave it while it still works,
-                # for an account whose login lasts (rule 2).
-                trigger = "login-expiry"
-            elif below:
+            if below:
                 if settings.strategy != "consume-first" and not priority_mode:
-                    self._emit(
-                        NoSwitchEvent(
-                            reason="below-threshold",
-                            # Both sides through pct_label: .0f utilization could
-                            # display an impossible "100% < 99.9%".
-                            detail=_below_line_detail(
-                                active_binding,
-                                active_headroom,
-                                thresholds[current],
-                            ),
-                            binding=active_binding,
-                        )
+                    stay_event = NoSwitchEvent(
+                        reason="below-threshold",
+                        # Both sides through pct_label: .0f utilization could
+                        # display an impossible "100% < 99.9%".
+                        detail=_below_line_detail(
+                            active_binding,
+                            active_headroom,
+                            thresholds[current],
+                        ),
+                        binding=active_binding,
                     )
-                    return TickOutcome.NO_ACTION
-                # consume-first: below the threshold we still proactively move to
-                # whichever account's weekly window resets soonest, to burn the
-                # most-perishable quota first. Candidate selection decides whether
-                # a sooner-resetting account with room actually exists.
-                trigger = "priority" if priority_mode else "consume-first"
+                else:
+                    # consume-first: below the threshold we still proactively
+                    # move to whichever account's weekly window resets soonest,
+                    # to burn the most-perishable quota first. Candidate
+                    # selection decides whether a sooner-resetting account with
+                    # room actually exists.
+                    usage_trigger = "priority" if priority_mode else "consume-first"
             else:
                 # Exhaustion is physical: at-limit reads the raw headroom.
-                trigger = "at-limit" if active_headroom <= 0 else "proactive"
-                if trigger == "proactive" and leaving:
-                    # Over its line with its login about to end: the login
-                    # decides where to go. Its landing rule takes any healthy
-                    # account whose login lasts, hysteresis or not.
-                    trigger = "login-expiry"
+                usage_trigger = "at-limit" if active_headroom <= 0 else "proactive"
                 ahead = (
                     self._own_reset_ahead(
                         state, current, entries, usage, thresholds, quarantined,
                         active_binding,
                     )
-                    if trigger == "proactive" else None
+                    if usage_trigger == "proactive" else None
                 )
                 if ahead is not None:
                     # resets.beforeSwitch: the account's own reset is spent at
                     # resets.threshold, rather than switching away at its line
                     # (docs/resets.md, "Before switching").
-                    self._emit(NoSwitchEvent(
+                    usage_trigger = None
+                    stay_event = NoSwitchEvent(
                         reason="reset-ahead",
                         detail=(
                             f"account {current}'s own {ahead[0]} is spent when "
@@ -3470,8 +3679,19 @@ class AutoSwitchEngine:
                         account=str(current),
                         reset_noun=ahead[0],
                         reset_line=ahead[1],
-                    ))
-                    return TickOutcome.NO_ACTION
+                    )
+            if leaving and usage_trigger != "at-limit":
+                # Its login ends within LOGIN_LEAVE_S: leave it while it still
+                # works, for an account whose login lasts (rule 2). Its landing
+                # rule takes any healthy account, hysteresis or not; when it
+                # cannot move, the check does what usage alone would have done
+                # (``fall_back``).
+                trigger = "login-expiry"
+            elif stay_event is not None:
+                self._emit(stay_event)
+                return TickOutcome.NO_ACTION
+            else:
+                trigger = usage_trigger
         else:
             if self._offline_now(entries):
                 # No read reaches the server: nothing about the active
@@ -3479,7 +3699,10 @@ class AutoSwitchEngine:
                 # another account nobody can read either. Hold at the normal
                 # cadence (the network may be back on the next check), count
                 # nothing toward failover, and let no idle hold run into its
-                # cap: the hold starts again once reads work.
+                # cap: the hold starts again once reads work. The unhealthy
+                # count is kept, not reset: should the reachability check be
+                # wrong (the host "down" while the account is really dead),
+                # failover goes on from where it was once a read says so.
                 self._idle_hold_since = None
                 self._idle_hold_warned = False
                 self._emit(self._offline_event())
@@ -3552,6 +3775,18 @@ class AutoSwitchEngine:
             "login_left_s": login_left.get(current) if trigger == "login-expiry" else None,
         }
 
+        def fall_back() -> TickOutcome | None:
+            """login-expiry has nowhere to land: what usage alone would have
+            done. A stay ends the check as NO_ACTION, saying why (the login,
+            not the line); a move by usage carries on as that trigger, on the
+            readings already in hand. Never a read of its own."""
+            nonlocal trigger
+            if usage_trigger is None:
+                return self._login_ending_hold(current, entries)
+            trigger = usage_trigger
+            self._tick_cause.update(login_ends_at=None, login_left_s=None)
+            return None
+
         # login-expiry waits out the cooldown too: LOGIN_LEAVE_S leaves room
         # for one, and it is what bounds a move by choice.
         if trigger in (
@@ -3581,6 +3816,10 @@ class AutoSwitchEngine:
         api_key_candidates = (
             [] if self.switcher.account_kind_for(current) == "api_key" else list(picked.api_key)
         )
+        if trigger == "login-expiry" and not oauth_candidates:
+            held = fall_back()
+            if held is not None:
+                return held
         if (
             trigger in ("consume-first", "priority")
             and not oauth_candidates
@@ -3604,8 +3843,6 @@ class AutoSwitchEngine:
                 )
             )
             return TickOutcome.NO_ACTION
-        if trigger == "login-expiry" and not oauth_candidates:
-            return self._login_ending_hold(current, entries)
         if not oauth_candidates and not api_key_candidates:
             # Won't change until the user adds/recovers an account — no point
             # re-polling at full cadence.
@@ -3687,7 +3924,7 @@ class AutoSwitchEngine:
                 thresholds=kw["thresholds"],
             )
             no_return = self._no_return_account(
-                trigger,
+                kw["trigger"],
                 state,
                 kw["headroom"],
                 kw["active_headroom"],
@@ -3704,20 +3941,29 @@ class AutoSwitchEngine:
                     return unbarred
             return ranked
 
+        def rank_now():
+            return _rank(
+                trigger=trigger,
+                consume_first=consume_first,
+                oauth_candidates=oauth_candidates,
+                usage=usage,
+                headroom=headroom,
+                current=current,
+                active_headroom=active_headroom,
+                settings=settings,
+                now=decided_now,
+                thresholds=thresholds,
+                login_left=login_left,
+            )
+
         decided_now = self.clock()
-        ordered, any_known, active_reset_ts = _rank(
-            trigger=trigger,
-            consume_first=consume_first,
-            oauth_candidates=oauth_candidates,
-            usage=usage,
-            headroom=headroom,
-            current=current,
-            active_headroom=active_headroom,
-            settings=settings,
-            now=decided_now,
-            thresholds=thresholds,
-            login_left=login_left,
-        )
+        ordered, any_known, active_reset_ts = rank_now()
+        if trigger == "login-expiry" and not ordered:
+            # Nowhere to land on what is in hand: no re-read on its account.
+            held = fall_back()
+            if held is not None:
+                return held
+            ordered, any_known, active_reset_ts = rank_now()
 
         # login-expiry decides below the escalation band too, on readings up
         # to a candidate interval old: re-read before a move it would make.
@@ -3740,19 +3986,14 @@ class AutoSwitchEngine:
             headroom = _headroom_by_account(usage, self._models)
             active_headroom = headroom.get(current)
             decided_now = self.clock()
-            ordered, any_known, active_reset_ts = _rank(
-                trigger=trigger,
-                consume_first=consume_first,
-                oauth_candidates=oauth_candidates,
-                usage=usage,
-                headroom=headroom,
-                current=current,
-                active_headroom=active_headroom,
-                settings=settings,
-                now=decided_now,
-                thresholds=thresholds,
-                login_left=login_left,
-            )
+            ordered, any_known, active_reset_ts = rank_now()
+            if trigger == "login-expiry" and not ordered:
+                # The re-read took its targets away: usage decides on the
+                # readings just taken, with no second re-read.
+                held = fall_back()
+                if held is not None:
+                    return held
+                ordered, any_known, active_reset_ts = rank_now()
 
         priority_active_ready = priority_mode and current in switchable and self._priority_ready(
             usage.get(current), headroom.get(current), settings, thresholds[current]
@@ -3869,8 +4110,6 @@ class AutoSwitchEngine:
             return self._all_exhausted(usage)
 
         if not ordered:
-            if trigger == "login-expiry":
-                return self._login_ending_hold(current, entries)
             if priority_active_ready:
                 self._emit(NoSwitchEvent(
                     reason="already-consuming-priority",
@@ -4046,6 +4285,14 @@ class AutoSwitchEngine:
                 continue
             return outcome
 
+        if trigger == "login-expiry":
+            # Targets it could not land on (stale after the re-read, or not
+            # freshened): stay, said why, and try again next check.
+            if systemic or transient_failure:
+                _logger.debug(
+                    "login-expiry could not freshen a target: %s", systemic or "transient"
+                )
+            return self._login_ending_hold(current, entries)
         if skipped_keys and not (systemic or transient_failure):
             # Every key left was turned down: the same hold as no key at all
             # (said by the refusal above, once per episode), not an error.
@@ -4565,10 +4812,10 @@ class AutoSwitchEngine:
         twice per tick: on the stored snapshot to decide provisionally, then
         on the escalated refetch to re-verify before switching.
 
-        A candidate whose login ends within ``LOGIN_ENDING_S`` (or has
-        passed its end date) sorts behind every other, whatever the strategy;
-        a move by choice never lands on one within ``LOGIN_LEAVE_S``; and
-        ``login-expiry`` takes only candidates whose login is not ending.
+        A candidate whose login ends within ``LOGIN_ENDING_S``, or whose date
+        has passed, sorts behind every other, whatever the strategy; a move
+        by choice never lands on one inside ``LOGIN_LEAVE_S`` of its date;
+        and ``login-expiry`` takes only candidates whose login is not ending.
         """
         if thresholds is None:
             thresholds = ThresholdMap({}, settings.threshold)

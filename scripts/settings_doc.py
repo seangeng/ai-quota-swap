@@ -74,9 +74,9 @@ MEANINGS: dict[str, str] = {
     ),
     "autoswitch.watchLoginExpiry": (
         "Watch the date each saved login ends. An account whose login ends "
-        "within 2 hours, or has passed that date, is picked only when no other "
-        "account has room, and the active account is left 15 minutes before its "
-        "login ends when another account with room has a login that lasts. "
+        "within 2 hours, or whose date has passed, is picked only when no other "
+        "account qualifies, and in the 15 minutes before its date the active "
+        "account is left for another with room whose login lasts. "
         "`qswap login N` renews a login. Accounts with no end date (API keys, "
         "setup-tokens, Codex) are not affected."
     ),

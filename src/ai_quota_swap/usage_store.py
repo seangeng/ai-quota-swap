@@ -1364,13 +1364,14 @@ class UsageStore:
         For the auto engine once the usage host answers again during an
         offline episode: the failure backoff (up to ``BACKOFF_CAP_S``) would
         otherwise hold the first read after the network came back for as
-        long as ten minutes. Only a row whose last error is a network
-        failure (``UsageEntry.network_failure``), still in backoff, and last
-        attempted before ``attempted_before`` is lifted: a Retry-After or any
-        failure the server answered is never cut short, and a row is never
-        tried more often than the caller's bound. The failure count stays,
-        so a read that fails again backs off from where it was. Returns the
-        rows lifted.
+        long as ten minutes. Only a row whose last read found no network at
+        all (``network``, or a refresh that failed that way), still in
+        backoff, and last attempted before ``attempted_before`` is lifted: a
+        timeout (a host that takes connections and does not answer), a
+        Retry-After, or any failure the server answered is never cut short,
+        and a row is never tried more often than the caller's bound. The
+        failure count stays, so a read that fails again backs off from where
+        it was. Returns the rows lifted.
         """
         nums = [n for n in nums if n in identities]
         if not nums:
@@ -1391,9 +1392,7 @@ class UsageStore:
                     or now >= backoff_until
                     or attempted is None
                     or attempted >= attempted_before
-                    or not oauth.is_network_failure(
-                        row.get("lastError"), _error_detail(row)
-                    )
+                    or not _no_network(row.get("lastError"), _error_detail(row))
                 ):
                     continue
                 row["backoffUntil"] = None
@@ -1431,6 +1430,14 @@ class UsageStore:
 
 def _num_or_none(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
+
+
+def _no_network(kind: str | None, detail: str | None) -> bool:
+    """Whether a failure found no network at all: ``network``, or a refresh
+    whose detail says so. Not a timeout."""
+    if kind == "network":
+        return True
+    return kind == "refresh-failed" and bool(detail) and detail.startswith("network")
 
 
 def _error_detail(row: dict) -> str | None:
