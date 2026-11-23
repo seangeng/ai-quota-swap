@@ -436,3 +436,92 @@ class ResetRunner:
             if isinstance(e, manual_reset.ResetChanged):
                 return f"{e} Open the menu again."  # nothing sent
             return manual_reset.not_used_text(what, who, reason)
+
+
+def _start_login_thread(work: Callable[[], None]) -> None:
+    threading.Thread(target=work, daemon=True, name="menubar-login").start()
+
+
+class LoginRunner:
+    """Runs a *Sign in again* click off the main thread.
+
+    ``renew(switcher, number, save_lock=…)`` is :func:`ai_quota_swap.login.
+    renew_account` with no terminal (the app binds ``interactive=False``):
+    the sign-in ``qswap login N`` makes, in a private profile, saved over the
+    account's login. Tests pass a fake. ``report(notification)`` receives the
+    result from the worker thread: ``Renewed the login of #3 work; the next
+    sign-in is due …``, or the command line's failure sentence. ``lock`` (the
+    app's action lock) is held around the save alone, never while the
+    browser is waited on, so the menu's other actions go on meanwhile.
+
+    One sign-in at a time: while it runs, :meth:`busy` names its account (its
+    row reads "waiting for the browser…") and :meth:`run` refuses another.
+    Nothing the worker raises escapes it.
+    """
+
+    def __init__(
+        self,
+        renew: Callable[..., object],
+        report: Callable[[object], None],
+        *,
+        start: Callable[[Callable[[], None]], None] | None = None,
+        lock: threading.Lock | None = None,
+    ) -> None:
+        self._renew = renew
+        self._report = report
+        self._start = start or _start_login_thread
+        self._lock = lock
+        self._busy: str | None = None
+        self._guard = threading.Lock()
+
+    def busy(self) -> str | None:
+        """The account number whose sign-in runs, or None."""
+        with self._guard:
+            return self._busy
+
+    def run(self, switcher, number: str, *, who: str) -> bool:
+        """Sign ``number`` in again in the background. False (and nothing
+        started) while a sign-in runs."""
+        number = str(number)
+        with self._guard:
+            if self._busy is not None:
+                return False
+            self._busy = number
+
+        def work() -> None:
+            text = self._outcome(switcher, number, who=who)
+            with self._guard:
+                self._busy = None
+            try:
+                from ai_quota_swap.menubar_notify import Notification
+
+                self._report(Notification(text))
+            except Exception:
+                _logger.error("menu bar: could not report a sign-in's result", exc_info=True)
+
+        try:
+            self._start(work)
+        except Exception:
+            with self._guard:
+                self._busy = None
+            raise
+        return True
+
+    def _outcome(self, switcher, number: str, *, who: str) -> str:
+        """The sign-in, and its result as one or two sentences. Never raises."""
+        from ai_quota_swap import login
+        from ai_quota_swap.exceptions import ProviderError
+
+        try:
+            renewal = self._renew(switcher, number, save_lock=self._lock)
+        except ProviderError as e:
+            return " ".join(str(e).split())
+        except Exception as e:
+            _logger.error("menu bar: the sign-in of #%s failed", number, exc_info=True)
+            return f"Could not renew the login of {who}: {type(e).__name__}: {e}"
+        text = login.renewed_text(renewal)
+        try:
+            note = login.key_note(switcher, renewal)
+        except Exception:
+            note = None
+        return f"{text}. {note}" if note else text

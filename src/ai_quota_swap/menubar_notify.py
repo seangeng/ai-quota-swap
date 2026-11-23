@@ -265,6 +265,74 @@ class Notifier:
         return Notification(f"{engine_name(provider, both=both)} did not start: {reason}")
 
 
+#: The second login notice comes inside the last day.
+_LAST_DAY_S = 86400.0
+#: A notice record outlives its deadline by this long, then is dropped.
+_NOTICE_KEEP_S = 7 * 86400.0
+
+
+def login_notice_text(label: str, number: str, left: float, when: str) -> str:
+    """``The login of #3 work runs out in 2d 23h (Nov 26 14:00). Renew it
+    with Sign in again in the menu, or run: qswap login 3``."""
+    from ai_quota_swap import oauth
+
+    return (
+        f"The login of {label} runs out in {oauth.format_countdown(left)} ({when}). "
+        f"Renew it with Sign in again in the menu, or run: qswap login {number}"
+    )
+
+
+def login_notices(
+    accounts, *, now: float, notify_days: int, said: Mapping, both: bool = False,
+) -> tuple[list[Notification], dict]:
+    """The login notices due now, and the record of what was said.
+
+    A Claude Code subscription login (not an API key, not a setup-token, not
+    one that already needs re-login) gets one notice once it is within
+    ``notify_days`` days of its deadline, and one more inside the last day;
+    one first seen inside the last day gets that one alone. ``said`` maps
+    ``claude:N`` to ``{"deadline": epoch seconds, "said": [...]}``: a login
+    renewed since has another deadline and starts fresh, and a record whose
+    deadline passed a week ago is dropped. ``notify_days`` 0 says nothing.
+    Pure: the caller keeps the record (``menubar.MenuBarState``)."""
+    from ai_quota_swap import oauth
+
+    record: dict = {
+        k: v for k, v in said.items()
+        if isinstance(v, dict) and isinstance(v.get("deadline"), (int, float))
+        and v["deadline"] > now - _NOTICE_KEEP_S
+    }
+    notes: list[Notification] = []
+    if notify_days <= 0:
+        return notes, record
+    for acc in accounts:
+        if getattr(acc, "provider", "claude") != "claude" or acc.kind == "api_key":
+            continue
+        if getattr(acc, "setup_token", False) or acc.needs_relogin:
+            continue
+        expires = acc.login_expires_at
+        if expires is None:
+            continue
+        left = expires - now
+        if left <= 0 or left > notify_days * 86400:
+            continue
+        key = f"claude:{acc.number}"
+        deadline = int(expires)
+        entry = record.get(key)
+        stages = set(entry.get("said") or ()) if entry and entry.get("deadline") == deadline else set()
+        stage = "last-day" if left <= _LAST_DAY_S else "window"
+        if stage in stages:
+            continue
+        stages |= {"window", stage}
+        record[key] = {"deadline": deadline, "said": sorted(stages)}
+        label = account_label(acc.number, alias=acc.alias or None, email=acc.email,
+                              provider="claude" if both else None)
+        notes.append(Notification(login_notice_text(
+            label, acc.number, left, oauth.login_expiry_clock(expires, now),
+        )))
+    return notes, record
+
+
 def ref_labeler(accounts: Mapping[str, Mapping[str, str]]) -> Callable[[Mapping | None], str]:
     """A labeller for switch results' ``{number, email}`` refs, with the
     aliases the menu knows (``accounts``: number → ``{"alias", "email"}``)."""

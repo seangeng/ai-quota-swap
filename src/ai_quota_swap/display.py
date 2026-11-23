@@ -157,11 +157,16 @@ def usage_unavailable(
     return text
 
 
-def relogin_step(provider: str | None = "claude") -> str:
-    """The exact way out of ``needs re-login``."""
+def relogin_step(provider: str | None = "claude", number: int | str | None = None) -> str:
+    """The exact way out of ``needs re-login``: a sign-in in the browser that
+    leaves the active login alone (``qswap login N``; without a number,
+    ``qswap login`` renews every login that needs it). The older way,
+    ``/login`` in Claude Code and then ``qswap add``, is in the docs."""
     if provider == "codex":
         return "log in to it again: qswap codex login"
-    return "log in to it in Claude Code (/login), then run: qswap add"
+    if number is None:
+        return "sign in to it again: qswap login"
+    return f"sign in to it again: qswap login {number}"
 
 
 def set_aside_reason(reason: str | None) -> str:
@@ -568,7 +573,7 @@ def state_parts(block: AccountBlock) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     if block.state == "needs-relogin":
         why = f" ({block.set_aside})" if block.set_aside else ""
-        out.append((f"{NEEDS_RELOGIN}{why}: {relogin_step(block.provider)}", "warn"))
+        out.append((f"{NEEDS_RELOGIN}{why}: {relogin_step(block.provider, block.number)}", "warn"))
     elif block.state == "unavailable":
         retrying = block.error not in ("store-unmirrored", "invalid_client", "setup-token")
         out.append((

@@ -257,6 +257,9 @@ class AccountSnapshot:
     #: The subscription logged in under an active key
     #: (docs/design/api-key-sessions.md): shown "underneath", never active.
     underneath: bool = False
+    #: Its saved login is a setup-token (``oauth.is_setup_token``): an
+    #: "oauth" account with no sign-in to renew (``qswap login``).
+    setup_token: bool = False
 
     @property
     def display_tag(self) -> str:

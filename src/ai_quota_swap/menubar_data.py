@@ -135,6 +135,7 @@ def account_states(
             over=over if acc.is_active else "",
             by_engine=bool(acc.is_active)
             and getattr(snapshot, "key_entered_by", None) == "engine",
+            setup_token=bool(getattr(acc, "setup_token", False)),
         )
         for acc in snapshot.accounts
     )

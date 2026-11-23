@@ -16,11 +16,12 @@ plain attributes, which the one-second sync tick picks up on the main thread.
 
 from __future__ import annotations
 
+import functools
 import re
 import threading
 import time
 
-from ai_quota_swap import launch_agent, manual_reset
+from ai_quota_swap import launch_agent, login, manual_reset
 from ai_quota_swap.exceptions import (
     CredentialReadError,
     ProviderError,
@@ -37,6 +38,7 @@ from ai_quota_swap.menubar import (
     Action,
     Menu,
     MenuBarSettings,
+    MenuBarState,
     MenuInput,
     ProviderState,
     Row,
@@ -56,6 +58,7 @@ from ai_quota_swap.menubar import (
     change_resets_setting,
     relogin_confirmation,
     remove_dialog,
+    sign_in,
     toggle_menu_setting,
     use_reset,
     wanted_engines,
@@ -71,14 +74,27 @@ from ai_quota_swap.menubar_data import (
     read_history,
     scan_ledger,
 )
-from ai_quota_swap.menubar_engines import ActiveChangeWatcher, EngineSupervisor, ResetRunner
-from ai_quota_swap.menubar_notify import Notification, Notifier, manual_switch_text, ref_labeler
+from ai_quota_swap.menubar_engines import (
+    ActiveChangeWatcher,
+    EngineSupervisor,
+    LoginRunner,
+    ResetRunner,
+)
+from ai_quota_swap.menubar_notify import (
+    Notification,
+    Notifier,
+    login_notices,
+    manual_switch_text,
+    ref_labeler,
+)
 
 _ACCOUNT_REF = re.compile(r"Account-(\d+)(?: \([^)]*\))?")
 #: Marks a finished background action in the event queue.
 _ACTION_DONE = object()
 #: Marks the result of a *Use a reset* claim in the event queue.
 _RESET_DONE = object()
+#: Marks the result of a *Sign in again* in the event queue.
+_LOGIN_DONE = object()
 #: Marks work a worker needs done on the main thread (a dialog).
 _ON_MAIN = object()
 
@@ -88,9 +104,11 @@ def run_app(switcher, rumps, AppKit) -> int:
     Codex's switcher is built once Codex manages an account."""
     from ai_quota_swap.autoswitch import AutoSwitchEngine
     from ai_quota_swap.settings import (
+        LoginSettings,
         ResetSettings,
         load_codex_settings,
         load_engine_settings,
+        load_login_settings,
         load_reset_settings,
         load_settings,
         set_setting,
@@ -99,6 +117,7 @@ def run_app(switcher, rumps, AppKit) -> int:
 
     data_root = switcher.backup_dir
     settings_path = data_root / "menubar_settings.json"
+    state_path = data_root / "menubar_state.json"
     log_path = data_root / "ai-quota-swap.log"
     logger = switcher._logger
 
@@ -126,6 +145,9 @@ def run_app(switcher, rumps, AppKit) -> int:
             self._first_scan_done = False
             self._thresholds: dict[str, float] = {}
             self._resets = ResetSettings()
+            self._login_settings = LoginSettings()
+            # The login notices already posted, kept across restarts.
+            self._ui_state = MenuBarState.load(state_path)
             self._start_at_login = False
             self._last_usage_log: dict = {}
             self._events: list = []
@@ -135,6 +157,13 @@ def run_app(switcher, rumps, AppKit) -> int:
             # --yes` sequence) in a worker; the result comes back as an event.
             self._reset_runner = ResetRunner(
                 manual_reset.spend, lambda note: self._queue_event(_RESET_DONE, note),
+                lock=self._action_lock,
+            )
+            # Sign in again: login.renew_account (the `qswap login N` sign-in)
+            # with no terminal, in a worker; the result comes back as an event.
+            self._login_runner = LoginRunner(
+                functools.partial(login.renew_account, interactive=False),
+                lambda note: self._queue_event(_LOGIN_DONE, note),
                 lock=self._action_lock,
             )
             self._notifier = Notifier()
@@ -251,6 +280,7 @@ def run_app(switcher, rumps, AppKit) -> int:
                 self._dirty = False
                 self._apply_engines()
                 self.rebuild_menu()
+                self._post_login_notices()
             self._detect_active_change()
             self._drain_events()
             self._refresh_health_row()
@@ -322,6 +352,11 @@ def run_app(switcher, rumps, AppKit) -> int:
                         self.refresh_async()  # show the refilled window
                     self.rebuild_menu()  # the account's rows are usable again
                     continue
+                if provider is _LOGIN_DONE:
+                    self._notify(ev)
+                    self.refresh_async()  # show the new deadline
+                    self.rebuild_menu()  # Sign in again's rows are usable again
+                    continue
                 kind = getattr(ev, "kind", "")
                 if kind == "engine-stopped":
                     if self._supervisor.stopped(provider, ev):
@@ -363,6 +398,10 @@ def run_app(switcher, rumps, AppKit) -> int:
             except Exception:
                 self._resets = ResetSettings()
             try:
+                self._login_settings = load_login_settings(data_root)
+            except Exception:
+                self._login_settings = LoginSettings()
+            try:
                 self._start_at_login = bool(launch_agent.start_at_login_enabled())
             except Exception:
                 self._start_at_login = False
@@ -384,6 +423,7 @@ def run_app(switcher, rumps, AppKit) -> int:
                 start_at_login=self._start_at_login, thresholds=self._thresholds,
                 can_add_token=hasattr(self.switcher, "add_account_from_token"),
                 resets=self._resets, resets_busy=self._reset_runner.busy(),
+                login_busy=self._login_runner.busy(),
             )
 
         def rebuild_menu(self):
@@ -464,6 +504,28 @@ def run_app(switcher, rumps, AppKit) -> int:
                 if row.attention:
                     _mark_attention(AppKit, self._health_item, row.text)
                 self._health_row = row
+
+        def _post_login_notices(self):
+            """A login nearing its deadline: one notice inside login.notifyDays
+            and one in its last day (menubar_notify.login_notices), remembered
+            in menubar_state.json so a restart does not repeat them."""
+            try:
+                notes, said = login_notices(
+                    self._data.claude.accounts, now=time.time(),
+                    notify_days=self._login_settings.notify_days,
+                    said=self._ui_state.login_notices, both=self._both(),
+                )
+            except Exception:
+                logger.debug("menu bar: login notices could not be worked out", exc_info=True)
+                return
+            if said != self._ui_state.login_notices:
+                self._ui_state.login_notices = said
+                try:
+                    self._ui_state.save(state_path)
+                except OSError:
+                    logger.warning("could not save %s", state_path, exc_info=True)
+            for note in notes:
+                self._notify(note)
 
         # ---- feedback -------------------------------------------------------
         def _notify(self, note: Notification | None):
@@ -672,6 +734,20 @@ def run_app(switcher, rumps, AppKit) -> int:
                 )
                 return
             self.refresh_async()
+
+        def _do_sign_in(self, a: Action):
+            # `qswap login N`'s sign-in, off the main thread and with no
+            # terminal; one at a time (menubar.sign_in, LoginRunner).
+            def run(number, who):
+                if not self._login_runner.run(self.switcher, number, who=who):
+                    return False
+                acc = next((x for x in self._data.claude.accounts if x.number == number), None)
+                if acc is not None:
+                    self._notify(Notification(login.browser_note(who, acc.email)))
+                return True
+
+            if sign_in(self._menu_input(), a, run=run):
+                self.rebuild_menu()  # the row reads "waiting for the browser…"
 
         def _do_open_log(self, _a: Action):
             import subprocess

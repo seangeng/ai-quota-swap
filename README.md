@@ -131,6 +131,7 @@ To let qswap switch for you, run `qswap auto`. The menu bar's auto-switch is off
 | To | Run | Read |
 |---|---|---|
 | keep several Codex logins | `qswap codex add`, then `qswap codex login` (not plain `codex login`) for each further account | [codex.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/codex.md) |
+| renew a saved login before it runs out, without touching the active one | `qswap login 2`, or `qswap login` for every login that is due | [troubleshooting.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/troubleshooting.md#an-account-needs-re-login) |
 | run Claude Code as another account in one terminal only | `qswap run 2` | [sessions.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/sessions.md) |
 | pick the account for a directory | `qswap map 2 ~/work/client-app` | [sessions.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/sessions.md#pick-the-account-per-directory) |
 | script it | `--json`, and `qswap auto --once` for cron, with exit codes | [json-output.md](https://github.com/seangeng/ai-quota-swap/blob/main/docs/json-output.md) |

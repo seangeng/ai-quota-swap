@@ -17,6 +17,7 @@ from ai_quota_swap.settings import (
     atomic_write_json,
     AutoSwitchSettings,
     CodexSettings,
+    LoginSettings,
     RunSettings,
     UiSettings,
     UpdateSettings,
@@ -361,6 +362,7 @@ class TestSettingSpecs:
             "usage": UsageSettings(),
             "resets": ResetSettings(),
             "codex": CodexSettings(),
+            "login": LoginSettings(),
         }
         for spec in SETTING_SPECS.values():
             assert spec.default == getattr(sources[spec.section], spec.field)

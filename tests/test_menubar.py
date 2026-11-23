@@ -392,7 +392,7 @@ def test_row_needs_relogin_from_the_sentinel():
     row = _row(acc)
     assert row.text == "#1 work · needs re-login"
     assert row.attention
-    assert "log in to it in Claude Code (/login), then run: qswap add" in row.tooltip
+    assert "needs re-login: sign in to it again: qswap login 1" in row.tooltip
     assert "quarantine" not in row.text + row.tooltip
 
 
@@ -401,7 +401,8 @@ def test_row_an_account_the_engine_set_aside_needs_relogin():
     row = _row(acc)
     assert row.text == "#1 side · needs re-login"
     assert row.attention
-    assert "needs re-login (its saved login was refused): log in to it" in " ".join(row.tooltip.split())
+    assert "needs re-login (its saved login was refused): sign in to it again: qswap login 1" in (
+        " ".join(row.tooltip.split()))
 
 
 def test_row_unavailable():
@@ -1236,12 +1237,12 @@ def test_the_switchers_ask_the_same_question(monkeypatch):
 def test_relogin_confirmation_is_the_refusal_without_the_flag():
     refusal = (
         "#4 side needs re-login (its saved login was refused); not switched.\n"
-        "Log in to it in Claude Code (/login), then run: qswap add\n"
+        "Sign in to it again: qswap login 4\n"
         "To switch to it anyway: qswap switch 4 --anyway"
     )
     assert menubar.relogin_confirmation(refusal) == (
         "#4 side needs re-login (its saved login was refused).\n"
-        "Log in to it in Claude Code (/login), then run: qswap add"
+        "Sign in to it again: qswap login 4"
     )
 
 
@@ -1423,7 +1424,7 @@ def test_needs_relogin_notification_once_with_the_next_step():
     note = n.event("claude", event, both=True, now=0)
     assert note.body == (
         "Claude #4 side needs re-login: its saved login was refused. "
-        "Log in to it in Claude Code (/login), then run: qswap add"
+        "Sign in to it again: qswap login 4"
     )
     assert "quarantine" not in note.body
     assert n.event("claude", event, both=True, now=10) is None
@@ -2493,11 +2494,11 @@ def test_reset_runner_says_why_the_command_line_refused():
         "(usable once a limit is reached)"
     )
     runner, _spend, queued, notes = _runner(ValidationError(
-        "#1 personal needs re-login; nothing was spent.\nLog in to it in Claude Code (/login), then run: qswap add"))
+        "#1 personal needs re-login; nothing was spent.\nSign in to it again: qswap login 1"))
     runner.run("sw", "claude", "1", "fb", who="Claude #1 personal", what="a Fable reset")
     queued[0]()
     assert notes[0].body.startswith(
-        "Did not use a Fable reset on Claude #1 personal: needs re-login; nothing was spent. Log in")
+        "Did not use a Fable reset on Claude #1 personal: needs re-login; nothing was spent. Sign in")
     busy = manual_reset.ResetBusy("A reset on #1 personal is already being used; try again in a moment.")
     runner, _spend, queued, notes = _runner(busy)
     runner.run("sw", "claude", "1", "fb", who="#1 personal", what="a Fable reset")

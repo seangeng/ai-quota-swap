@@ -128,7 +128,7 @@ def choose(switcher, account: str, grant_id: str | None = None, *,
     if status is None:
         why = entry.last_error if entry is not None else None
         if why == "invalid_grant" or (entry is not None and entry.sentinel == "re-login needed"):
-            step = display.relogin_step("codex" if codex else "claude")
+            step = display.relogin_step("codex" if codex else "claude", None if codex else num)
             raise ValidationError(
                 f"{name} {display.NEEDS_RELOGIN}; nothing was spent.\n"
                 f"{step[:1].upper()}{step[1:]}"

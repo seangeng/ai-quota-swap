@@ -24,6 +24,7 @@ Accounts
   switch [ACCOUNT]      switch to an account, or to the next one
   add                   save the current Claude Code login as an account
   add-token [TOKEN]     add an account from a setup-token or API key
+  login [ACCOUNT]       sign an account in again before its login runs out
   remove ACCOUNT        stop managing an account
   alias ACCOUNT NAME    give an account a short name
   disable, enable       hold an account out of rotation, or bring it back

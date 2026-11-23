@@ -1202,6 +1202,122 @@ def _print_resets(switcher: ClaudeAccountSwitcher, *, as_json: bool) -> None:
         ))
 
 
+def _seconds(value: str) -> float:
+    """argparse type for a positive number of seconds."""
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number of seconds: {value!r}")
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError(f"must be more than 0 seconds: {value!r}")
+    return seconds
+
+
+def _login_command(argv: list[str]) -> None:
+    """Handle `qswap login [ACCOUNT] [--all] [--sso] [--timeout SECONDS]`.
+
+    Signs saved accounts in again in the browser, one at a time, through
+    ``login.renew``: a private profile for ``claude auth login``, the identity
+    checked, the login saved (and made live when the account is the active
+    one), the profile deleted. Without ACCOUNT, the logins that are due;
+    ``--all``, every subscription login. Exit 1 when any sign-in failed, 130
+    on Ctrl-C. No ``--json``: ``add`` and ``codex login`` have none.
+    """
+    import time as _time
+
+    from ai_quota_swap import display, login
+
+    parser = ArgumentParser(
+        prog="qswap login",
+        usage="qswap login [ACCOUNT] [--all] [--sso] [--timeout SECONDS]",
+        description=(
+            "Sign a saved Claude Code account in again in the browser, to renew its "
+            "login before it runs out; the active login is not disturbed. Without "
+            "ACCOUNT, every login due within 7 days or needing re-login."
+        ),
+        epilog="""examples:
+  qswap login           # the logins that are due
+  qswap login 3
+  qswap login work --sso
+  qswap login --all     # every subscription login
+
+The browser must be signed in to claude.ai as that account, or signed out.
+""",
+    )
+    parser.add_argument("account", nargs="?", metavar="ACCOUNT",
+                        help="number, email or alias; omit for the logins that are due")
+    parser.add_argument("--all", action="store_true", help="renew every subscription login")
+    parser.add_argument("--sso", action="store_true", help="sign in with SSO")
+    parser.add_argument(
+        "--timeout", type=_seconds, default=login.DEFAULT_TIMEOUT_S, metavar="SECONDS",
+        help="how long each sign-in may take (default: 300)",
+    )
+    parser.add_argument("--debug", action="store_true", help="log debug detail")
+    args = parser.parse_args(argv)
+    if args.account is not None and args.all:
+        parser.error("give ACCOUNT or --all, not both")
+
+    current = None
+    try:
+        switcher = _switcher(debug=args.debug)
+        _guard_root(switcher)
+        switcher._refuse_session_shell()
+        now = _time.time()
+        if args.account is not None:
+            targets = [login.resolve(switcher, args.account)]
+        else:
+            if not switcher.managed_count():
+                raise switcher._nothing_managed_error()
+            every = login.subscription_logins(switcher)
+            targets = every if args.all else [t for t in every if t.due(now)]
+            if not targets:
+                for line in display.wrap(login.nothing_due_text(every, now)):
+                    print(line)
+                return
+            targets = login.due_first(targets, now)
+            noun = "login" if len(targets) == 1 else "logins"
+            names = ", ".join(
+                f"{t.label} ({t.note(now)})" if t.note(now) else t.label for t in targets
+            )
+            for line in display.wrap(f"Renewing {len(targets)} {noun}, one after another: {names}"):
+                print(line)
+        failed = 0
+        for target in targets:
+            current = target
+
+            def announce(t=target) -> None:
+                for line in display.wrap(login.browser_note(t.label, t.email)):
+                    print(dimmed(line))
+
+            try:
+                renewal = login.renew(switcher, target, sso=args.sso, timeout=args.timeout,
+                                      announce=announce)
+            except ProviderError as e:
+                if len(targets) == 1:
+                    raise
+                error(f"Error: {e}")
+                failed += 1
+                continue
+            lines = display.wrap(login.renewed_text(renewal))
+            print(f"{accent('Renewed')}{lines[0].removeprefix('Renewed')}")
+            for line in lines[1:]:
+                print(line)
+            note = login.key_note(switcher, renewal)
+            if note:
+                for line in display.wrap(note):
+                    print(line)
+        current = None
+        if failed:
+            sys.exit(1)
+    except ProviderError as e:
+        error(f"Error: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        which = f" for {current.label}" if current is not None else ""
+        print(f"\n{dimmed(f'Cancelled; nothing was saved{which}.')}")
+        sys.exit(130)
+
+
 def _usage_date(value: str):
     """argparse type for YYYY-MM-DD (a local date)."""
     from datetime import date
@@ -2338,7 +2454,7 @@ def main() -> None:
 _OWN_PARSER_VERBS = (
     "run", "auto", "config", "map", "unmap", "unclaimed", "alias", "threshold",
     "priority", "api", "budget", "credit", "reset", "resets", "usage", "swap", "move",
-    "doctor",
+    "doctor", "login",
 )
 # Options of the legacy interface that take a value (so the value is not
 # mistaken for a verb's positional argument).
@@ -2508,6 +2624,9 @@ def _dispatch(argv: list[str]) -> None:
         return
     if argv and argv[0] == "move":
         _move_command(argv[1:])
+        return
+    if argv and argv[0] == "login":
+        _login_command(argv[1:])
         return
     if argv and argv[0] == "doctor":
         from ai_quota_swap import doctor

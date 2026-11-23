@@ -148,7 +148,7 @@ $ qswap switch 2 --json
   "schemaVersion": 1,
   "error": {
     "type": "SwitchError",
-    "message": "#2 work needs re-login (its saved login was refused); not switched.\nLog in to it in Claude Code (/login), then run: qswap add\nTo switch to it anyway: qswap switch 2 --anyway"
+    "message": "#2 work needs re-login (its saved login was refused); not switched.\nSign in to it again: qswap login 2\nTo switch to it anyway: qswap switch 2 --anyway"
   }
 }
 ```
@@ -179,7 +179,7 @@ Optional fields, each absent unless its condition holds:
 | `threshold` | a per-account switch line is set with `qswap threshold` (list rows) | e.g. `85.0` |
 | `needsRelogin` | always, in list rows and Claude Code's `status` row | `true` when the account will not be used until its owner logs in again |
 | `setAside` | the auto-switch engine holds the account out | `{"reason": "invalid_grant"}` (its login was refused) or `"identity-conflict"` (it belongs to another account) |
-| `loginExpiresAt` | Claude Code list rows whose saved login records an expiry | When it will need a fresh `/login` and `qswap add` |
+| `loginExpiresAt` | Claude Code list rows whose saved login records an expiry | When it will need a new sign-in: `qswap login N`, or `/login` in Claude Code and `qswap add` |
 | `plan` | list rows, once the plan has been read | `label` as the text views print it (`Max 20x`, `Team`, `Pro`, ...), the raw `tier`, `organizationType`, `billingType`, `subscriptionStatus` and `planDisplayName` when known, `expired` and `fetchedAt` |
 | `budget` | an API-key account with a monthly budget (`qswap budget`), in list rows and `status`'s `active` | Dollars a month, e.g. `500.0` |
 | `credit` | an API-key account with a recorded credit (`qswap credit`), in list rows and `status`'s `active` | `{amount, since, expires}`: dollars, when it was recorded (ISO time), and the last usable UTC day or `null` |

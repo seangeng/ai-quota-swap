@@ -2758,7 +2758,7 @@ class TestCodexPrefix:
         assert "ClaudeAccountSwitcher(" in inspect.getsource(cli._switcher)
         # priority builds through print_priorities(make_switcher=_switcher),
         # shared with qswap codex priority.
-        assert source.count("switcher = _switcher(debug=args.debug)") == 13
+        assert source.count("switcher = _switcher(debug=args.debug)") == 14
         assert "print_priorities(_switcher, args" in source
 
     def test_a_command_handler_reports_a_provider_error(self, capsys):

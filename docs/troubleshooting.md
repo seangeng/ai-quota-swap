@@ -41,17 +41,41 @@ Doctor reads only: it changes nothing and asks nothing. It makes no network requ
 $ qswap list
 ...
   #2 work (maya@northwind.example.com) · Northwind Labs
-     needs re-login: log in to it in Claude Code (/login), then run: qswap add
+     needs re-login: sign in to it again: qswap login 2
 ...
   #4 side (sam@example.org) · Pro
-     needs re-login (its saved login was refused): log in to it in Claude Code
-     (/login), then run: qswap add
+     needs re-login (its saved login was refused): sign in to it again:
+     qswap login 4
 ...
 ```
 
 The saved login no longer works: the server refused to renew it, or the auto-switch engine set the account aside because its login was refused or belongs to another account. Words in parentheses, when shown, say why. qswap will not switch to it, and a rotation skips it with `Skipped #2 work: needs re-login.`
 
-Fix it by logging in to that account in Claude Code and saving the new login over the old one. `qswap add` recognizes the account by its email and organization and updates the same number:
+Sign it in again:
+
+```
+$ qswap login 2
+The browser opens to sign in #2 work (maya@northwind.example.com). It must be
+signed in to claude.ai as maya@northwind.example.com, or signed out. The active
+login is not touched.
+...
+Renewed the login of #2 work; the next sign-in is due Dec 23 14:02 · in 30d
+```
+
+`qswap login` runs Claude Code's own sign-in (`claude auth login`) for that account in a private profile under the data directory, so the login Claude Code is using and every running session stay as they are. Claude Code's prompts show in between. The browser must be signed in to claude.ai as that account, or signed out. Signed in as another account, it signs that one in, and qswap saves nothing:
+
+```
+Error: The browser signed in as #1 personal, not #2 work
+  (maya@northwind.example.com), so nothing was saved. Sign out of claude.ai in
+  the browser, or switch it to maya@northwind.example.com, and run it again:
+  qswap login 2. To renew #1 personal instead: qswap login 1
+```
+
+When the account is the active one, its new login becomes the live login too, as a switch writes one, and running Claude Code sessions pick it up within about 30 seconds on macOS and from their next message elsewhere. `--sso` signs in with SSO. A sign-in that does not finish within 5 minutes is stopped (`--timeout SECONDS` gives it longer), and Ctrl-C stops it; either way nothing is saved and the private profile is deleted. `qswap login` never runs `claude auth logout`, which would sign the new login out again.
+
+With no account, `qswap login` signs in again every account that needs re-login or whose login runs out within 7 days, one after another, and says which first; `--all` does every subscription login. An API-key account and a setup-token account have no sign-in to renew: for those, `qswap add-token KEY --slot N`. The menu bar does the same from *Sign in again* ([menubar.md](menubar.md#sign-in-again)).
+
+The older way still works: log in to that account in Claude Code and save the new login over the old one. It replaces the login Claude Code is using. `qswap add` recognizes the account by its email and organization and updates the same number:
 
 ```bash
 claude          # then /login, and sign in as maya@northwind.example.com
@@ -65,11 +89,15 @@ A direct switch is refused until then:
 ```
 $ qswap switch 2
 Error: #2 work needs re-login (its saved login was refused); not switched.
-Log in to it in Claude Code (/login), then run: qswap add
+Sign in to it again: qswap login 2
 To switch to it anyway: qswap switch 2 --anyway
 ```
 
 `--anyway` overrides only this refusal. For a Codex account the step is `qswap codex login`. A Codex account that reads `usage unknown until used` does not need re-login: its token expired while it sat unused, and Codex renews it the first time it runs on it.
+
+## A login runs out soon
+
+A Claude subscription login runs out about a month after it was signed in, however much it is used; only a new sign-in moves that date. In its last 7 days, `qswap list` shows a `login` row (`expires Nov 26 14:00 · in 5d 12h`), the menu bar's row for the account ends with `re-login in 5d 12h`, and the menu bar posts a notification 3 days before and one more in the last day (`login.notifyDays`, [settings.md](settings.md)). `qswap login 2` renews it now, and `qswap login` renews every login that is due.
 
 ## Usage unavailable (HTTP 503), retrying
 

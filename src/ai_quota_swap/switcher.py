@@ -312,12 +312,8 @@ SENTINEL_NOTES = {
     ),
     USAGE_API_KEY: "API key — no usage recorded on this machine",
     USAGE_KEYCHAIN_UNAVAILABLE: "Keychain unavailable — it is locked or busy; unlock it and try again",
-    USAGE_RELOGIN_REQUIRED: (
-        "needs re-login — log in to it in Claude Code (/login), then run: qswap add"
-    ),
-    USAGE_NO_CREDENTIALS: (
-        "no saved login — log in to it in Claude Code (/login), then run: qswap add"
-    ),
+    USAGE_RELOGIN_REQUIRED: "needs re-login — sign in to it again: qswap login",
+    USAGE_NO_CREDENTIALS: "no saved login — sign in to it again: qswap login",
 }
 
 
@@ -2294,6 +2290,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     policy=self._policy_from_data(seq_data, n),
                     subscription_plan=plans.get(n),
                     underneath=key is not None and n == under,
+                    setup_token=oauth.is_setup_token(oauth.extract_oauth_data(creds or "")),
                 )
             )
         return AccountsSnapshot(
@@ -4689,6 +4686,191 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
 
         for line in display.key_still_active(self.label(key, long=False), number):
             print(line)
+
+    # -- qswap login: a new sign-in saved over a slot's login (ai_quota_swap.login) --
+
+    def save_renewed_login(
+        self, account_num: str, credentials: str, oauth_account: dict
+    ) -> dict:
+        """Save a new sign-in of ``account_num`` over its saved login.
+
+        ``qswap login`` made the sign-in in a private profile and has already
+        matched that profile's identity (``oauth_account``, its
+        ``.claude.json`` ``oauthAccount``) against the slot. Here the capture
+        guards ``add`` applies run first, the profile oracle among them, before
+        any lock (no network under the locks). Then, under the locks a switch
+        takes (qswap's, and Claude Code's credential and config locks):
+
+        - the slot must still be this account;
+        - when it is the live login, the new login is installed live by the
+          switch's own steps: the live credential is attributed the way a
+          switch attributes the one it leaves (``_prefetch_live_identity``
+          before the locks, ``_classify_outgoing_credential`` under them), and
+          when it is this account's, or its tokens were wiped, the new
+          credential is written with the live MCP sign-ins composed in
+          (``_prepare_credentials_for_activation``) and ``oauthAccount``
+          spliced into ``~/.claude.json``. Running sessions pick it up as
+          after a switch, and the rotated-backup resync has nothing older to
+          copy back: it writes only a live credential that still carries the
+          lineage it served, and the live lineage is now the new one. A live
+          credential that is another account's, an API key or an item with no
+          login (a key saved the older way) is left as it is;
+        - the slot's saved login is replaced (``.prev`` kept), which
+          invalidates its ``qswap run`` profile or marks a running one stale,
+          as ``add`` does;
+        - the saved config keeps everything but ``oauthAccount``, which is
+          updated from the sign-in. A switch splices only that into
+          ``~/.claude.json``, and restores the rest only when the live file
+          cannot be read, so the private profile's nearly empty
+          ``.claude.json`` must not replace it.
+
+        The record keeps its alias, disabled flag, threshold, priority and
+        everything else; a missing uuid is filled in. The dead-token state is
+        cleared. Returns ``{"live": bool, "key": str | None}``: whether the
+        live login was replaced too, and the API key active over it, if any.
+        Raises :class:`LoginError` (nothing saved) when a guard refuses.
+        """
+        from ai_quota_swap.exceptions import CredentialWriteError, LoginError
+
+        self._refuse_session_shell()
+        account_num = str(account_num)
+        record = ((self._get_sequence_data() or {}).get("accounts") or {}).get(account_num)
+        if not isinstance(record, dict):
+            raise AccountNotFoundError(f"#{account_num} does not exist; qswap list shows the accounts")
+        email = record.get("email", "")
+        org_uuid = record.get("organizationUuid", "") or ""
+        name = self.label(account_num, long=False)
+        account_uuid = str(oauth_account.get("accountUuid") or "")
+        try:
+            self._reject_live_api_key_capture(credentials)
+        except ValidationError as e:
+            raise LoginError(
+                f"The sign-in for {name} left no Claude login (an API key, or MCP "
+                "sign-ins only), so nothing was saved."
+            ) from e
+        credentials = self._reject_foreign_credential_capture(
+            credentials, email, org_uuid, account_uuid
+        )
+        pair = oauth.extract_oauth_data(credentials) or {}
+        if not (pair.get("accessToken") and pair.get("refreshToken")):
+            # Never seed a slot with a partial token pair (the resync's rule).
+            raise LoginError(
+                f"The sign-in for {name} left no complete login (no refresh "
+                "token), so nothing was saved."
+            )
+        key = self.helper_account()
+        provenance = (
+            self._prefetch_live_identity()
+            if self.login_account_number() == account_num
+            else {"live": None, "resolved": None}
+        )
+        live = False
+        with FileLock(self.lock_file), claude_credentials_lock(), claude_config_lock():
+            data = self._get_sequence_data() or {}
+            record = (data.get("accounts") or {}).get(account_num)
+            if (
+                not isinstance(record, dict)
+                or record.get("email", "") != email
+                or (record.get("organizationUuid", "") or "") != org_uuid
+            ):
+                raise LoginError(
+                    f"{name} changed while the browser sign-in ran, so nothing "
+                    f"was saved. Try again: qswap login {account_num}"
+                )
+            if self.login_account_number() == account_num:
+                live = self._install_renewed_live_login(
+                    account_num, email, credentials, oauth_account, provenance, data
+                )
+            try:
+                self._write_account_credentials(account_num, email, credentials)
+            except Exception as e:
+                if not live:
+                    raise
+                # The live login is the new one; the resync copies it into
+                # the slot once it reads it, and `qswap add` does it now.
+                raise CredentialWriteError(
+                    f"The live login of {name} was renewed, but its saved copy "
+                    f"could not be written ({e}). Save it with: qswap add"
+                ) from e
+            self._write_account_config(
+                account_num, email, self._renewed_account_config(account_num, email, oauth_account)
+            )
+            changed = False
+            if not record.get("uuid") and account_uuid:
+                record["uuid"] = account_uuid
+                changed = True
+            if live and key is None and data.get("activeAccountNumber") != int(account_num):
+                data["activeAccountNumber"] = int(account_num)
+                changed = True
+            if changed:
+                data["lastUpdated"] = get_timestamp()
+                self._write_json(self.sequence_file, data)
+        self._usage_store.clear_dead_token([account_num], {account_num: (email, org_uuid)})
+        self._logger.info(
+            f"Renewed the login of account {account_num}: {email}"
+            + (" (the live login too)" if live else "")
+        )
+        return {"live": live, "key": key}
+
+    def _install_renewed_live_login(
+        self,
+        account_num: str,
+        email: str,
+        credentials: str,
+        oauth_account: dict,
+        provenance: dict,
+        data: dict,
+    ) -> bool:
+        """The live half of :meth:`save_renewed_login`; the caller holds the
+        switch's three locks. True when the live login is now the new one."""
+        live_creds = self._read_credentials()
+        if live_creds is None:
+            raise CredentialReadError(
+                f"The live login of {self.label(account_num, long=False)} could not "
+                "be read (the Keychain is locked or busy), so nothing was saved. "
+                f"Once it answers, try again: qswap login {account_num}"
+            )
+        if not live_creds or looks_like_api_key(live_creds) or holds_no_login(live_creds):
+            return False  # no login of this account is live: the saved copy alone
+        kind, _ = self._classify_outgoing_credential(
+            account_num, email, live_creds, provenance, data
+        )
+        if kind not in ("own-bytes", "own-family", "own-rotated", "unresolved", "wiped"):
+            # Another account's credential under this account's config: the
+            # switch that repairs that keeps a safety copy first; a renewal
+            # leaves it to that switch.
+            self._logger.warning(
+                f"Renewed account {account_num}'s saved login only: the live "
+                f"credential is not its own ({kind})."
+            )
+            return False
+        self._write_credentials(self._prepare_credentials_for_activation(credentials, live_creds))
+        config_path = self._get_claude_config_path()
+        try:
+            config = self._read_json(config_path)
+            if isinstance(config, dict):
+                current = config.get("oauthAccount")
+                current = current if isinstance(current, dict) else {}
+                config["oauthAccount"] = {**current, **oauth_account}
+                self._write_json(config_path, config)
+        except Exception as e:  # same identity either way; the credential is what counts
+            self._logger.warning(f"Could not update the live oauthAccount after a renewal: {e!r}")
+        return True
+
+    def _renewed_account_config(self, account_num: str, email: str, oauth_account: dict) -> str:
+        """The slot's saved config with ``oauthAccount`` updated from a new
+        sign-in and everything else kept; ``{"oauthAccount": …}`` when there
+        is none, or none that can be read."""
+        try:
+            saved = json.loads(self._read_account_config(account_num, email) or "{}")
+        except (OSError, ValueError):
+            saved = {}
+        if not isinstance(saved, dict):
+            saved = {}
+        current = saved.get("oauthAccount")
+        current = current if isinstance(current, dict) else {}
+        saved["oauthAccount"] = {**current, **oauth_account}
+        return json.dumps(saved, indent=2)
 
     def add_account_from_token(
         self,
@@ -7651,8 +7833,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     if any(str(num) in relogin for num in sequence):
                         raise ConfigError(
                             "No account can be activated: each one needs re-login, is "
-                            "disabled, or has no saved login. Log in to one in Claude "
-                            "Code (/login), then run: qswap add"
+                            "disabled, or has no saved login. Sign them in again "
+                            "with: qswap login"
                         )
                     raise ConfigError(
                         "No managed accounts have valid stored credentials/config. "
@@ -8749,7 +8931,7 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
             if not anyway:
                 raise SwitchError(
                     f"{name} {display.NEEDS_RELOGIN} ({why}); not switched.\n"
-                    f"Log in to it in Claude Code (/login), then run: qswap add\n"
+                    f"Sign in to it again: qswap login {number}\n"
                     f"To switch to it anyway: qswap switch {number} --anyway"
                 )
             return [f"{name} {display.NEEDS_RELOGIN} ({why}); switching anyway"]

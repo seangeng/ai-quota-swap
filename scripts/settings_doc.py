@@ -24,6 +24,7 @@ SECTIONS = {
     "autoswitch": "Auto-switch (both providers)",
     "resets": "Usage resets (both providers)",
     "codex": "Codex",
+    "login": "Saved logins",
     "run": "Sessions",
     "usage": "Usage readings",
     "ui": "Appearance",
@@ -137,6 +138,12 @@ MEANINGS: dict[str, str] = {
         "`qswap codex auto`'s switch line, in place of `autoswitch.threshold`. "
         "High by default because a Codex switch interrupts work in progress."
     ),
+    "login.notifyDays": (
+        "The menu bar posts a notification when a subscription login comes within "
+        "this many days of running out, and one more in its last day. Each names "
+        "the account and both ways to renew it: *Sign in again* in the menu, and "
+        "`qswap login N`. `0` turns them off."
+    ),
 }
 
 # The value each row's example command sets: valid, and not the default.
@@ -164,6 +171,7 @@ EXAMPLES: dict[str, str] = {
     "resets.beforeSwitch": "true",
     "codex.restartDaemon": "false",
     "codex.threshold": "90",
+    "login.notifyDays": "5",
 }
 
 

@@ -180,7 +180,7 @@ class FakeSwitcher:
         if not anyway:
             raise SwitchError(
                 f"#{number} {display.NEEDS_RELOGIN} ({why}); not switched.\n"
-                "Log in to it in Claude Code (/login), then run: qswap add\n"
+                f"Sign in to it again: qswap login {number}\n"
                 f"To switch to it anyway: qswap switch {number} --anyway"
             )
         return [f"#{number} {display.NEEDS_RELOGIN} ({why}); switching anyway"]
@@ -435,7 +435,7 @@ class TestBlocks:
         text = " ".join(t for t, _r in display.state_parts(block))
         assert text == (
             "needs re-login (its saved login was refused): "
-            "log in to it in Claude Code (/login), then run: qswap add"
+            "sign in to it again: qswap login 4"
         )
 
     def test_codex_relogin_step_and_note(self):
@@ -950,7 +950,7 @@ class TestDashboard:
         async with app.run_test(size=(110, 32)) as pilot:
             await settle(pilot)
             panel = panel_text(app)
-            assert "needs re-login: log in to it in Claude Code (/login), then run: qswap add" in panel
+            assert "needs re-login: sign in to it again: qswap login 2" in panel
             assert "needs re-login (its saved login was refused)" in panel
 
     async def test_disabled_marker_on_card_and_row(self, tmp_path):
@@ -1243,7 +1243,7 @@ class TestSwitching:
             body = app.screen.query_one(".modal-body", Static).render().plain
             assert body == (
                 "#2 needs re-login (its saved login was refused); not switched.\n"
-                "Log in to it in Claude Code (/login), then run: qswap add"
+                "Sign in to it again: qswap login 2"
             )
             assert not any(c[0] == "switch_to" for c in fake.calls)
             await pilot.press("enter")  # the focus starts on Cancel

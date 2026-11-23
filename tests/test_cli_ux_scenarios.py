@@ -39,7 +39,7 @@ class TestSwitchTargets:
         r = qswap("trouble", "switch", "2", "++", "list", "--json")
         out = r.stdout + r.stderr
         assert "Error: #2 work needs re-login (its saved login was refused); not" in out
-        assert "then run: qswap add" in out
+        assert "Sign in to it again: qswap login 2" in out
         assert "To switch to it anyway: qswap switch 2 --anyway" in out
         listed = json.loads(r.stdout[r.stdout.index("{"):])
         assert listed["activeAccountNumber"] == 1  # nothing changed

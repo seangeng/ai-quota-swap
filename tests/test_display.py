@@ -89,8 +89,12 @@ class TestPhrases:
         assert display.grant_state(None) == "usable now"
 
     def test_relogin_step_per_provider(self):
-        assert display.relogin_step("claude").endswith("then run: qswap add")
+        # Claude Code's is qswap login: the account's number when it is
+        # known, else the bare command, which renews every login that needs it.
+        assert display.relogin_step("claude", 3) == "sign in to it again: qswap login 3"
+        assert display.relogin_step("claude") == "sign in to it again: qswap login"
         assert display.relogin_step("codex").endswith("qswap codex login")
+        assert display.relogin_step("codex", 2).endswith("qswap codex login")
 
     def test_error_labels(self):
         assert display.error_label("http-503") == "HTTP 503"
@@ -138,7 +142,7 @@ class TestBlock:
     def test_needs_relogin_from_the_sentinel_or_the_engine(self):
         dead = _block(Reading(sentinel=USAGE_RELOGIN_REQUIRED))
         assert dead.state == "needs-relogin"
-        assert display.state_lines(dead)[0].startswith("     needs re-login: log in to it")
+        assert display.state_lines(dead)[0] == "     needs re-login: sign in to it again: qswap login 1"
         held = _block(Reading(last_good=_fresh(), fetched_at=NOW, age_s=0), set_aside="invalid_grant")
         lines = display.render_block(held)
         assert "needs re-login (its saved login was refused)" in lines[1]
