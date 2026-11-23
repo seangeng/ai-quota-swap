@@ -20,12 +20,12 @@
   "menubar": {
     "name": "menubar",
     "scenario": "autoswitch",
-    "mode": "littledemo",
+    "mode": "local",
     "page": "docs/shots/recording-menubar.html",
     "video": "assets/demos/menubar.mp4",
-    "recorder": "@littledemo/cli record (local Chrome, loopback page), GIF re-encoded with ffmpeg",
+    "recorder": "DevTools protocol frame grabs (cdp.record_frames), GIF made with ffmpeg",
     "gif": "assets/demos/menubar.gif",
-    "gifBytes": 1213384
+    "gifBytes": 761919
   },
   "quickstart": {
     "name": "quickstart",
