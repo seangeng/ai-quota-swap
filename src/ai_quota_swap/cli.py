@@ -1286,7 +1286,7 @@ The browser must be signed in to claude.ai as that account, or signed out.
             current = target
 
             def announce(t=target) -> None:
-                for line in display.wrap(login.browser_note(t.label, t.email)):
+                for line in display.wrap(login.browser_note(t.label, t.email, active=t.active)):
                     print(dimmed(line))
 
             try:
@@ -1302,19 +1302,35 @@ The browser must be signed in to claude.ai as that account, or signed out.
             print(f"{accent('Renewed')}{lines[0].removeprefix('Renewed')}")
             for line in lines[1:]:
                 print(line)
-            note = login.key_note(switcher, renewal)
-            if note:
+            for note in renewal.notes:
                 for line in display.wrap(note):
-                    print(line)
+                    print(dimmed(line))
+            for note in (login.live_left_note(renewal), login.key_note(switcher, renewal)):
+                if note:
+                    for line in display.wrap(note):
+                        print(line)
         current = None
         if failed:
             sys.exit(1)
     except ProviderError as e:
         error(f"Error: {e}")
         sys.exit(1)
-    except KeyboardInterrupt:
-        which = f" for {current.label}" if current is not None else ""
-        print(f"\n{dimmed(f'Cancelled; nothing was saved{which}.')}")
+    except KeyboardInterrupt as e:
+        # What was written by then, from the save's own record of it.
+        name = current.label if current is not None else "the account"
+        if isinstance(e, login.SignInInterrupted) and e.saved:
+            text = f"Cancelled after the new login of {name} was saved."
+        elif isinstance(e, login.SignInInterrupted) and e.live:
+            text = (
+                f"Cancelled: the live login of {name} is the new one, but its saved copy "
+                "was not written. Save it with: qswap add"
+            )
+        else:
+            which = f" for {current.label}" if current is not None else ""
+            text = f"Cancelled; nothing was saved{which}."
+        print()
+        for line in display.wrap(text):
+            print(dimmed(line))
         sys.exit(130)
 
 

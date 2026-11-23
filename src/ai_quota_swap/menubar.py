@@ -1659,8 +1659,9 @@ def use_reset(inp: MenuInput, action: Action, *, confirm, run) -> bool:
 
 
 SIGN_IN_TITLE = "Sign in again"
-#: What a *Sign in again* row reads while its sign-in runs.
-SIGN_IN_WAITING = "waiting for the browser…"
+#: What a *Sign in again* row reads while its sign-in runs; clicking it then
+#: cancels the sign-in.
+SIGN_IN_WAITING = "waiting for the browser… (click to cancel)"
 
 
 def sign_in_accounts(inp: MenuInput) -> list[AccountState]:
@@ -1680,7 +1681,8 @@ def sign_in_rows(inp: MenuInput) -> list[Row]:
     """*Sign in again*'s rows: ``#3 work · due in 13h``, due ones first
     (needs re-login, then the soonest), the rest in account order. A click
     runs ``qswap login N``'s sign-in (:func:`sign_in`). While one runs, its
-    row reads ``waiting for the browser…`` and no row can be clicked."""
+    row reads ``waiting for the browser… (click to cancel)`` and cancels it,
+    and the others cannot be clicked."""
     from ai_quota_swap import login
 
     def key(item: tuple[int, AccountState]):
@@ -1700,10 +1702,14 @@ def sign_in_rows(inp: MenuInput) -> list[Row]:
         tail = f" · {note}" if note else ""
         room = ROW_LIMIT - len(tail)
         text = (label if len(label) <= room else display.fit(label, max(room, LABEL_FLOOR))) + tail
-        action = None if inp.login_busy is not None else Action("sign-in", "claude", acc.number)
+        if inp.login_busy == acc.number:
+            action = Action("cancel-sign-in", "claude", acc.number)
+            tooltip = "Click to cancel this sign-in; nothing is saved."
+        else:
+            action = None if inp.login_busy is not None else Action("sign-in", "claude", acc.number)
+            tooltip = login.browser_note(label, acc.email, active=acc.active or acc.underneath)
         rows.append(Row(
-            text, action=action, attention=note == display.NEEDS_RELOGIN,
-            tooltip=login.browser_note(label, acc.email),
+            text, action=action, attention=note == display.NEEDS_RELOGIN, tooltip=tooltip,
         ))
     return rows
 
@@ -2005,7 +2011,7 @@ ACTION_KINDS = frozenset({
     "title-follows", "title-pct", "toggle-scoped", "toggle-chart", "interval", "toggle-auto",
     "threshold", "toggle-login", "refresh-now", "quit",
     "resets-auto", "toggle-weekly-for-model", "toggle-before-switch", "use-reset",
-    "sign-in",
+    "sign-in", "cancel-sign-in",
 })
 
 

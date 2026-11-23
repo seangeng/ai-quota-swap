@@ -4051,7 +4051,8 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         )
 
     def _reject_foreign_credential_capture(
-        self, creds: str, email: str, org_uuid: str, account_uuid: str
+        self, creds: str, email: str, org_uuid: str, account_uuid: str,
+        *, on_unverified: Callable[[str], None] | None = None,
     ) -> str:
         """Guard for ``add_account``: the stored token must be THIS account's.
 
@@ -4100,6 +4101,11 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         def unverified(why: str) -> str:
             # Fail-open, but never silently: registering with the ownership
             # question unanswered is the state the field incident was in.
+            # ``on_unverified`` lets a caller with its own words and its own
+            # surface (qswap login, the menu bar) say it instead.
+            if on_unverified is not None:
+                on_unverified(why)
+                return creds
             print(
                 f"{accent('Notice:')} could not verify that the stored "
                 f"credential belongs to {email} ({why}). Registering anyway; "
@@ -4690,31 +4696,26 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
     # -- qswap login: a new sign-in saved over a slot's login (ai_quota_swap.login) --
 
     def save_renewed_login(
-        self, account_num: str, credentials: str, oauth_account: dict
+        self, account_num: str, credentials: str, oauth_account: dict,
+        *, progress: dict | None = None,
     ) -> dict:
         """Save a new sign-in of ``account_num`` over its saved login.
 
-        ``qswap login`` made the sign-in in a private profile and has already
-        matched that profile's identity (``oauth_account``, its
-        ``.claude.json`` ``oauthAccount``) against the slot. Here the capture
-        guards ``add`` applies run first, the profile oracle among them, before
-        any lock (no network under the locks). Then, under the locks a switch
-        takes (qswap's, and Claude Code's credential and config locks):
+        ``qswap login`` made the sign-in in a private profile; ``oauth_account``
+        is that profile's ``.claude.json`` ``oauthAccount``. The slot's record
+        must be that account (email, case aside, organization, and the
+        account uuid when both sides have one), checked now and again under
+        the locks: the browser wait is minutes long, and a swap, a move or a
+        remove and add meanwhile can put another account in the slot. Then
+        the capture guards ``add`` applies run, the profile oracle among them,
+        before any lock (no network under the locks), in this command's own
+        words. Under the locks a switch takes (qswap's, and Claude Code's
+        credential and config locks):
 
-        - the slot must still be this account;
-        - when it is the live login, the new login is installed live by the
-          switch's own steps: the live credential is attributed the way a
-          switch attributes the one it leaves (``_prefetch_live_identity``
-          before the locks, ``_classify_outgoing_credential`` under them), and
-          when it is this account's, or its tokens were wiped, the new
-          credential is written with the live MCP sign-ins composed in
-          (``_prepare_credentials_for_activation``) and ``oauthAccount``
-          spliced into ``~/.claude.json``. Running sessions pick it up as
-          after a switch, and the rotated-backup resync has nothing older to
-          copy back: it writes only a live credential that still carries the
-          lineage it served, and the live lineage is now the new one. A live
-          credential that is another account's, an API key or an item with no
-          login (a key saved the older way) is left as it is;
+        - when the slot is the live login, the new login is installed live by
+          the switch's own steps (:meth:`_install_renewed_live_login`), so
+          running sessions pick it up as after a switch and the rotated-backup
+          resync has nothing older to copy back;
         - the slot's saved login is replaced (``.prev`` kept), which
           invalidates its ``qswap run`` profile or marks a running one stale,
           as ``add`` does;
@@ -4726,17 +4727,26 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
 
         The record keeps its alias, disabled flag, threshold, priority and
         everything else; a missing uuid is filled in. The dead-token state is
-        cleared. Returns ``{"live": bool, "key": str | None}``: whether the
-        live login was replaced too, and the API key active over it, if any.
-        Raises :class:`LoginError` (nothing saved) when a guard refuses.
+        cleared. ``progress`` (when given) gains ``live`` and ``saved`` as
+        each write lands, for a caller interrupted in between.
+
+        Returns ``{"live": bool, "key": str | None, "live_left": str | None,
+        "notes": [str]}``: whether the live login was replaced too; the API
+        key active over it, if any; why the live login was left as it was
+        when the slot is the live account and it was (``empty``,
+        ``no-login``, ``api-key``, ``foreign``); and sentences for the caller
+        to show (an ownership check that could not run). Raises
+        :class:`LoginError` (nothing saved) when a guard refuses, and
+        :class:`LockError` before writing anything when a lock is busy.
         """
         from ai_quota_swap.exceptions import CredentialWriteError, LoginError
 
         self._refuse_session_shell()
         account_num = str(account_num)
-        record = ((self._get_sequence_data() or {}).get("accounts") or {}).get(account_num)
-        if not isinstance(record, dict):
-            raise AccountNotFoundError(f"#{account_num} does not exist; qswap list shows the accounts")
+        progress = progress if progress is not None else {}
+        data = self._get_sequence_data() or {}
+        record = (data.get("accounts") or {}).get(account_num)
+        self._require_renewal_identity(account_num, record, oauth_account, data)
         email = record.get("email", "")
         org_uuid = record.get("organizationUuid", "") or ""
         name = self.label(account_num, long=False)
@@ -4748,9 +4758,6 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 f"The sign-in for {name} left no Claude login (an API key, or MCP "
                 "sign-ins only), so nothing was saved."
             ) from e
-        credentials = self._reject_foreign_credential_capture(
-            credentials, email, org_uuid, account_uuid
-        )
         pair = oauth.extract_oauth_data(credentials) or {}
         if not (pair.get("accessToken") and pair.get("refreshToken")):
             # Never seed a slot with a partial token pair (the resync's rule).
@@ -4758,29 +4765,44 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 f"The sign-in for {name} left no complete login (no refresh "
                 "token), so nothing was saved."
             )
+        notes: list[str] = []
+
+        def unverified(why: str) -> None:
+            notes.append(
+                f"qswap could not check with Anthropic that the new login belongs to "
+                f"{name} ({why}); it was saved, since the sign-in named that account."
+            )
+
+        try:
+            credentials = self._reject_foreign_credential_capture(
+                credentials, email, org_uuid,
+                (record.get("uuid") or "").strip() or account_uuid,
+                on_unverified=unverified,
+            )
+        except ConfigError as e:
+            raise LoginError(
+                f"Anthropic says the new login belongs to another account than {name} "
+                f"({email}), so nothing was saved. Sign out of claude.ai in the "
+                f"browser, or switch it to {email}, and run it again: qswap login {account_num}"
+            ) from e
         key = self.helper_account()
         provenance = (
             self._prefetch_live_identity()
             if self.login_account_number() == account_num
             else {"live": None, "resolved": None}
         )
+        live_left: str | None = None
         live = False
         with FileLock(self.lock_file), claude_credentials_lock(), claude_config_lock():
             data = self._get_sequence_data() or {}
             record = (data.get("accounts") or {}).get(account_num)
-            if (
-                not isinstance(record, dict)
-                or record.get("email", "") != email
-                or (record.get("organizationUuid", "") or "") != org_uuid
-            ):
-                raise LoginError(
-                    f"{name} changed while the browser sign-in ran, so nothing "
-                    f"was saved. Try again: qswap login {account_num}"
-                )
+            self._require_renewal_identity(account_num, record, oauth_account, data)
             if self.login_account_number() == account_num:
-                live = self._install_renewed_live_login(
+                live_left = self._install_renewed_live_login(
                     account_num, email, credentials, oauth_account, provenance, data
                 )
+                live = live_left is None
+                progress["live"] = live
             try:
                 self._write_account_credentials(account_num, email, credentials)
             except Exception as e:
@@ -4792,25 +4814,75 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     f"The live login of {name} was renewed, but its saved copy "
                     f"could not be written ({e}). Save it with: qswap add"
                 ) from e
+            progress["saved"] = True
             self._write_account_config(
                 account_num, email, self._renewed_account_config(account_num, email, oauth_account)
             )
-            changed = False
+            changed = activated = False
             if not record.get("uuid") and account_uuid:
                 record["uuid"] = account_uuid
                 changed = True
             if live and key is None and data.get("activeAccountNumber") != int(account_num):
                 data["activeAccountNumber"] = int(account_num)
-                changed = True
+                changed = activated = True
             if changed:
                 data["lastUpdated"] = get_timestamp()
                 self._write_json(self.sequence_file, data)
-        self._usage_store.clear_dead_token([account_num], {account_num: (email, org_uuid)})
+            if activated:
+                self._record_activation(account_num, email, org_uuid)
+        try:
+            self._usage_store.clear_dead_token([account_num], {account_num: (email, org_uuid)})
+        except LockError as e:
+            # Written already; never read as "nothing saved" (the caller
+            # retries a LockError). The next read of the new login clears it.
+            self._logger.warning(f"Renewed account {account_num}, but its dead-login state stays until the next read: {e}")
         self._logger.info(
             f"Renewed the login of account {account_num}: {email}"
             + (" (the live login too)" if live else "")
+            + (f" (the live login left as it was: {live_left})" if live_left else "")
         )
-        return {"live": live, "key": key}
+        return {"live": live, "key": key, "live_left": live_left, "notes": notes}
+
+    def _require_renewal_identity(
+        self, account_num: str, record: dict | None, oauth_account: dict, data: dict
+    ) -> None:
+        """Refuse (:class:`LoginError`, nothing saved) unless slot
+        ``account_num`` is the account a sign-in made: the same email (case
+        aside), the same organization, and the same account uuid when both
+        sides have one. Same email and organization with another uuid is an
+        account that was deleted and made again."""
+        from ai_quota_swap.exceptions import LoginError
+        from ai_quota_swap.login import uuid_mismatch_text
+
+        email = str(oauth_account.get("emailAddress") or "")
+        org = str(oauth_account.get("organizationUuid") or "")
+        uuid = str(oauth_account.get("accountUuid") or "").strip()
+        if not isinstance(record, dict):
+            raise LoginError(
+                f"#{account_num} was removed while the browser sign-in ran, so "
+                "nothing was saved."
+            )
+        name = self.label(account_num, long=False)
+        if (record.get("email") or "").lower() == email.lower() and (
+            record.get("organizationUuid") or ""
+        ) == org:
+            saved_uuid = (record.get("uuid") or "").strip()
+            if saved_uuid and uuid and saved_uuid != uuid:
+                raise LoginError(uuid_mismatch_text(name, account_num, email))
+            return
+        text = (
+            f"{name} changed while the browser sign-in ran and is no longer "
+            f"{email}, so nothing was saved."
+        )
+        for num, other in (data.get("accounts") or {}).items():
+            if (
+                isinstance(other, dict)
+                and (other.get("email") or "").lower() == email.lower()
+                and (other.get("organizationUuid") or "") == org
+            ):
+                text += f" That account is now {self.label(num, long=False)}; renew it with: qswap login {num}"
+                break
+        raise LoginError(text)
 
     def _install_renewed_live_login(
         self,
@@ -4820,18 +4892,41 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         oauth_account: dict,
         provenance: dict,
         data: dict,
-    ) -> bool:
+    ) -> str | None:
         """The live half of :meth:`save_renewed_login`; the caller holds the
-        switch's three locks. True when the live login is now the new one."""
-        live_creds = self._read_credentials()
-        if live_creds is None:
+        switch's three locks. None when the live login is now the new one,
+        else why it was left as it was.
+
+        The live store is read the way a switch reads the login it leaves,
+        and a read that failed (the Keychain locked, or inside its cooldown)
+        or served a fallback refuses before anything is written: taking it
+        for "no login live" would renew the saved copy alone, and the next
+        usage pass would copy the old live login back over it. The live
+        credential is then attributed like a switch's outgoing one
+        (``_prefetch_live_identity`` before the locks,
+        ``_classify_outgoing_credential`` under them). This account's own,
+        or one Claude Code wiped after a refused refresh, is replaced; one
+        that could not be attributed is replaced after a safety copy, as a
+        switch keeps those bytes. The new credential is written with the
+        live MCP sign-ins composed in (``_prepare_credentials_for_activation``)
+        and ``oauthAccount`` spliced into ``~/.claude.json``. An empty store,
+        an item with only MCP sign-ins, an API key and another account's
+        credential are left as they are.
+        """
+        active = self._read_active_credentials()
+        if active.value is None or active.keychain_unavailable or active.degraded:
             raise CredentialReadError(
                 f"The live login of {self.label(account_num, long=False)} could not "
                 "be read (the Keychain is locked or busy), so nothing was saved. "
                 f"Once it answers, try again: qswap login {account_num}"
             )
-        if not live_creds or looks_like_api_key(live_creds) or holds_no_login(live_creds):
-            return False  # no login of this account is live: the saved copy alone
+        live_creds = active.value
+        if not live_creds:
+            return "empty"
+        if looks_like_api_key(live_creds):
+            return "api-key"
+        if holds_no_login(live_creds):
+            return "no-login"
         kind, _ = self._classify_outgoing_credential(
             account_num, email, live_creds, provenance, data
         )
@@ -4843,7 +4938,12 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 f"Renewed account {account_num}'s saved login only: the live "
                 f"credential is not its own ({kind})."
             )
-            return False
+            return "foreign"
+        if kind == "unresolved":
+            # Raises when the copy cannot be written: nothing is written then.
+            self._stash_live_credential(
+                live_creds, "replaced-by-renewal", account_num, provenance.get("resolved")
+            )
         self._write_credentials(self._prepare_credentials_for_activation(credentials, live_creds))
         config_path = self._get_claude_config_path()
         try:
@@ -4855,6 +4955,24 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                 self._write_json(config_path, config)
         except Exception as e:  # same identity either way; the credential is what counts
             self._logger.warning(f"Could not update the live oauthAccount after a renewal: {e!r}")
+        return None
+
+    def _keeps_newer_saved_login(self, account_num: str, saved: str | None, live: str | None) -> bool:
+        """Whether the slot's saved login came from a later sign-in than the
+        live credential about to be copied over it, which then must not be.
+
+        ``refreshTokenExpiresAt`` is set at sign-in and never grows within
+        one lineage, so a later date in the saved copy means a newer sign-in
+        (``qswap login`` renews the saved copy alone when it cannot replace
+        the live login). Logs one line when it keeps it."""
+        saved_at = oauth.login_expires_at_epoch(saved or "")
+        live_at = oauth.login_expires_at_epoch(live or "")
+        if saved_at is None or live_at is None or saved_at <= live_at:
+            return False
+        self._logger.info(
+            "Kept account %s's saved login: it comes from a later sign-in than "
+            "the live credential, which was not copied over it.", account_num,
+        )
         return True
 
     def _renewed_account_config(self, account_num: str, email: str, oauth_account: dict) -> str:
@@ -5596,8 +5714,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                             sentinel=USAGE_FOREIGN_CREDENTIAL
                         )
                     working = live
-                    if live_verdict or (
+                    if (live_verdict or (
                         oauth.credential_fingerprint(live) == backup_fp
+                    )) and not self._keeps_newer_saved_login(
+                        account_num, self._read_account_credentials(account_num, email), live
                     ):
                         try:
                             self._write_account_credentials(
@@ -6005,6 +6125,10 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                     and live_oauth.get("refreshToken")
                     and oauth.credential_fingerprint(live)
                     == oauth.credential_fingerprint(creds)
+                ):
+                    return
+                if self._keeps_newer_saved_login(
+                    account_num, self._read_account_credentials(account_num, email), live
                 ):
                     return
                 self._write_account_credentials(account_num, email, live)
@@ -10508,6 +10632,15 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
                                 )
                         except Exception:
                             pass  # Ignore errors during purge
+
+        # Likewise a `qswap login` profile a crash left behind: its Keychain
+        # item is named after its path (login.sweep deletes both).
+        try:
+            from ai_quota_swap.login import sign_in_root, sweep
+
+            sweep(sign_in_root(self))
+        except Exception as e:
+            self._logger.warning(f"Could not clear the sign-in profiles before the purge: {e!r}")
 
         # Session-profile keychain entries must go BEFORE the backup dir:
         # the hashed service names are derived from the dir paths and can't

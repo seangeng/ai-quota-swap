@@ -71,7 +71,11 @@ Error: The browser signed in as #1 personal, not #2 work
   qswap login 2. To renew #1 personal instead: qswap login 1
 ```
 
-When the account is the active one, its new login becomes the live login too, as a switch writes one, and running Claude Code sessions pick it up within about 30 seconds on macOS and from their next message elsewhere. `--sso` signs in with SSO. A sign-in that does not finish within 5 minutes is stopped (`--timeout SECONDS` gives it longer), and Ctrl-C stops it; either way nothing is saved and the private profile is deleted. `qswap login` never runs `claude auth logout`, which would sign the new login out again.
+When the account is the active one, its new login becomes the live login too, as a switch writes one, and running Claude Code sessions pick it up within about 30 seconds on macOS and from their next message elsewhere. When Claude Code's login store cannot be read (a locked Keychain), nothing is saved; try again once it answers. When the store holds no login, only MCP server sign-ins, an API key, or another account's login, the live login is left as it was and qswap says so; `qswap switch N --force` then installs the renewed one.
+
+`--sso` signs in with SSO. A sign-in that does not finish within 5 minutes is stopped (`--timeout SECONDS` gives it longer), and Ctrl-C stops it and any sign-ins still to come; nothing is saved and the private profile is deleted. A save that finds qswap's or Claude Code's files busy waits up to 45 seconds for them. `qswap login` never runs `claude auth logout`, which would sign the new login out again.
+
+The saved account must still be the one the browser signed in as when the login is saved: when another account takes its number meanwhile (a `qswap swap`, a `move`, a remove and an add), nothing is saved, and the message says where the account went. The same address with another account id means the account was deleted and made again: log in to it in Claude Code (`/login`), then `qswap add --slot N`.
 
 With no account, `qswap login` signs in again every account that needs re-login or whose login runs out within 7 days, one after another, and says which first; `--all` does every subscription login. An API-key account and a setup-token account have no sign-in to renew: for those, `qswap add-token KEY --slot N`. The menu bar does the same from *Sign in again* ([menubar.md](menubar.md#sign-in-again)).
 

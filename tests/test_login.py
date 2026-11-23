@@ -40,12 +40,13 @@ from ai_quota_swap.usage_store import FetchRecord
 DAY = 86400.0
 
 
-def _creds(tag: str, *, login_left: float = 20 * DAY, mcp: dict | None = None) -> str:
+def _creds(tag: str, *, login_left: float = 20 * DAY, mcp: dict | None = None,
+           access: str | None = None, deadline_ms: int | None = None, token_left: float = 8 * 3600) -> str:
     now = time.time()
     data: dict = {"claudeAiOauth": {
-        "accessToken": f"sk-ant-oat01-{tag}", "refreshToken": f"sk-ant-ort01-{tag}",
-        "expiresAt": int((now + 8 * 3600) * 1000),
-        "refreshTokenExpiresAt": int((now + login_left) * 1000),
+        "accessToken": f"sk-ant-oat01-{access or tag}", "refreshToken": f"sk-ant-ort01-{tag}",
+        "expiresAt": int((now + token_left) * 1000),
+        "refreshTokenExpiresAt": deadline_ms or int((now + login_left) * 1000),
         "scopes": ["user:inference", "user:profile"],
     }}
     if mcp is not None:
@@ -81,7 +82,8 @@ class FakeClaude:
         self.calls: list[dict] = []
         self.profile: Path | None = None
 
-    def __call__(self, profile: Path, email: str, *, sso=False, interactive=True, timeout=None) -> LoginRun:
+    def __call__(self, profile: Path, email: str, *, sso=False, interactive=True, timeout=None,
+                 on_process=None) -> LoginRun:
         self.profile = profile
         self.calls.append({"profile": profile, "email": email, "sso": sso,
                            "interactive": interactive, "timeout": timeout})
@@ -193,7 +195,12 @@ def test_renews_a_saved_login_and_keeps_everything_set_on_it(fleet, block_real_k
     assert saved["oauthAccount"]["billingType"] == "stripe_subscription"
     # The live login is #1's, untouched.
     assert _fp(s._read_credentials()) == _fp(_creds("one"))
-    assert renewal == Renewal("2", "#2 work", oauth.login_expires_at_epoch(fake.creds), live=False, key=None)
+    assert renewal == Renewal(
+        "2", "#2 work", oauth.login_expires_at_epoch(fake.creds), live=False, key=None, live_left=None,
+        # The suite answers no ownership lookup: said, in this command's words.
+        notes=("qswap could not check with Anthropic that the new login belongs to #2 work (the "
+               "identity lookup did not resolve); it was saved, since the sign-in named that account.",),
+    )
     assert login.renewed_text(renewal).startswith("Renewed the login of #2 work; the next sign-in is due ")
     assert login.renewed_text(renewal).endswith(" · in 29d 23h")
     # Nothing of the private profile is left, Keychain item included.
@@ -284,17 +291,55 @@ def test_the_resync_does_not_undo_a_renewal(fleet, monkeypatch):
     assert _fp(s._read_credentials()) == _fp(fake.creds)
 
 
-def test_CONTROL_a_renewal_of_the_saved_copy_alone_is_undone_by_the_resync(fleet, monkeypatch):
-    """Why the live login has to be replaced too: with only the saved copy
-    renewed, the same resync call writes the old live login back over it."""
+def test_the_resync_keeps_a_saved_login_from_a_later_sign_in(fleet, monkeypatch, caplog):
+    """With only the saved copy renewed (the live login could not be
+    replaced), the resync used to copy the old live login back over it.
+    The saved login's later refreshTokenExpiresAt now keeps it."""
     s = fleet
-    old = _creds("one")
+    old = _creds("one")  # live: 20 days left
     monkeypatch.setattr(oauth, "fetch_oauth_profile", lambda token: {
         "uuid": "uuid-1", "email": "maya@example.com", "organizationUuid": "",
     })
-    s._write_account_credentials("1", "maya@example.com", _creds("renewed"))
-    s._resync_rotated_backup("1", "maya@example.com", "", old)
-    assert _fp(s.read_account_credentials("1", "maya@example.com")) == _fp(old)
+    renewed = _creds("renewed", login_left=30 * DAY)
+    s._write_account_credentials("1", "maya@example.com", renewed)
+    with caplog.at_level("INFO", logger="ai-quota-swap"):
+        s._resync_rotated_backup("1", "maya@example.com", "", old)
+    assert _fp(s.read_account_credentials("1", "maya@example.com")) == _fp(renewed)
+    assert [r for r in caplog.records if "comes from a later sign-in" in r.getMessage()]
+
+
+def test_CONTROL_the_resync_still_follows_a_rotation(fleet, monkeypatch):
+    """The guard leaves the resync's own job alone: Claude Code rotated the
+    live login (same sign-in, same deadline), and the saved copy follows."""
+    s = fleet
+    deadline = int((time.time() + 20 * DAY) * 1000)
+    s._write_account_credentials("1", "maya@example.com", _creds("one", deadline_ms=deadline))
+    rotated = _creds("one-rotated", deadline_ms=deadline)
+    s._write_credentials(rotated)
+    monkeypatch.setattr(oauth, "fetch_oauth_profile", lambda token: {
+        "uuid": "uuid-1", "email": "maya@example.com", "organizationUuid": "",
+    })
+    s._resync_rotated_backup("1", "maya@example.com", "", rotated)
+    assert _fp(s.read_account_credentials("1", "maya@example.com")) == _fp(rotated)
+
+
+def test_the_adopt_branch_keeps_a_saved_login_from_a_later_sign_in(fleet, monkeypatch, caplog):
+    """The expired-token path adopts a live login some Claude Code rotated
+    and, with a memoised verdict for its lineage, copies it into the slot.
+    Not over a saved login from a later sign-in."""
+    s = fleet
+    renewed = _creds("renewed", login_left=30 * DAY)
+    s._write_account_credentials("1", "maya@example.com", renewed)
+    live = _creds("one", access="one-rotated")  # the old sign-in, rotated by a running Claude Code
+    s._write_credentials(live)
+    expired = _creds("one", token_left=-3600)  # what the collect pass had read
+    s._probe_verdicts[s._lineage_key("1", "maya@example.com", _fp(live))] = True
+    monkeypatch.setattr(oauth, "try_fetch_usage_for_account",
+                        lambda *a, **k: oauth.UsageOutcome(usage={"five_hour": {"pct": 5.0}}))
+    with caplog.at_level("INFO", logger="ai-quota-swap"):
+        s._fetch_active_usage("1", "maya@example.com", expired)
+    assert _fp(s.read_account_credentials("1", "maya@example.com")) == _fp(renewed)
+    assert [r for r in caplog.records if "comes from a later sign-in" in r.getMessage()]
 
 
 def test_a_wiped_live_login_is_replaced(fleet):
@@ -660,7 +705,8 @@ def stand_in(tmp_path, monkeypatch):
         with open({str(record)!r}, "w") as f:
             json.dump({{"argv": sys.argv[1:], "env": dict(os.environ)}}, f)
         print("Opening the browser to sign in")
-        print("Login failed: the browser closed", file=sys.stderr)
+        if not os.environ.get("FAKE_CLAUDE_QUIET"):
+            print("Login failed: the browser closed", file=sys.stderr)
         sys.exit(int(os.environ.get("FAKE_CLAUDE_EXIT", "0")))
         """), encoding="utf-8")
     script.chmod(0o755)
@@ -901,11 +947,15 @@ def test_sign_in_again_names_the_provider_beside_codex():
     assert [c.text for c in row.children] == ["Claude #2 work · due in 2d 0h"]
 
 
-def test_while_one_runs_it_waits_and_nothing_can_be_clicked():
+def test_while_one_runs_it_waits_and_its_row_cancels_it():
     menu = menubar.build_menu(_menu_input(*_ACCOUNTS, login_busy="2"))
     rows = menu.find("Sign in again").children
-    assert "#2 work · waiting for the browser…" in [r.text for r in rows]
-    assert all(r.action is None for r in rows)
+    (waiting,) = [r for r in rows if r.text.startswith("#2 work")]
+    assert waiting.text == "#2 work · waiting for the browser… (click to cancel)"
+    assert waiting.action == Action("cancel-sign-in", "claude", "2")
+    assert waiting.tooltip == "Click to cancel this sign-in; nothing is saved."
+    assert all(r.action is None for r in rows if r is not waiting)
+    assert "cancel-sign-in" in menubar.ACTION_KINDS
     ran = []
     inp = _menu_input(*_ACCOUNTS, login_busy="2")
     assert not menubar.sign_in(inp, Action("sign-in", "claude", "3"), run=lambda n, who: ran.append(n))
@@ -928,8 +978,9 @@ class _FakeRenew:
         self.answer = answer
         self.calls: list = []
 
-    def __call__(self, switcher, number, *, save_lock=None):
+    def __call__(self, switcher, number, *, save_lock=None, on_process=None):
         self.calls.append((switcher, number, save_lock))
+        self.on_process = on_process
         if isinstance(self.answer, BaseException):
             raise self.answer
         return self.answer
@@ -959,21 +1010,26 @@ def test_the_runner_runs_one_sign_in_at_a_time_and_reports_it():
     queued[0]()
     assert renew.calls == [("sw", "3", lock)]  # the save lock, not held around the wait
     assert runner.busy() is None
-    assert notes[0].body.startswith("Renewed the login of #3 night; the next sign-in is due ")
+    assert notes[0].ok and not notes[0].cancelled
+    assert notes[0].text.startswith("Renewed the login of #3 night; the next sign-in is due ")
 
 
-def test_the_runner_reports_a_failure_in_the_command_lines_words():
+def test_the_runner_reports_and_logs_a_failure_in_the_command_lines_words(caplog):
     runner, _, queued, notes = _login_runner(LoginError(
         "The browser signed in as #1 personal, not #3 night (sam@example.org), so\nnothing was saved."))
     runner.run("sw", "3", who="#3 night")
-    queued[0]()
-    assert notes[0].body == (
+    with caplog.at_level("WARNING", logger="ai-quota-swap"):
+        queued[0]()
+    assert notes[0] == menubar_engines.SignInResult(
         "The browser signed in as #1 personal, not #3 night (sam@example.org), so nothing was saved."
     )
+    assert any("the sign-in of #3 failed: The browser signed in as #1 personal" in r.getMessage()
+               for r in caplog.records)
     runner, _, queued, notes = _login_runner(RuntimeError("boom"))
     runner.run("sw", "3", who="#3 night")
     queued[0]()
-    assert notes[0].body == "Could not renew the login of #3 night: RuntimeError: boom"
+    assert notes[0].text == "Could not renew the login of #3 night: RuntimeError: boom"
+    assert not notes[0].ok
     assert runner.busy() is None
 
 
@@ -981,7 +1037,7 @@ def test_the_runner_says_when_a_key_stays_active():
     runner, _, queued, notes = _login_runner(Renewal("1", "#1 personal", None, live=True, key="5"))
     runner.run(_Labels(), "1", who="#1 personal")
     queued[0]()
-    assert notes[0].body == (
+    assert notes[0].text == (
         "Renewed the login of #1 personal. #5 ci is still the active API key; Claude Code "
         "sessions use it, not this login. To use this login: qswap switch 1"
     )
@@ -990,8 +1046,13 @@ def test_the_runner_says_when_a_key_stays_active():
 def test_the_app_wires_sign_in_again():
     source = (Path(menubar.__file__).parent / "menubar_app.py").read_text(encoding="utf-8")
     assert "def _do_sign_in(" in source
+    assert "def _do_cancel_sign_in(" in source
     assert "functools.partial(login.renew_account, interactive=False)" in source
     assert "login_busy=self._login_runner.busy()" in source
+    # A failure is an alert, as other actions' are; quitting stops the sign-in.
+    assert "self._alert(ev.text)" in source
+    quit_body = source[source.index("def _do_quit("):source.index("def _do_restart_engines(")]
+    assert "self._login_runner.cancel()" in quit_body
 
 
 # -- the notices before a deadline ----------------------------------------------------------
@@ -1116,3 +1177,526 @@ def test_a_new_login_the_keychain_will_not_give_up_saves_nothing(fleet, monkeypa
         "The new login could not be read from the Keychain (it is locked or busy), so "
         "nothing was saved. Once it answers, try again: qswap login 2"
     )
+
+
+# -- review fixes: the slot must still be the account ------------------------------------
+
+
+def _swap_in(s, num: int, email: str, uuid: str):
+    """What a swap, a move, or a remove and an add leave: another account in the slot."""
+    data = s._get_sequence_data()
+    data["accounts"][str(num)].update(email=email, uuid=uuid)
+    s._write_json(s.sequence_file, data)
+
+
+def test_a_slot_given_to_another_account_during_the_wait_gets_nothing(fleet):
+    """The sign-in lands on #2's account, but #2 became someone else while
+    the browser was open: the save refuses instead of writing A's login
+    into B's slot."""
+    s = fleet
+    b_creds = _creds("b")
+    fake = FakeClaude("maya@northwind.example.com")
+
+    def runner(profile, email, **kw):
+        run = fake(profile, email, **kw)
+        _swap_in(s, 2, "b@example.org", "uuid-b")
+        s._write_account_credentials("2", "b@example.org", b_creds)
+        return run
+
+    with pytest.raises(LoginError) as e:
+        login.renew(s, _target(s), runner=runner, interactive=False)
+    assert str(e.value) == (
+        "#2 work changed while the browser sign-in ran and is no longer "
+        "maya@northwind.example.com, so nothing was saved."
+    )
+    assert _fp(s.read_account_credentials("2", "b@example.org")) == _fp(b_creds)
+
+
+def test_the_message_names_where_the_account_went(fleet):
+    s = fleet
+
+    def runner(profile, email, **kw):
+        run = FakeClaude("maya@northwind.example.com")(profile, email, **kw)
+        data = s._get_sequence_data()  # a swap of #1 and #2
+        data["accounts"]["1"], data["accounts"]["2"] = data["accounts"]["2"], data["accounts"]["1"]
+        s._write_json(s.sequence_file, data)
+        return run
+
+    with pytest.raises(LoginError) as e:
+        login.renew(s, _target(s), runner=runner, interactive=False)
+    assert str(e.value).endswith(
+        "nothing was saved. That account is now #1 work; renew it with: qswap login 1"
+    )
+
+
+def test_the_check_runs_again_under_the_locks(fleet, monkeypatch):
+    """The slot changes after the first check, while the ownership lookup
+    runs: the check under the locks refuses."""
+    s = fleet
+    real = s._reject_foreign_credential_capture
+
+    def lookup(*a, **k):
+        _swap_in(s, 2, "b@example.org", "uuid-b")
+        return real(*a, **k)
+
+    monkeypatch.setattr(s, "_reject_foreign_credential_capture", lookup)
+    with pytest.raises(LoginError, match="changed while the browser sign-in ran"):
+        login.renew(s, _target(s), runner=FakeClaude("maya@northwind.example.com"), interactive=False)
+    assert _fp(s.read_account_credentials("2", "maya@northwind.example.com")) == _fp(_creds("two-old"))
+    assert s.read_account_credentials("2", "b@example.org") == ""
+
+
+def test_a_target_read_before_an_earlier_wait_is_checked_again(fleet):
+    """A bare `qswap login` reads every target once; by the second one's
+    turn the slot may hold another account."""
+    s = fleet
+    target = _target(s)
+    _swap_in(s, 2, "b@example.org", "uuid-b")
+    fake = FakeClaude("maya@northwind.example.com")
+    with pytest.raises(LoginError) as e:
+        login.renew(s, target, runner=fake, interactive=False)
+    assert str(e.value).startswith("#2 work (maya@northwind.example.com) changed before its sign-in")
+    assert fake.calls == []
+
+
+def test_a_recreated_account_is_refused(fleet):
+    """Same email and organization, another account id: the account was
+    deleted and made again, and the record's uuid would call the renewed
+    login foreign."""
+    s = fleet
+    with pytest.raises(LoginError) as e:
+        login.renew(s, _target(s), runner=FakeClaude("maya@northwind.example.com", uuid="uuid-new"),
+                    interactive=False)
+    assert str(e.value) == (
+        "The browser signed in as maya@northwind.example.com, but as another account than the "
+        "one saved as #2 work (its account id differs), so nothing was saved. If that account "
+        "was deleted and made again, log in to it in Claude Code (/login), then run: qswap add --slot 2"
+    )
+    _unchanged(s)
+
+
+def test_emails_compare_without_case(fleet):
+    s = fleet
+    fake = FakeClaude("Maya@Northwind.Example.com")
+    login.renew(s, _target(s), runner=fake, interactive=False)
+    assert _fp(s.read_account_credentials("2", "maya@northwind.example.com")) == _fp(fake.creds)
+
+
+def test_equal_organizations_are_a_match(temp_home, platform):
+    s = ClaudeAccountSwitcher()
+    s._setup_directories()
+    s._init_sequence_file()
+    _seed(s, 3, "maya@northwind.example.com", _creds("three"), org="org-northwind", alias="team")
+    fake = FakeClaude("maya@northwind.example.com", org="org-northwind", uuid="uuid-3",
+                      org_name="Northwind")
+    renewal = login.renew(s, _target(s, "3"), runner=fake, interactive=False)
+    assert renewal.number == "3"
+    assert _fp(s.read_account_credentials("3", "maya@northwind.example.com")) == _fp(fake.creds)
+
+
+def test_the_ownership_lookup_refusing_saves_nothing(fleet, monkeypatch):
+    s = fleet
+    seen = []
+
+    def profile(token):
+        seen.append(token)
+        return {"uuid": "uuid-x", "email": "x@example.org", "organizationUuid": ""}
+
+    monkeypatch.setattr(oauth, "fetch_oauth_profile", profile)
+    with pytest.raises(LoginError) as e:
+        login.renew(s, _target(s), runner=FakeClaude("maya@northwind.example.com"), interactive=False)
+    assert str(e.value) == (
+        "Anthropic says the new login belongs to another account than #2 work "
+        "(maya@northwind.example.com), so nothing was saved. Sign out of claude.ai in the browser, "
+        "or switch it to maya@northwind.example.com, and run it again: qswap login 2"
+    )
+    assert seen  # it asked
+    _unchanged(s)
+
+
+def test_the_ownership_lookup_uses_the_saved_account_id(fleet, monkeypatch):
+    s = fleet
+    asked = []
+    real = s._reject_foreign_credential_capture
+
+    def guard(creds, email, org, uuid, **kw):
+        asked.append(uuid)
+        return real(creds, email, org, uuid, **kw)
+
+    monkeypatch.setattr(s, "_reject_foreign_credential_capture", guard)
+    login.renew(s, _target(s), runner=FakeClaude("maya@northwind.example.com"), interactive=False)
+    assert asked == ["uuid-2"]
+
+
+# -- review fixes: the live login ---------------------------------------------------------
+
+
+def test_an_unreadable_live_login_refuses_before_writing(fleet, monkeypatch):
+    """A Keychain read that failed (or is inside its cooldown) answers ""
+    with keychain_unavailable: never taken for "no login live"."""
+    from ai_quota_swap.credentials import ActiveCredentials
+    from ai_quota_swap.exceptions import CredentialReadError
+
+    s = fleet
+    for answer in (ActiveCredentials("", True, True), ActiveCredentials(_creds("one"), False, True),
+                   ActiveCredentials(None, False, False)):
+        monkeypatch.setattr(s, "_read_active_credentials", lambda a=answer: a)
+        with pytest.raises(CredentialReadError) as e:
+            login.renew(s, _target(s, "1"), runner=FakeClaude("maya@example.com", uuid="uuid-1"),
+                        interactive=False)
+        assert str(e.value) == (
+            "The live login of #1 personal could not be read (the Keychain is locked or busy), "
+            "so nothing was saved. Once it answers, try again: qswap login 1"
+        )
+        assert _fp(s.read_account_credentials("1", "maya@example.com")) == _fp(_creds("one"))
+        assert _fp(s._read_credentials()) == _fp(_creds("one"))
+
+
+@pytest.mark.parametrize("live, code, why", [
+    ("", "empty", "Claude Code's login store holds no login"),
+    (json.dumps({"mcpOAuth": {"linear": {"accessToken": "m"}}}), "no-login",
+     "Claude Code's login store holds only MCP server sign-ins"),
+], ids=["empty", "mcp-only"])
+def test_the_active_accounts_own_live_login_left_as_it_was_is_said(fleet, monkeypatch, capsys, live, code, why):
+    s = fleet
+    s._write_credentials(live)
+    fake = FakeClaude("maya@example.com", uuid="uuid-1")
+    renewal = login.renew(s, _target(s, "1"), runner=fake, interactive=False)
+    assert (renewal.live, renewal.live_left) == (False, code)
+    assert login.live_left_note(renewal) == (
+        f"#1 personal is the active account, but its live login was left as it was ({why}); "
+        "to install the renewed one: qswap switch 1 --force"
+    )
+    # The advice holds: --force puts the renewed login in.
+    s.switch_to("1", force=True)
+    capsys.readouterr()
+    assert _fp(s._read_credentials()) == _fp(fake.creds)
+
+
+def test_an_unattributed_live_login_is_kept_before_it_is_replaced(fleet):
+    """A live credential of another lineage that the profile lookup cannot
+    place: a switch keeps those bytes, and so does a renewal."""
+    s = fleet
+    stray = _creds("stray")
+    s._write_credentials(stray)
+    fake = FakeClaude("maya@example.com", uuid="uuid-1")
+    assert login.renew(s, _target(s, "1"), runner=fake, interactive=False).live is True
+    entries = s.list_unclaimed_credentials()
+    assert [e.get("reason") for e in entries.values()] == ["replaced-by-renewal"]
+    assert [e.get("fingerprint") for e in entries.values()] == [_fp(stray)]
+
+
+def test_a_saved_copy_that_cannot_be_written_after_the_live_one(fleet, monkeypatch):
+    from ai_quota_swap.exceptions import CredentialWriteError
+
+    s = fleet
+    real = s._write_account_credentials
+
+    def broken(num, email, creds, **kw):
+        if num == "1" and "new" in creds:
+            raise OSError("disk full")
+        return real(num, email, creds, **kw)
+
+    monkeypatch.setattr(s, "_write_account_credentials", broken)
+    fake = FakeClaude("maya@example.com", uuid="uuid-1")
+    with pytest.raises(CredentialWriteError) as e:
+        login.renew(s, _target(s, "1"), runner=fake, interactive=False)
+    assert str(e.value) == (
+        "The live login of #1 personal was renewed, but its saved copy could not be written "
+        "(disk full). Save it with: qswap add"
+    )
+    assert _fp(s._read_credentials()) == _fp(fake.creds)
+
+
+def test_a_corrected_active_account_is_recorded(fleet, monkeypatch):
+    s = fleet
+    data = s._get_sequence_data()
+    data["activeAccountNumber"] = 2
+    s._write_json(s.sequence_file, data)
+    recorded = []
+    monkeypatch.setattr(s, "_record_activation", lambda num, email, org, **k: recorded.append(num))
+    login.renew(s, _target(s, "1"), runner=FakeClaude("maya@example.com", uuid="uuid-1"), interactive=False)
+    assert s._get_sequence_data()["activeAccountNumber"] == 1
+    assert recorded == ["1"]
+
+
+# -- review fixes: the save --------------------------------------------------------------
+
+
+def test_the_save_lock_is_held_around_the_save_alone(fleet, monkeypatch):
+    import threading
+
+    s = fleet
+    lock = threading.Lock()
+    during: dict = {}
+    fake = FakeClaude("maya@northwind.example.com")
+
+    def runner(profile, email, **kw):
+        during["wait"] = lock.locked()
+        return fake(profile, email, **kw)
+
+    real = s.save_renewed_login
+
+    def save(*a, **k):
+        during["save"] = lock.locked()
+        return real(*a, **k)
+
+    monkeypatch.setattr(s, "save_renewed_login", save)
+    login.renew(s, _target(s), runner=runner, interactive=False, save_lock=lock)
+    assert during == {"wait": False, "save": True}
+    assert not lock.locked()
+
+
+@pytest.fixture
+def quick_locks(monkeypatch):
+    """qswap's account lock waits 0.2 s instead of 10, and a busy save is
+    tried again every 0.05 s."""
+    from ai_quota_swap import switcher as switcher_mod
+
+    monkeypatch.setattr(switcher_mod, "FileLock", lambda path, timeout=0.2: FileLock(path, timeout=0.2))
+    monkeypatch.setattr(login, "_SAVE_RETRY_PAUSE_S", 0.05)
+
+
+def test_a_busy_lock_is_waited_out(fleet, quick_locks):
+    import threading
+
+    s = fleet
+    holder = FileLock(s.lock_file)
+    fake = FakeClaude("maya@northwind.example.com")
+
+    def runner(profile, email, **kw):
+        assert holder.acquire(timeout=1)
+        threading.Timer(0.8, holder.release).start()
+        return fake(profile, email, **kw)
+
+    login.renew(s, _target(s), runner=runner, interactive=False)
+    assert _fp(s.read_account_credentials("2", "maya@northwind.example.com")) == _fp(fake.creds)
+
+
+def test_a_lock_that_stays_busy_gives_up_with_nothing_saved(fleet, quick_locks, monkeypatch):
+    s = fleet
+    monkeypatch.setattr(login, "_SAVE_RETRY_S", 0.3)
+    holder = FileLock(s.lock_file)
+    assert holder.acquire(timeout=1)
+    try:
+        with pytest.raises(LoginError) as e:
+            login.renew(s, _target(s), runner=FakeClaude("maya@northwind.example.com"), interactive=False)
+    finally:
+        holder.release()
+    assert str(e.value).startswith(
+        "The account files stayed busy for 0m (another qswap or Claude Code was writing them), "
+        "so the new login of #2 work was not saved.")
+    _unchanged(s)
+    assert _profiles_left(s) == [".lock"]
+
+
+# -- review fixes: cancels ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("code", [130, -2])
+def test_claude_ended_by_ctrl_c_on_a_terminal_is_a_cancel(fleet, code):
+    s = fleet
+    fake = FakeClaude("maya@northwind.example.com", returncode=code)
+    with pytest.raises(login.SignInInterrupted) as e:
+        login.renew(s, _target(s), runner=fake, interactive=True)
+    assert (e.value.live, e.value.saved) == (False, False)
+    _unchanged(s)
+    # Off a terminal it is an ordinary failure.
+    with pytest.raises(LoginError, match=f"exit code {code}"):
+        login.renew(s, _target(s), runner=FakeClaude("maya@northwind.example.com", returncode=code),
+                    interactive=False)
+
+
+def test_a_cancel_stops_a_bare_qswap_login(cli_fleet, capsys, monkeypatch):
+    s, _ = cli_fleet
+    calls = []
+
+    def runner(profile, email, **kw):
+        calls.append(email)
+        return FakeClaude(email, returncode=130)(profile, email, **kw)
+
+    monkeypatch.setattr(login, "run_claude_login", runner)
+    monkeypatch.setattr("ai_quota_swap.prompts.interactive", lambda: True)
+    code, out, _ = _main(["login", "--all"], capsys)
+    assert code == 130
+    assert calls == ["maya@northwind.example.com"]  # the next browser never opened
+    assert out.rstrip().endswith("Cancelled; nothing was saved for #2 work.")
+
+
+def test_ctrl_c_after_the_live_write_says_what_is_true(cli_fleet, capsys, monkeypatch):
+    s, _ = cli_fleet
+    real = s._write_account_credentials
+
+    def interrupted(num, email, creds, **kw):
+        if num == "1" and "new" in creds:
+            raise KeyboardInterrupt
+        return real(num, email, creds, **kw)
+
+    monkeypatch.setattr(ClaudeAccountSwitcher, "_write_account_credentials",
+                        lambda self, *a, **k: interrupted(*a, **k))
+    code, out, _ = _main(["login", "1"], capsys)
+    assert code == 130
+    assert " ".join(out.split()).endswith(
+        "Cancelled: the live login of #1 personal is the new one, but its saved copy was not "
+        "written. Save it with: qswap add")
+
+
+def test_the_terminal_is_put_back_after_a_timeout(stand_in, tmp_path, monkeypatch):
+    import termios
+
+    profile = tmp_path / "profile-x"
+    profile.mkdir()
+    restored = []
+    monkeypatch.setattr(login, "_save_terminal", lambda: (0, ["saved"]))
+    monkeypatch.setattr(termios, "tcsetattr", lambda fd, when, attrs: restored.append(attrs))
+    monkeypatch.setenv("FAKE_CLAUDE_SLEEP", "5")
+    run = REAL_RUN(profile, "maya@example.com", interactive=True, timeout=0.5)
+    assert run.timed_out and restored == [["saved"]]
+
+
+def test_the_failure_detail_is_stderr_alone(stand_in, tmp_path, monkeypatch):
+    profile = tmp_path / "profile-x"
+    profile.mkdir()
+    monkeypatch.setenv("FAKE_CLAUDE_EXIT", "1")
+    monkeypatch.setenv("FAKE_CLAUDE_QUIET", "1")
+    run = REAL_RUN(profile, "maya@example.com", interactive=False, timeout=30)
+    assert run == LoginRun(1, "")
+
+
+def test_the_real_runner_hands_over_the_process(stand_in, tmp_path):
+    profile = tmp_path / "profile-x"
+    profile.mkdir()
+    seen = []
+    REAL_RUN(profile, "maya@example.com", interactive=False, timeout=30, on_process=seen.append)
+    assert len(seen) == 1 and seen[0].returncode == 0
+
+
+def test_the_menu_cancel_kills_the_sign_in():
+    class Proc:
+        killed = 0
+
+        def kill(self):
+            Proc.killed += 1
+
+    renewal_error = LoginError("claude auth login failed (exit code -9).")
+    runner, renew, queued, notes = _login_runner(renewal_error)
+    assert not runner.cancel()  # nothing runs
+    runner.run("sw", "3", who="#3 night")
+    assert runner.cancel()  # before claude started: killed as it starts
+    proc = Proc()
+    renew.on_process = None
+    queued[0]()  # the worker
+    runner._on_process(proc)
+    assert Proc.killed == 1
+    assert notes[0] == menubar_engines.SignInResult(
+        "Cancelled the sign-in of #3 night; nothing was saved.", cancelled=True)
+
+
+def test_the_menu_cancel_of_a_running_claude():
+    import threading
+
+    started = threading.Event()
+    released = threading.Event()
+
+    class Proc:
+        def kill(self):
+            released.set()
+
+    def renew(switcher, number, *, save_lock=None, on_process=None):
+        on_process(Proc())
+        started.set()
+        released.wait(5)
+        raise LoginError("claude auth login failed (exit code -9).")
+
+    notes = []
+    runner = menubar_engines.LoginRunner(renew, notes.append)
+    runner.run("sw", "3", who="#3 night")
+    assert started.wait(5)
+    assert runner.cancel()
+    for _ in range(100):
+        if notes:
+            break
+        time.sleep(0.05)
+    assert notes and notes[0].cancelled and runner.busy() is None
+
+
+def test_the_runner_says_when_the_live_login_was_left():
+    renewal = Renewal("1", "#1 personal", None, live=False, live_left="no-login",
+                      notes=("qswap could not check with Anthropic that the new login belongs to #1 personal "
+                             "(the identity lookup did not resolve); it was saved, since the sign-in named "
+                             "that account.",))
+    runner, _, queued, notes = _login_runner(renewal)
+    runner.run(_Labels(), "1", who="#1 personal")
+    queued[0]()
+    assert notes[0].text == (
+        "Renewed the login of #1 personal. qswap could not check with Anthropic that the new login "
+        "belongs to #1 personal (the identity lookup did not resolve); it was saved, since the sign-in "
+        "named that account. #1 personal is the active account, but its live login was left as it was "
+        "(Claude Code's login store holds only MCP server sign-ins); to install the renewed one: "
+        "qswap switch 1 --force"
+    )
+
+
+# -- review fixes: the rest ---------------------------------------------------------------
+
+
+def test_the_child_environment_drops_what_would_sign_in_without_the_browser(tmp_path, monkeypatch):
+    for name in login.SIGN_IN_DROPPED_ENV_VARS:
+        monkeypatch.setenv(name, "x")
+    env = login.login_env(tmp_path / "profile-x")
+    assert {"CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "CLAUDE_CODE_OAUTH_SCOPES", "CLAUDE_CODE_OAUTH_CLIENT_ID",
+            "ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID"} <= set(login.SIGN_IN_DROPPED_ENV_VARS)
+    assert not set(login.SIGN_IN_DROPPED_ENV_VARS) & set(env)
+    from ai_quota_swap.session import AUTH_OVERRIDE_ENV_VARS
+
+    assert "CLAUDE_CODE_OAUTH_REFRESH_TOKEN" not in AUTH_OVERRIDE_ENV_VARS  # other features unchanged
+
+
+def test_the_browser_note_for_the_active_account():
+    assert login.browser_note("#1 personal", "maya@example.com", active=True) == (
+        "The browser opens to sign in #1 personal (maya@example.com). It must be signed in to "
+        "claude.ai as maya@example.com, or signed out. It is the active account, so the new login "
+        "becomes the live one too."
+    )
+    assert login.browser_note("#2 work", "w@example.com").endswith("The active login is not touched.")
+
+
+def test_the_cli_says_the_active_account_becomes_live(cli_fleet, capsys):
+    code, out, err = _main(["login", "1"], capsys)
+    assert code == 0, err
+    assert "It is the active account, so the new login becomes the live one too." in " ".join(out.split())
+
+
+def test_a_windows_cmd_shim_cannot_take_some_emails():
+    assert login.cmd_shim_refusal("a&b@example.com", r"C:\\npm\\claude.cmd", platform="win32") == (
+        "a&b@example.com has a character that Windows reads differently in claude.cmd "
+        "(& | < > ^ % ! \" ( )), so qswap login cannot pass it on; log in to it in Claude Code "
+        "(/login), then run: qswap add"
+    )
+    assert login.cmd_shim_refusal("plain@example.com", r"C:\\npm\\claude.cmd", platform="win32") is None
+    assert login.cmd_shim_refusal("a&b@example.com", r"C:\\bin\\claude.exe", platform="win32") is None
+    assert login.cmd_shim_refusal("a&b@example.com", "/usr/local/bin/claude", platform="darwin") is None
+
+
+def test_purge_clears_a_left_over_sign_in_profile(fleet, block_real_keychain):
+    s = fleet
+    left = login.sign_in_root(s) / "profile-crashed"
+    left.mkdir(parents=True)
+    (left / ".credentials.json").write_text(_creds("left"), encoding="utf-8")
+    if Platform.detect() == Platform.MACOS:
+        block_real_keychain.set_password(keychain_service_name(str(left)),
+                                         macos_keychain.keychain_account_name(), _creds("left"))
+    s.purge(assume_yes=True)
+    assert not left.exists()
+    assert _keychain_items_for(block_real_keychain, left) == []
+
+
+def test_the_cli_says_when_the_live_login_was_left(cli_fleet, capsys):
+    s, _ = cli_fleet
+    s._write_credentials("")
+    code, out, err = _main(["login", "1"], capsys)
+    assert code == 0, err
+    assert (
+        "#1 personal is the active account, but its live login was left as it was (Claude "
+        "Code's login store holds no login); to install the renewed one: qswap switch 1 --force"
+    ) in " ".join(out.split())

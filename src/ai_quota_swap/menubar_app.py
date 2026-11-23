@@ -353,7 +353,13 @@ def run_app(switcher, rumps, AppKit) -> int:
                     self.rebuild_menu()  # the account's rows are usable again
                     continue
                 if provider is _LOGIN_DONE:
-                    self._notify(ev)
+                    # A renewal or a cancel is a notification; a failure is
+                    # an alert, as every other menu action's (it is logged
+                    # by the runner too).
+                    if ev.ok or ev.cancelled:
+                        self._notify(Notification(ev.text))
+                    else:
+                        self._alert(ev.text)
                     self.refresh_async()  # show the new deadline
                     self.rebuild_menu()  # Sign in again's rows are usable again
                     continue
@@ -743,11 +749,18 @@ def run_app(switcher, rumps, AppKit) -> int:
                     return False
                 acc = next((x for x in self._data.claude.accounts if x.number == number), None)
                 if acc is not None:
-                    self._notify(Notification(login.browser_note(who, acc.email)))
+                    self._notify(Notification(login.browser_note(
+                        who, acc.email, active=acc.active or acc.underneath,
+                    )))
                 return True
 
             if sign_in(self._menu_input(), a, run=run):
                 self.rebuild_menu()  # the row reads "waiting for the browser…"
+
+        def _do_cancel_sign_in(self, _a: Action):
+            # The waiting row: kill the sign-in's claude; the worker reports
+            # "Cancelled …" and the rows come back.
+            self._login_runner.cancel()
 
         def _do_open_log(self, _a: Action):
             import subprocess
@@ -760,6 +773,7 @@ def run_app(switcher, rumps, AppKit) -> int:
             self.refresh_async(full=True)  # explicit refresh: a store-governed pass
 
         def _do_quit(self, _a: Action):
+            self._login_runner.cancel()  # its claude dies with the app
             # Said now: the event queue is not read again after quitting.
             for text in self._supervisor.stop_all():
                 self._notify(Notification(text))

@@ -195,9 +195,9 @@ Each Claude subscription login runs out about a month after it was signed in. *S
       #2 work
 ```
 
-A row without a date is a login that does not record one (saved by an older Claude Code). Clicking a row runs what `qswap login N` runs, in the background: Claude Code's own sign-in (`claude auth login`) in a private profile under the data directory, so the active login and running sessions are not disturbed. The browser opens on claude.ai and must be signed in there as that account, or signed out; a notification says so as it opens. While it waits, the row reads `#3 night-shift · waiting for the browser…` and no row can be clicked: one sign-in runs at a time. It gives up after 5 minutes.
+A row without a date is a login that does not record one (saved by an older Claude Code). Clicking a row runs what `qswap login N` runs, in the background: Claude Code's own sign-in (`claude auth login`) in a private profile under the data directory, so the active login and running sessions are not disturbed. The browser opens on claude.ai and must be signed in there as that account, or signed out; a notification says so as it opens. While it waits, the row reads `#3 night-shift · waiting for the browser… (click to cancel)`, and clicking it stops the sign-in; the other rows cannot be clicked, since one sign-in runs at a time. It gives up after 5 minutes, and *Quit* stops it too. Nothing is saved then.
 
-A notification then gives the result: `Renewed the login of #3 night-shift; the next sign-in is due Dec 23 14:02 · in 30d`, or why nothing was saved, as `qswap login` says it (`The browser signed in as #1 personal, not #3 night-shift (ops@example.net), so nothing was saved. Sign out of claude.ai in the browser, or switch it to ops@example.net, and run it again: qswap login 3. ...`). When the account is the active one, its new login becomes the live login too, as a switch writes one ([troubleshooting.md](troubleshooting.md#an-account-needs-re-login)).
+A notification gives the result: `Renewed the login of #3 night-shift; the next sign-in is due Dec 23 14:02 · in 30d`. When the account is the active one, its new login becomes the live login too, as a switch writes one; when its live login has to be left as it was, the notification says why and gives `qswap switch N --force` ([troubleshooting.md](troubleshooting.md#an-account-needs-re-login)). A failure is an alert, with the reason `qswap login` gives (`The browser signed in as #1 personal, not #3 night-shift (ops@example.net), so nothing was saved. Sign out of claude.ai in the browser, or switch it to ops@example.net, and run it again: qswap login 3. ...`), and goes into the log.
 
 Before a login runs out, the menu bar posts a notification 3 days ahead and one more in its last day, each naming both ways to renew it ([Notifications](#notifications)). `qswap config set login.notifyDays 5` warns 5 days ahead instead, and `0` turns both off. Each is posted once per login: a restart does not repeat it, and a renewed login starts over.
 
@@ -270,7 +270,7 @@ Every notification is titled `ai-quota-swap`. With both providers managed, the a
 | You used a reset from the menu | `Used a Fable reset on #1 personal · Fable refilled · 2 left on this grant`; `A Fable reset on #1 personal was already used: an earlier attempt went through. Run qswap reset to see where things stand.` (a retry the server had already counted); `A Fable reset on #1 personal may have been used: why. Run qswap reset to see where things stand.`; `Usage on #1 personal changed while this was open; nothing was used. Open the menu again.`; or `Did not use …: why` | every use |
 | An account needs re-login | `#4 side needs re-login: its saved login was refused. Sign in to it again: qswap login 4` | once per account and reason |
 | A login runs out soon | `The login of #3 night-shift runs out in 2d 23h (Nov 26 14:00). Renew it with Sign in again in the menu, or run: qswap login 3` | once `login.notifyDays` (3) days before, and once more in the last day |
-| You signed in again from the menu | `The browser opens to sign in #3 night-shift (ops@example.net). It must be signed in to claude.ai as ops@example.net, or signed out. The active login is not touched.`, then `Renewed the login of #3 night-shift; the next sign-in is due Dec 23 14:02 · in 30d` or why nothing was saved | every sign-in |
+| You signed in again from the menu | `The browser opens to sign in #3 night-shift (ops@example.net). It must be signed in to claude.ai as ops@example.net, or signed out. The active login is not touched.`, then `Renewed the login of #3 night-shift; the next sign-in is due Dec 23 14:02 · in 30d`, or `Cancelled the sign-in of #3 night-shift; nothing was saved.` (a failure is an alert) | every sign-in |
 | Every account is at its limit | `All accounts are at their limit; the first resets 15:32 · in 1h 12m` | once per provider until the next switch or reset time |
 | An API-key budget nears | `#5 ci has spent $410.00 of its $500.00 monthly budget (82%)` | once per account and month |
 | A setting matches nothing | `Warning: autoswitch.model 'Fabel' matches no limit any account reports` | once, whichever engine noticed |
@@ -278,7 +278,7 @@ Every notification is titled `ai-quota-swap`. With both providers managed, the a
 | An engine stopped | `Auto-switch stopped: the engine loop ended on its own. Open the menu to restart it.` | every time |
 | An engine did not start | `Codex auto-switch did not start: No Codex accounts are managed yet.` | every attempt |
 
-A failed action (a switch, an add, a remove) shows the command line's error in an alert.
+A failed action (a switch, an add, a remove, a sign-in) shows the command line's error in an alert.
 
 ## Files
 

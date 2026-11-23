@@ -46,6 +46,7 @@ from ai_quota_swap import clis, display, macos_keychain, oauth, prompts, spawn
 from ai_quota_swap.exceptions import (
     AccountNotFoundError,
     CredentialReadError,
+    LockError,
     LoginError,
     ValidationError,
 )
@@ -90,6 +91,8 @@ class Target:
     expires_at: float | None = None
     needs_relogin: bool = False
     why: str = ""
+    #: The live login is this account's, so a renewal replaces it too.
+    active: bool = False
 
     def due(self, now: float) -> bool:
         return is_due(self.expires_at, self.needs_relogin, now)
@@ -127,6 +130,22 @@ class Renewal:
     expires_at: float | None
     live: bool = False
     key: str | None = None
+    #: The account is the live login's, and that was left as it was: why
+    #: (``empty``, ``no-login``, ``api-key``, ``foreign``).
+    live_left: str | None = None
+    #: Sentences for the caller to show (an ownership check that could not run).
+    notes: tuple[str, ...] = ()
+
+
+class SignInInterrupted(KeyboardInterrupt):
+    """Ctrl-C during a sign-in, with what had been written by then: the
+    live login (``live``) and the saved one (``saved``). Before the save
+    both are False and nothing was written."""
+
+    def __init__(self, *, live: bool = False, saved: bool = False):
+        super().__init__()
+        self.live = live
+        self.saved = saved
 
 
 # -- which logins -----------------------------------------------------------------
@@ -242,7 +261,7 @@ class _Facts:
         return Target(
             num, email, record.get("organizationUuid", "") or "",
             self.switcher.label(num, long=False), expires_at=expires,
-            needs_relogin=bool(why), why=why,
+            needs_relogin=bool(why), why=why, active=num == self.live_num,
         )
 
 
@@ -307,11 +326,47 @@ def key_note(switcher, renewal: Renewal) -> str | None:
     return " ".join(display.key_still_active(switcher.label(renewal.key, long=False), renewal.number))
 
 
-def browser_note(label: str, email: str) -> str:
-    """What to know before the browser opens."""
-    return (
+def browser_note(label: str, email: str, *, active: bool = False) -> str:
+    """What to know before the browser opens. ``active``: the account is the
+    live login's, which the new login replaces too."""
+    head = (
         f"The browser opens to sign in {label} ({email}). It must be signed in to "
-        f"claude.ai as {email}, or signed out. The active login is not touched."
+        f"claude.ai as {email}, or signed out."
+    )
+    if active:
+        return f"{head} It is the active account, so the new login becomes the live one too."
+    return f"{head} The active login is not touched."
+
+
+_LIVE_LEFT_WHY = {
+    "empty": "Claude Code's login store holds no login",
+    "no-login": "Claude Code's login store holds only MCP server sign-ins",
+    "api-key": "Claude Code's login store holds an API key",
+    "foreign": "the live login belongs to another account",
+}
+
+
+def live_left_note(renewal: Renewal) -> str | None:
+    """When the account is the active one but its live login was left as it
+    was: that, why, and the switch that installs the renewed login. A plain
+    ``qswap switch N`` to the active account changes nothing, so ``--force``."""
+    if not renewal.live_left:
+        return None
+    why = _LIVE_LEFT_WHY.get(renewal.live_left, renewal.live_left)
+    return (
+        f"{renewal.label} is the active account, but its live login was left as it "
+        f"was ({why}); to install the renewed one: qswap switch {renewal.number} --force"
+    )
+
+
+def uuid_mismatch_text(label: str, number: str, email: str) -> str:
+    """The same email and organization as the account saved in the slot, but
+    another account id: that account was deleted and made again."""
+    return (
+        f"The browser signed in as {email}, but as another account than the one "
+        f"saved as {label} (its account id differs), so nothing was saved. If that "
+        f"account was deleted and made again, log in to it in Claude Code (/login), "
+        f"then run: qswap add --slot {number}"
     )
 
 
@@ -322,17 +377,77 @@ def sign_in_root(switcher) -> Path:
     return Path(switcher.backup_dir) / SIGN_IN_DIRNAME
 
 
+#: Dropped from the sign-in's environment alone, on top of
+#: ``session.AUTH_OVERRIDE_ENV_VARS``: with ``CLAUDE_CODE_OAUTH_REFRESH_TOKEN``
+#: set, ``claude auth login`` (2.1.330) skips the browser and exchanges that
+#: token, spending it; the others steer which login it makes.
+#: ``CLAUDE_SECURESTORAGE_CONFIG_DIR`` would put the login in another
+#: profile's store (with it empty, the default one: the live login).
+SIGN_IN_DROPPED_ENV_VARS = (
+    "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+    "CLAUDE_CODE_OAUTH_SCOPES",
+    "CLAUDE_CODE_OAUTH_CLIENT_ID",
+    "ANTHROPIC_PROFILE",
+    "ANTHROPIC_FEDERATION_RULE_ID",
+)
+
+
 def login_env(profile: Path) -> dict[str, str]:
     """The child's environment: ``CLAUDE_CONFIG_DIR`` is the private profile,
-    and nothing sends it elsewhere. The variables that make Claude Code skip
-    the account login are dropped (``session.AUTH_OVERRIDE_ENV_VARS``), and
-    so is ``CLAUDE_SECURESTORAGE_CONFIG_DIR``, which would put the login in
-    another profile's store (with it empty, the default one: the live login)."""
+    and nothing sends the sign-in elsewhere or makes it without the browser:
+    ``session.AUTH_OVERRIDE_ENV_VARS`` and :data:`SIGN_IN_DROPPED_ENV_VARS`
+    are dropped."""
     from ai_quota_swap.session import _probe_env
 
     env = _probe_env(profile)
-    env.pop("CLAUDE_SECURESTORAGE_CONFIG_DIR", None)
+    for name in SIGN_IN_DROPPED_ENV_VARS:
+        env.pop(name, None)
     return env
+
+
+#: Characters ``cmd.exe`` reads in a ``claude.cmd`` shim's arguments.
+_CMD_SPECIALS = '&|<>^%!"()'
+
+
+def cmd_shim_refusal(email: str, exe: str | None, platform: str = sys.platform) -> str | None:
+    """Why ``email`` cannot be passed to ``claude`` here, or None. On Windows
+    a ``claude.cmd`` (or ``.bat``) shim hands its arguments to ``cmd.exe``,
+    which re-reads characters such as ``&`` and ``%`` in them."""
+    if platform != "win32" or not exe or not exe.lower().endswith((".cmd", ".bat")):
+        return None
+    if not any(c in email for c in _CMD_SPECIALS):
+        return None
+    return (
+        f"{email} has a character that Windows reads differently in claude.cmd "
+        f"({' '.join(_CMD_SPECIALS)}), so qswap login cannot pass it on; log in to it "
+        "in Claude Code (/login), then run: qswap add"
+    )
+
+
+def _save_terminal():
+    """The terminal's settings, to put back after the child: a child killed
+    at the timeout cannot restore the raw mode it set."""
+    try:
+        import termios
+
+        fd = sys.stdin.fileno()
+        if not os.isatty(fd):
+            return None
+        return fd, termios.tcgetattr(fd)
+    except Exception:
+        return None
+
+
+def _restore_terminal(saved) -> None:
+    if saved is None:
+        return
+    try:
+        import termios
+
+        termios.tcsetattr(saved[0], termios.TCSADRAIN, saved[1])
+    except Exception:
+        pass
 
 
 def _last_line(*texts: str | None) -> str:
@@ -346,13 +461,19 @@ def _last_line(*texts: str | None) -> str:
 def run_claude_login(
     profile: Path, email: str, *, sso: bool = False, interactive: bool = True,
     timeout: float | None = DEFAULT_TIMEOUT_S,
+    on_process: Callable[[subprocess.Popen], None] | None = None,
 ) -> LoginRun:
     """``claude auth login --claudeai --email EMAIL [--sso]`` into ``profile``.
 
     On a terminal the child shares it: Claude Code's prompts show and Ctrl-C
-    reaches it (same process group), coming back here as
-    ``KeyboardInterrupt`` once the child is gone. Off one, stdin is empty and
-    the output is captured. Either way the child is killed at ``timeout``.
+    reaches it (same process group). Claude Code handles SIGINT itself and
+    exits 130, so the parent may see no ``KeyboardInterrupt``; :func:`renew`
+    reads that exit as a cancel. The terminal's settings are saved and put
+    back around the child. Off a terminal, stdin is empty and the output is
+    captured; the failure detail is the last line of stderr alone (stdout
+    carries the prompt and the authorize URL). Either way the child is
+    killed at ``timeout``. ``on_process`` receives the running process, for
+    a caller that cancels it (the menu bar).
     """
     exe = clis.find_cli("claude")
     if exe is None:
@@ -360,22 +481,35 @@ def run_claude_login(
     argv = [exe, "auth", "login", "--claudeai", "--email", email]
     if sso:
         argv.append("--sso")
-    kwargs: dict = {"env": login_env(profile), "check": False, "timeout": timeout}
+    kwargs: dict = {"env": login_env(profile)}
     if not interactive:
         kwargs.update(
-            stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
         )
+    terminal = _save_terminal() if interactive else None
     try:
-        proc = spawn.run(argv, **kwargs)
-    except subprocess.TimeoutExpired:
-        return LoginRun(None, "timed out", timed_out=True)
-    except OSError as e:
-        return LoginRun(None, str(e))
-    detail = "" if interactive else _last_line(proc.stderr, proc.stdout)
-    if not interactive and (proc.stdout or proc.stderr):
-        _logger.debug("claude auth login said: %s", _last_line(proc.stdout, proc.stderr))
-    return LoginRun(proc.returncode, detail)
+        try:
+            proc = spawn.popen(argv, **kwargs)
+        except OSError as e:
+            return LoginRun(None, str(e))
+        if on_process is not None:
+            on_process(proc)
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return LoginRun(None, "timed out", timed_out=True)
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+    finally:
+        _restore_terminal(terminal)
+    if out or err:
+        _logger.debug("claude auth login said: %s", _last_line(err, out))
+    return LoginRun(proc.returncode, "" if interactive else _last_line(err))
 
 
 def _delete_keychain_item(profile: Path) -> bool:
@@ -479,19 +613,30 @@ def _failure(run: LoginRun, target: Target, timeout: float | None) -> LoginError
     )
 
 
+def _same_account(email: str, org_uuid: str, target: Target) -> bool:
+    """The codebase's account identity: email (case aside) and organization."""
+    return email.lower() == target.email.lower() and org_uuid == target.org_uuid
+
+
 def _mismatch(switcher, target: Target, email: str, org_uuid: str, oauth_account: dict) -> LoginError:
     data = switcher._get_sequence_data() or {}
-    other = switcher._find_account_slot(data, email, org_uuid)
+    other = next((
+        num for num, record in (data.get("accounts") or {}).items()
+        if isinstance(record, dict)
+        and (record.get("email") or "").lower() == email.lower()
+        and (record.get("organizationUuid") or "") == org_uuid
+    ), None)
+    same_email = email.lower() == target.email.lower()
     if other is not None:
         who = switcher.label(other, long=False)
-    elif email == target.email:
+    elif same_email:
         org = oauth_account.get("organizationName") or ("another organization" if org_uuid else "personal")
         who = f"{email} ({org})"
     else:
         who = email
     record = (data.get("accounts") or {}).get(target.number) or {}
     expected = target.email
-    if email == target.email:
+    if same_email:
         org = record.get("organizationName") or ("its organization" if target.org_uuid else "the personal account")
         expected = f"{target.email} in {org}"
     text = (
@@ -504,6 +649,50 @@ def _mismatch(switcher, target: Target, email: str, org_uuid: str, oauth_account
     return LoginError(text)
 
 
+def _still_the_target(switcher, target: Target) -> None:
+    """Refuse when the slot no longer holds the account ``target`` was read
+    as: a bare ``qswap login`` reads every target once, before the first
+    of several browser waits."""
+    record = ((switcher._get_sequence_data() or {}).get("accounts") or {}).get(target.number)
+    if not isinstance(record, dict) or not _same_account(
+        record.get("email") or "", record.get("organizationUuid") or "", target
+    ):
+        raise LoginError(
+            f"{target.label} ({target.email}) changed before its sign-in started, so "
+            "nothing was signed in. See where the accounts are now with: qswap list"
+        )
+
+
+#: How long a save waits out a busy lock (qswap's or Claude Code's) before
+#: giving up; a completed sign-in is worth the wait. ``save_renewed_login``
+#: raises before it writes anything.
+_SAVE_RETRY_S = 45.0
+_SAVE_RETRY_PAUSE_S = 1.0
+
+
+def _save(switcher, target: Target, creds: str, oauth_account: dict, save_lock, progress: dict) -> dict:
+    deadline = time.monotonic() + _SAVE_RETRY_S
+    while True:
+        try:
+            with save_lock if save_lock is not None else contextlib.nullcontext():
+                return switcher.save_renewed_login(
+                    target.number, creds, oauth_account, progress=progress
+                )
+        except LockError as e:
+            if time.monotonic() >= deadline:
+                raise LoginError(
+                    f"The account files stayed busy for {oauth.format_countdown(_SAVE_RETRY_S)} "
+                    f"(another qswap or Claude Code was writing them), so the new login of "
+                    f"{target.label} was not saved. Try again: qswap login {target.number}"
+                ) from e
+            _logger.info("login: %s; retrying the save of #%s", e, target.number)
+            time.sleep(_SAVE_RETRY_PAUSE_S)
+
+
+#: Exit statuses of a ``claude`` that Ctrl-C ended: its own 130, or SIGINT.
+_CANCELLED = (130, -2)
+
+
 def renew(
     switcher,
     target: Target,
@@ -514,21 +703,33 @@ def renew(
     runner: Callable[..., LoginRun] | None = None,
     save_lock=None,
     announce: Callable[[], None] | None = None,
+    on_process: Callable[[subprocess.Popen], None] | None = None,
 ) -> Renewal:
     """Sign ``target`` in again in a private profile and save the login.
 
     ``interactive`` defaults to whether stdin is a terminal. ``runner(profile,
-    email, sso=, interactive=, timeout=) -> LoginRun`` stands in for
-    :func:`run_claude_login` (tests never run ``claude``); it is called with
-    the profile already made. ``save_lock`` (a context manager) is held
-    around the save alone, not the wait for the browser; ``announce`` runs
-    once the sign-in lock is held, before ``claude`` starts. Raises
-    :class:`LoginError` with nothing saved; ``KeyboardInterrupt`` propagates
-    once the profile is gone.
+    email, sso=, interactive=, timeout=[, on_process=]) -> LoginRun`` stands
+    in for :func:`run_claude_login` (tests never run ``claude``); it is
+    called with the profile already made. ``save_lock`` (a context manager)
+    is held around the save alone, never during the wait for the browser;
+    ``announce`` runs once the sign-in lock is held, before ``claude``
+    starts; ``on_process`` is handed the child (the menu bar's cancel).
+
+    The slot must still be ``target``'s account when the sign-in starts, the
+    sign-in must land on that account, and :meth:`ClaudeAccountSwitcher.
+    save_renewed_login` checks the slot against the sign-in again before it
+    writes. A save that meets a busy lock is retried for
+    :data:`_SAVE_RETRY_S`. Raises :class:`LoginError` with nothing saved;
+    Ctrl-C (or, on a terminal, ``claude`` exiting the way Ctrl-C ends it)
+    raises :class:`SignInInterrupted` once the profile is gone.
     """
     switcher._refuse_session_shell()
     if interactive is None:
         interactive = prompts.interactive()
+    refusal = cmd_shim_refusal(target.email, clis.find_cli("claude"))
+    if refusal:
+        raise LoginError(refusal)
+    _still_the_target(switcher, target)
     run = runner or run_claude_login
     root = sign_in_root(switcher)
     _make_root(root)
@@ -538,6 +739,7 @@ def renew(
             "Another sign-in is waiting for the browser (qswap login in another "
             "terminal, or the menu bar). Finish or cancel it, then try again."
         )
+    progress: dict = {}
     try:
         sweep(root)
         made = Path(tempfile.mkdtemp(prefix=_PROFILE_PREFIX, dir=root))
@@ -549,7 +751,11 @@ def renew(
                 os.chmod(profile, 0o700)
             if announce is not None:
                 announce()
-            outcome = run(profile, target.email, sso=sso, interactive=interactive, timeout=timeout)
+            extra = {"on_process": on_process} if on_process is not None else {}
+            outcome = run(profile, target.email, sso=sso, interactive=interactive,
+                          timeout=timeout, **extra)
+            if interactive and outcome.returncode in _CANCELLED:
+                raise SignInInterrupted()
             if outcome.returncode != 0:
                 raise _failure(outcome, target, timeout)
             from ai_quota_swap.session import read_config_dir_credentials, read_session_identity
@@ -562,7 +768,7 @@ def renew(
                 )
             oauth_account = _profile_oauth_account(profile)
             email, org_uuid = identity
-            if (email, org_uuid) != (target.email, target.org_uuid):
+            if not _same_account(email, org_uuid, target):
                 raise _mismatch(switcher, target, email, org_uuid, oauth_account)
             try:
                 creds = read_config_dir_credentials(str(profile), strict_keychain=True)
@@ -576,8 +782,13 @@ def renew(
                     f"claude auth login finished but left no login to save. Nothing was "
                     f"saved; try again: qswap login {target.number}"
                 )
-            with save_lock if save_lock is not None else contextlib.nullcontext():
-                saved = switcher.save_renewed_login(target.number, creds, oauth_account)
+            saved = _save(switcher, target, creds, oauth_account, save_lock, progress)
+        except SignInInterrupted:
+            raise
+        except KeyboardInterrupt as e:
+            raise SignInInterrupted(
+                live=bool(progress.get("live")), saved=bool(progress.get("saved"))
+            ) from e
         finally:
             remove_profile(profile)
     finally:
@@ -585,6 +796,7 @@ def renew(
     return Renewal(
         target.number, target.label, oauth.login_expires_at_epoch(creds),
         live=bool(saved.get("live")), key=saved.get("key"),
+        live_left=saved.get("live_left"), notes=tuple(saved.get("notes") or ()),
     )
 
 

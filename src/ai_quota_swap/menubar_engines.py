@@ -442,27 +442,41 @@ def _start_login_thread(work: Callable[[], None]) -> None:
     threading.Thread(target=work, daemon=True, name="menubar-login").start()
 
 
+@dataclass(frozen=True)
+class SignInResult:
+    """How a *Sign in again* ended, in one or two sentences: ``ok`` (the
+    login was renewed), ``cancelled`` (from the menu, or by quitting), or
+    neither (a failure, which the app shows as an alert)."""
+
+    text: str
+    ok: bool = False
+    cancelled: bool = False
+
+
 class LoginRunner:
     """Runs a *Sign in again* click off the main thread.
 
-    ``renew(switcher, number, save_lock=…)`` is :func:`ai_quota_swap.login.
-    renew_account` with no terminal (the app binds ``interactive=False``):
-    the sign-in ``qswap login N`` makes, in a private profile, saved over the
-    account's login. Tests pass a fake. ``report(notification)`` receives the
-    result from the worker thread: ``Renewed the login of #3 work; the next
-    sign-in is due …``, or the command line's failure sentence. ``lock`` (the
-    app's action lock) is held around the save alone, never while the
-    browser is waited on, so the menu's other actions go on meanwhile.
+    ``renew(switcher, number, save_lock=…, on_process=…)`` is
+    :func:`ai_quota_swap.login.renew_account` with no terminal (the app
+    binds ``interactive=False``): the sign-in ``qswap login N`` makes, in a
+    private profile, saved over the account's login. Tests pass a fake.
+    ``report(result)`` receives a :class:`SignInResult` from the worker
+    thread: ``Renewed the login of #3 work; the next sign-in is due …``
+    (with any note the save made), or the command line's failure sentence,
+    which is logged too. ``lock`` (the app's action lock) is held around the
+    save alone, never while the browser is waited on, so the menu's other
+    actions go on meanwhile.
 
-    One sign-in at a time: while it runs, :meth:`busy` names its account (its
-    row reads "waiting for the browser…") and :meth:`run` refuses another.
+    One sign-in at a time: while it runs, :meth:`busy` names its account
+    and :meth:`run` refuses another. :meth:`cancel` kills the ``claude`` it
+    started (the cancel row, quitting the app); nothing is saved then.
     Nothing the worker raises escapes it.
     """
 
     def __init__(
         self,
         renew: Callable[..., object],
-        report: Callable[[object], None],
+        report: Callable[[SignInResult], None],
         *,
         start: Callable[[Callable[[], None]], None] | None = None,
         lock: threading.Lock | None = None,
@@ -472,6 +486,8 @@ class LoginRunner:
         self._start = start or _start_login_thread
         self._lock = lock
         self._busy: str | None = None
+        self._proc = None
+        self._cancelled = False
         self._guard = threading.Lock()
 
     def busy(self) -> str | None:
@@ -487,15 +503,16 @@ class LoginRunner:
             if self._busy is not None:
                 return False
             self._busy = number
+            self._proc = None
+            self._cancelled = False
 
         def work() -> None:
-            text = self._outcome(switcher, number, who=who)
+            result = self._outcome(switcher, number, who=who)
             with self._guard:
                 self._busy = None
+                self._proc = None
             try:
-                from ai_quota_swap.menubar_notify import Notification
-
-                self._report(Notification(text))
+                self._report(result)
             except Exception:
                 _logger.error("menu bar: could not report a sign-in's result", exc_info=True)
 
@@ -507,21 +524,52 @@ class LoginRunner:
             raise
         return True
 
-    def _outcome(self, switcher, number: str, *, who: str) -> str:
-        """The sign-in, and its result as one or two sentences. Never raises."""
+    def cancel(self) -> bool:
+        """Stop the running sign-in (its ``claude`` is killed; nothing is
+        saved). False when none runs."""
+        with self._guard:
+            if self._busy is None:
+                return False
+            self._cancelled = True
+            proc = self._proc
+        if proc is not None:
+            _kill(proc)
+        return True
+
+    def _on_process(self, proc) -> None:
+        with self._guard:
+            self._proc = proc
+            cancelled = self._cancelled
+        if cancelled:
+            _kill(proc)
+
+    def _outcome(self, switcher, number: str, *, who: str) -> SignInResult:
+        """The sign-in, and its result. Never raises."""
         from ai_quota_swap import login
         from ai_quota_swap.exceptions import ProviderError
 
         try:
-            renewal = self._renew(switcher, number, save_lock=self._lock)
+            renewal = self._renew(switcher, number, save_lock=self._lock, on_process=self._on_process)
         except ProviderError as e:
-            return " ".join(str(e).split())
+            if self._cancelled:
+                return SignInResult(f"Cancelled the sign-in of {who}; nothing was saved.", cancelled=True)
+            text = " ".join(str(e).split())
+            _logger.warning("menu bar: the sign-in of #%s failed: %s", number, text)
+            return SignInResult(text)
         except Exception as e:
             _logger.error("menu bar: the sign-in of #%s failed", number, exc_info=True)
-            return f"Could not renew the login of {who}: {type(e).__name__}: {e}"
-        text = login.renewed_text(renewal)
+            return SignInResult(f"Could not renew the login of {who}: {type(e).__name__}: {e}")
+        parts = [login.renewed_text(renewal), *renewal.notes]
         try:
-            note = login.key_note(switcher, renewal)
+            parts += [n for n in (login.live_left_note(renewal), login.key_note(switcher, renewal)) if n]
         except Exception:
-            note = None
-        return f"{text}. {note}" if note else text
+            _logger.debug("menu bar: a sign-in's notes could not be worded", exc_info=True)
+        head = [p if p.endswith(".") else f"{p}." for p in parts[:-1]]
+        return SignInResult(" ".join([*head, parts[-1]]), ok=True)
+
+
+def _kill(proc) -> None:
+    try:
+        proc.kill()
+    except Exception:
+        pass
