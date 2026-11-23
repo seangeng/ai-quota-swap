@@ -4,7 +4,7 @@ The menu bar app keeps the active account's usage in the macOS menu bar, and its
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="../assets/screenshots/raw/menubar-light.png">
-  <img src="../assets/screenshots/raw/menubar.png" alt="The menu bar's title, personal · 46% · 38%, and its open menu: five Claude Code accounts and two Codex accounts with their usage, a check mark on each active account, held usage resets, the cost row as a seven-day chart by account (today $5.16, 7 days $78.25), and auto-switch running for both" width="566">
+  <img src="../assets/screenshots/raw/menubar.png" alt="The menu bar's title, personal · 46% · 38%, and its open menu: five Claude Code accounts and two Codex accounts with their usage, a check mark on each active account, held usage resets, the cost row as a seven-day chart by account (today $5.16, 7 days $78.25) whose legend names every account the same way (#1 per…, #2 work, #5 ci), the Manage rows including Sign in again, and auto-switch running for both" width="568">
 </picture>
 
 The pictures on this page are drawings of the menu, not screenshots of the app: the [demo harness](../scripts/demo/README.md) draws the rows that `menubar.build_menu`, the function the app builds its menu from, returns for made-up accounts, with auto-switch turned on, and places the cost chart's bars with the app's own layout code. The chart on its own, under [The cost row](#the-cost-row), is the app's chart view, drawn off screen. The recording's notification is the text the app posts for that switch.
@@ -48,7 +48,7 @@ Turning *Auto-switch Claude Code* off, or quitting the menu bar, while sessions 
 
 ### Automatic resets
 
-<img src="../assets/screenshots/raw/menubar-auto-resets.png" alt="The menu with Settings and Use resets automatically open: As a last resort, when no account can take over, checked; Use a weekly reset for a single model's limit; and Use the active account's reset before switching, greyed under the last-resort mode" width="1058">
+<img src="../assets/screenshots/raw/menubar-auto-resets.png" alt="The menu with Settings and Use resets automatically open: As a last resort, when no account can take over, checked; Use a weekly reset for a single model's limit; and Use the active account's reset before switching, greyed under the last-resort mode" width="1060">
 
 *Settings → Use resets automatically* chooses when the engines spend a usage reset by themselves (`resets.auto`): *Off*, *When the active account reaches its limit* (`active`), *As a last resort, when no account can take over* (`last-resort`, the default) or *When any account reaches its limit* (`on-limit`); hover a choice for `qswap reset`'s line for it. *Use a weekly reset for a single model's limit* is `resets.weeklyForModelLimit`. *Use the active account's reset before switching* is `resets.beforeSwitch` ([resets.md](resets.md#before-switching)); it is greyed, and keeps its check mark, under *Off* and *As a last resort* and while `resets.enabled` is off, where the setting has no effect, and its tooltip says so. All of them apply to Claude Code and Codex, which the submenu's first line says once Codex manages an account. Turning automatic use on from *Off* asks once, since a spent reset cannot be taken back (at most three in 24 hours, per provider); the question is judged on `settings.json` at the click, so a `qswap config set resets.auto off` made since the menu was drawn still asks. The engines read these settings on every check, so a change applies without a restart.
 
@@ -165,7 +165,7 @@ With *Settings → Show usage chart* on, as it is by default, the same sentence 
 
 ### Use a reset
 
-<img src="../assets/screenshots/raw/menubar-resets.png" alt="The menu, with its seven-day cost chart, and its Use a reset submenu open to the left: Claude #1 personal's Fable reset and #3 night-shift's 5-hour reset greyed until a limit is reached, and Codex #2 work's reset credit, which clears all usage, highlighted" width="939">
+<img src="../assets/screenshots/raw/menubar-resets.png" alt="The menu, with its seven-day cost chart, and its Use a reset submenu open to the left: Claude #1 personal's Fable reset and #3 night-shift's 5-hour reset greyed until a limit is reached, and Codex #2 work's reset credit, which clears all usage, highlighted" width="941">
 
 One row per account and kind, grouped by provider when both have some:
 
@@ -209,7 +209,7 @@ The accounts section says `No accounts are managed yet.` and the next step for e
 
 *Settings* in the menu holds, from the top: *Show account name in menu bar*, *Title follows* (with Codex managed), *Title percentage*, *Show model limits in title*, *Show usage chart* and *Refresh interval*; then the auto-switch toggles, their thresholds and *Use resets automatically*; then *Start at login*.
 
-<img src="../assets/screenshots/raw/menubar-settings.png" alt="The menu with Settings open: Show account name in menu bar, Title follows, Title percentage, Show model limits in title, Show usage chart checked, and Refresh interval; Auto-switch Claude Code and Auto-switch Codex checked, the two threshold submenus and Use resets automatically; Start at login checked" width="734">
+<img src="../assets/screenshots/raw/menubar-settings.png" alt="The menu with Settings open: Show account name in menu bar, Title follows, Title percentage, Show model limits in title, Show usage chart checked, and Refresh interval; Auto-switch Claude Code and Auto-switch Codex checked, the two threshold submenus and Use resets automatically; Start at login checked" width="736">
 
 The menu's own preferences live in `menubar_settings.json` in the data directory (`~/.ai-quota-swap` on macOS). Change them from the menu; the menu bar reads the file when it starts.
 
