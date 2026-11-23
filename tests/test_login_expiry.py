@@ -312,8 +312,12 @@ class TestDashboardFit:
 
     @pytest.mark.asyncio
     async def test_fresh_logins_render_exactly_as_without_the_field(self, tmp_path):
-        fresh, *_ = await _dashboard(tmp_path, _seven(time.time() + FAR), (80, 24))
-        bare, *_ = await _dashboard(tmp_path, _seven(None), (80, 24))
+        # One list, so both renders share its reset stamps: two lists built
+        # from the wall clock a moment apart can fall either side of a minute.
+        bare_accounts = _seven(None)
+        fresh_accounts = [_replace_login(acc, time.time() + FAR) for acc in bare_accounts]
+        fresh, *_ = await _dashboard(tmp_path, fresh_accounts, (80, 24))
+        bare, *_ = await _dashboard(tmp_path, bare_accounts, (80, 24))
         assert fresh == bare
 
 
