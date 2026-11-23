@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.3
+
+One experimental feature: a long-lived token as the backup of a login, so a login that ends no longer takes its account out of rotation.
+
+- Experimental: `qswap add-token --backup-for N` keeps a setup-token from `claude setup-token` as the backup of login N. It stands by while the login works and stands in once the login needs re-login. Adding one sends one small request to check that the token is that account's: the token's usage and reset times must agree with the login's. `--unverified` saves it when there is nothing to compare, never when they disagree.
+- While a backup stands by it is not read and auto-switch does not use it. While it stands in, it takes the login's place, first in line when the active login ends, and its usage is read from a one-token request at the normal polling pace.
+- After `qswap login N`, auto-switch moves from the backup back to the login at its next check (`its login works again`).
+- `list`, `status`, the dashboard, the menu bar and the auto log show `backup for #3 work · standing by` (or `standing in`) and `token ends about Nov 23, 2027`. A login that needs re-login says its backup covers it. In `--json`, rows gain `backupFor` and `backupAccountNumber`, `usageStatus` can be `standing_by`, and a switch can have the trigger `backup-return`.
+- `qswap switch N` to a login that needs re-login names its backup. `qswap remove` of the login leaves the backup as an ordinary setup-token account. `qswap export` and `qswap import` carry the link. `qswap doctor` warns about a backup whose login is gone, a second backup for one login, and a backup within a month of a year old. The menu bar posts one notice when a backup starts standing in.
+- Limits: a setup-token only does inference, so usage resets, Remote Control and claude.ai connectors have not been checked on it, and the feature has been tested against stand-ins, not yet against a real token. Nothing changes for anyone who adds no backup.
+- The menu bar pictures, the hero and the menu recording in the docs show the 0.1.2 menu.
+
+The qswap package on PyPI is 0.1.3 too and asks for ai-quota-swap 0.1.3 or newer.
+
 ## 0.1.2
 
 Renewing a saved login takes one command or one click. Auto-switch knows when the machine is offline and when a login is about to end. Seven open issues are closed.
