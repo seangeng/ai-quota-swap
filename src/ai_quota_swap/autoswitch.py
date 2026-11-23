@@ -1675,15 +1675,18 @@ def key_entry_hold(reading: object, *, now: float, record: object = None) -> str
     account record) alone: ``key-no-limit`` with neither a budget nor a
     credit (decision A2), ``spend-unknown`` with no spend figure from the
     last 20 minutes (A4), ``limit-latched`` when a limit reached earlier
-    still holds (A5, the reading's ``latched``); None when it may. The
-    engine's own check (``_enterable_keys``) asks its state for the latch;
-    the dashboard's "Next best" asks this."""
+    still holds (A5, the reading's ``latched``), ``key-left`` while another
+    key's brake holds every other key (A10, the reading's ``key_left``);
+    None when it may. The engine's own check (``_enterable_keys``) asks its
+    state for the latch; the dashboard's "Next best" asks this."""
     from ai_quota_swap import api_spend
 
     if not api_spend.has_limit(reading, record):
         return "key-no-limit"
     if api_spend.limit_reason(reading, latched=False) is None and api_spend.latch_of(reading):
         return "limit-latched"
+    if api_spend.key_left_of(reading):
+        return "key-left"
     if api_spend.engine_limit_reason(reading, now=now, limited=True) == api_spend.SPEND_UNKNOWN:
         return "spend-unknown"
     return None

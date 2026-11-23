@@ -162,6 +162,9 @@ def next_best(
             latched = api_spend.latch_of(getattr(acc.usage, "api_spend", None)) or "budget"
             words = api_spend.LATCHED_WORDS[latched]
             unused.append(Candidate(number, name, f"API key · {words}, not used"))
+        elif hold == "key-left":
+            # Another key was left at its limit (A10), as the auto log's row says.
+            unused.append(Candidate(number, name, f"API key · {api_spend.KEY_LEFT_WORDS}"))
         else:
             out.append(Candidate(number, name, "API key · only as a last resort"))
     return out + unused

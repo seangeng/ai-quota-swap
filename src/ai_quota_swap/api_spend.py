@@ -356,6 +356,70 @@ def _latches(root: Path) -> dict:
     return latches if isinstance(latches, dict) else {}
 
 
+# -- one key's brake holds the other keys (decision A10) -----------------------------
+#
+# After auto-switch leaves an API key at its limit for a subscription that is
+# itself full, it enters no other key until a check reads a subscription with
+# room (``keyLeft`` in its state file). ``readings`` copies that record into
+# every other key's reading (``key_left``), as it copies a latch, so list,
+# status, the dashboard and the auto log say the same thing about those keys.
+
+#: How a key's row says it is held after another key's brake, in every view.
+KEY_LEFT_WORDS = "not used until a subscription has room"
+#: How a key was left at its limit, as "auto-switch left #2 ci ..." says it.
+LEFT_WORDS = {
+    "budget": "at its monthly budget",
+    "credit-spent": "with its credit spent",
+    "credit-expired": "with its credit expired",
+    "spend-unknown": "when its spend could not be measured",
+    "no-limit": "as it has no budget or credit",
+}
+
+
+def _key_left(root: Path) -> tuple[str, str | None] | None:
+    """``(account, reason)`` of the engine's ``keyLeft`` while API keys are
+    turned on for auto-switch, or None. With them off the engine enters no
+    key at all, and a record left from before holds nothing. Never raises."""
+    try:
+        from ai_quota_swap.autoswitch import STATE_FILENAME, _read_state_file
+        from ai_quota_swap.settings import load_engine_settings
+
+        left = _read_state_file(root / STATE_FILENAME).get("keyLeft")
+        if not isinstance(left, dict) or left.get("account") is None:
+            return None
+        if not load_engine_settings(root, "claude").include_api_key_accounts:
+            return None
+    except Exception:
+        return None
+    reason = left.get("reason")
+    return str(left["account"]), (str(reason) if reason else None)
+
+
+def key_left_of(reading: object) -> dict | None:
+    """The other key's brake that holds this key (``key_left``: ``{left,
+    reason, label, account}``), when it is what the engine would say about
+    the key: it has a budget or a credit and has reached neither, a latch
+    included (the order of the engine's own check). None otherwise."""
+    if not isinstance(reading, dict):
+        return None
+    held = reading.get("key_left")
+    if not isinstance(held, dict) or not has_limit(reading) or limit_reason(reading) is not None:
+        return None
+    return held
+
+
+def key_left_detail(held: dict) -> str:
+    """Why the key is held, and how to use it anyway: ``auto-switch left #2
+    ci at its monthly budget, and enters no other key until a subscription
+    has room; to use this key now: qswap switch 5``."""
+    why = LEFT_WORDS.get(str(held.get("reason") or ""), "at its limit")
+    who = held.get("label") or f"#{held.get('left')}"
+    text = f"auto-switch left {who} {why}, and enters no other key until a subscription has room"
+    if held.get("account"):
+        text += f"; to use this key now: qswap switch {held['account']}"
+    return text
+
+
 # -- the engine's freshness rule ----------------------------------------------------
 #
 # Auto-switch holds an API key to its budget or credit only with a spend
@@ -971,6 +1035,8 @@ def readings(
     prices = None
     today_label = day.date().isoformat()
     latches = _latches(root)
+    key_left = _key_left(root)
+    active = _active(switcher) if key_left is not None else None
     scan_failure = failed_scan(root, now)
     out: dict[str, dict] = {}
     for num, info in infos.items():
@@ -1058,8 +1124,34 @@ def readings(
         held = latched_reasons(latches.get(num), reading, record, now)
         if held:
             reading["latched"] = {"reason": held[0], "account": num}
+        if key_left is not None and num not in (key_left[0], active):
+            # Another key was left at its limit: auto-switch enters this one
+            # no more until a subscription has room (A10). An active key is
+            # in use already: nothing holds it.
+            reading["key_left"] = {
+                "left": key_left[0], "reason": key_left[1], "account": num,
+                "label": _label(switcher, key_left[0]),
+            }
         out[num] = reading
     return out
+
+
+def _active(switcher) -> str | None:
+    """The active account's number, None when it cannot be told."""
+    try:
+        number = switcher.current_account_number()
+    except Exception:
+        return None
+    return str(number) if number is not None else None
+
+
+def _label(switcher, number: str) -> str:
+    """``#2 ci``, as every message names an account; ``#2`` when the
+    switcher cannot say."""
+    try:
+        return switcher.label(number, long=False)
+    except Exception:
+        return f"#{number}"
 
 
 def budget_state(reading: object) -> tuple[float, float] | None:
@@ -1196,13 +1288,16 @@ def spend_text(reading: dict, now: float | None = None) -> str:
     month`` when there is a budget. With a credit: ``API key · $1,150 of
     $1,187 credit left``, and the month against its budget after it when one
     is set too. A budget or credit with no fresh figure ends in
-    :data:`LIMIT_NOT_ENFORCED` (``now`` judges the age)."""
+    :data:`LIMIT_NOT_ENFORCED` (``now`` judges the age), and one held after
+    another key's brake in :data:`KEY_LEFT_WORDS`."""
     from ai_quota_swap.display import API_KEY_NO_USAGE
 
     unenforced = limit_not_enforced(reading, now)
     tail = [LIMIT_NOT_ENFORCED] if unenforced else []
     if only := _only_latched(reading):
         tail.append(LATCHED_WORDS[only])
+    if key_left_of(reading):
+        tail.append(KEY_LEFT_WORDS)
     credit = reading.get("credit")
     if isinstance(credit, dict):
         parts = ["API key", credit_text(credit)]
@@ -1297,7 +1392,8 @@ def detail_text(
     """A second line when there is more to say: why the figure is not
     Anthropic's, how old it is, or how to get one; for a credit, since when it
     counts and when it expires. While the limit is not enforced it says how
-    old the figure is and what auto-switch does about it."""
+    old the figure is and what auto-switch does about it; while another
+    key's brake holds this one, which key and how to use this one anyway."""
     now = time.time() if now is None else now
     base = _detail_text(reading, now)
     unpriced = _unpriced_words(reading)
@@ -1325,6 +1421,10 @@ def detail_text(
             base = None  # the row says there is no figure; the next step follows
         step = ORG_UNENFORCED_NEXT if org else UNENFORCED_NEXT
         base = f"{base}; {step}" if base else step
+    if held := key_left_of(reading):
+        # What holds the key first, as the engine checks it before the figure.
+        words = key_left_detail(held)
+        base = f"{words} · {base}" if base else words
     credit = reading.get("credit")
     if not with_credit or not isinstance(credit, dict) or credit.get("expired"):
         return base

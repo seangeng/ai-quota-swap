@@ -374,7 +374,9 @@ What the code does where this part leaves room, or where it had to differ:
   `--once`) go ahead on the second. Only a check that read the active account and wanted no
   key ends it. A key left at its limit (`keyLeft` in the state file:
   account, reason, when) means no other key until a check reads a subscription in the
-  rotation with room (`key-left`, said once); the key left may come back once its own figure
+  rotation with room (`key-left`, said once; `api_spend.readings` copies the record into each
+  other key's reading, `key_left`, so the rows of `list`, `status`, the dashboard and its Next
+  best say it as the auto log does); the key left may come back once its own figure
   allows it, as a fresh figure after `spend-unknown` does. Among keys that qualify the engine
   takes the first in account order. A key judged at its budget or credit stays at it in the engine's
   state file, one latch per kind (`limitLatch[N]` holds `budget` and `credit` apart): the
