@@ -129,7 +129,7 @@ With pipx: `pipx install --force 'ai-quota-swap[menubar]'`. If you run qswap fro
 
 ## Upgrades, and an install from GitHub
 
-`qswap upgrade` runs `uv tool upgrade ai-quota-swap` or `pipx upgrade ai-quota-swap`, whichever installed qswap, then says what landed (`ai-quota-swap upgraded: 0.1.0 -> 0.1.1`, or `ai-quota-swap is still at 0.1.0.`). On a Mac it restarts a running menu bar when the build changed. On Windows it prints the command for you to run instead, because the running `qswap.exe` cannot be replaced.
+`qswap upgrade` runs `uv tool upgrade ai-quota-swap` or `pipx upgrade ai-quota-swap`, whichever installed qswap, then says what landed (`ai-quota-swap upgraded: 0.1.0 -> 0.1.1`, or `ai-quota-swap is still at 0.1.0.`). While an API key is active, the new build then checks the key line in Claude Code's settings: a line that runs a qswap that is no longer there, or another install of qswap, is written again for the new build, and the upgrade says so in one line (`Wrote the key line for #5 ci again: it runs a qswap that is no longer there.`). If it cannot be written again, the upgrade says why and gives the command that fixes it. A line that is not this qswap's is left alone. On a Mac it restarts a running menu bar when the build changed. On Windows it prints the command for you to run instead, because the running `qswap.exe` cannot be replaced.
 
 An install made under the qswap name (`uv tool install qswap`) is a tool named qswap. From 0.1.1 on, the commands qswap runs and prints use that name: `qswap upgrade` runs `uv tool upgrade qswap`, and the reinstall commands say `'qswap[menubar]'`. Use that name in the reinstall lines on this page too. With pipx, `pipx upgrade qswap` would upgrade only the qswap package, which holds no code, so `qswap upgrade` runs `pipx runpip qswap install --upgrade ai-quota-swap`. The versions it reports are ai-quota-swap's.
 
@@ -228,7 +228,7 @@ qswap key-helper 5 --check
 - `#5 does not exist` or `is a subscription account`: the line names the wrong account. `qswap switch N` to the account you want removes or replaces it.
 - `has no saved key` or `saved credential is not an API key`: save it again with `qswap add-token KEY --slot 5`. A switch refuses such an account, so this only happens when the saved key is changed or lost after the switch.
 - `the Keychain could not be read`: unlock the login keychain (a remote shell may not have it unlocked).
-- The command itself is not found: qswap was reinstalled somewhere else. `qswap switch 5` points the line at this qswap; `qswap doctor` reports it too.
+- The command itself is not found: qswap was reinstalled somewhere else. `qswap switch 5` points the line at this qswap; `qswap doctor` reports it too. `qswap upgrade` does this by itself after an upgrade.
 
 ## "Invalid API key · Fix external API key"
 

@@ -527,28 +527,9 @@ class KeyActivationMixin:
         is gone, else the line's reason and the check to run."""
         number = str(number)
         done: list[str] = []
-        label = self.label(number, long=False)
         why = claude_settings.line_answers(self.key_helper_state())
         if why is not None:
-            row = ((self._get_sequence_data() or {}).get("accounts") or {}).get(number) or {}
-            self._require_saved_key(number, row.get("email", ""))
-            with FileLock(self.lock_file):
-                try:
-                    claude_settings.install(number, data_dir=self._data_dir)
-                except claude_settings.SettingsError as e:
-                    path = claude_settings.shown_path(e.path or claude_settings.settings_path())
-                    raise SwitchError(
-                        f"The key line for {label} {why}, and it could not be written "
-                        f"again: {path} {e.reason}."
-                    ) from e
-            again = claude_settings.line_answers(self.key_helper_state())
-            if again is not None:
-                raise SwitchError(
-                    f"The key line for {label} {again}, also after it was written "
-                    f"again for this qswap. Check it with: qswap key-helper {number} --check"
-                )
-            self._logger.info(f"Wrote the key line for account {number} again: it {why}")
-            done.append(f"Wrote the key line for {label} again: it {why}.")
+            done.append(self._write_line_again(number, why))
         state = self._key_state()
         if str(state.get("number")) != number:
             with FileLock(self.lock_file):
@@ -561,6 +542,66 @@ class KeyActivationMixin:
             if still:
                 raise SwitchError(self._profiles_unisolated_reason(still).capitalize() + ".")
         return done
+
+    def _write_line_again(self, number: str, why: str) -> str:
+        """Write qswap's line for the key ``number`` again for this install
+        (it ``why``) and check that it answers now, for
+        :meth:`repair_active_key` and :meth:`key_line_after_upgrade`. Returns
+        the sentence that says so. Raises :class:`SwitchError` when the key
+        is not saved, the line cannot be written, or it does not answer even
+        so."""
+        label = self.label(number, long=False)
+        row = ((self._get_sequence_data() or {}).get("accounts") or {}).get(number) or {}
+        self._require_saved_key(number, row.get("email", ""))
+        with FileLock(self.lock_file):
+            try:
+                claude_settings.install(number, data_dir=self._data_dir)
+            except claude_settings.SettingsError as e:
+                path = claude_settings.shown_path(e.path or claude_settings.settings_path())
+                raise SwitchError(
+                    f"The key line for {label} {why}, and it could not be written "
+                    f"again: {path} {e.reason}."
+                ) from e
+        again = claude_settings.line_answers(self.key_helper_state())
+        if again is not None:
+            raise SwitchError(
+                f"The key line for {label} {again}, also after it was written "
+                f"again for this qswap. Check it with: qswap key-helper {number} --check"
+            )
+        self._logger.info(f"Wrote the key line for account {number} again: it {why}")
+        return f"Wrote the key line for {label} again: it {why}."
+
+    def key_line_after_upgrade(self) -> tuple[str | None, str | None]:
+        """``qswap upgrade``'s last step, run by the build it installed (issue
+        #20): when this data directory's key line is in the settings but does
+        not run this install of qswap (:func:`claude_settings.line_runs_elsewhere`:
+        its script is gone, or is another install's), it is written again the
+        way ``qswap switch N`` to the active key writes it. Returns ``(done,
+        problem)``: the sentence for a line written again, or what is wrong
+        with one that could not be, ending with the command that fixes it. A
+        line that is not this qswap's is never touched, and nothing else is
+        repaired here."""
+        state = self.key_helper_state()
+        if not state.ours or state.number is None:
+            return None, None
+        number = str(state.number)
+        why = claude_settings.line_runs_elsewhere(state.command, data_dir=self._data_dir)
+        if why is None:
+            return None, None
+        problem = self.helper_problem()
+        if problem is not None:
+            row = ((self._get_sequence_data() or {}).get("accounts") or {}).get(number)
+            return None, " ".join(display.key_helper_problem(
+                number, problem["why"], self.helper_fix_command(),
+                key=self.label(number, long=False) if isinstance(row, dict) else None,
+            ))
+        try:
+            return self._write_line_again(number, why), None
+        except SwitchError as e:
+            text = str(e)
+            if ": qswap " not in text:  # it names no command of its own
+                text += f" To write it again: qswap switch {number}"
+            return None, text
 
     def _settings_env(self) -> dict[str, str]:
         """The ``env`` block of the user settings (``{}`` when there is none

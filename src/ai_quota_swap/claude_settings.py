@@ -53,7 +53,9 @@ helper.
 Whether the line can give Claude Code the key is :func:`check_command`: the
 line's own command, run with ``--check`` the way Claude Code runs it. Doctor
 reports it, and a switch to the active key writes the line again when it
-does not answer (:func:`line_answers`).
+does not answer (:func:`line_answers`). After ``qswap upgrade`` the build it
+installed writes the line again when it runs another qswap than that build
+(:func:`line_runs_elsewhere`).
 """
 
 from __future__ import annotations
@@ -467,6 +469,43 @@ def line_answers(state: HelperState) -> str | None:
         # a session with another XDG_DATA_HOME still finds the key.
         return "names no data directory"
     return check_command(state.command)
+
+
+def line_runs_elsewhere(command: str | None, *, data_dir: Path | str | None = None) -> str | None:
+    """Whether qswap's line runs this install of qswap, from the line and the
+    files alone (nothing is run): None when it does, else why not, in words
+    that follow "the line" (as :func:`command_problem`'s). Its program must
+    be the one :func:`helper_command` names now: a console script by any path
+    that leads to the same file (``~/.local/bin/qswap`` and the script it
+    links to are one), an interpreter by that very path (two virtual
+    environments' interpreters can be links to one Python, and each imports
+    its own qswap). ``qswap upgrade`` asks this of the build it installed."""
+    problem = command_problem(command)
+    if problem is not None:
+        return problem
+    line = read_line(command)
+    expected = read_line(helper_command(line.number, data_dir=data_dir)) if line else None
+    if line is None or expected is None:
+        return None
+    if expected.data_dir and not line.data_dir:
+        return "names no data directory"
+    if line.module != expected.module or not _same_program(
+        line.program, expected.program, interpreter=expected.module is not None
+    ):
+        return f"runs another install of qswap ({shown_path(Path(line.program))})"
+    return None
+
+
+def _same_program(a: str, b: str, *, interpreter: bool) -> bool:
+    """Whether two paths run the same program (:func:`line_runs_elsewhere`)."""
+    if a == b:
+        return True
+    if interpreter:
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 def _quote(path: str) -> str:

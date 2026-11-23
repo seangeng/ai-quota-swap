@@ -319,6 +319,28 @@ What the code does where this part leaves room, or where it had to differ:
   the run profiles, instead of answering only `Already on`. List, status, the dashboard and
   the menu bar carry a note for such a variable and for another `apiKeyHelper`, in the
   refusal's words and with its fix.
+- **After `qswap upgrade`** (issue #20). An upgrade that moves or replaces the console
+  script leaves a line naming the old one. Once the package manager has succeeded, the
+  upgrade runs the check in the build it installed, not in its own process: `sys.executable
+  -P -c` calling `update_check.key_line_after_upgrade` of the files on disk. uv tool, pipx
+  and the qswap alias all upgrade the tool's environment in place, so that interpreter is
+  still there and imports the new build, which answers for its own console script
+  (`installed.command`, the resolver the line is written with). The old process keeps the
+  old build's modules: a module it imported after the upgrade would come from the new
+  files, and its own resolver could point at a package directory the upgrade replaced. The
+  old process only reads, before the upgrade, where Claude Code's settings are, and spawns
+  the check when they mention `key-helper`. The check acts only on this data directory's
+  line: when it runs a qswap that is no longer there, or another install
+  (`claude_settings.line_runs_elsewhere`: a console script by any path leading to this
+  install's, an interpreter only by its own path, since two environments' interpreters can
+  link to one Python), it is written again by the step `qswap switch N` to the active key
+  uses (`_write_line_again`: the saved key checked, the line written under the account lock,
+  then run with `--check`). Nothing else is repaired: not the record, not run profiles, not
+  who entered the key. The child prints one JSON object; the upgrade prints its sentence,
+  or a warning with the command that fixes the line, before it restarts the menu bar. A
+  child that fails, times out or answers anything else changes nothing in the report. An
+  upgrade from a build without the check (0.1.1 and earlier) does not run it; the engine's
+  reconcile and `qswap switch N` still repair a line whose script is gone.
 - **Order of the two steps.** Entering a key gives run profiles their copies first, then
   writes the record, then the line (a failure in between puts the profiles back); leaving
   removes the line and then restores the profiles. Either crash leaves copies with no line,
