@@ -122,6 +122,7 @@ def report_inputs(
 def scan_recent(
     data_root: Path, *, registry: dict | None = None, days: int = 7,
     provider: str = "claude", today: date | None = None, start: float | None = None,
+    now: float | None = None,
 ) -> ScanStats:
     """Bring the ledger up to date for the last ``days`` days and record when
     (``last_scan_at``), without building a report: the incremental scan the
@@ -131,9 +132,13 @@ def scan_recent(
     from the start of the period a key's limit is measured over (its budget
     month, its credit), from that hour (decision EM3). The scan is
     incremental, so a wide window costs once. Safe beside another scan
-    (every event is counted once). Raises what the scan raises; the engine
-    catches it."""
+    (every event is counted once). ``now`` is the time the scan is recorded
+    at, and the local day the ``days`` window ends on unless ``today`` is
+    given; the wall clock by default (a test passes its fake clock). Raises
+    what the scan raises; the engine catches it."""
     data_root = Path(data_root)
+    if today is None and now is not None:
+        today = date.fromtimestamp(now)
     since, until = resolve_range(days=days, since=None, until=None, today=today)
     store = LedgerStore(data_root / DB_FILENAME)
     try:
@@ -143,7 +148,7 @@ def scan_recent(
             window = day_bounds(since, until)[0] * 3600
         scanner = Scanner(store, default_config(data_root, registry), progress=None)
         stats = scanner.run((provider,), since=window)
-        store.set_meta(LAST_SCAN_META, f"{time.time():.3f}")
+        store.set_meta(LAST_SCAN_META, f"{time.time() if now is None else now:.3f}")
         return stats
     finally:
         store.close()

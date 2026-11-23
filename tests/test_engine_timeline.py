@@ -19,11 +19,14 @@ wherever the suite allows it: the keys' spend readings come from
 ``api_spend.readings`` over a real ledger database (``ledger.db``), priced by
 the real price table, with tokens of a model that has no price charged at the
 dearest rate. The fakes are the seams the suite already uses: the ledger
-scan (``scan_recent``, which reads transcripts on the wall clock; here it
-moves the transcript lines written so far into the ledger and stamps the
-fake clock), the subscriptions' usage endpoint (``usage_entries_by_account``,
-``refresh_usage``) and the reset claim (``claim_usage_reset``). The real
-claim (``resets.claim``) is made to fail the test if anything reaches it.
+scan (``scan_recent``; here it moves the transcript lines written so far
+into the ledger and stamps the fake clock), the subscriptions' usage
+endpoint (``usage_entries_by_account``, ``refresh_usage``) and the reset
+claim (``claim_usage_reset``). The real claim (``resets.claim``) is made to
+fail the test if anything reaches it. T7 goes further (issue #17): the real
+scan over real session files, at the fake clock (its ``now``), and the
+keys read through the switcher's ``_api_spend_readings`` with Anthropic's
+Admin API faked, so an organization's key's figure ages on the fake clock.
 
 Assertions run after every tick. The expectations are docs/auto-switch.md,
 docs/api-accounts.md, docs/resets.md and the design's "As built"
@@ -50,6 +53,7 @@ from ai_quota_swap import api_spend, claude_settings, resets
 from ai_quota_swap.autoswitch import (
     RETURN_ROOM_PCT,
     SPEND_SCAN_INTERVAL_S,
+    SPEND_SCAN_MIN_GAP_S,
     AutoSwitchEngine,
     NoSwitchEvent,
     ResetEvent,
@@ -1316,3 +1320,221 @@ class TestT6AResetThePlannerKeeps:
                 # Nine hours on the key, then #2's window refilled by itself.
                 assert (back.t, back.to) == (540, "2"), run.trace()
         assert len(run.ticks) >= (560 if long else 200)
+
+
+# == T7: an organization's key, on the real scan ==============================================
+#
+# Issue #17: the timelines above fake the ledger scan and read the keys with
+# no network, so an organization's key, held to Anthropic's figure only
+# (EM2), never had its figure age on the fake clock. Here the keys are read
+# through the switcher's own path (``_api_spend_readings``, with the fake
+# clock as ``now``), #6 is linked to an organization whose Admin API is
+# faked, and the engine's scan is the real ``scan_recent`` over real session
+# files, recorded at the fake clock (its ``now``).
+
+#: Each key's own (made-up) key, so the organization's listing can name one.
+OWN_KEYS = {n: "sk-ant-api03-" + tag * 20 for n, tag in (("5", "q5"), ("6", "w6"), ("7", "x7"))}
+#: The organization's id for #6's key.
+ORG_KEY_ID = "apikey_06"
+#: The Admin API is down from this tick, and back from that one.
+ADMIN_DOWN, ADMIN_UP = 30, 100
+_REAL_SCAN = ledger_usage.scan_recent
+
+
+class OrgWorld(World):
+    """The owner's world with #6 in an organization: every minute of work
+    is a line in a real session file, Anthropic's report holds #6's spend
+    as it happens, and the Admin API can be down."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.infos = {
+            n: (int(n), email, "", "", False, OWN_KEYS[n], alias) for n, (email, alias) in KEYS.items()
+        }
+        self.admin_up = True
+        self.admin_answers: list[float] = []   # when the usage report answered
+
+    def spend(self, num: str, dollars: float, model: str = PRICED, *,
+              at: float | None = None) -> None:
+        super().spend(num, dollars, model, at=at)
+        from ai_quota_swap.session import session_dir_for
+        from tests.ledger_fixtures import claude_line
+
+        ts, _n, _m, tokens = self.lines[-1]
+        # A qswap run profile's own projects: its lines belong to the key.
+        path = (session_dir_for(self.h.switcher.backup_dir, num, KEYS[num][0])
+                / "projects" / "-work-demo" / f"sess-{num}.jsonl")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(claude_line(mid=f"m-{num}-{len(self.lines)}", ts=ts, model=model, inp=tokens,
+                                out=0, cr=0, w5=0, session=f"sess-{num}") + "\n")
+        os.utime(path, (ts, ts))  # changed when its last line was written
+
+    def scan(self, data_root, **kw):
+        """The real scan, on the fake clock."""
+        self.scans.append((self.now, kw.get("start")))
+        stats = _REAL_SCAN(data_root, now=self.now, **kw)
+        self.pending = []
+        return stats
+
+    def readings(self, fetch=frozenset()) -> dict[str, dict]:
+        return self.h.switcher._api_spend_readings(dict(self.infos), fetch, now=self.now)
+
+    def entries(self, fetch=None, scheduled=False) -> dict[str, UsageEntry]:
+        out = {n: self.sub_entry(n) for n in self.subs}
+        readings = self.readings(fetch)
+        for n in KEYS:
+            out[n] = UsageEntry(sentinel="api key", api_spend=readings.get(n))
+        return out
+
+    def usage_report(self, query):
+        from tests.admin_fakes import bucket, error_response, json_response, report, usage_result
+
+        if not self.admin_up:
+            return error_response(500, "api_error")
+        self.admin_answers.append(self.now)
+        days: dict[str, int] = {}
+        for ts, n, _model, tokens in self.lines:
+            if n == "6" and ts <= self.now:
+                day = datetime.fromtimestamp(ts, tz=UTC).date().isoformat()
+                days[day] = days.get(day, 0) + tokens
+        return json_response(report([
+            bucket(day, [usage_result(ORG_KEY_ID, PRICED, inp=tokens)])
+            for day, tokens in sorted(days.items())
+        ]))
+
+
+def _org_world(temp_home, monkeypatch):
+    from ai_quota_swap import admin_api
+    from ai_quota_swap.admin_orgs import OrgRegistry
+    from ai_quota_swap.models import Platform
+    from tests.admin_fakes import ADMIN_KEY, FakeAnthropic, json_response, key_item, keys_page
+
+    h, _plain = _owner(temp_home, monkeypatch, _out_for_hours())
+    world = OrgWorld(h, _plain.subs)
+    monkeypatch.setattr(ledger_usage, "scan_recent", world.scan)
+    for n, (email, _alias) in KEYS.items():
+        h.switcher._write_account_credentials(n, email, OWN_KEYS[n])
+    admin_api._memory.clear()
+    monkeypatch.delenv("ANTHROPIC_ADMIN_KEY", raising=False)
+    OrgRegistry(h.switcher.backup_dir, platform=Platform.LINUX).add(
+        "acme", ADMIN_KEY, "org-1", "Acme",
+    )
+    monkeypatch.setattr(admin_api, "send", FakeAnthropic({
+        "/v1/organizations/api_keys": [json_response(keys_page([
+            key_item(ORG_KEY_ID, "build", OWN_KEYS["6"]),
+        ]))],
+        "/v1/organizations/usage_report/messages": world.usage_report,
+    }))
+    # #5's credit was spent by hand this morning, so the engine's key is #6;
+    # #6 and #7 spent a little earlier in the month.
+    month_early = datetime(2026, 11, 4, 15, tzinfo=UTC).timestamp()
+    world.spend("5", 1190.0, at=CREDIT_AT + 20 * MINUTE)
+    world.spend("6", 20.0, at=month_early)
+    world.spend("7", 10.0, at=month_early)
+
+    def admin_outage(w, t, active):
+        if t == ADMIN_DOWN:
+            w.admin_up = False
+        elif t == ADMIN_UP:
+            w.admin_up = True
+
+    world.hooks.append(admin_outage)
+    return h, world
+
+
+class TestT7AnOrganizationsKey:
+    def test_anthropics_figure_ages_on_the_fake_clock_and_the_real_scan_runs(
+        self, temp_home, monkeypatch
+    ):
+        """EM2 on the timeline: #6 is held to Anthropic's figure only. The
+        Admin API goes down at t30: the engine keeps the key while the last
+        answer is no more than 20 minutes old, leaves it for the account
+        underneath once it is older (spend-unknown, no latch), enters no
+        other key meanwhile (A10: #7's rows say why), and comes back to #6
+        when the Admin API answers again. The real scan runs on the fake
+        clock throughout: its stamp is the engine's time, and once
+        Anthropic's last answer is an hour old #6's row shows this machine's
+        figure, which is every line written to its session files."""
+        h, world = _org_world(temp_home, monkeypatch)
+        with Run(h, world) as run:
+            tick = run.step()
+            assert tick.active == "6", f"t0: {[e.human() for e in tick.holds]}"
+            reading = world.readings()["6"]
+            assert reading["source"] == api_spend.SOURCE_ADMIN
+            assert reading["spend"]["used"] == pytest.approx(world.dollars("6", scanned=False))
+            # The real scan ran at the fake clock, over the real session files.
+            store = LedgerStore(h.switcher.backup_dir / DB_FILENAME)
+            try:
+                assert float(store.get_meta(LAST_SCAN_META)) == world.now
+            finally:
+                store.close()
+            seven = world.readings()["7"]
+            assert seven["source"] == api_spend.SOURCE_LEDGER and seven["as_of"] == world.now
+            assert seven["spend"]["used"] == pytest.approx(10.0)
+            left_at = back_at = None
+            for _ in range(1, 170):
+                tick = run.step()
+                where = f"t{tick.t} ({_clock(tick.now)})"
+                last = max(world.admin_answers)
+                age = world.now - last
+                if left_at is None:
+                    if tick.active == "6":
+                        # Kept while Anthropic's last answer is fresh enough.
+                        assert age <= api_spend.SPEND_FRESH_S, f"{where}: {age:.0f}s"
+                        continue
+                    left_at = tick.t
+                    s = tick.switches[0]
+                    # Within a tick of the figure going stale, as the engine knows it.
+                    assert api_spend.SPEND_FRESH_S < age <= api_spend.SPEND_FRESH_S + MINUTE, (
+                        f"{where}: left with Anthropic's figure {age:.0f}s old"
+                    )
+                    assert tick.t > ADMIN_DOWN
+                    assert (_num(s.to_ref), s.trigger) == ("1", "at-limit"), s.human()
+                    assert s.limit_reason == api_spend.SPEND_UNKNOWN, s.human()
+                    assert s.human() == (
+                        "Switched #6 build → #1 maya@example.com · its spend could not be "
+                        "measured for 20 minutes; no subscription has room, so back to the "
+                        "account underneath"
+                    ), s.human()
+                    continue
+                if back_at is None:
+                    entered = [m.to for m in run.moves if m.t == tick.t and m.to in KEYS]
+                    assert "7" not in entered and "5" not in entered, f"{where}\n{run.trace()}"
+                    if not world.admin_up:
+                        assert tick.active == "1", f"{where}\n{run.trace()}"
+                        # A10 on #7's rows (issue #14), and #6's own reason.
+                        rows = world.readings()
+                        assert rows["7"]["key_left"]["left"] == "6"
+                        assert api_spend.spend_text(rows["7"], world.now).endswith(
+                            api_spend.KEY_LEFT_WORDS)
+                        assert api_spend.engine_limit_reason(
+                            rows["6"], now=world.now, limited=True) == api_spend.SPEND_UNKNOWN
+                    if world.now - last > admin_api_stale_max():
+                        # An hour without an answer: this machine's figure,
+                        # every line the real scans read, shown but never
+                        # held to the limit.
+                        six = world.readings()["6"]
+                        assert six["source"] == api_spend.SOURCE_LEDGER, where
+                        assert api_spend.machine_only(six)
+                        assert six["spend"]["used"] == pytest.approx(world.dollars("6"), abs=1e-6)
+                        assert world.now - six["as_of"] < SPEND_SCAN_MIN_GAP_S + MINUTE
+                    if tick.active == "6":
+                        back_at = tick.t
+                        assert tick.switches[0].trigger == "at-limit"
+                        # Back with the first answer after the outage (the
+                        # organization backs off after each failure, so that
+                        # can be a while after the Admin API is up again).
+                        again = [a for a in world.admin_answers if a >= T0 + ADMIN_UP * MINUTE]
+                        assert again and world.now - again[0] <= MINUTE, f"{where}\n{run.trace()}"
+            assert left_at is not None, f"never left #6\n{run.trace()}"
+            assert back_at is not None, f"never back on #6\n{run.trace()}"
+        assert [m.to for m in run.entries_now()] == ["6", "6"], run.trace()
+        assert not world.claims
+        _no_flap(run)
+
+
+def admin_api_stale_max() -> float:
+    from ai_quota_swap import admin_api
+
+    return admin_api.STALE_MAX_S

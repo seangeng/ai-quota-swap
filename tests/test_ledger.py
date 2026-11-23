@@ -1441,6 +1441,34 @@ def _history(env) -> None:
 
 
 class TestScanWindow:
+    def test_scan_recent_records_the_time_it_is_given(self, env):
+        """Issue #17: ``now`` is when the scan is recorded (the figure's
+        age) and the day its 7-day window ends on; the wall clock without it."""
+        import time
+
+        from ai_quota_swap.ledger.store import LAST_SCAN_META
+        from ai_quota_swap.ledger.usage import scan_recent
+
+        def last_scan() -> float:
+            store = env.store()
+            try:
+                return float(store.get_meta(LAST_SCAN_META))
+            finally:
+                store.close()
+
+        # A session from two days before ``now``: inside its 7-day window,
+        # whatever the wall clock's date.
+        _aged(write_lines(env.transcript("sess-then.jsonl"), [
+            claude_line(mid="msg_then", ts=T0 - 2 * D, session="sess-then"),
+        ]), T0 - 2 * D)
+        stats = scan_recent(env.data, now=T0)
+        assert last_scan() == T0
+        assert (stats.files_read, stats.files_skipped) == (1, 0)
+        assert env.sums("claude")["requests"] == 1
+        before = time.time()
+        scan_recent(env.data)
+        assert before <= last_scan() <= time.time()
+
     @pytest.mark.parametrize("wide", ["wider window", "all"])
     def test_a_narrow_scan_then_a_wider_one_matches_a_wide_scan_from_scratch(self, env, wide):
         _history(env)
