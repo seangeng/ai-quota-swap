@@ -475,6 +475,99 @@ def _restart_menubar_if_rebuilt(before: dict, after: dict | None) -> None:
     print(f"Menu bar restarted onto {describe_identity(after)} (was pid {pid}).")
 
 
+#: What ``qswap upgrade`` runs in the build it installed, through this
+#: install's interpreter: :func:`key_line_after_upgrade` of that build, never
+#: this process's copy, which may be older than the files on disk.
+_KEY_LINE_CHILD = (
+    "import sys\n"
+    "from ai_quota_swap.update_check import key_line_after_upgrade\n"
+    "sys.exit(key_line_after_upgrade())\n"
+)
+#: How long the upgrade waits for that check: a switcher's start, and at most
+#: one run of the key line with ``--check`` (claude_settings.CHECK_TIMEOUT).
+KEY_LINE_TIMEOUT = 60
+
+
+def _settings_path() -> Path | None:
+    """Claude Code's user settings file, or None when it cannot be told.
+    Read before the upgrade, while this process's modules match the files."""
+    try:
+        from ai_quota_swap.claude_settings import settings_path
+
+        return settings_path()
+    except Exception:
+        return None
+
+
+def _check_key_line(settings: Path | None) -> None:
+    """After an upgrade, have the build on disk check the key line (issue
+    #20): an upgrade that moves or replaces the ``qswap`` script leaves a
+    line that names it pointing at something stale.
+
+    The check runs in a fresh interpreter, ``sys.executable`` with ``-P``:
+    uv tool, pipx and the qswap alias all upgrade the tool's environment in
+    place, so that interpreter imports the new build, which answers for its
+    own console script (``installed.command``). This process keeps the old
+    build's modules, and a module it imported now would come from the new
+    files. It runs only when the settings mention ``key-helper``. The child
+    prints one JSON object (:func:`key_line_after_upgrade`); anything else,
+    a failure or a timeout leaves the upgrade's report as it was."""
+    from ai_quota_swap.printer import warning  # imported before the upgrade ran
+
+    if settings is None:
+        return
+    try:
+        if b"key-helper" not in settings.read_bytes():
+            return
+    except OSError:
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, "-P", "-c", _KEY_LINE_CHILD],
+            capture_output=True,
+            text=True,
+            timeout=KEY_LINE_TIMEOUT,
+            check=False,
+        )
+        answer = json.loads((result.stdout.strip().splitlines() or ["null"])[-1])
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return
+    if result.returncode != 0 or not isinstance(answer, dict):
+        return
+    lines = [str(x) for x in answer.get("lines") or [] if isinstance(x, str)]
+    if not lines:
+        return
+    if answer.get("problem"):
+        warning("\n".join(lines))
+    else:
+        print("\n".join(lines))
+
+
+def key_line_after_upgrade() -> int:
+    """Run by the build ``qswap upgrade`` installed (:func:`_check_key_line`):
+    when this data directory's key line in Claude Code's settings no longer
+    runs this install, write it again (``key_activation.key_line_after_upgrade``).
+    Prints one JSON object on standard output, ``{"lines": [...], "problem":
+    bool}``, the lines wrapped for the terminal; exits 0. Changes nothing,
+    and builds no switcher, when the settings hold no line of this qswap's."""
+    from ai_quota_swap import claude_settings, display
+    from ai_quota_swap.paths import get_backup_root
+
+    lines: list[str] = []
+    problem = False
+    if claude_settings.read_state(data_dir=get_backup_root()).ours:
+        from ai_quota_swap.switcher import ClaudeAccountSwitcher
+
+        done, trouble = ClaudeAccountSwitcher().key_line_after_upgrade()
+        if trouble:
+            lines, problem = display.wrap(trouble), True
+        elif done:
+            lines = display.wrap(done)
+    sys.stdout.write(json.dumps({"lines": lines, "problem": problem}) + "\n")
+    sys.stdout.flush()
+    return 0
+
+
 def _shell_word(word: str) -> str:
     """``word`` quoted so a shell reads it back as one argument: POSIX quoting,
     or cmd.exe's double quotes on Windows. An interpreter path can hold a
@@ -495,7 +588,8 @@ def run_self_upgrade(current_version: str | None = None) -> int:
     -> 0.1.0 (fdeb279)``), since every git install of one release shares its
     version. A uv install with a release cooldown also gets told about a
     release the cooldown hides, since uv itself only reports "Nothing to
-    upgrade".
+    upgrade". While an API key is active, the build on disk then checks the
+    key line in Claude Code's settings (:func:`_check_key_line`).
     """
     from ai_quota_swap.printer import accent, error, warning
 
@@ -505,6 +599,7 @@ def run_self_upgrade(current_version: str | None = None) -> int:
         current_version = __version__
     # Read before the package manager rewrites direct_url.json.
     before = {**install_identity(), "version": current_version}
+    settings = _settings_path()
 
     method = _detect_install_method()
     cmd = _upgrade_command(method)
@@ -558,6 +653,10 @@ def run_self_upgrade(current_version: str | None = None) -> int:
         ))
     elif after is not None:
         print(f"ai-quota-swap is still at {describe_identity(after)}.")
+
+    # Before the menu bar restarts, so its engine starts on a line that runs
+    # the new build.
+    _check_key_line(settings)
 
     if sys.platform == "darwin":
         _restart_menubar_if_rebuilt(before, after)

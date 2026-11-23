@@ -53,7 +53,9 @@ helper.
 Whether the line can give Claude Code the key is :func:`check_command`: the
 line's own command, run with ``--check`` the way Claude Code runs it. Doctor
 reports it, and a switch to the active key writes the line again when it
-does not answer (:func:`line_answers`).
+does not answer (:func:`line_answers`). After ``qswap upgrade`` the build it
+installed writes the line again when it runs another qswap than that build
+(:func:`line_runs_elsewhere`).
 """
 
 from __future__ import annotations
@@ -469,6 +471,43 @@ def line_answers(state: HelperState) -> str | None:
     return check_command(state.command)
 
 
+def line_runs_elsewhere(command: str | None, *, data_dir: Path | str | None = None) -> str | None:
+    """Whether qswap's line runs this install of qswap, from the line and the
+    files alone (nothing is run): None when it does, else why not, in words
+    that follow "the line" (as :func:`command_problem`'s). Its program must
+    be the one :func:`helper_command` names now: a console script by any path
+    that leads to the same file (``~/.local/bin/qswap`` and the script it
+    links to are one), an interpreter by that very path (two virtual
+    environments' interpreters can be links to one Python, and each imports
+    its own qswap). ``qswap upgrade`` asks this of the build it installed."""
+    problem = command_problem(command)
+    if problem is not None:
+        return problem
+    line = read_line(command)
+    expected = read_line(helper_command(line.number, data_dir=data_dir)) if line else None
+    if line is None or expected is None:
+        return None
+    if expected.data_dir and not line.data_dir:
+        return "names no data directory"
+    if line.module != expected.module or not _same_program(
+        line.program, expected.program, interpreter=expected.module is not None
+    ):
+        return f"runs another install of qswap ({shown_path(Path(line.program))})"
+    return None
+
+
+def _same_program(a: str, b: str, *, interpreter: bool) -> bool:
+    """Whether two paths run the same program (:func:`line_runs_elsewhere`)."""
+    if a == b:
+        return True
+    if interpreter:
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 def _quote(path: str) -> str:
     """``path`` as one word for the shell Claude Code runs the helper in.
     :func:`read_line` reads back every word this writes. On Windows (cmd.exe)
@@ -586,6 +625,26 @@ def _read(path: Path) -> str | None:
         return _decode(path.read_bytes())
     except FileNotFoundError:
         return None
+
+
+def transcript_days(path: Path | None = None) -> float:
+    """How many days Claude Code keeps a session's transcript after its last
+    change: ``cleanupPeriodDays`` in its user settings (or in ``path``) when
+    that is a number of 0 or more, else its default (30). The launch records
+    of ``qswap run`` on a key are kept as long (``ledger.activations``).
+    Never raises."""
+    from ai_quota_swap.ledger.activations import TRANSCRIPT_DAYS
+
+    try:
+        text = _split_bom(_read(settings_path() if path is None else path) or "")[1]
+        obj, _err = _parse(text or "")
+    except (OSError, UnicodeDecodeError, ValueError):
+        return TRANSCRIPT_DAYS
+    value = (obj or {}).get("cleanupPeriodDays")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return TRANSCRIPT_DAYS
+    days = float(value)
+    return days if 0 <= days < 1e9 else TRANSCRIPT_DAYS
 
 
 def read_state(path: Path | None = None, *, data_dir: Path | str | None = None) -> HelperState:

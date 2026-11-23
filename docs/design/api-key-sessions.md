@@ -215,6 +215,12 @@ return to it when the key is left.
 `--settings '{"apiKeyHelper": "<qswap> key-helper N"}'`. Only that process uses the key, for
 as long as it lives. Arguments after `--` go to `claude` as for any `run`.
 
+The launch also gives claude a session id of its own (`--session-id`) and records it with the
+account and the time (`key_runs.jsonl`), so the ledger gives that conversation's usage to the
+key ([ledger.md](ledger.md#attribution-to-accounts)). Arguments that pick the conversation
+(`--resume`, `--continue` and the like) get no id, and that session's usage is attributed as
+before.
+
 ### Credit
 
 `qswap credit N AMOUNT [--expires DATE]` records a balance for an API-key account as of now;
@@ -240,7 +246,9 @@ stays on the key. Nor does a stamp naming the login under the key mark one when 
 session's first counted event falls while the key is active through the line (a session
 opened as the subscription ran out, just before the engine entered the key): `qswap run`
 for that login is refused while the key is active, so its usage stays by time, on the key.
-A stamp naming another login still marks a `qswap run` session.
+A stamp naming another login still marks a `qswap run` session. A `qswap run N` session on
+a key is the key's by its launch record (issue #21), whatever the time or a stamp says;
+before the record existed it went by time, to the login.
 
 ### As built
 
@@ -319,6 +327,28 @@ What the code does where this part leaves room, or where it had to differ:
   the run profiles, instead of answering only `Already on`. List, status, the dashboard and
   the menu bar carry a note for such a variable and for another `apiKeyHelper`, in the
   refusal's words and with its fix.
+- **After `qswap upgrade`** (issue #20). An upgrade that moves or replaces the console
+  script leaves a line naming the old one. Once the package manager has succeeded, the
+  upgrade runs the check in the build it installed, not in its own process: `sys.executable
+  -P -c` calling `update_check.key_line_after_upgrade` of the files on disk. uv tool, pipx
+  and the qswap alias all upgrade the tool's environment in place, so that interpreter is
+  still there and imports the new build, which answers for its own console script
+  (`installed.command`, the resolver the line is written with). The old process keeps the
+  old build's modules: a module it imported after the upgrade would come from the new
+  files, and its own resolver could point at a package directory the upgrade replaced. The
+  old process only reads, before the upgrade, where Claude Code's settings are, and spawns
+  the check when they mention `key-helper`. The check acts only on this data directory's
+  line: when it runs a qswap that is no longer there, or another install
+  (`claude_settings.line_runs_elsewhere`: a console script by any path leading to this
+  install's, an interpreter only by its own path, since two environments' interpreters can
+  link to one Python), it is written again by the step `qswap switch N` to the active key
+  uses (`_write_line_again`: the saved key checked, the line written under the account lock,
+  then run with `--check`). Nothing else is repaired: not the record, not run profiles, not
+  who entered the key. The child prints one JSON object; the upgrade prints its sentence,
+  or a warning with the command that fixes the line, before it restarts the menu bar. A
+  child that fails, times out or answers anything else changes nothing in the report. An
+  upgrade from a build without the check (0.1.1 and earlier) does not run it; the engine's
+  reconcile and `qswap switch N` still repair a line whose script is gone.
 - **Order of the two steps.** Entering a key gives run profiles their copies first, then
   writes the record, then the line (a failure in between puts the profiles back); leaving
   removes the line and then restores the profiles. Either crash leaves copies with no line,
@@ -435,3 +465,17 @@ What the code does where this part leaves room, or where it had to differ:
   the new key within 5 minutes (at once after a rejected request), and never moves the key to
   another slot; **remove** takes the line out first and names `qswap run N` sessions on that
   key, which qswap records at launch.
+- **The launch record** (issue #21). What is exact at launch is the session id: claude takes
+  one (`--session-id`, listed by `claude --help` on 2.1.330) and writes it on every
+  transcript line. The pid is known too (exec keeps it), and Claude Code's
+  `sessions/<pid>.json` names the session while the process runs, but it is gone once the
+  process exits, so matching by it would depend on qswap looking while the session runs;
+  the record keeps the pid only for `remove`. A conversation started with `/clear` inside
+  the process gets a new id the record does not know, and its usage goes by time, as before.
+  The other way round, a recorded conversation resumed later with plain `claude --resume`
+  on a login stays the key's: the record has no end, and counting the key high is the side
+  a budget wants. Not run against a real Claude Code: that `--session-id` sets the
+  transcript's `sessionId` in an interactive and a print-mode session, that claude accepts
+  it beside `--settings` and the arguments users pass after `--` (a subcommand among them),
+  and what `/clear` does to the id. The suite fakes claude at exec and builds the
+  transcripts it reads.

@@ -12,7 +12,9 @@ the ledger up to date). So the read:
   that a session Claude Code stamped as started on another account (a
   ``qswap run`` session sharing the default history) belongs to that account
   and is left out here. API-key accounts never own such a session (the stamp
-  names an account uuid, which they do not have), so nothing is added;
+  names an account uuid, which they do not have), so nothing is added. A
+  ``qswap run`` session on a key is in the key's own buckets already: the
+  scan gave it the account of its launch record;
 - prices tokens when read, with the same table and ``pricing.json``; tokens
   of a model with no price are charged at the table's dearest rate for their
   kind (``PriceTable.dearest``), since these figures hold an API key to its
@@ -30,7 +32,12 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from ai_quota_swap.ledger.activations import ActivationLog, identity_key, log_path
+from ai_quota_swap.ledger.activations import (
+    ActivationLog,
+    identity_key,
+    launches_path,
+    log_path,
+)
 from ai_quota_swap.ledger.pricing import OVERRIDE_FILENAME, PriceTable
 from ai_quota_swap.ledger.store import DB_FILENAME, LAST_SCAN_META, SCHEMA_VERSION
 
@@ -107,7 +114,8 @@ def account_spend(
         return None
     memo_key = (
         str(db), db_key, _stat_key(Path(str(db) + "-wal")),
-        _stat_key(log_path(root)), _stat_key(root / OVERRIDE_FILENAME),
+        _stat_key(log_path(root)), _stat_key(launches_path(root)),
+        _stat_key(root / OVERRIDE_FILENAME),
         email, org or "", int(month_start), int(day_start),
         None if since_start is None else int(since_start),
     )
@@ -187,9 +195,10 @@ def _read(
         owner = moved.get(session)
         if owner is not None and owner != account:
             continue
-        if log is not None and starts:
+        if log is not None and starts and not log.launched(session):
             # docs/design/api-key-sessions.md: in a saved-key period only the
-            # sessions started after the activation used the key.
+            # sessions started after the activation used the key (a qswap run
+            # session on it is the key's by its launch record).
             elsewhere = saved_key_moves(log, hour, starts.get(session), account)
             if elsewhere is not None and elsewhere != account:
                 continue

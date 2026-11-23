@@ -2724,6 +2724,209 @@ class TestMovedQswap:
         assert command_missing("qswap key-helper 5") is False  # found on PATH
 
 
+def _program(path: Path) -> Path:
+    """A stand-in console script at ``path`` (an empty executable file)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+class TestTheLineAfterAnUpgrade:
+    """Issue #20: after ``qswap upgrade`` the build it installed checks this
+    data directory's key line. A line whose script is gone, or is another
+    install's, is written again the way ``qswap switch N`` to the active key
+    writes it, and the upgrade says so in one line; a line that cannot be
+    written again is said with the command that fixes it. Real files: the
+    line's script and this install's are made in the test's directory."""
+
+    @pytest.fixture(autouse=True)
+    def _this_install(self, monkeypatch, tmp_path):
+        self.mine = _program(tmp_path / "new" / "bin" / "qswap")
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [str(self.mine)])
+        monkeypatch.setattr(claude_settings, "command_missing", _REAL_COMMAND_MISSING)
+
+    def _line(self, home: Path, command: str, **extra) -> bytes:
+        body = json.dumps({"apiKeyHelper": command, "model": "opus", **extra}, indent=2) + "\n"
+        _settings(home).write_text(body, encoding="utf-8")
+        return _settings(home).read_bytes()
+
+    def test_a_line_that_runs_this_install_is_left_alone(self, temp_home):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        before = _settings(temp_home).read_bytes()
+        assert s.key_line_after_upgrade() == (None, None)
+        assert _settings(temp_home).read_bytes() == before
+
+    @POSIX_ONLY
+    def test_a_link_to_this_install_is_this_install(self, temp_home, tmp_path):
+        s = _fleet()
+        link = tmp_path / "local" / "bin" / "qswap"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(self.mine)
+        before = self._line(temp_home, f"{link} key-helper 5")
+        assert s.key_line_after_upgrade() == (None, None)
+        assert _settings(temp_home).read_bytes() == before
+
+    def test_a_script_that_is_gone_is_written_again(self, temp_home, tmp_path):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        record = s._key_state()
+        self._line(temp_home, f"{tmp_path / 'gone' / 'qswap'} key-helper 5")
+        done, problem = s.key_line_after_upgrade()
+        assert problem is None
+        assert done == "Wrote the key line for #5 ci again: it runs a qswap that is no longer there."
+        assert _settings_obj(temp_home) == {
+            "apiKeyHelper": f"{self.mine} key-helper 5", "model": "opus",
+        }
+        assert s._key_state() == record  # who entered the key is left as it was
+        assert s.key_line_after_upgrade() == (None, None)
+
+    def test_another_install_still_there_is_written_again(self, temp_home, tmp_path):
+        s = _fleet()
+        old = _program(tmp_path / "old" / "bin" / "qswap")
+        self._line(temp_home, f"{old} key-helper 5")
+        done, problem = s.key_line_after_upgrade()
+        assert problem is None
+        assert done == (
+            f"Wrote the key line for #5 ci again: it runs another install of qswap ({old})."
+        )
+        assert _settings_obj(temp_home)["apiKeyHelper"] == f"{self.mine} key-helper 5"
+        assert old.exists()  # the other install itself is not touched
+
+    def test_lines_that_are_not_this_qswaps_are_never_touched(self, temp_home, tmp_path):
+        s = _fleet()
+        gone = tmp_path / "gone" / "qswap"
+        for text in (
+            json.dumps({"apiKeyHelper": "/opt/vault/print-key"}),
+            json.dumps({"apiKeyHelper": f"{gone} key-helper 5 --data-dir /elsewhere/qswap"}),
+            '{"apiKeyHelper": "%s key-helper 5",' % gone,
+        ):
+            _settings(temp_home).write_text(text, encoding="utf-8")
+            assert s.key_line_after_upgrade() == (None, None)
+            assert _settings(temp_home).read_text(encoding="utf-8") == text
+
+    def test_a_key_that_is_not_saved_says_how_to_save_it(self, temp_home, tmp_path):
+        s = _fleet()
+        before = self._line(temp_home, f"{tmp_path / 'gone' / 'qswap'} key-helper 5")
+        s._delete_account_credentials("5", EMAIL_5)
+        done, problem = s.key_line_after_upgrade()
+        assert done is None
+        assert problem == "#5 ci has no saved key. Save one with: qswap add-token KEY --slot 5"
+        assert _settings(temp_home).read_bytes() == before
+
+    def test_a_settings_file_it_cannot_write_names_the_switch(self, temp_home, tmp_path, monkeypatch):
+        s = _fleet()
+        self._line(temp_home, f"{tmp_path / 'gone' / 'qswap'} key-helper 5")
+
+        def refuse(*a, **k):
+            raise claude_settings.SettingsError("could not be written (EACCES)", kind="write")
+
+        monkeypatch.setattr(claude_settings, "install", refuse)
+        done, problem = s.key_line_after_upgrade()
+        assert done is None
+        where = claude_settings.shown_path(claude_settings.settings_path())
+        assert problem == (
+            "The key line for #5 ci runs a qswap that is no longer there, and it could not "
+            f"be written again: {where} could not be written (EACCES). "
+            "To write it again: qswap switch 5"
+        )
+
+    def test_a_line_for_a_subscription_names_the_way_off_it(self, temp_home, tmp_path):
+        s = _fleet()
+        before = self._line(temp_home, f"{tmp_path / 'gone' / 'qswap'} key-helper 7")
+        done, problem = s.key_line_after_upgrade()
+        assert done is None
+        assert "make #7 work the active API key, but #7 work is not an API-key account" in problem
+        assert problem.endswith("Remove the line: qswap switch 1")
+        assert _settings(temp_home).read_bytes() == before
+
+    def test_doctor_reports_a_line_whose_script_is_gone(self, temp_home, tmp_path):
+        s = _fleet()
+        s.switch_to("5", json_output=True)
+        self._line(temp_home, f"{tmp_path / 'gone' / 'qswap'} key-helper 5")
+        check = {c.id: c for c in doctor.run_checks()}["claude.key_helper"]
+        assert check.status == "fail"
+        assert "with a qswap that is no longer there" in check.summary
+        assert check.fix == "qswap switch 5"
+
+    def test_the_entry_the_upgrade_runs(self, temp_home, tmp_path, monkeypatch, capsys):
+        from ai_quota_swap import update_check
+        from tests.api_helpers import pin_platform
+
+        pin_platform(monkeypatch, Platform.MACOS)  # the fleet's, for a switcher of its own
+        _fleet()
+        self._line(temp_home, f"{tmp_path / 'gone' / 'qswap'} key-helper 5")
+        capsys.readouterr()
+        assert update_check.key_line_after_upgrade() == 0
+        answer = json.loads(capsys.readouterr().out)
+        assert answer["problem"] is False
+        assert " ".join(answer["lines"]) == (
+            "Wrote the key line for #5 ci again: it runs a qswap that is no longer there."
+        )
+        assert all(len(line) <= display.WIDTH for line in answer["lines"])
+
+    def test_the_entry_builds_nothing_without_a_line_of_its_own(
+        self, temp_home, monkeypatch, capsys
+    ):
+        from ai_quota_swap import switcher, update_check
+
+        def never(*a, **k):
+            raise AssertionError("no switcher without a key line")
+
+        monkeypatch.setattr(switcher, "ClaudeAccountSwitcher", never)
+        _settings(temp_home).parent.mkdir(parents=True, exist_ok=True)
+        _settings(temp_home).write_text(json.dumps({"apiKeyHelper": "/opt/vault/print-key"}),
+                                        encoding="utf-8")
+        assert update_check.key_line_after_upgrade() == 0
+        assert json.loads(capsys.readouterr().out) == {"lines": [], "problem": False}
+
+
+@POSIX_ONLY
+class TestTheLineRunsThisInstall:
+    """``claude_settings.line_runs_elsewhere`` on real files: a console
+    script by any path that leads to it, an interpreter only by its own
+    path, since another environment's interpreter can be a link to the same
+    Python and imports its own qswap."""
+
+    def test_an_interpreter_is_judged_by_its_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(claude_settings, "command_missing", _REAL_COMMAND_MISSING)
+        mine = tmp_path / "new" / "bin" / "python"
+        other = tmp_path / "old" / "bin" / "python"
+        for link in (mine, other):
+            link.parent.mkdir(parents=True)
+            link.symlink_to(sys.executable)
+        monkeypatch.setattr(claude_settings, "qswap_executable",
+                            lambda: [str(mine), "-P", "-m", "ai_quota_swap"])
+        elsewhere = claude_settings.line_runs_elsewhere
+        assert elsewhere(f"{mine} -P -m ai_quota_swap key-helper 5") is None
+        assert elsewhere(f"{other} -P -m ai_quota_swap key-helper 5") == (
+            f"runs another install of qswap ({other})"
+        )
+        script = _program(tmp_path / "bin" / "qswap")
+        assert elsewhere(f"{script} key-helper 5") == f"runs another install of qswap ({script})"
+
+    def test_the_reasons_a_line_cannot_answer_come_first(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(claude_settings, "command_missing", _REAL_COMMAND_MISSING)
+        script = _program(tmp_path / "bin" / "qswap")
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [str(script)])
+        elsewhere = claude_settings.line_runs_elsewhere
+        assert elsewhere(f"{script} key-helper 5") is None
+        assert elsewhere("qswap key-helper 5").startswith("runs qswap by name only")
+        assert elsewhere("/opt/vault/print-key") == "is not a key line of qswap's"
+        script.chmod(0o644)
+        assert elsewhere(f"{script} key-helper 5") == f"runs {script}, which is not executable"
+
+    def test_on_linux_a_line_names_its_data_directory(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(claude_settings, "command_missing", _REAL_COMMAND_MISSING)
+        monkeypatch.setattr(key_helper, "_platform", lambda: "linux")
+        script = _program(tmp_path / "bin" / "qswap")
+        monkeypatch.setattr(claude_settings, "qswap_executable", lambda: [str(script)])
+        assert claude_settings.line_runs_elsewhere(f"{script} key-helper 5") == (
+            "names no data directory"
+        )
+
+
 @POSIX_ONLY
 class TestTheLineAnswers:
     """Decision B2 (F18): doctor runs the line's own command with --check,

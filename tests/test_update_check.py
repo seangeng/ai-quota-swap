@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 import urllib.error
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1116,6 +1118,152 @@ class TestUpgradeRestartsARunningMenuBar:
         out = capsys.readouterr().out
         assert "ai-quota-swap upgraded: 0.27.2 -> 0.28.0" in out
         assert "Menu bar restarted" in out
+
+
+# --- the key line after an upgrade (issue #20) --------------------------------
+
+
+def _child(lines: list[str], problem: bool = False, *, code: int = 0) -> MagicMock:
+    """A finished run of the key line check in the build on disk."""
+    return MagicMock(returncode=code, stdout=json.dumps({"lines": lines, "problem": problem}) + "\n")
+
+
+class TestUpgradeChecksTheKeyLine:
+    """After an upgrade the build on disk, not this process, checks qswap's
+    key line in Claude Code's settings: a fresh interpreter of the same
+    install, which imports the new files. Only when the settings mention
+    the key helper; anything unexpected leaves the upgrade's report as it was."""
+
+    @pytest.fixture
+    def settings(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"apiKeyHelper": "/opt/q/bin/qswap key-helper 5"}), encoding="utf-8")
+        return path
+
+    def test_the_build_on_disk_runs_the_check(self, settings, capsys):
+        from ai_quota_swap import update_check
+
+        done = "Wrote the key line for #5 ci again: it runs a qswap that is no longer there."
+        with patch("ai_quota_swap.update_check.subprocess.run", return_value=_child([done])) as run:
+            update_check._check_key_line(settings)
+        argv = run.call_args.args[0]
+        assert argv == [update_check.sys.executable, "-P", "-c", update_check._KEY_LINE_CHILD]
+        assert "from ai_quota_swap.update_check import key_line_after_upgrade" in argv[3]
+        assert run.call_args.kwargs["timeout"] == update_check.KEY_LINE_TIMEOUT
+        assert run.call_args.kwargs["capture_output"] is True
+        assert capsys.readouterr().out.splitlines() == [done]
+
+    def test_a_line_that_could_not_be_written_again_is_a_warning(self, settings, capsys):
+        from ai_quota_swap import update_check
+
+        text = "#5 ci has no saved key. Save one with: qswap add-token KEY --slot 5"
+        with patch("ai_quota_swap.update_check.subprocess.run", return_value=_child([text], True)):
+            update_check._check_key_line(settings)
+        assert text in capsys.readouterr().out
+
+    @pytest.mark.parametrize("body", [None, "{}", '{"model": "opus"}', "{not json"])
+    def test_settings_without_the_key_helper_run_nothing(self, tmp_path, body):
+        from ai_quota_swap import update_check
+
+        path = tmp_path / "settings.json"
+        if body is not None:
+            path.write_text(body, encoding="utf-8")
+        with patch("ai_quota_swap.update_check.subprocess.run") as run:
+            update_check._check_key_line(path)
+            update_check._check_key_line(None)
+        run.assert_not_called()
+
+    @pytest.mark.parametrize("outcome", [
+        {"return_value": _child(["x"], code=1)},
+        {"return_value": MagicMock(returncode=0, stdout="Traceback (most recent call last):\n")},
+        {"return_value": MagicMock(returncode=0, stdout="")},
+        {"return_value": MagicMock(returncode=0, stdout='["not", "an", "object"]\n')},
+        {"side_effect": subprocess.TimeoutExpired("python", 60)},
+        {"side_effect": FileNotFoundError("python")},
+    ], ids=["failed", "not-json", "nothing", "not-an-object", "timeout", "no-interpreter"])
+    def test_anything_unexpected_says_nothing(self, settings, capsys, outcome):
+        from ai_quota_swap import update_check
+
+        with patch("ai_quota_swap.update_check.subprocess.run", **outcome):
+            update_check._check_key_line(settings)
+        assert capsys.readouterr().out == ""
+
+    def test_the_last_line_is_the_answer(self, settings, capsys):
+        """A build that prints something first (a migration notice) still
+        answers on its last line."""
+        from ai_quota_swap import update_check
+
+        out = "ai-quota-swap: migrated data\n" + _child(["Wrote it again."]).stdout
+        with patch("ai_quota_swap.update_check.subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout=out)):
+            update_check._check_key_line(settings)
+        assert capsys.readouterr().out == "Wrote it again.\n"
+
+    @patch("ai_quota_swap.update_check.sys.platform", "darwin")
+    def test_run_self_upgrade_checks_after_the_report_and_before_the_menu_bar(
+        self, settings, monkeypatch, capsys
+    ):
+        from ai_quota_swap import update_check
+
+        order: list[str] = []
+        monkeypatch.setattr(update_check, "_detect_install_method", lambda: "uv")
+        monkeypatch.setattr(update_check, "install_identity", lambda: _OLD_BUILD)
+        monkeypatch.setattr(update_check, "_installed_identity_on_disk", lambda: _NEW_BUILD)
+        monkeypatch.setattr(update_check, "held_back_release_notice", lambda v: None)
+        monkeypatch.setattr(update_check, "_settings_path",
+                            lambda: order.append("settings path") or settings)
+        monkeypatch.setattr(update_check, "_restart_menubar_if_rebuilt",
+                            lambda *a: order.append("menu bar"))
+
+        def run(argv, **kw):
+            order.append("upgrade" if argv[0] == "uv" else "key line")
+            return MagicMock(returncode=0) if argv[0] == "uv" else _child(["Wrote it again."])
+
+        with patch("ai_quota_swap.update_check.subprocess.run", side_effect=run):
+            assert run_self_upgrade("0.27.2") == 0
+        # The settings path is read while this process's modules still match
+        # the files on disk.
+        assert order == ["settings path", "upgrade", "key line", "menu bar"]
+        assert capsys.readouterr().out.splitlines() == [
+            "ai-quota-swap upgraded: 0.27.2 -> 0.28.0", "Wrote it again.",
+        ]
+
+    @patch("ai_quota_swap.update_check.sys.platform", "linux")
+    def test_a_failed_upgrade_checks_nothing(self, settings, monkeypatch):
+        from ai_quota_swap import update_check
+
+        monkeypatch.setattr(update_check, "_detect_install_method", lambda: "pipx")
+        monkeypatch.setattr(update_check, "_settings_path", lambda: settings)
+        with patch("ai_quota_swap.update_check.subprocess.run",
+                   return_value=MagicMock(returncode=1)) as run:
+            assert run_self_upgrade("0.27.2") == 1
+        run.assert_called_once()
+
+    def test_the_child_entry_is_in_this_build(self, tmp_path):
+        """The command really runs: this build's entry answers in the JSON
+        the upgrade reads. Another program's apiKeyHelper (it mentions
+        key-helper) is not qswap's, so nothing is built or written. The
+        child gets a home of its own."""
+        from ai_quota_swap import update_check
+
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        settings = home / ".claude" / "settings.json"
+        body = json.dumps({"apiKeyHelper": "/opt/vault/print-key key-helper 5"})
+        settings.write_text(body, encoding="utf-8")
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("CLAUDE_CONFIG_DIR", "XDG_DATA_HOME")}
+        env.update(HOME=str(home), USERPROFILE=str(home))
+        src = str(Path(update_check.__file__).resolve().parents[1])
+        env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+        result = subprocess.run(
+            [update_check.sys.executable, "-P", "-c", update_check._KEY_LINE_CHILD],
+            capture_output=True, text=True, timeout=60, env=env, cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout.splitlines()[-1]) == {"lines": [], "problem": False}
+        assert settings.read_text(encoding="utf-8") == body
+        assert [p.name for p in home.iterdir()] == [".claude"]  # no data directory made
 
 
 # --- the install commands qswap prints ----------------------------------------

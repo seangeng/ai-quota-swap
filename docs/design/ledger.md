@@ -105,6 +105,29 @@ Transcripts do not say which account served a request.
   as early, which keeps its attribution. A default-tree session keeps time-based attribution, so a switch mid-session moves
   its later usage to the new account. Sessions starting before the first activation line stay
   unattributed.
+- `qswap run N` on an API key runs one process on the shared profile with the key in
+  `--settings`, while the log names the login every other session uses, and a session
+  started under a helper gets its owner stamp only once the helper is gone (2.1.322
+  binary). So the launch gives claude a session id of qswap's
+  own (`--session-id`, a fresh UUID) and appends a launch record to `key_runs.jsonl` beside
+  the log: `{pid, number, ts, session, email, org}`, no key and no token. The id is known at
+  launch and every transcript line of that conversation carries it (`sessionId`), sub-agent
+  transcripts included, so the match needs no guessing. At scan time an event of a recorded
+  session at or after the record's time goes to the record's account, before the log is
+  asked; at report time neither the owner-stamp rule nor the saved-key rule moves a
+  recorded session. The account is stored as the log stores it, so a later `qswap swap`
+  or `move` does not carry the usage to another account. A launch whose arguments pick the
+  conversation (`--resume`, `--continue`, `--fork-session`, `--from-pr`, `--teleport`, and
+  `--bg`, whose session runs in another process) gets no id: claude refuses one beside
+  `--resume`, and the conversation is not known at launch. It is recorded without a session
+  (for `remove`), and its usage is attributed as before. An id the user passed
+  (`--session-id X`) is recorded as given. Records are dropped when the next launch is
+  recorded, once older than Claude Code's transcript retention (`cleanupPeriodDays` in its
+  user settings, 30 days by default, from the launch, plus a day) and their process is gone:
+  the transcript the record explains is gone by then, and the ledger keeps what the record
+  gave each event, so no report changes. The drop runs under the account lock, which a
+  launch waits at most a second for; without it the record is appended and the old ones
+  wait.
 - Sessions with entrypoint `claude-desktop` (and `claude-desktop-3p`, `local-agent`) run on a
   token the desktop app supplies, not the CLI login qswap switches; they are reported under a
   separate "desktop app" account.

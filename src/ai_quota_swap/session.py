@@ -52,11 +52,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 import unicodedata
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
@@ -284,6 +286,42 @@ _BOOTSTRAP_LOCK_TIMEOUT = 30.0
 # Migration moves every transcript in a profile, so it waits longer than the
 # bootstrap for a peer to finish rather than bailing and leaving a half state.
 _MIGRATION_LOCK_TIMEOUT = 30.0
+
+# Claude Code options that pick the conversation a launch opens (``claude
+# --help``, 2.1.330), and --bg, whose session runs in another process. With
+# one of them qswap run on a key gives claude no --session-id: claude refuses
+# one beside --resume or --continue, and the conversation is not known at
+# launch.
+_SESSION_PICKERS = (
+    "--continue", "--resume", "--fork-session", "--from-pr", "--teleport", "--bg",
+    "--background",
+)
+_SESSION_PICKER_LETTERS = frozenset("cr")  # -c, -r, alone or in a cluster (-pc)
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
+
+
+def key_run_session(claude_args: list[str]) -> tuple[list[str], str | None]:
+    """``(extra arguments, session id)`` for ``qswap run N`` on a key: the
+    ``--session-id`` qswap gives claude, and the id its launch record names
+    (``ledger.activations``, "Launch records"). Every transcript line of
+    that conversation carries the id, so ``qswap usage`` can give its usage
+    to the key exactly. An id the user passed (``--session-id X``) is
+    recorded as it is, with nothing added; with an option that picks the
+    conversation (``--resume``, ``--continue``, ...) nothing is added and
+    nothing is recorded."""
+    for i, arg in enumerate(claude_args):
+        if arg == "--session-id" or arg.startswith("--session-id="):
+            value = arg.partition("=")[2] if "=" in arg else (
+                claude_args[i + 1] if i + 1 < len(claude_args) else ""
+            )
+            return [], value if _UUID_RE.fullmatch(value) else None
+    for arg in claude_args:
+        if arg.partition("=")[0] in _SESSION_PICKERS:
+            return [], None
+        if re.fullmatch(r"-[A-Za-z]+", arg) and _SESSION_PICKER_LETTERS & set(arg[1:]):
+            return [], None
+    session = str(uuid.uuid4())
+    return ["--session-id", session], session
 
 
 def slugify_email(email: str) -> str:
@@ -1016,15 +1054,17 @@ class SessionManager:
                 # A qswap run profile's shell: run on the shared profile.
                 env.pop("CLAUDE_CONFIG_DIR", None)
         flag = json.dumps({claude_settings.HELPER_KEY: claude_settings.helper_command(account_num)})
-        # The pid claude will run under (exec keeps it): removing the account
-        # names this session, whose key would stop working.
-        self.switcher.record_key_run(account_num, os.getpid())
+        # The launch record: the pid claude will run under (exec keeps it),
+        # so removing the account names this session, whose key would stop
+        # working; and the session id, so its usage goes to the key.
+        extra, session = key_run_session(claude_args)
+        self.switcher.record_key_run(account_num, os.getpid(), session=session)
         print(
             f"{accent('Launching')} {self.switcher.label(account_num, long=False)} (API key) "
             f"{muted('[this session only]')}",
             file=sys.stderr,
         )
-        self._exec(claude_bin, ["--settings", flag, *claude_args], env=env)
+        self._exec(claude_bin, ["--settings", flag, *extra, *claude_args], env=env)
 
     def _ensure_not_api_key(self, account_num: str, email: str) -> None:
         """Reject API-key accounts for a session profile.
