@@ -112,15 +112,24 @@ Transcripts do not say which account served a request.
   own (`--session-id`, a fresh UUID) and appends a launch record to `key_runs.jsonl` beside
   the log: `{pid, number, ts, session, email, org}`, no key and no token. The id is known at
   launch and every transcript line of that conversation carries it (`sessionId`), sub-agent
-  transcripts included, so the match needs no guessing. At scan time an event of a recorded
+  transcripts included, so the match needs no guessing (Claude Code 2.1.330, and 2.1.331 in
+  print mode: every line but `file-history-snapshot` ones, which carry no usage; a
+  sub-agent's transcript names the parent's id). At scan time an event of a recorded
   session at or after the record's time goes to the record's account, before the log is
   asked; at report time neither the owner-stamp rule nor the saved-key rule moves a
   recorded session. The account is stored as the log stores it, so a later `qswap swap`
   or `move` does not carry the usage to another account. A launch whose arguments pick the
-  conversation (`--resume`, `--continue`, `--fork-session`, `--from-pr`, `--teleport`, and
-  `--bg`, whose session runs in another process) gets no id: claude refuses one beside
-  `--resume`, and the conversation is not known at launch. It is recorded without a session
-  (for `remove`), and its usage is attributed as before. An id the user passed
+  conversation (`--resume`, `--continue`, `--from-pr`, `--teleport`, and `--bg`, whose
+  session runs in another process) gets no id: claude refuses one beside `--resume` or
+  `--continue` ("also needs --fork-session", 2.1.330), and the conversation is not known at
+  launch. It is recorded without a session (for `remove`), and its usage is attributed as
+  before. With `--fork-session` beside `--resume` or `--continue` the launch starts a copy,
+  and claude gives the copy the id (2.1.330 and 2.1.331): the fork gets one. The copy
+  repeats the earlier responses with their message and request ids and their times, so they
+  count once, and the record claims none of them (they come before it): only the fork's own
+  responses are the key's.
+  A conversation started with `/clear` inside a recorded process gets an id Claude Code
+  makes, which no record names, and goes by the log. An id the user passed
   (`--session-id X`) is recorded as given. Records are dropped when the next launch is
   recorded, once older than Claude Code's transcript retention (`cleanupPeriodDays` in its
   user settings, 30 days by default, from the launch, plus a day) and their process is gone:

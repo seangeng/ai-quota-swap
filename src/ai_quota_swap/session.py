@@ -289,14 +289,16 @@ _MIGRATION_LOCK_TIMEOUT = 30.0
 
 # Claude Code options that pick the conversation a launch opens (``claude
 # --help``, 2.1.330), and --bg, whose session runs in another process. With
-# one of them qswap run on a key gives claude no --session-id: claude refuses
-# one beside --resume or --continue, and the conversation is not known at
-# launch.
-_SESSION_PICKERS = (
-    "--continue", "--resume", "--fork-session", "--from-pr", "--teleport", "--bg",
-    "--background",
-)
-_SESSION_PICKER_LETTERS = frozenset("cr")  # -c, -r, alone or in a cluster (-pc)
+# one of them qswap run on a key gives claude no --session-id: the
+# conversation is not known at launch.
+_SESSION_PICKERS = ("--from-pr", "--teleport", "--bg", "--background")
+# --resume and --continue pick one too, and claude refuses --session-id beside
+# them ("also needs --fork-session"). With --fork-session it takes the id for
+# the copy it starts, and writes it on every line of that copy (seen on
+# 2.1.330 and 2.1.331), so a fork gets one.
+_RESUMERS = ("--continue", "--resume")
+_RESUMER_LETTERS = frozenset("cr")  # -c, -r, alone or in a cluster (-pc)
+_FORK = "--fork-session"
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 
 
@@ -308,18 +310,22 @@ def key_run_session(claude_args: list[str]) -> tuple[list[str], str | None]:
     to the key exactly. An id the user passed (``--session-id X``) is
     recorded as it is, with nothing added; with an option that picks the
     conversation (``--resume``, ``--continue``, ...) nothing is added and
-    nothing is recorded."""
+    nothing is recorded, unless ``--fork-session`` makes it a new one."""
     for i, arg in enumerate(claude_args):
         if arg == "--session-id" or arg.startswith("--session-id="):
             value = arg.partition("=")[2] if "=" in arg else (
                 claude_args[i + 1] if i + 1 < len(claude_args) else ""
             )
             return [], value if _UUID_RE.fullmatch(value) else None
-    for arg in claude_args:
-        if arg.partition("=")[0] in _SESSION_PICKERS:
-            return [], None
-        if re.fullmatch(r"-[A-Za-z]+", arg) and _SESSION_PICKER_LETTERS & set(arg[1:]):
-            return [], None
+    names = [arg.partition("=")[0] for arg in claude_args]
+    if any(name in _SESSION_PICKERS for name in names):
+        return [], None
+    resumes = any(name in _RESUMERS for name in names) or any(
+        re.fullmatch(r"-[A-Za-z]+", arg) and _RESUMER_LETTERS & set(arg[1:])
+        for arg in claude_args
+    )
+    if resumes and _FORK not in names:
+        return [], None
     session = str(uuid.uuid4())
     return ["--session-id", session], session
 

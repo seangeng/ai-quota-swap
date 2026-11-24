@@ -156,7 +156,7 @@ stays logged in underneath. claude.ai connectors and Remote Control are
 unavailable while a key is in use. Go back with: qswap switch 1
 ```
 
-The switch adds one line to Claude Code's settings (`"apiKeyHelper": ".../qswap key-helper 5"`), and `qswap switch 1` takes it out. It has been tested on Claude Code 2.1.322 with sessions in print mode (`claude -p`), not yet with an interactive session or with a claude.ai login underneath ([what has not been tested](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#limits)).
+The switch adds one line to Claude Code's settings (`"apiKeyHelper": ".../qswap key-helper 5"`), and `qswap switch 1` takes it out. It has been tested on Claude Code 2.1.330 with sessions in print mode (`claude -p`) and interactive ones, not yet with a real claude.ai login underneath ([what has not been tested](https://github.com/seangeng/ai-quota-swap/blob/main/docs/api-accounts.md#limits)).
 
 ## FAQ
 

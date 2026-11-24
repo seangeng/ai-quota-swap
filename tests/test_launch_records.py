@@ -55,13 +55,29 @@ class TestTheSessionId:
 
     @pytest.mark.parametrize("args", [
         ["--resume"], ["--resume", "abc"], ["--resume=abc"], ["-r"], ["-r", "abc"],
-        ["--continue"], ["-c"], ["-pc"], ["--fork-session", "--resume", "abc"],
+        ["--continue"], ["-c"], ["-pc"],
         ["--from-pr", "12"], ["--teleport"], ["--bg"], ["--background"],
+        ["--from-pr", "12", "--fork-session"], ["--bg", "--resume", "abc", "--fork-session"],
     ])
     def test_an_option_that_picks_the_conversation_gets_none(self, args):
-        """claude refuses --session-id beside --resume or --continue, and the
-        conversation such a launch opens is not known when it starts."""
+        """claude refuses --session-id beside --resume or --continue ("also
+        needs --fork-session", 2.1.330), and the conversation such a launch
+        opens is not known when it starts."""
         assert key_run_session(args) == ([], None)
+
+    @pytest.mark.parametrize("args", [
+        ["--resume", "abc", "--fork-session"], ["--fork-session", "--resume=abc"],
+        ["-r", "abc", "--fork-session", "-p", "hi"], ["--continue", "--fork-session"],
+        ["-pc", "--fork-session"], ["--fork-session"],
+    ])
+    def test_a_fork_gets_a_fresh_id(self, args):
+        """With --fork-session claude takes --session-id beside --resume or
+        --continue for the copy it starts, and writes that id on every line
+        of the copy (checked against Claude Code 2.1.330 and 2.1.331), so the
+        fork's usage can go to the key like any other launch's."""
+        extra, session = key_run_session(args)
+        assert extra == ["--session-id", session]
+        assert str(uuid.UUID(session)) == session
 
     def test_an_id_of_the_users_own_is_recorded_as_it_is(self):
         assert key_run_session(["--session-id", SID]) == ([], SID)
@@ -132,6 +148,16 @@ class TestTheLaunchRecord:
         assert load_launches(s.backup_dir) == []
         monkeypatch.setattr("ai_quota_swap.process_detection.is_pid_alive", lambda pid: True)
         assert s.key_run_pids("5") == [os.getpid()]  # remove still names it
+
+    def test_a_fork_is_recorded_with_its_new_session(self, temp_home, monkeypatch):
+        s = _keyed_switcher()
+        args = _launch(s, monkeypatch, ["--resume", "abc", "--fork-session", "-p", "go on"])
+        assert args[2] == "--session-id"
+        session = args[3]
+        assert args[4:] == ["--resume", "abc", "--fork-session", "-p", "go on"]
+        (record,) = _records(s)
+        assert record["session"] == session
+        assert [launch.session for launch in load_launches(s.backup_dir)] == [session]
 
     def test_records_past_claude_codes_retention_go_at_the_next_launch(
         self, temp_home, monkeypatch
@@ -354,6 +380,26 @@ class TestTheLedger:
         finally:
             store.close()
         assert _by_account(env) == {"#5 api-key-5": 3, "#1 a@example.com": 1}
+
+    def test_a_fork_is_the_keys_from_its_launch_on(self):
+        """``qswap run 5 -- --resume X --fork-session``: claude copies X's
+        responses into the fork with their own ids and times under the new
+        id (Claude Code 2.1.330). The copies came before the
+        launch and count once, as X's; only the fork's own response is the
+        key's."""
+        env = _world()
+        write_lines(env.transcript("sess-orig.jsonl"), [
+            claude_line(mid="o1", rid="r1", ts=T0 + 120, session="sess-orig"),
+            claude_line(mid="o2", rid="r2", ts=T0 + 130, session="sess-orig"),
+        ])
+        _launched(env, T0 + 200)
+        write_lines(env.transcript(f"{SID}.jsonl"), [
+            claude_line(mid="o1", rid="r1", ts=T0 + 120, session=SID),
+            claude_line(mid="o2", rid="r2", ts=T0 + 130, session=SID),
+            claude_line(mid="f1", rid="r3", ts=T0 + 210, session=SID),
+        ])
+        env.scan()
+        assert _by_account(env) == {"#1 a@example.com": 2, "#5 api-key-5": 1}
 
     def test_a_record_naming_no_account_is_not_used(self):
         env = _world()
