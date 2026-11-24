@@ -137,6 +137,12 @@ deadline in `menubar_state.json`.
 
 ## Not verified
 
+- What a login's end date follows. Confirmed from the token endpoint (2026-11-23): `refresh_token_expires_in`
+  on every refresh points at the same absolute date, so a refresh never extends a login. Not
+  confirmed: what sets the date at sign-in. Two sign-ins a minute apart came out at 27 and 29
+  days, so it is not the sign-in time alone; the claude.ai session the browser signed in with is
+  the likely source. A renewed login that ends in under 21 days gets a sentence that offers
+  signing out of claude.ai first as something that may help (`short_login_note`).
 - No run against the real `claude auth login` yet. Assumed: it exits 0 only once the login is
   written, writes `oauthAccount` into the profile's `.claude.json` as `/login` does, and on
   macOS keeps the credential in the hashed Keychain item.
