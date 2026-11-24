@@ -80,24 +80,28 @@ A test that needs the Keychain asks for the `block_real_keychain` fixture by nam
 
 ## The live switch, end to end
 
-The suite fakes Claude Code, so it cannot show that a real Claude Code follows the key line a switch to an API key writes. That is checked by hand: qswap's own switch, run against the real `claude` binary and the real API, in a throwaway home, with a made-up key. It was last run on Claude Code 2.1.322; what it found is in [docs/design/api-key-sessions.md](docs/design/api-key-sessions.md#part-2-use-a-key-without-logging-anyone-out). Run it again when a change touches the line, the helper or the switch, or when Claude Code changes how it reads settings.
+The suite fakes Claude Code, so it cannot show that a real Claude Code follows the key line a switch to an API key writes, or what it does with the `--session-id` that `qswap run N` gives it on a key. That is checked by hand: qswap's own commands, run against the real `claude` binary in a throwaway home, with made-up keys and a stand-in for the API on loopback. It was last run on Claude Code 2.1.330, 2026-11-23, and the print-mode checks again on 2.1.331; what it found is in [docs/design/api-key-sessions.md](docs/design/api-key-sessions.md#part-2-use-a-key-without-logging-anyone-out) and [docs/design/ledger.md](docs/design/ledger.md#attribution-to-accounts). Run it again when a change touches the line, the helper, the switch or `qswap run` on a key, or when Claude Code changes how it reads settings or session ids.
 
-What it shows, with print-mode sessions (`claude -p`) and the throwaway home's user settings as the only settings layer:
+What it shows, with the throwaway home's user settings as the user layer:
 
-- a session started while qswap's line is in sends the key the line prints;
-- one long-lived process (`--input-format stream-json`) follows `qswap switch 5` and the switch back, about one second after each write;
-- `qswap run 5` gives that one process the key and writes no settings;
-- a line for an account that cannot give a key fails new sessions with "Your apiKeyHelper script is failing", while a session already holding the key keeps sending it;
-- `qswap key-helper` prints exactly the key, or one line on standard error.
+- a session started while qswap's line is in sends the key the line prints, in print mode (`claude -p`) and in an interactive session;
+- a running session, a long-lived print-mode process (`--input-format stream-json`) or an interactive one, follows `qswap switch 5` and a switch to another key about one second after the write, and the switch back to the login underneath about two seconds after it (qswap deletes the settings file it created, which Claude Code notices later than a change); the next request uses the new credential;
+- `--settings` outranks the line: `qswap run 5` keeps its process on #5's key, print mode or interactive, while the user settings name another key or none, also after `/clear`, and writes no settings;
+- with `ANTHROPIC_AUTH_TOKEN` beside the line, in the settings' `env` block or the environment, each request carries the key as `X-Api-Key` and the token as the bearer; with `ANTHROPIC_API_KEY`, that key as `X-Api-Key` and the line's key as the bearer;
+- the session id `qswap run 5` gives claude is on every transcript line of the conversation, a sub-agent's included, and `qswap usage` gives that conversation to #5 by its launch record, whatever the switches in between; claude refuses the id beside `--resume` or `--continue` unless `--fork-session` is there too;
+- a line for an account that cannot give a key fails new sessions with "Your apiKeyHelper script is failing", while a session already holding the key keeps sending it (last run on 2.1.322);
+- `qswap key-helper` prints exactly the key, or one line on standard error (last run on 2.1.322).
 
-It does not cover an interactive session, a claude.ai login underneath (the throwaway home has none), Remote Control or claude.ai connectors.
+It does not cover a real claude.ai login underneath (the throwaway home has a made-up setup-token login, which cannot load claude.ai connectors), which credential Anthropic bills when a request carries two (the stand-in answers every request), Remote Control, claude.ai connectors, or Windows.
 
 How it stays away from your accounts:
 
-- `HOME` and `CLAUDE_CONFIG_DIR` point into a fresh `mktemp -d` directory, removed afterwards. Every process starts from `env -i` with a short list of variables: no `ANTHROPIC_*` variable and no `CLAUDE_CODE_OAUTH_TOKEN`.
-- The key is made up (`sk-ant-api03-E2E-FAKE-KEY-...`). The API answers every request with a 401, so nothing is billed. Claude Code retries a rejected key for about four minutes per prompt, so allow five minutes for each check that sends one.
+- `HOME` and `CLAUDE_CONFIG_DIR` point into a fresh `mktemp -d` directory outside your home, removed afterwards: Claude Code reads `CLAUDE.md` files in every folder above its working directory, so from a folder under your home it would read `~/.claude/CLAUDE.md`. Every process starts from `env -i` with a short list of variables: no `ANTHROPIC_*` variable except `ANTHROPIC_BASE_URL`, pointing at the stand-in, and the ones a check sets to made-up values; no `CLAUDE_CODE_OAUTH_TOKEN` or `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`.
+- Keys and tokens are made up (`sk-ant-api03-E2E-FAKE-KEY-...`). The stand-in listens on 127.0.0.1, records which header carried which made-up value (never another value) and answers with a minimal response and a usage block, so nothing is billed and nothing leaves the machine.
+- `claude` is started by absolute path, only by the check itself, under `sandbox-exec` with a profile that allows no connection but loopback, no read or write of the real account stores, no write under your home, and no run of `security`, `open`, `launchctl` or `osascript`. Stand-ins for those come first on its `PATH`. Claude Code runs `security` by name for its Keychain items, so the stand-in answers them, from the store qswap's driver uses. Interactive sessions run on a pseudo-terminal the check holds, so nothing opens on screen.
 - qswap runs in-process, under a driver that replaces the Keychain with an in-memory store and, like the demo harness's guards, refuses opens of the real account stores (`~/.claude*`, `~/.codex`, `~/.ai-quota-swap`, the Keychain directory), writes outside the throwaway directory, spawns of `security` and `launchctl`, and any connection qswap tries other than loopback.
-- `claude` is started by absolute path, only by the check itself.
+
+One thing about the throwaway home changes what a login switch does. With `CLAUDE_CONFIG_DIR` set, Claude Code reads its login only from a Keychain item named after that directory (`Claude Code-credentials-` and eight hex digits), while qswap's login switch writes the item without the suffix, which a session started without `CLAUDE_CONFIG_DIR` reads. So the way back to a login was checked with the `security` stand-in answering the suffixed name from the unsuffixed item, as Claude Code on the default profile sees it.
 
 ## Lint
 

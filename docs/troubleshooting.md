@@ -205,7 +205,7 @@ unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
 - The session was started while the key was saved the older way (`--log-out-sessions`) and you switched to another key since: such a session keeps its key until you restart it.
 - Another settings layer sets an `apiKeyHelper` of its own. Claude Code reads its settings in this order, the first one that sets a value winning: managed settings, `--settings`, the project's `.claude/settings.local.json`, its `.claude/settings.json`, and last your user settings, where qswap's line is (Anthropic's documentation). A helper in any of the others outranks qswap's line in both directions, and qswap cannot change those files: remove the helper there. `qswap doctor` warns about the managed settings and about the project settings of the directory it runs in.
 
-A session moves when Claude Code sees the settings file change, about a second after the write (measured on Claude Code 2.1.322). One that has been idle moves on its next request.
+A session moves when Claude Code sees the settings file change, about a second after the write (measured on Claude Code 2.1.322 and 2.1.330, in print mode and in an interactive session). One that has been idle moves on its next request.
 
 ## The key line was left behind after a crash
 

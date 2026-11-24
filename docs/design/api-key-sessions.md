@@ -77,22 +77,59 @@ real user layer. What it showed:
 - A line for an account that cannot give a key fails new sessions with "Your apiKeyHelper
   script is failing", and a session that already holds the key keeps sending it.
 
-Not tested: an interactive session, a claude.ai login underneath on the user settings layer
-(an earlier run moved one process from a claude.ai login to the key and back, on a project
-settings file), Remote Control, and claude.ai connectors in a running session.
+Tested again on Claude Code 2.1.330, 2026-11-23 (issue #22), in the same kind of throwaway
+home, with a stand-in for the API on loopback that records which made-up value each header
+carried, interactive sessions on a pseudo-terminal, and a made-up setup-token login for #1.
+The print-mode checks were repeated on 2.1.331, with the same results. What it showed:
+
+- An interactive session started while qswap's line is in sends the key, as `X-Api-Key` and
+  as the bearer, with no prompt (in a directory already trusted).
+- A running interactive session followed `qswap switch 6` from #5 1.01 s after the write,
+  and `qswap switch 5` from the login 1.01 s after. Back to the login underneath took 1.81 s
+  (with the stand-in for `security` described below): qswap deleted the settings file it had
+  created, and Claude Code reports a deleted file later than a changed one. The next request
+  after each change used the new credential (the login's bearer with its OAuth beta header,
+  or the key), with no wait for the login cache.
+- `qswap run 5` keeps its process on #5's key while the user settings hold #6's line, after
+  switches to #1 and back to #5, and after `/clear`; so does `claude --settings` with #5's
+  helper in print mode.
+- Beside the line, `ANTHROPIC_AUTH_TOKEN` (in the settings' `env` block or the environment)
+  becomes the bearer and the key stays in `X-Api-Key` (`apiKeySource: apiKeyHelper`);
+  `ANTHROPIC_API_KEY` takes `X-Api-Key` and leaves the line's key as the bearer
+  (`apiKeySource: ANTHROPIC_API_KEY`); with both set, `X-Api-Key` is the API key and the
+  bearer the token.
+- The session id `qswap run 5` passes is on every transcript line (below, under "The launch
+  record"), and `qswap usage` gave that conversation to #5 while the activation log named #6
+  or #1.
+
+The throwaway home has two limits. With `CLAUDE_CONFIG_DIR` set, Claude Code reads its login
+only from the Keychain item suffixed with that directory's hash, and qswap's login switch
+writes the unsuffixed item, so a session in that home never saw the login qswap switched to
+("Not logged in · Please run /login" for over a minute, also after the line was gone). The
+way back was checked with the stand-in for `security` answering the suffixed name from the
+unsuffixed item, which is what Claude Code on the default profile reads. And the login was a
+setup token, which Claude Code does not use for claude.ai connectors (it lacks the scope).
+
+Not tested: a real claude.ai login underneath (an earlier run moved one process from a
+claude.ai login to the key and back, on a project settings file), which credential Anthropic
+bills when a request carries both a key and a token, Remote Control, claude.ai connectors in a
+running session, and Windows.
 
 ### What Claude Code does with `apiKeyHelper`
 
-Each fact names where it comes from: the end-to-end run on 2.1.322 above, the 2.1.322 binary
-(read, not run), or Anthropic's documentation.
+Each fact names where it comes from: the end-to-end runs above (2.1.322, and 2.1.330 for the
+interactive sessions, `--settings` and the session id), the 2.1.322 binary (read, not run), or
+Anthropic's documentation.
 
 - While the setting is present, the helper's output is the API key and the claude.ai login
   is not used. Every process that reads that settings file follows it, running or new
-  (end-to-end run, print mode).
+  (end-to-end runs, print mode and interactive).
 - User settings (`~/.claude/settings.json`) and project settings are watched, and a file
   replaced by a rename (how qswap writes) counts as a change. A running process acts on the
-  change about one second after the write (end-to-end run). The `--settings` flag is read
-  once at start and never again (an earlier run on 2.1.322, on a project settings file).
+  change about one second after the write, and on a deleted file after about two (end-to-end
+  runs). The `--settings` flag is read once at start and never again (an earlier run on
+  2.1.322, on a project settings file), and its `apiKeyHelper` outranks the user settings':
+  such a process keeps its key while the user settings line changes or goes (2.1.330).
 - The helper's output is cached for 5 minutes; `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` changes
   that (Anthropic's settings reference, and the 2.1.322 binary). The cache is cleared at every
   settings change and at every 401 (2.1.322 binary). So the helper runs when a session moves
@@ -116,15 +153,19 @@ Each fact names where it comes from: the end-to-end run on 2.1.322 above, the 2.
   claude.ai login. The helper's output is sent as both `X-Api-Key` and `Authorization:
   Bearer`, to `ANTHROPIC_BASE_URL` when that is set. Outranked by `ANTHROPIC_AUTH_TOKEN`,
   the helper still runs: the token is the bearer and the helper's key still goes as
-  `X-Api-Key` with every request (end-to-end run; `ANTHROPIC_API_KEY` takes `X-Api-Key`
-  and leaves the bearer to the helper, 2.1.322 binary). Which one Anthropic bills was not
-  tested, so the note over an active key says either may be billed, and names the host.
+  `X-Api-Key` with every request, whether the token is in the environment or a settings
+  file's `env` block (end-to-end runs). `ANTHROPIC_API_KEY` takes `X-Api-Key` and leaves the
+  bearer to the helper, and with both variables set the request carries the two of them and
+  not the helper's key (2.1.330). Which one Anthropic bills was not tested, so the note over
+  an active key says either may be billed, and names the host.
 - Claude Code does not load claude.ai connectors (the MCP servers that come with the claude.ai
   login) while a helper is set, and Remote Control does not support API keys (Anthropic's
-  documentation). What a running session does with either when the line appears or goes was
-  not tested.
+  documentation; a 2.1.330 session on the key logs `[claudeai-mcp] Disabled: API-key auth
+  precedence active`). What a running session does with either when the line appears or goes
+  was not tested.
 - No approval prompt or trust step applies to a helper in user settings or the flag layer
-  (2.1.322 binary).
+  (2.1.322 binary; no prompt in 2.1.330 interactive sessions, in a directory already
+  trusted).
 - A session started while the line is in writes its `session-owner` stamp only after the line
   is gone, and then with the login's account (2.1.322 binary).
 
@@ -219,7 +260,7 @@ The launch also gives claude a session id of its own (`--session-id`) and record
 account and the time (`key_runs.jsonl`), so the ledger gives that conversation's usage to the
 key ([ledger.md](ledger.md#attribution-to-accounts)). Arguments that pick the conversation
 (`--resume`, `--continue` and the like) get no id, and that session's usage is attributed as
-before.
+before; with `--fork-session` the launch starts a new conversation, which gets one.
 
 ### Credit
 
@@ -486,8 +527,18 @@ What the code does where this part leaves room, or where it had to differ:
   the process gets a new id the record does not know, and its usage goes by time, as before.
   The other way round, a recorded conversation resumed later with plain `claude --resume`
   on a login stays the key's: the record has no end, and counting the key high is the side
-  a budget wants. Not run against a real Claude Code: that `--session-id` sets the
-  transcript's `sessionId` in an interactive and a print-mode session, that claude accepts
-  it beside `--settings` and the arguments users pass after `--` (a subcommand among them),
-  and what `/clear` does to the id. The suite fakes claude at exec and builds the
-  transcripts it reads.
+  a budget wants. Seen on Claude Code 2.1.330 (2026-11-23; in print mode on 2.1.331 too):
+  the id is the `sessionId` of every transcript line of the conversation, in print mode and
+  interactive,
+  except `file-history-snapshot` lines, which have no such field and no usage; a sub-agent's
+  transcript (`<id>/subagents/agent-*.jsonl`) carries the parent's id on every line. claude
+  takes the id after `--settings` and before a prompt, `-p`, a subcommand (`mcp list` runs as
+  usual) or `--version`. Beside `--resume` or `--continue` it exits 1 with `Error:
+  --session-id with --continue or --resume also needs --fork-session.`; with
+  `--fork-session` it gives the fork that id, so `qswap run N` passes one for a fork (the
+  fork's copies of earlier responses keep their ids and times, so they count once and the
+  record claims none of them). An id already used gives `Error: Session ID ... is already in use.`, which a
+  fresh UUID never meets. `/clear` starts a new transcript under an id Claude Code makes, and
+  the session stays on the key. A launch that runs no conversation (`mcp list`) still writes
+  a record with an id no transcript will name; it is dropped with the others. The suite fakes
+  claude at exec and builds the transcripts it reads.

@@ -35,7 +35,7 @@ qswap auto --threshold 85 --weekly-threshold 97
 
 Flags override the [settings](#settings) for that run only. A value out of range is clamped, with a warning such as `Warning: --interval 5 is out of range; using 15s`.
 
-After a switch to a subscription account, a running Claude Code picks up the new login within about 30 seconds on macOS (its Keychain cache) and from its next message where the login is kept in a file. A move to an API key reaches running sessions about a second after qswap writes the key line into Claude Code's settings (measured on Claude Code 2.1.322; [below](#api-key-accounts-and-budgets)). The default line is 90 rather than 95 to cover that delay and a heavy turn that keeps spending meanwhile. Switches take the same credential locks Claude Code uses, so a switch never lands in the middle of Claude Code refreshing its token.
+After a switch to a subscription account, a running Claude Code picks up the new login within about 30 seconds on macOS (its Keychain cache) and from its next message where the login is kept in a file. A move to an API key reaches running sessions about a second after qswap writes the key line into Claude Code's settings (measured on Claude Code 2.1.322 and 2.1.330; [below](#api-key-accounts-and-budgets)). The default line is 90 rather than 95 to cover that delay and a heavy turn that keeps spending meanwhile. Switches take the same credential locks Claude Code uses, so a switch never lands in the middle of Claude Code refreshing its token.
 
 ## How it picks the next account
 

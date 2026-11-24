@@ -16,7 +16,7 @@ Added #6 build@example.com (from API key)
 - `--slot N` stores it in slot N; `--yes` replaces an account already in that slot without asking.
 - Adding makes no request to Anthropic. The key is stored like a saved login (see [../SECURITY.md](../SECURITY.md)).
 
-A switch to an API-key account moves every Claude Code session onto the key within a few seconds, running ones included: [Switch to an API key](#switch-to-an-api-key). That has been tested on Claude Code 2.1.322 with sessions in print mode; [Limits](#limits) says what has not. Auto-switch treats an API-key account differently, as [Set a budget](#set-a-budget) explains.
+A switch to an API-key account moves every Claude Code session onto the key within a few seconds, running ones included: [Switch to an API key](#switch-to-an-api-key). That has been tested on Claude Code 2.1.322 and 2.1.330, with sessions in print mode and interactive ones; [Limits](#limits) says what has not. Auto-switch treats an API-key account differently, as [Set a budget](#set-a-budget) explains.
 
 ### Setup-tokens
 
@@ -102,7 +102,7 @@ The switch adds one line to Claude Code's user settings, `~/.claude/settings.jso
 
 The command is the `qswap` of this install, by absolute path, so a session with another `PATH` finds it; the path is quoted when it has spaces or shell characters in it. On Linux the line also names qswap's data directory (`--data-dir`), because Claude Code started from a desktop launcher or an editor may have another `XDG_DATA_HOME`, or none. A line for another data directory is another qswap's (one run with another `XDG_DATA_HOME`, say): this qswap leaves it alone and does not switch to a key while it is there, and `qswap list`, `qswap status`, the dashboard, the menu bar and `qswap doctor` name that data directory. A switch to a subscription leaves that line in and says so: `Claude Code sessions stay on the key of another qswap, whose data directory is ~/elsewhere, until its key line is removed from ~/.claude/settings.json.` On macOS and Windows a line names no data directory unless its qswap runs with another one, so a line without one belongs to the default data directory. On Linux, where every line qswap writes names it, a line without one (written by hand, or copied from a Mac) is this qswap's own: it counts as the active key, auto-switch watches its limit, and `qswap switch 5` to it writes it again with `--data-dir`.
 
-Claude Code watches that file. About a second after the write (measured on Claude Code 2.1.322), every session that reads it, running or new, sends its requests with the key that `qswap key-helper 5` prints, instead of the claude.ai login. Nothing else changes: not the login, not the saved key, not `~/.claude.json`. Running sessions keep their conversation. Some things do change for them:
+Claude Code watches that file. About a second after the write (measured on Claude Code 2.1.322 and 2.1.330, in print mode and in an interactive session), every session that reads it, running or new, sends its requests with the key that `qswap key-helper 5` prints, instead of the claude.ai login. Nothing else changes: not the login, not the saved key, not `~/.claude.json`. Running sessions keep their conversation. Some things do change for them:
 
 - Claude Code does not load claude.ai connectors (the MCP servers that come with the claude.ai login) while a key is in use, and Remote Control does not work with an API key, so a session you drive from your phone loses that link (Anthropic's documentation). Neither has been tested here, nor whether a running session gets them back after you leave the key.
 - The first request on the key is expected not to reuse the login's prompt cache (a cache belongs to the account that wrote it; not measured here), so it would pay for the cache again, at the key's price.
@@ -255,7 +255,7 @@ so either may be billed. Remove ANTHROPIC_AUTH_TOKEN from the env block of
 ~/.claude/settings.json, then: qswap switch 5
 ```
 
-Claude Code 2.1.322 still runs the line while `ANTHROPIC_AUTH_TOKEN` is set beside it: every request carries the key from the line as `x-api-key` and the token as the bearer, sent to `ANTHROPIC_BASE_URL` when that is set too (measured end to end; `ANTHROPIC_API_KEY` takes the other header, read in the binary). Which of the two Anthropic bills was not tested, so the note says either may be. With a cloud provider variable (`CLAUDE_CODE_USE_BEDROCK` and the like) no key of Anthropic's is sent, and the note says sessions do not use the key. Doctor says the same, the host included, on its check of the active key, which then warns instead of passing.
+Claude Code 2.1.322 and 2.1.330 still run the line while `ANTHROPIC_AUTH_TOKEN` is set beside it, in the `env` block or the environment: every request carries the key from the line as `x-api-key` and the token as the bearer, sent to `ANTHROPIC_BASE_URL` when that is set too (measured end to end). `ANTHROPIC_API_KEY` takes `x-api-key` and leaves the key from the line as the bearer (measured on 2.1.330). Which of the two Anthropic bills was not tested, so the note says either may be. With a cloud provider variable (`CLAUDE_CODE_USE_BEDROCK` and the like) no key of Anthropic's is sent, and the note says sessions do not use the key. Doctor says the same, the host included, on its check of the active key, which then warns instead of passing.
 
 `qswap switch 5` to the key already active refuses in the same words, and changes nothing, while such a variable is set. Only doctor reports the other layers and a line whose command fails its check while its program is there.
 
@@ -427,7 +427,7 @@ Change one with `qswap config set usage.headerProbe true`. The full list is in [
 
 ## Limits
 
-- The live switch has been tested on Claude Code 2.1.322, in print mode (`claude -p`), with a throwaway home's user settings and a made-up key ([CONTRIBUTING.md](../CONTRIBUTING.md#the-live-switch-end-to-end)). Not yet tested: an interactive session, a claude.ai login underneath on the user settings file, Remote Control and connectors in a running session. qswap does not check the Claude Code version.
+- The live switch has been tested on Claude Code 2.1.330, in print mode (`claude -p`) and in interactive sessions, with a throwaway home's user settings, made-up keys and a made-up setup-token login underneath ([CONTRIBUTING.md](../CONTRIBUTING.md#the-live-switch-end-to-end)). Not yet tested: a real claude.ai login underneath, Remote Control and connectors in a running session, which credential Anthropic bills when `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` sits beside the line, and Windows. qswap does not check the Claude Code version.
 - A budget is enforced by qswap's auto-switch only, and only while a spend figure no older than 20 minutes exists; without one auto-switch keeps off the key.
 - Anthropic's figure needs an Admin key, which can do far more than read reports.
 - The local estimate sees only this machine's Claude Code usage while the account was active.
