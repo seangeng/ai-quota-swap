@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4
+
+One fix, for a fault that 0.1.2 introduced.
+
+- The active account's saved login follows Claude Code's token refreshes again. Since 0.1.2, qswap kept the saved copy when its end date was later than the live login's, to protect a login renewed with `qswap login`. Claude Code recomputes that date on every refresh and it comes out up to a second earlier, so after the first refresh qswap took the saved copy for a newer sign-in, stopped updating it, and wrote `Kept account N's saved login` to the log on every check. The saved copy was put right again by the next switch away from the account. The date now has to be more than 5 minutes later to count as a newer sign-in, and the line is written once.
+
+The qswap package on PyPI is 0.1.4 too and asks for ai-quota-swap 0.1.4 or newer.
+
 ## 0.1.3
 
 One experimental feature: a long-lived token as the backup of a login, so a login that ends no longer takes its account out of rotation.
