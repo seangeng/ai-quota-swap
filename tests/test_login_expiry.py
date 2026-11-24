@@ -42,6 +42,28 @@ async def _workers_done(pilot) -> None:
         await app.workers.wait_for_complete(pending)
 
 
+async def _laid_out(pilot, find, what: str, pauses: int = 50):
+    """Pause until ``find()`` returns a widget that is mounted and laid out
+    (a non-zero size no wider than the screen), at most ``pauses`` times.
+
+    One ``pilot.pause()`` is not enough on a slow runner: the layout pass can
+    land a frame later, and a measurement taken before it reads a size of 0."""
+    from textual.css.query import NoMatches
+
+    screen_width = pilot.app.size.width
+    widget = None
+    for _ in range(pauses):
+        await pilot.pause()
+        try:
+            widget = find()
+        except NoMatches:
+            continue
+        if widget is not None and 0 < widget.size.width <= screen_width and widget.size.height > 0:
+            return widget
+    size = None if widget is None else tuple(widget.size)
+    pytest.fail(f"{what} was not laid out within {pauses} pauses (size {size}, screen width {screen_width})")
+
+
 # ---------------------------------------------------------------------------
 # The rule: oauth.login_time_left / format_login_expiry
 # ---------------------------------------------------------------------------
@@ -286,9 +308,8 @@ async def _dashboard(tmp_path, accounts, size):
     app = make_app(FakeSwitcher(accounts, tmp_path))
     async with app.run_test(size=size) as pilot:
         await _workers_done(pilot)
-        await pilot.pause()
-        panel = app.screen.query_one(AccountsPanel)
-        menu = app.screen.query_one("#menu", ListView)
+        panel = await _laid_out(pilot, lambda: app.screen.query_one(AccountsPanel), "the accounts panel")
+        menu = await _laid_out(pilot, lambda: app.screen.query_one("#menu", ListView), "the menu")
         items = list(menu.query(MenuItem))
         shown = sum(1 for item in items if menu.region.contains_region(item.region))
         return panel.render().plain.splitlines(), panel.content_size, shown, len(items)
@@ -335,8 +356,9 @@ async def _candidates(tmp_path, accounts, size):
     async with app.run_test(size=size) as pilot:
         await _workers_done(pilot)
         await app.push_screen(AutoScreen())
-        await pilot.pause()
-        box = app.screen.query_one("#candidates-claude", Static)
+        box = await _laid_out(
+            pilot, lambda: app.screen.query_one("#candidates-claude", Static), "the Next-best box"
+        )
         return box.render().plain, box.size.width
 
 
@@ -372,8 +394,9 @@ async def test_switch_screen_cards_stay_within_the_width(tmp_path):
         async with app.run_test(size=size) as pilot:
             await _workers_done(pilot)
             await app.push_screen(SwitchScreen())
-            await pilot.pause()
-            card = app.screen.query(AccountCard).first()
+            card = await _laid_out(
+                pilot, lambda: app.screen.query(AccountCard).first(), "the first account card"
+            )
             lines = card.render().plain.splitlines()
             assert all(cell_len(line) <= card.size.width for line in lines)
             assert any(line.strip().startswith("login") and line.rstrip().endswith("in 5d 12h")
