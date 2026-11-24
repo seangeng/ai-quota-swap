@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.5
+
+Two small changes, and the API-key switch checked against a newer Claude Code.
+
+- `qswap login` says when a new login ends in less than 21 days, and suggests signing out of claude.ai before running it again. A sign-in usually lasts about a month, but two made a minute apart have come out at 27 and 29 days, and a token refresh never moves the date. The date may follow the claude.ai session in the browser; that is not confirmed.
+- `qswap run N -- --resume ID --fork-session` on an API key gives the fork a session id of its own and records it, so `qswap usage` counts the fork on the key. Claude Code refuses `--session-id` beside `--resume` or `--continue` without `--fork-session`, so those launches still get none.
+- The API-key switch and `qswap run` on a key were run against Claude Code 2.1.330 in a throwaway home with made-up keys, in interactive sessions too. A running session follows a switch between keys about a second after it, `--settings` wins over a key line in the user settings, and the session id `qswap run` passes is on every transcript line. `docs/design/api-key-sessions.md` and `CONTRIBUTING.md` say what was seen and what is still untested: a real claude.ai login underneath, Remote Control, Windows.
+
+The qswap package on PyPI is 0.1.5 too and asks for ai-quota-swap 0.1.5 or newer.
+
 ## 0.1.4
 
 One fix, for a fault that 0.1.2 introduced.
