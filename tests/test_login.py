@@ -323,6 +323,50 @@ def test_CONTROL_the_resync_still_follows_a_rotation(fleet, monkeypatch):
     assert _fp(s.read_account_credentials("1", "maya@example.com")) == _fp(rotated)
 
 
+def test_the_resync_follows_a_rotation_whose_end_date_shrank(fleet, monkeypatch, caplog):
+    """What a real Claude Code does on refresh: it recomputes
+    refreshTokenExpiresAt from the server's whole-second figure and keeps
+    the earlier, so the rotated live login ends a moment before the saved
+    copy it came from. That is the same sign-in, and the saved copy follows
+    it (0.1.2 and 0.1.3 compared the dates exactly and kept the stale copy,
+    with a log line on every pass)."""
+    s = fleet
+    deadline = int((time.time() + 20 * DAY) * 1000)
+    s._write_account_credentials("1", "maya@example.com", _creds("one", deadline_ms=deadline))
+    monkeypatch.setattr(oauth, "fetch_oauth_profile", lambda token: {
+        "uuid": "uuid-1", "email": "maya@example.com", "organizationUuid": "",
+    })
+    for n, shaved_ms in enumerate((412, 1000, 2600), start=1):
+        rotated = _creds(f"one-rotated-{n}", deadline_ms=deadline - shaved_ms)
+        s._write_credentials(rotated)
+        with caplog.at_level("INFO", logger="ai-quota-swap"):
+            s._resync_rotated_backup("1", "maya@example.com", "", rotated)
+        assert _fp(s.read_account_credentials("1", "maya@example.com")) == _fp(rotated)
+    assert not [r for r in caplog.records if "comes from a later sign-in" in r.getMessage()]
+
+
+def test_a_kept_login_is_logged_once_not_on_every_pass(fleet, monkeypatch, caplog):
+    s = fleet
+    old = _creds("one")  # live: 20 days left
+    monkeypatch.setattr(oauth, "fetch_oauth_profile", lambda token: {
+        "uuid": "uuid-1", "email": "maya@example.com", "organizationUuid": "",
+    })
+    renewed = _creds("renewed", login_left=30 * DAY)
+    s._write_account_credentials("1", "maya@example.com", renewed)
+    with caplog.at_level("INFO", logger="ai-quota-swap"):
+        for _ in range(4):
+            s._resync_rotated_backup("1", "maya@example.com", "", old)
+    assert _fp(s.read_account_credentials("1", "maya@example.com")) == _fp(renewed)
+    assert len([r for r in caplog.records if "comes from a later sign-in" in r.getMessage()]) == 1
+
+
+def test_the_margin_between_a_rotation_and_a_later_sign_in():
+    from ai_quota_swap import switcher as switcher_module
+
+    # Far above what one sign-in's date can drift, far below the gap between two sign-ins.
+    assert 60 <= switcher_module.LATER_SIGN_IN_MARGIN_S <= 3600
+
+
 def test_the_adopt_branch_keeps_a_saved_login_from_a_later_sign_in(fleet, monkeypatch, caplog):
     """The expired-token path adopts a live login some Claude Code rotated
     and, with a memoised verdict for its lineage, copies it into the slot.

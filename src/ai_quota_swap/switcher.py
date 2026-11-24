@@ -152,6 +152,14 @@ _LOCKSTEP_RESET_TOLERANCE_S = 5.0
 # an age note there would be permanent noise.
 _USAGE_AGE_NOTE_S = poll_policy.SERVE_TTL_S
 
+# How much later a saved login's end date must be than the live login's to
+# count as a later sign-in (`_keeps_newer_saved_login`). Within one sign-in
+# the date only drifts down, by about a second in all: Claude Code recomputes
+# it on each refresh from the server's whole-second figure and keeps the
+# earlier. Two sign-ins of one account are minutes to days apart. Wide,
+# because a false "later sign-in" stops the saved copy following rotations.
+LATER_SIGN_IN_MARGIN_S = 5 * 60.0
+
 
 def _pace_marker(window: dict, fetched_at: float | None) -> str:
     """"  (ahead of pace)" when a weekly window is meaningfully ahead of pace, else ""."""
@@ -522,6 +530,9 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         self._poll_inputs_override: tuple[float, float | None, tuple[str, ...]] | None = None
         # (settings mtime, usage.headerProbe) — see _header_probe_enabled.
         self._header_probe_cache: tuple[float | None, bool] | None = None
+        # (account, saved login's fingerprint) pairs `_keeps_newer_saved_login`
+        # has logged, so a kept login is said once and not on every pass.
+        self._kept_newer_said: set[tuple[str, str]] = set()
         # (settings mtime, ResetSettings) — see reset_settings.
         self._reset_settings_cache: tuple[float | None, ResetSettings] | None = None
 
@@ -5059,17 +5070,26 @@ class ClaudeAccountSwitcher(KeyActivationMixin):
         live credential about to be copied over it, which then must not be.
 
         ``refreshTokenExpiresAt`` is set at sign-in and never grows within
-        one lineage, so a later date in the saved copy means a newer sign-in
-        (``qswap login`` renews the saved copy alone when it cannot replace
-        the live login). Logs one line when it keeps it."""
+        one lineage, so a saved date well past the live one means a newer
+        sign-in (``qswap login`` renews the saved copy alone when it cannot
+        replace the live login). Within one lineage it does shrink: Claude
+        Code recomputes it on every refresh from the server's whole-second
+        ``refresh_token_expires_in`` and keeps the earlier of the two, so a
+        rotated live login ends up to a second or so before the copy saved
+        from it. That is a rotation to follow, hence
+        :data:`LATER_SIGN_IN_MARGIN_S`. Logs one line per saved login it
+        keeps, not one per pass."""
         saved_at = oauth.login_expires_at_epoch(saved or "")
         live_at = oauth.login_expires_at_epoch(live or "")
-        if saved_at is None or live_at is None or saved_at <= live_at:
+        if saved_at is None or live_at is None or saved_at - live_at <= LATER_SIGN_IN_MARGIN_S:
             return False
-        self._logger.info(
-            "Kept account %s's saved login: it comes from a later sign-in than "
-            "the live credential, which was not copied over it.", account_num,
-        )
+        said = (str(account_num), oauth.credential_fingerprint(saved or "") or "")
+        if said not in self._kept_newer_said:
+            self._kept_newer_said.add(said)
+            self._logger.info(
+                "Kept account %s's saved login: it comes from a later sign-in than "
+                "the live credential, which was not copied over it.", account_num,
+            )
         return True
 
     def _renewed_account_config(self, account_num: str, email: str, oauth_account: dict) -> str:
