@@ -21,7 +21,15 @@ from pathlib import Path
 
 import pytest
 
-from ai_quota_swap import login, macos_keychain, menubar, menubar_engines, menubar_notify, oauth
+from ai_quota_swap import (
+    display,
+    login,
+    macos_keychain,
+    menubar,
+    menubar_engines,
+    menubar_notify,
+    oauth,
+)
 from ai_quota_swap.exceptions import (
     AccountNotFoundError,
     LoginError,
@@ -253,6 +261,34 @@ def test_a_running_qswap_run_session_is_marked_stale(fleet, monkeypatch):
 
 
 # -- the active account -------------------------------------------------------------------
+
+
+def test_a_login_that_ends_short_of_a_month_says_so(fleet):
+    """Seen for real: a new sign-in can be good for much less than a month.
+    The renewal then says how long, and what may give the full month."""
+    s = fleet
+    fake = FakeClaude("maya@example.com", uuid="uuid-1", creds=_creds("new", login_left=6 * 3600))
+    renewal = login.renew(s, _target(s, "1"), runner=fake, interactive=False)
+    [note] = [n for n in renewal.notes if "short of the usual month" in n]
+    assert "This login ends in " in note and note.endswith("qswap login 1")
+    assert "signing out of claude.ai" in note
+
+
+def test_a_login_that_lasts_the_month_says_nothing_more(fleet):
+    s = fleet
+    fake = FakeClaude("maya@example.com", uuid="uuid-1")  # 30 days
+    renewal = login.renew(s, _target(s, "1"), runner=fake, interactive=False)
+    assert not [n for n in renewal.notes if "short of the usual month" in n]
+
+
+def test_the_short_login_line():
+    now = 1_800_000_000.0
+    assert login.short_login_note("3", None, now) is None
+    assert login.short_login_note("3", now + 30 * DAY, now) is None
+    assert login.short_login_note("3", now + login.SHORT_LOGIN_S, now) is None
+    note = login.short_login_note("3", now + 12 * DAY + 3 * 3600, now)
+    assert note.startswith("This login ends in 12d 3h, short of the usual month.")
+    assert all(len(line) <= 80 for line in display.wrap(note))
 
 
 def test_renewing_the_active_account_replaces_the_live_login(fleet):

@@ -77,6 +77,8 @@ When the account is the active one, its new login becomes the live login too, as
 
 The saved account must still be the one the browser signed in as when the login is saved: when another account takes its number meanwhile (a `qswap swap`, a `move`, a remove and an add), nothing is saved, and the message says where the account went. The same address with another account id means the account was deleted and made again: log in to it in Claude Code (`/login`), then `qswap add --slot N`.
 
+A sign-in usually lasts about a month, and a token refresh never moves its end date: the server gives the same date on every refresh. A new login can still end sooner than a month. Two sign-ins made a minute apart have come out at 27 and 29 days, so the date does not follow the sign-in alone; it may follow the claude.ai session in your browser. When a renewed login ends in less than 21 days, `qswap login` says so and suggests signing out of claude.ai and running it again.
+
 With no account, `qswap login` signs in again every account that needs re-login or whose login runs out within 7 days, one after another, and says which first; `--all` does every subscription login. An API-key account and a setup-token account have no sign-in to renew: for those, `qswap add-token KEY --slot N`. The menu bar does the same from *Sign in again* ([menubar.md](menubar.md#sign-in-again)).
 
 The older way still works: log in to that account in Claude Code and save the new login over the old one. It replaces the login Claude Code is using. `qswap add` recognizes the account by its email and organization and updates the same number:

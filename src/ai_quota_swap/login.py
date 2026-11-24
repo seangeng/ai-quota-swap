@@ -318,6 +318,28 @@ def renewed_text(renewal: Renewal, now: float | None = None) -> str:
     return f"{text}; the next sign-in is due {when} · in {left}"
 
 
+#: A sign-in is expected to last about a month. A new login that ends sooner
+#: than this gets a sentence saying so (:func:`short_login_note`).
+SHORT_LOGIN_S = 21 * 86400
+
+
+def short_login_note(number: str, expires_at: float | None, now: float) -> str | None:
+    """What to say about a new login that ends well short of a month, or
+    None. The end date does not follow the sign-in alone: two sign-ins made a
+    minute apart (2026-11-23) were good for 27 and 29 days, and a token
+    refresh never moves the date. What it does follow is not confirmed; the
+    claude.ai session the browser signed in with is the likely one, so the
+    sentence offers that as a maybe and never as the cause."""
+    if expires_at is None or expires_at - now >= SHORT_LOGIN_S:
+        return None
+    left = oauth.format_countdown(max(0.0, expires_at - now))
+    return (
+        f"This login ends in {left}, short of the usual month. The end date may "
+        "follow the claude.ai session in your browser, so signing out of claude.ai "
+        f"and running it again may give a full month: qswap login {number}"
+    )
+
+
 def key_note(switcher, renewal: Renewal) -> str | None:
     """While an API key is active over the renewed login: sessions stay on
     the key, and the switch that puts them on this login (``add``'s words)."""
@@ -793,10 +815,15 @@ def renew(
             remove_profile(profile)
     finally:
         lock.release()
+    expires_at = oauth.login_expires_at_epoch(creds)
+    notes = list(saved.get("notes") or ())
+    short = short_login_note(target.number, expires_at, time.time())
+    if short:
+        notes.append(short)
     return Renewal(
-        target.number, target.label, oauth.login_expires_at_epoch(creds),
+        target.number, target.label, expires_at,
         live=bool(saved.get("live")), key=saved.get("key"),
-        live_left=saved.get("live_left"), notes=tuple(saved.get("notes") or ()),
+        live_left=saved.get("live_left"), notes=tuple(notes),
     )
 
 
