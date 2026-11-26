@@ -20,9 +20,9 @@ A switch to an API-key account moves every Claude Code session onto the key with
 
 ### Check a key when Claude reports an error
 
-`qswap api check 5` sends a free token-count request directly to Anthropic with the saved key. A successful count leaves billing untested. To test whether Anthropic will serve a message on that key, run `qswap api check 5 --inference`. It sends one short Haiku request with at most one output token. Anthropic bills a successful request. Both commands accept an account number, alias or email, and support `--json`.
+`qswap api check 5` sends a free token-count request directly to Anthropic with the saved key. A successful count leaves billing untested. To test whether Anthropic will serve a message on that key, run `qswap api check 5 --inference`. It sends one short Haiku request with at most one output token. Anthropic bills a successful request. The check runs outside Claude Code, so the transcript-based spend estimate omits its cost. Both commands accept an account number, alias or email, and support `--json`.
 
-A rejection identifies a low credit balance, an organization's monthly API limit, or the HTTP error the check encountered. Check the organization's **Billing** page for low credit and its **Limits** page for a monthly limit. The monthly budget you enter in qswap sets a local spending limit. The credit you enter gives qswap a starting amount for its estimate.
+A rejection identifies a low credit balance, an organization's monthly API limit, or the HTTP error the check encountered. Check the organization's **Billing** page for low credit and its **Spend limits** page for a monthly limit. Anthropic documents when a tier cap resets and how to request an increase. [Claude API limits](https://platform.claude.com/docs/en/api/rate-limits#reaching-your-spend-cap) The monthly budget you enter in qswap sets a local spending limit. The credit you enter gives qswap a starting amount for its estimate.
 
 For 24 hours, the menu row shows a failed inference check with its age, and the tooltip and `qswap budget` show the last inference result, including a success. A free check leaves that result in place. Checking a key works while another account is active. Auto-switch never runs either probe.
 

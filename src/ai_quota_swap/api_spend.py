@@ -1408,6 +1408,10 @@ def inference_check_text(reading: dict | None, now: float, *, failures_only: boo
     if (not label or not isinstance(at, (int, float)) or not 0 <= now - at < api_check.MAX_AGE
             or failures_only and check.get("outcome") == "accepted"):
         return None
+    if failures_only:
+        if check["outcome"] == "monthly-limit":
+            label = "monthly API limit reached"
+        return f"{label} · checked {_age(now - at)}"
     return f"Last check {_age(now - at)} · {label}"
 
 

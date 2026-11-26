@@ -2559,6 +2559,16 @@ def test_api_inference_refusal_visible_beside_local_budget():
     acc = _acct(number="6", email="api-key-6@token.local", kind="api_key",
                 entry=Reading(sentinel=USAGE_API_KEY, api_spend=reading))
     row = _row(acc, now=now)
-    assert "Last check 1m ago · credit balance too low" in row.text and row.attention
+    assert "credit balance too low · checked 1m ago" in row.text and row.attention
     assert "$0 local · $200 monthly budget" in row.tooltip
     assert "credit balance too low" in row.tooltip
+
+
+def test_monthly_limit_check_fits_in_api_key_row():
+    now = time.time()
+    reading = _api_reading()
+    reading["inference_check"] = {"outcome": "monthly-limit", "checkedAt": now,
+                                  "model": "claude-haiku-5-5", "httpStatus": 429}
+    acc = _acct(number="5", email="api-key-5@token.local", kind="api_key",
+                entry=Reading(sentinel=USAGE_API_KEY, api_spend=reading))
+    assert "monthly API limit reached · checked just now" in _row(acc, now=now).text

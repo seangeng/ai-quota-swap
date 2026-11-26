@@ -47,13 +47,16 @@ def _outcome(status: int, payload: object, inference: bool) -> str:
             return "counted"
         return "unreadable"
     err = data.get("error")
-    message = str(err.get("message", "")).lower() if isinstance(err, dict) else ""
+    err = err if isinstance(err, dict) else {}
+    message = str(err.get("message", "")).lower()
+    details = err.get("details")
+    error_code = details.get("error_code") if isinstance(details, dict) else None
     if status in (400, 402, 403, 429):
         if "credit balance is too low" in message:
             return "low-credit"
-        if "monthly api usage threshold" in message:
+        if error_code == "enforced_spend_limit_reached" or "monthly api usage threshold" in message:
             return "monthly-limit"
-        if status == 402 or (isinstance(err, dict) and err.get("type") == "billing_error"):
+        if status == 402 or err.get("type") == "billing_error":
             return "billing"
     if status >= 500:
         return "server"

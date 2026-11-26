@@ -63,6 +63,7 @@ def test_cli_probe_and_cached_menu_reading(temp_home, monkeypatch, capsys):
 
 @pytest.mark.parametrize(("status", "payload", "outcome"), [
     (429, {"error": {"message": "Your organization has crossed its monthly API usage threshold."}}, "monthly-limit"),
+    (429, {"error": {"details": {"error_code": "enforced_spend_limit_reached"}}}, "monthly-limit"),
     (429, {"error": {"message": "Too many requests"}}, "rate-limit"),
     (402, {"error": {"type": "billing_error"}}, "billing"),
     (401, {}, "auth"), (403, {}, "permission"), (404, {}, "model"),
