@@ -307,6 +307,10 @@ def usage_fields(
     return "unavailable", None
 
 
+def inference_check_to_json(check: dict) -> dict:
+    return {**check, "checkedAt": _timestamp(check["checkedAt"])}
+
+
 def api_spend_to_json(reading: dict) -> dict:
     """An API-key account's spend reading (``api_spend.readings``) as the
     additive ``apiSpend`` row field. ``used``/``today`` are null when there
@@ -327,6 +331,8 @@ def api_spend_to_json(reading: dict) -> dict:
         out["asOf"] = _timestamp(as_of)
     if reading.get("org"):
         out["organization"] = reading["org"]
+    if check := reading.get("inference_check"):
+        out["inferenceCheck"] = inference_check_to_json(check)
     if reading.get("api_key_id"):
         out["apiKeyId"] = reading["api_key_id"]
     if reading.get("unpriced_tokens"):

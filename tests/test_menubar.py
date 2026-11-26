@@ -531,7 +531,7 @@ def test_row_placeholder_name_is_never_an_address_or_cut_mid_word():
     budget = _api_reading(used=0.0, limit=500.0, today=0.0)
     acc = _acct(number="5", email="api-key-5@token.local", kind="api_key",
                 entry=Reading(sentinel=USAGE_API_KEY, api_spend=budget))
-    assert _row(acc).text == "#5 api-key-5 · API key · $0 of $500 this month"
+    assert _row(acc).text == "#5 api-key-5 · API key · $0 local · $500 monthly budget"
     # A setup-token placeholder with held resets keeps its whole name or none.
     far = _NOW + 120 * 86400
     usage = _reset_usage(grants=[fable("a", ends=far, left=3), weekly("w", ends=far)])
@@ -2549,3 +2549,26 @@ def test_reset_runner_holds_the_lock_while_spending():
     runner = menubar_engines.ResetRunner(spend, lambda note: None, start=lambda fn: fn(), lock=lock)
     assert runner.run("sw", "claude", "1", "fb", who="#1 personal", what="a Fable reset")
     assert seen == [True] and not lock.locked()
+
+
+def test_api_inference_refusal_visible_beside_local_budget():
+    now = time.time()
+    reading = _api_reading(used=0.0, limit=200.0, today=0.0)
+    reading["inference_check"] = {"outcome": "low-credit", "checkedAt": now - 60,
+                                  "model": "claude-haiku-5-5", "httpStatus": 400}
+    acc = _acct(number="6", email="api-key-6@token.local", kind="api_key",
+                entry=Reading(sentinel=USAGE_API_KEY, api_spend=reading))
+    row = _row(acc, now=now)
+    assert "credit balance too low · checked 1m ago" in row.text and row.attention
+    assert "$0 local · $200 monthly budget" in row.tooltip
+    assert "credit balance too low" in row.tooltip
+
+
+def test_monthly_limit_check_fits_in_api_key_row():
+    now = time.time()
+    reading = _api_reading()
+    reading["inference_check"] = {"outcome": "monthly-limit", "checkedAt": now,
+                                  "model": "claude-haiku-5-5", "httpStatus": 429}
+    acc = _acct(number="5", email="api-key-5@token.local", kind="api_key",
+                entry=Reading(sentinel=USAGE_API_KEY, api_spend=reading))
+    assert "monthly API limit reached · checked just now" in _row(acc, now=now).text

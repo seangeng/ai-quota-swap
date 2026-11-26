@@ -18,6 +18,7 @@ from pathlib import Path
 from ai_quota_swap import admin_api, api_spend
 from ai_quota_swap.admin_api import AdminApiError, AdminCache
 from ai_quota_swap.admin_orgs import (
+    ADMIN_KEY_PREFIX,
     ENV_VAR,
     STORAGE_ENV,
     STORAGE_FILE,
@@ -102,18 +103,20 @@ def _label(num: str, email: str) -> str:
 
 
 def api_command(argv: list[str]) -> None:
-    """Handle ``qswap api org add [NAME] | list | remove NAME``."""
+    """Handle API-key diagnostics and organization registration."""
     prog = _cli()._prog_name()
     from ai_quota_swap.argparsing import ArgumentParser
 
     parser = ArgumentParser(
         prog=f"{prog} api",
         description=(
-            "Register an organization's Admin API key, so API-key accounts show "
+            "Check a Claude Console API key or register an organization's Admin API key, so accounts show "
             "what Anthropic recorded for their key and usage --billed shows the "
             "organization's billed cost."
         ),
         epilog=f"""examples:
+  {prog} api check 5                   # free token count
+  {prog} api check 5 --inference       # one billable request if accepted
   {prog} api org add               # paste the key at the hidden prompt
   {prog} api org add acme < key.txt
   {prog} api org list
@@ -123,7 +126,13 @@ kept in the macOS Keychain (elsewhere, a private file in the data directory).
 See docs/api-accounts.md.
 """,
     )
-    groups = parser.add_subparsers(dest="group", metavar="org")
+    groups = parser.add_subparsers(dest="group", metavar="{check,org}")
+    check = groups.add_parser("check", help="Check one saved Console API key")
+    check.add_argument("account", metavar="ACCOUNT", help="Account number, alias or email")
+    check.add_argument("--inference", action="store_true",
+                       help="Send one Messages request with at most one output token. A successful request is billable.")
+    check.add_argument("--json", action="store_true", help="Machine-readable output")
+    check.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     org = groups.add_parser("org", help="Registered organizations")
     sub = org.add_subparsers(dest="action", metavar="{add,list,remove}")
     p_add = sub.add_parser("add", help="Register an organization's Admin key")
@@ -137,14 +146,16 @@ See docs/api-accounts.md.
     p_rm.add_argument("name", metavar="NAME")
     p_rm.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if args.group != "org" or not args.action:
+    if args.group is None or (args.group == "org" and not args.action):
         parser.print_help(sys.stderr)
         sys.exit(64)
 
     try:
         switcher = _cli()._switcher(debug=getattr(args, "debug", False))
         _cli()._guard_root(switcher)
-        if args.action == "add":
+        if args.group == "check":
+            _key_check(switcher, args.account, inference=args.inference, as_json=args.json)
+        elif args.action == "add":
             _org_add(switcher, args.name)
         elif args.action == "list":
             _org_list(switcher, as_json=args.json)
@@ -157,6 +168,35 @@ See docs/api-accounts.md.
     except KeyboardInterrupt:
         print(f"\n{dimmed('Operation cancelled')}")
         sys.exit(130)
+
+
+def _key_check(switcher, account: str, *, inference: bool, as_json: bool) -> None:
+    from ai_quota_swap import api_check, key_helper
+    from ai_quota_swap.json_output import SCHEMA_VERSION, inference_check_to_json
+
+    if account.startswith("sk-ant-"):
+        _fail("Use a saved account number, alias or email.", as_json, "InvalidAccount", code=64)
+    num, email, _org = switcher.resolve_account(account)
+    try:
+        key = key_helper.read_key(num, switcher.backup_dir)
+    except key_helper.HelperFailure as exc:
+        _fail(str(exc), as_json, "KeyUnavailable")
+    if key.startswith(ADMIN_KEY_PREFIX):
+        _fail("Use a Console inference key. Admin keys belong under qswap api org.", as_json, "InvalidKey")
+    result = api_check.probe(key, inference=inference)
+    if inference:
+        try:
+            api_check.save_inference(switcher.backup_dir, key, result)
+        except OSError:
+            print("Could not save the check for the menu bar.", file=sys.stderr)
+    if as_json:
+        print(json.dumps({"schemaVersion": SCHEMA_VERSION, "account": int(num),
+                          "check": "inference" if inference else "count_tokens", **inference_check_to_json(result)}))
+    else:
+        status = f" (HTTP {result['httpStatus']})" if result["httpStatus"] is not None else ""
+        print(f"{_label(num, email)} · {result['model']} · {api_check.LABELS[result['outcome']]}{status}")
+    if result["outcome"] not in ("accepted", "counted"):
+        sys.exit(1)
 
 
 def read_admin_key() -> str:

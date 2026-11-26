@@ -44,7 +44,7 @@ Usage and cost
   usage                 tokens and estimated cost by day, model, account
   budget                monthly budgets for API-key accounts
   credit                a prepaid credit for an API-key account
-  api org               register an organization's Admin API key
+  api check / api org   check a Claude API key or register an Admin key
 
 Codex
   codex COMMAND         the same for Codex logins (qswap codex help)

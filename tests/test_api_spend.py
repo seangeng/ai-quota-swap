@@ -380,9 +380,9 @@ class TestNothingRecorded:
         _ledger("someone-else@example.com", [])
         reading = _readings(s)["3"]
         assert api_spend.spend_text(reading, now=NOW) == (
-            "API key · $0 of $500 this month · no usage recorded on this machine"
+            "API key · $0 local · $500 monthly budget · no usage recorded on this machine"
         )
-        assert api_spend.menu_text(reading, now=NOW) == "$0 of $500 this month"
+        assert api_spend.menu_text(reading, now=NOW) == "$0 local · $500 monthly budget"
         assert api_spend.budget_state(reading) == (0.0, 500.0)  # still enforced as before
 
     def test_an_old_zero_estimate_says_how_old_without_estimate(self, env):

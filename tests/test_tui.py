@@ -627,7 +627,7 @@ class TestRows:
                 "source": "ledger", "as_of": time.time(), "unpriced_tokens": 0}
         acc = make_account(5, kind="api_key", email="api-key-5@token.local",
                            entry=replace(entry, api_spend=zero))
-        assert self._row(acc, 100).endswith("   $0 of $500 this month")
+        assert self._row(acc, 100).endswith("   $0 local · $500 monthly budget")
 
     def test_a_limit_is_said_in_words(self):
         acc = make_account(1, entry=make_entry(100.0, 64.0))

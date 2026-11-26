@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `qswap api check ACCOUNT` checks a saved Claude Console key with a free token count. Add `--inference` to send one short, billable-if-accepted message. The menu shows the reason for a failed inference check and labels local spend separately from the monthly budget.
+
 ## 0.1.5
 
 Two small changes, and the API-key switch checked against a newer Claude Code.
