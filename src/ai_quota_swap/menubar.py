@@ -1030,6 +1030,9 @@ def account_row(
         else:
             summary = display.api_key_summary(block)
             tries = ([over, by, summary], [by, summary], [summary])
+        check = api_spend.inference_check_text(reading, now, failures_only=True)
+        if check:
+            tries = [[check, *facts] for facts in tries] + [[check]]
         whole = not acc.alias and is_placeholder(acc.email)
         for extra in tries:
             facts = [x for x in extra if x]
@@ -1038,7 +1041,7 @@ def account_row(
         parts.extend(facts)
         # A limit reached, or one not enforced (no fresh figure): the engine
         # treats both as at the limit and leaves the key (decision A4).
-        attention = api_spend.limit_reason(reading) is not None or (
+        attention = bool(check) or api_spend.limit_reason(reading) is not None or (
             api_spend.limit_not_enforced(reading, now)
         )
     elif state == "not-read":

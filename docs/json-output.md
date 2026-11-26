@@ -13,6 +13,7 @@ Add `--json` to a qswap command and a script can read what you see on screen: ea
 | `priority`, `codex priority` | `{schemaVersion, accounts: [{number, email, priority}]}`; setting one, `{schemaVersion, account: {number, email}, priority}` |
 | `config`, `config list` | `{schemaVersion, path, settings: [{key, value, isSet}]}`; `config get KEY`, `{schemaVersion, key, value, isSet}` |
 | `usage` | a [token and cost report](#usage) |
+| `api check ACCOUNT [--inference]` | `{schemaVersion, account, check, model, outcome, httpStatus, checkedAt}`. The check timestamp is ISO 8601 UTC. A provider rejection returns exit code 1 with its result. For 24 hours, `apiSpend.inferenceCheck` includes the last inference result with an ISO timestamp. |
 | `budget` | `{schemaVersion, accounts: [{number, email, budget, apiSpend}]}`; setting one, `{schemaVersion, number, email, budget, changed}` |
 | `credit` | `{schemaVersion, accounts: [{number, email, credit, apiSpend}]}` for the accounts with a credit; setting one, `{schemaVersion, number, email, credit, changed}`. `credit` is `{amount, since, expires}` (`null` once removed) |
 | `api org list` | `{schemaVersion, organizations: [{name, organizationName, organizationId, storage, added, linkedAccounts}], environmentKey}`; never a key |

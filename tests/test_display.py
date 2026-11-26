@@ -177,7 +177,7 @@ class TestBlock:
             "no usage recorded"
         )
         assert display.api_key_summary(block(
-            "$0 of $500 this month · no usage recorded on this machine")) == "$0 of $500 this month"
+            "$0 local · $500 monthly budget · no usage recorded on this machine")) == "$0 local · $500 monthly budget"
         spent = "$4.12 today · $212.40 this month · estimate"
         assert display.api_key_summary(block(spent, "a detail line")) == spent
 

@@ -18,6 +18,14 @@ Added #6 build@example.com (from API key)
 
 A switch to an API-key account moves every Claude Code session onto the key within a few seconds, running ones included: [Switch to an API key](#switch-to-an-api-key). That has been tested on Claude Code 2.1.322 and 2.1.330, with sessions in print mode and interactive ones; [Limits](#limits) says what has not. Auto-switch treats an API-key account differently, as [Set a budget](#set-a-budget) explains.
 
+### Check a key when Claude reports an error
+
+`qswap api check 5` sends a free token-count request directly to Anthropic with the saved key. A successful count leaves billing untested. To test whether Anthropic will serve a message on that key, run `qswap api check 5 --inference`. It sends one short Haiku request with at most one output token. Anthropic bills a successful request. Both commands accept an account number, alias or email, and support `--json`.
+
+A rejection identifies a low credit balance, an organization's monthly API limit, or the HTTP error the check encountered. Check the organization's **Billing** page for low credit and its **Limits** page for a monthly limit. The monthly budget you enter in qswap sets a local spending limit. The credit you enter gives qswap a starting amount for its estimate.
+
+For 24 hours, the menu row shows a failed inference check with its age, and the tooltip and `qswap budget` show the last inference result, including a success. A free check leaves that result in place. Checking a key works while another account is active. Auto-switch never runs either probe.
+
 ### Setup-tokens
 
 A setup-token is the long-lived token `claude setup-token` prints. It is added with the same command:
@@ -284,7 +292,7 @@ Months and days are UTC, as in Anthropic's reports, so the month starts again at
 | `· budget reached earlier` at the end | Auto-switch judged the budget reached this month (Anthropic's figure, say) and the figure now reads lower (this machine's estimate). It still counts as reached until the month ends or you set the budget again; the second line names `qswap budget 5 AMOUNT`. A credit counted as spent the same way says `· credit counted as spent`, until you record it again (`qswap credit 5 AMOUNT`) |
 | `· not used until a subscription has room` at the end | Auto-switch left another key at its limit for a subscription that was itself full, and enters no other key until a check reads a subscription with room. The second line names that key and how to use this one now (`auto-switch left #5 ci at its monthly budget, and enters no other key until a subscription has room; to use this key now: qswap switch 6`). The dashboard's Next best and the auto log say the same. Only while `autoswitch.includeApiKeyAccounts` is on, and never on the active key |
 | `no usage recorded on this machine` | The estimate is $0 today and this month, or nothing has been scanned yet (no usage ledger on this machine). A one-line row (menu bar, dashboard) says `no usage recorded` |
-| `$0 of $500 this month · no usage recorded on this machine` | The same, with a budget. A one-line row says `$0 of $500 this month` |
+| `$0 local · $500 monthly budget · no usage recorded on this machine` | The same, with a budget. A one-line row says `$0 local · $500 monthly budget` |
 | `spend unknown: this machine's usage ledger could not be read; run: qswap usage` | The ledger exists but could not be read (written by another version, or damaged). Never shown as $0. A one-line row says `spend unknown` |
 | `no spend data yet` | A registered organization could not give a figure (for example, the key is not in it), and there is no estimate either. A second line says why |
 

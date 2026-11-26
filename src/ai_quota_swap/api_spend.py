@@ -41,7 +41,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ai_quota_swap import admin_api
+from ai_quota_swap import admin_api, api_check
 from ai_quota_swap.admin_api import AdminApiError, AdminCache, ReportResult
 from ai_quota_swap.admin_orgs import Org, OrgRegistry
 
@@ -1098,10 +1098,13 @@ def readings(
                     credit_unpriced = ls.unpriced_since
             elif not note and (root / DB_FILENAME).exists():
                 note = LEDGER_UNREADABLE
+        check = api_check.recent_inference(root, keys[num], now)
         if reading is None:
-            if budget is None and credit is None and not orgs and not note:
+            if budget is None and credit is None and not orgs and not note and check is None:
                 continue
             reading = _blank(None, None, None, 0, None)
+        if check is not None:
+            reading["inference_check"] = check
         if link is not None and reading.get("source") != SOURCE_ADMIN:
             # Linked, but Anthropic's figure is missing or past STALE_MAX_S:
             # this machine's figure is shown, never held to the limit (EM2).
@@ -1238,8 +1241,8 @@ def nothing_recorded(reading: object) -> bool:
 
 
 def _nothing_spent(limit: float | None) -> str:
-    """The budget form of nothing recorded: ``$0 of $500 this month``."""
-    return f"$0 of {budget_money(limit)} this month" if limit is not None else ""
+    """The budget form of nothing recorded: ``$0 local · $500 monthly budget``."""
+    return f"$0 local · {budget_money(limit)} monthly budget" if limit is not None else ""
 
 
 def credit_money(value: float, *, cents: bool = False) -> str:
@@ -1396,6 +1399,18 @@ def credit_counted_from(credit: dict, source: str | None) -> str:
     return f"{at.hour:02d}:00 UTC {day}"
 
 
+def inference_check_text(reading: dict | None, now: float, *, failures_only: bool = False) -> str | None:
+    check = (reading or {}).get("inference_check")
+    if not isinstance(check, dict):
+        return None
+    at = check.get("checkedAt")
+    label = api_check.LABELS.get(check.get("outcome"))
+    if (not label or not isinstance(at, (int, float)) or not 0 <= now - at < api_check.MAX_AGE
+            or failures_only and check.get("outcome") == "accepted"):
+        return None
+    return f"Last check {_age(now - at)} · {label}"
+
+
 def detail_text(
     reading: dict, now: float | None = None, *, with_credit: bool = True,
 ) -> str | None:
@@ -1435,6 +1450,8 @@ def detail_text(
         # What holds the key first, as the engine checks it before the figure.
         words = key_left_detail(held)
         base = f"{words} · {base}" if base else words
+    if check := inference_check_text(reading, now):
+        base = f"{check} · {base}" if base else check
     credit = reading.get("credit")
     if not with_credit or not isinstance(credit, dict) or credit.get("expired"):
         return base
@@ -1541,8 +1558,8 @@ def menu_text(
 ) -> str:
     """For a menu bar row, within its note width: ``$4.12 today ·
     $212.40/$500 (42%)``; ``(104%, over budget)`` past the budget, as
-    :func:`spend_text` says it. Nothing recorded with a budget: ``$0 of $500
-    this month``. A budget or credit with no fresh figure ends in ``limit
+    :func:`spend_text` says it. Nothing recorded with a budget: ``$0 local ·
+    $500 monthly budget``. A budget or credit with no fresh figure ends in ``limit
     not enforced``. ``today`` False leaves today's figure out, for a row
     with no room for it; ``credit`` False leaves out the credit that follows a
     monthly budget reached (the reason), so a row short of room never cuts

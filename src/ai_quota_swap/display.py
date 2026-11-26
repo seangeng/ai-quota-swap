@@ -241,7 +241,7 @@ def api_key_summary(block: "AccountBlock") -> str:
     """An API-key account's state in a one-line row (the menu bar, the
     dashboard), after its ``API key`` fact: the block's first line, except
     that nothing recorded is said in two words (``no usage recorded``), a
-    budget with nothing spent as ``$0 of $500 this month``, and a ledger that
+    budget with nothing spent as ``$0 local · $500 monthly budget``, and a ledger that
     could not be read as ``spend unknown``."""
     note = block.notes[0] if block.notes else API_KEY_NO_USAGE
     if note == API_KEY_NO_USAGE:

@@ -44,6 +44,7 @@ Usage and cost
   usage                 tokens and estimated cost by day, model, account
   budget                monthly budgets for API-key accounts
   credit                a prepaid credit for an API-key account
+  api check ACCOUNT     check a saved Claude API key (--inference tests billing)
   api org               register an organization's Admin API key
 
 Codex
