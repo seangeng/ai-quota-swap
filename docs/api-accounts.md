@@ -26,6 +26,8 @@ A rejection identifies a low credit balance, an organization's monthly API limit
 
 For 24 hours, the menu row shows a failed inference check with its age, and the tooltip and `qswap budget` show the last inference result, including a success. A free check leaves that result in place. Checking a key works while another account is active. Auto-switch never runs either probe.
 
+![Menu rows before and after a check, showing a monthly API limit on one demo key and the local spend and budget on another](../assets/screenshots/raw/api-key-checks.png)
+
 ### Setup-tokens
 
 A setup-token is the long-lived token `claude setup-token` prints. It is added with the same command:

@@ -135,6 +135,20 @@ their kind of token, never as zero (`unpriced_tokens` says how many).
 
 Months and days are UTC, as in Anthropic's reports (buckets snap to UTC boundaries).
 
+## Checking whether a key can serve messages
+
+A local spend figure can be zero while Anthropic is refusing requests. An explicit
+`qswap api check ACCOUNT` sends a free token count. With `--inference`, it sends
+one Messages request with a one-token output limit. A successful inference check
+means that the probe model served the request at the observed time.
+
+The inference check caches its timestamp, model, HTTP status and classified
+outcome under the saved key's fingerprint for display for 24 hours. A replaced
+key has its own fingerprint. The menu gives a recent rejection priority over
+spend text and includes the age of the check. The tooltip retains the local
+estimate. Token-count checks leave the inference result in place. Both checks
+run on demand. Auto-switch continues to use its existing budget and credit rules.
+
 ## Budgets
 
 `qswap budget ACCOUNT AMOUNT` sets a monthly budget in dollars; `qswap budget ACCOUNT off`
