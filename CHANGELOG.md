@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `qswap where [--json]` and `qswap route [--task KIND] [--caller PROVIDER] [--exclude LIST] [--require-cli] [--json]` report multi-provider fleet capacity across Claude Code, Codex, OpenCode (`opencode.db`), Gemini CLI, Antigravity, Grok Bot, and installed coding agents (Cursor, Copilot, Windsurf, Amp, Aider, Cline), and rank providers by task affinity, remaining headroom, and reset/credit expiry urgency. Every `where`, `route`, and menu bar refresh also writes a secret-free `~/.ai-quota-swap/fleet_status.json` (mode `0600`) for local tools such as Workmesh and desk displays.
 - `qswap api check ACCOUNT` checks a saved Claude Console key with a free token count. Add `--inference` to send one short, billable-if-accepted message. The menu shows the reason for a failed inference check and labels local spend separately from the monthly budget.
 
 ## 0.1.5

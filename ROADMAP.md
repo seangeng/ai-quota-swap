@@ -170,7 +170,7 @@ Design: [docs/design/api-accounts.md](docs/design/api-accounts.md). Guide:
 ### M5. Engine
 
 - [x] One reset policy across providers: Codex credits follow the same `resets.*` settings.
-- [ ] `where`: the best account per provider right now, and when each exhausted one returns.
+- [x] `where` and `route`: secret-free multi-provider fleet snapshot (`fleet_status.json`) and urgency-weighted routing across Claude Code, Codex, OpenCode, Gemini CLI, Antigravity, Grok, and installed coding agents ([docs/design/fleet.md](docs/design/fleet.md)).
 - [ ] Wait or switch: don't jump to an account with 1% left when the active one resets in 40
   minutes.
 - [ ] Hooks: run a user command on switch, limit reached, and reset used.

@@ -224,6 +224,12 @@ def run_app(switcher, rumps, AppKit) -> int:
                     claude, codex, read_history(log_path), heartbeats(data_root), now,
                 )
                 self._log_usage(self._data)
+                try:
+                    from ai_quota_swap.fleet import write_fleet_status
+
+                    write_fleet_status(data_root, cost_summary=self._cost, now=now)
+                except Exception:
+                    logger.debug("menu bar fleet_status write failed", exc_info=True)
                 self._dirty = True  # picked up by on_sync_tick on the main thread
                 if claude_store_only:
                     self._claude_source.refresh_plans()

@@ -42,8 +42,8 @@ Sessions
 
 Usage and cost
   usage                 tokens and estimated cost by day, model, account
-  budget                monthly budgets for API-key accounts
-  credit                a prepaid credit for an API-key account
+  where, route          fleet headroom and best provider across AI tools
+  budget, credit        monthly budgets and prepaid credits for API keys
   api check / api org   check a Claude API key or register an Admin key
 
 Codex
