@@ -18,6 +18,8 @@ Add `--json` to a qswap command and a script can read what you see on screen: ea
 | `credit` | `{schemaVersion, accounts: [{number, email, credit, apiSpend}]}` for the accounts with a credit; setting one, `{schemaVersion, number, email, credit, changed}`. `credit` is `{amount, since, expires}` (`null` once removed) |
 | `api org list` | `{schemaVersion, organizations: [{name, organizationName, organizationId, storage, added, linkedAccounts}], environmentKey}`; never a key |
 | `doctor` | `{schemaVersion, checks: [{id, group, status, summary, fix}], counts, online}`; a check about a file its summary names in words (another settings layer) adds `path` |
+| `where` | `{schemaVersion, updatedAt, updatedAtMs, todayUsd, sevenDayUsd, providers, recommendations, alerts}` — secret-free multi-provider fleet snapshot (also written to `~/.ai-quota-swap/fleet_status.json`, mode `0600`) |
+| `route` | `{schemaVersion, task, caller, best, ranked}` — urgency-weighted provider recommendations for `--task coding|review|long_context|research|bulk` |
 | `auto`, `codex auto` | one [event](#auto-switch-events) per line |
 
 Any other command answers `--json` with a usage error (exit 64). Real output follows; `...` marks lines left out.

@@ -2436,6 +2436,77 @@ def _status(switcher, *, as_json: bool):
     return None
 
 
+def _where_command(argv: list[str]) -> None:
+    """``qswap where [--json]``: fleet capacity across all providers, also refreshes fleet_status.json."""
+    from ai_quota_swap import fleet
+    from ai_quota_swap.argparsing import ArgumentParser as _Parser
+
+    parser = _Parser(
+        prog="qswap where",
+        usage="qswap where [--json]",
+        description="Show remaining quota and best provider across installed AI coding tools.",
+        epilog="examples:\n  qswap where\n  qswap where --json",
+    )
+    parser.add_argument("--json", action="store_true", help="print the fleet snapshot as JSON")
+    args = parser.parse_args(argv)
+    snap = fleet.write_fleet_status(paths.get_backup_root())
+    if args.json:
+        print(json.dumps(snap, indent=2))
+    else:
+        print(fleet.format_where_text(snap), end="")
+
+
+def _route_command(argv: list[str]) -> None:
+    """``qswap route [--task KIND] [--caller PROVIDER] [--exclude A,B] [--json]``."""
+    from ai_quota_swap import fleet
+    from ai_quota_swap.argparsing import ArgumentParser as _Parser
+
+    parser = _Parser(
+        prog="qswap route",
+        usage="qswap route [--task KIND] [--caller NAME] [--exclude LIST]\n"
+              "                   [--require-cli] [--json]",
+        description="Recommend the best provider for a task by headroom, reset urgency, and affinity.",
+        epilog="examples:\n  qswap route --task review --caller claude\n  qswap route --task coding --json",
+    )
+    parser.add_argument(
+        "--task",
+        default="coding",
+        choices=list(fleet.TASK_KINDS),
+        help="task shape (default: coding)",
+    )
+    parser.add_argument("--caller", default=None, help="calling provider (for cross-harness diversity)")
+    parser.add_argument("--exclude", default="", help="comma-separated provider ids to skip")
+    parser.add_argument("--require-cli", action="store_true", help="only include providers whose CLI is on PATH")
+    parser.add_argument("--json", action="store_true", help="print ranked choices as JSON")
+    args = parser.parse_args(argv)
+    snap = fleet.write_fleet_status(paths.get_backup_root())
+    excl = tuple(p.strip() for p in args.exclude.split(",") if p.strip())
+    ranked = fleet.recommend_providers(
+        snap["providers"],
+        task_kind=args.task,
+        caller_provider=args.caller,
+        exclude=excl,
+        require_cli=args.require_cli,
+    )
+    payload = {
+        "schemaVersion": fleet.SCHEMA_VERSION,
+        "task": args.task,
+        "caller": args.caller,
+        "best": ranked[0].to_json() if ranked else None,
+        "ranked": [c.to_json() for c in ranked],
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    elif ranked:
+        top = ranked[0]
+        print(f"{top.provider} ({top.reason})")
+        for alt in ranked[1:]:
+            print(f"  alt: {alt.provider} ({alt.reason})")
+    else:
+        print("No eligible provider available.")
+        sys.exit(1)
+
+
 def main() -> None:
     """Main entry point for the CLI."""
     if sys.argv[1:2] == ["key-helper"]:
@@ -2470,7 +2541,7 @@ def main() -> None:
 _OWN_PARSER_VERBS = (
     "run", "auto", "config", "map", "unmap", "unclaimed", "alias", "threshold",
     "priority", "api", "budget", "credit", "reset", "resets", "usage", "swap", "move",
-    "doctor", "login",
+    "doctor", "login", "where", "route",
 )
 # Options of the legacy interface that take a value (so the value is not
 # mistaken for a verb's positional argument).
@@ -2648,6 +2719,12 @@ def _dispatch(argv: list[str]) -> None:
         from ai_quota_swap import doctor
 
         doctor.doctor_command(argv[1:])
+        return
+    if argv and argv[0] == "where":
+        _where_command(argv[1:])
+        return
+    if argv and argv[0] == "route":
+        _route_command(argv[1:])
         return
 
     # Bare `qswap` in an interactive terminal opens the TUI dashboard (like
