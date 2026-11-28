@@ -608,6 +608,13 @@ def _collect_antigravity(
     reset_ts = _parse_iso_ts(reset_iso)
     resets_in_sec = int(reset_ts - now) if reset_ts is not None and reset_ts > now else None
 
+    claude_gpt_override = extra_cfg.get("claudeGptHeadroomPct")
+    claude_gpt_headroom: float | None = (
+        max(0.0, min(100.0, round(float(claude_gpt_override), 1)))
+        if isinstance(claude_gpt_override, (int, float))
+        else (headroom if installed else None)
+    )
+
     return {
         "id": "antigravity",
         "displayName": _PROVIDER_DISPLAY["antigravity"],
@@ -621,6 +628,8 @@ def _collect_antigravity(
         "bestSlot": "Ultra" if installed else None,
         "headroomPct": headroom,
         "poolHeadroomPct": headroom,
+        "modelPools": ["gemini", "claude", "gpt"] if installed else [],
+        "claudeGptHeadroomPct": claude_gpt_headroom,
         "bucket": _bucket_for_headroom(headroom, installed),
         "tight": headroom is not None and headroom <= 15.0,
         "nextResetAt": reset_iso,
@@ -1082,6 +1091,8 @@ def format_where_text(snapshot: dict[str, Any]) -> str:
             parts.append(f"{exp} reset credit{'s' if exp != 1 else ''}")
         if pid == "opencode" and info.get("models"):
             parts.append(f"model: {info['models'][0]}")
+        if pid == "antigravity" and info.get("modelPools"):
+            parts.append("pools: Gemini + Claude/GPT")
         if info.get("quotaMode") and info["quotaMode"] != "live":
             parts.append(f"({info['quotaMode']})")
         lines.append(f"  {name:<12} " + " · ".join(parts))
