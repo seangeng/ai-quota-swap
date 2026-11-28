@@ -17,9 +17,12 @@ plain attributes, which the one-second sync tick picks up on the main thread.
 from __future__ import annotations
 
 import functools
+import json
+import os
 import re
 import threading
 import time
+from pathlib import Path
 
 from ai_quota_swap import launch_agent, login, manual_reset
 from ai_quota_swap.exceptions import (
@@ -135,6 +138,8 @@ def run_app(switcher, rumps, AppKit) -> int:
             self._codex = CodexReader(data_root)
             self._data = Gathered(ProviderState("claude"), ProviderState("codex"))
             self._cost = None
+            self._fleet = None
+            self._workmesh = None
             # Read again when the ledger, a registry or an activation log
             # changes, or when the chart is turned on (the read for the
             # chart also reads each day by account; without it, it does not).
@@ -227,7 +232,7 @@ def run_app(switcher, rumps, AppKit) -> int:
                 try:
                     from ai_quota_swap.fleet import write_fleet_status
 
-                    write_fleet_status(data_root, cost_summary=self._cost, now=now)
+                    self._fleet = write_fleet_status(data_root, cost_summary=self._cost, now=now)
                 except Exception:
                     logger.debug("menu bar fleet_status write failed", exc_info=True)
                 self._dirty = True  # picked up by on_sync_tick on the main thread
@@ -418,6 +423,37 @@ def run_app(switcher, rumps, AppKit) -> int:
                 self._start_at_login = bool(launch_agent.start_at_login_enabled())
             except Exception:
                 self._start_at_login = False
+            self._workmesh = self._read_workmesh_status()
+
+        def _workmesh_config_path(self) -> Path:
+            xdg = os.environ.get("XDG_CONFIG_HOME")
+            base = Path(xdg) if xdg else Path.home() / ".config"
+            return base / "workmesh" / "config.json"
+
+        def _read_workmesh_status(self) -> dict | None:
+            cfg_path = self._workmesh_config_path()
+            if not cfg_path.exists():
+                return None
+            try:
+                raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            if not isinstance(raw, dict):
+                return None
+            hub = raw.get("hub") if isinstance(raw.get("hub"), dict) else {}
+            cap = raw.get("capacity") if isinstance(raw.get("capacity"), dict) else {}
+            pool = raw.get("pool") if isinstance(raw.get("pool"), dict) else {}
+            rules = pool.get("rules") if isinstance(pool.get("rules"), list) else []
+            hub_url = str(hub.get("url") or "")
+            board_url = "https://workmesh.b3os.org/usage" if "b3os.org" in hub_url else (f"{hub_url.rstrip('/')}/usage" if hub_url else "")
+            return {
+                "configured": True,
+                "hubUrl": hub_url,
+                "boardUrl": board_url,
+                "capacityShare": str(cap.get("share") or "off"),
+                "poolEnabled": bool(pool.get("enabled")),
+                "rulesCount": len(rules),
+            }
 
         def _menu_input(self) -> MenuInput:
             now = time.time()
@@ -437,6 +473,7 @@ def run_app(switcher, rumps, AppKit) -> int:
                 can_add_token=hasattr(self.switcher, "add_account_from_token"),
                 resets=self._resets, resets_busy=self._reset_runner.busy(),
                 login_busy=self._login_runner.busy(),
+                fleet=self._fleet, workmesh=self._workmesh,
             )
 
         def rebuild_menu(self):
@@ -937,6 +974,46 @@ def run_app(switcher, rumps, AppKit) -> int:
                 self._alert(f"Couldn't change Start at login: {e}")
                 return
             self.rebuild_menu()
+
+        def _mutate_workmesh_config(self, mutate):
+            from ai_quota_swap import fsutil
+
+            cfg_path = self._workmesh_config_path()
+            if not cfg_path.exists():
+                self._alert("Workmesh config not found (~/.config/workmesh/config.json).")
+                return
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                return
+            mutate(raw)
+            fsutil.atomic_write_text(cfg_path, json.dumps(raw, indent=2) + "\n", mode=0o600)
+            self.rebuild_menu()
+
+        def _do_workmesh_toggle_pool(self, _a: Action):
+            def toggle(raw: dict):
+                pool = raw.get("pool") if isinstance(raw.get("pool"), dict) else {}
+                pool["enabled"] = not bool(pool.get("enabled"))
+                raw["pool"] = pool
+
+            self._mutate_workmesh_config(toggle)
+
+        def _do_workmesh_share(self, a: Action):
+            level = str(a.value or "off")
+            if level not in ("off", "availability", "detailed"):
+                return
+
+            def set_share(raw: dict):
+                cap = raw.get("capacity") if isinstance(raw.get("capacity"), dict) else {}
+                cap["share"] = level
+                raw["capacity"] = cap
+
+            self._mutate_workmesh_config(set_share)
+
+        def _do_workmesh_open_board(self, _a: Action):
+            import webbrowser
+
+            url = (self._workmesh or {}).get("boardUrl") or "https://workmesh.b3os.org/usage"
+            webbrowser.open(str(url))
 
     MenuBarApp().run()
     return 0

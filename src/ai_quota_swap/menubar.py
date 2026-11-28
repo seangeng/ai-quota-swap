@@ -761,6 +761,10 @@ class MenuInput:
     resets_busy: frozenset = frozenset()
     #: The Claude Code account a *Sign in again* is waiting on the browser for.
     login_busy: str | None = None
+    #: Optional secret-free fleet snapshot from ``fleet.py`` (other AI tools + routing).
+    fleet: Mapping[str, object] | None = None
+    #: Optional Workmesh opt-in capacity/pool status read from ``~/.config/workmesh/config.json``.
+    workmesh: Mapping[str, object] | None = None
 
     def provider(self, provider: str) -> ProviderState:
         return self.codex if provider == "codex" else self.claude
@@ -1817,6 +1821,91 @@ def cost_row(inp: MenuInput) -> Row:
     return Row(text, chart=chart)
 
 
+def _other_ai_rows(inp: MenuInput) -> list[Row]:
+    """Summary rows for non-Claude/non-Codex AI tools from ``fleet_status.json``."""
+    fl = inp.fleet
+    if not isinstance(fl, Mapping):
+        return []
+    provs = fl.get("providers")
+    if not isinstance(provs, Mapping):
+        return []
+
+    rows: list[Row] = []
+    primary = ("opencode", "antigravity", "gemini", "grok")
+    for pid in primary:
+        info = provs.get(pid)
+        if not isinstance(info, Mapping) or not info.get("installed"):
+            continue
+        name = str(info.get("displayName") or pid)
+        hr = info.get("headroomPct")
+        parts: list[str] = []
+        if isinstance(hr, (int, float)):
+            parts.append(f"{hr:.0f}% free")
+        elif info.get("bucket"):
+            parts.append(str(info["bucket"]))
+        if pid == "antigravity" and info.get("modelPools"):
+            parts.append("Gemini + Claude/GPT")
+        elif pid == "opencode":
+            models = info.get("models")
+            if isinstance(models, list) and models:
+                parts.append(str(models[0]))
+            today_c = info.get("todayCostUsd")
+            if isinstance(today_c, (int, float)) and today_c > 0:
+                parts.append(f"${today_c:.2f} today")
+        if info.get("resetCountdown"):
+            parts.append(f"resets in {info['resetCountdown']}")
+        rows.append(Row(f"{name} · " + " · ".join(parts) if parts else name))
+
+    extras: list[str] = []
+    for pid in ("cursor", "copilot", "windsurf", "amp", "aider", "cline"):
+        info = provs.get(pid)
+        if isinstance(info, Mapping) and info.get("installed"):
+            extras.append(str(info.get("displayName") or pid))
+    if extras:
+        rows.append(Row("Also installed: " + ", ".join(extras)))
+
+    recs = fl.get("recommendations")
+    if isinstance(recs, Mapping):
+        coding = recs.get("coding")
+        if isinstance(coding, list) and coding and isinstance(coding[0], Mapping):
+            top = coding[0]
+            top_id = str(top.get("provider") or "")
+            top_info = provs.get(top_id)
+            top_name = str(top_info.get("displayName")) if isinstance(top_info, Mapping) and top_info.get("displayName") else top_id
+            reason = str(top.get("reason") or "")
+            if top_name:
+                rows.append(Row(f"Best right now: {top_name} ({reason})" if reason else f"Best right now: {top_name}"))
+    return rows
+
+
+def _workmesh_menu(inp: MenuInput) -> Row | None:
+    """Clickable Workmesh capacity sharing & delegation pool submenu."""
+    wm = inp.workmesh
+    if not isinstance(wm, Mapping) or not wm.get("configured"):
+        return None
+    share = str(wm.get("capacityShare") or "off")
+    pool_on = bool(wm.get("poolEnabled"))
+    rules_n = int(wm.get("rulesCount") or 0)
+    pool_label = f"Pool ON ({rules_n} rule{'s' if rules_n != 1 else ''})" if pool_on else "Pool OFF"
+    title = f"Workmesh · {pool_label} · sharing: {share}"
+
+    children: list[Row] = [
+        Row(
+            "Delegation pool (team readonly + worktree)",
+            action=Action("workmesh-toggle-pool"),
+            checked=pool_on,
+        ),
+        Row("", separator=True),
+        Row("Capacity sharing: detailed", action=Action("workmesh-share", value="detailed"), checked=share == "detailed"),
+        Row("Capacity sharing: availability", action=Action("workmesh-share", value="availability"), checked=share == "availability"),
+        Row("Capacity sharing: off", action=Action("workmesh-share", value="off"), checked=share == "off"),
+    ]
+    if wm.get("boardUrl"):
+        children.append(Row("", separator=True))
+        children.append(Row("Open Workmesh Usage board", action=Action("workmesh-open-board")))
+    return Row(title, children=tuple(children))
+
+
 def build_menu(inp: MenuInput) -> Menu:
     """The complete menu for one moment: title, sections, rows.
 
@@ -1837,6 +1926,12 @@ def build_menu(inp: MenuInput) -> Menu:
                                 heading=display.provider_heading("codex", both=True)))
     else:
         sections.append(Section("claude", tuple(_provider_rows(inp, inp.claude))))
+    other_rows = _other_ai_rows(inp)
+    if other_rows:
+        sections.append(Section("fleet", tuple(other_rows), heading="Other AI tools"))
+    wm_row = _workmesh_menu(inp)
+    if wm_row is not None:
+        sections.append(Section("workmesh", (wm_row,)))
     if inp.cost is not None:
         sections.append(Section("cost", (cost_row(inp),)))
     if inp.claude.accounts:

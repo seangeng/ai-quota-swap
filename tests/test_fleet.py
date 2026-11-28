@@ -233,3 +233,37 @@ def test_detects_gemini_and_popular_optional_providers(tmp_path: Path) -> None:
 
     ranked_long = fleet.recommend_providers(snap["providers"], task_kind="long_context")
     assert any(c.provider == "gemini" for c in ranked_long)
+
+
+def test_menubar_shows_other_ai_tools_and_workmesh_pool(tmp_path: Path) -> None:
+    from ai_quota_swap.menubar import MenuBarSettings, MenuInput, ProviderState, build_menu
+
+    now = time.time()
+    data_root, home = _seed_data_root(tmp_path, now)
+    (home / ".gemini" / "antigravity").mkdir(parents=True)
+    (home / ".cursor").mkdir(parents=True)
+    snap = fleet.collect_fleet_snapshot(data_root, home=home, now=now, apps_dir=None)
+
+    menu = build_menu(
+        MenuInput(
+            claude=ProviderState("claude"),
+            codex=ProviderState("codex"),
+            settings=MenuBarSettings(),
+            now=now,
+            fleet=snap,
+            workmesh={
+                "configured": True,
+                "capacityShare": "detailed",
+                "poolEnabled": True,
+                "rulesCount": 1,
+                "boardUrl": "https://workmesh.b3os.org/usage",
+            },
+        )
+    )
+    texts = [r.text for r in menu.rows() if not r.separator]
+    assert any("Other AI tools" in t for t in texts)
+    assert any("OpenCode" in t and "deepseek-v4.1-flash" in t for t in texts)
+    assert any("Antigravity" in t and "Gemini + Claude/GPT" in t for t in texts)
+    assert any("Also installed:" in t and "Cursor" in t for t in texts)
+    assert any("Best right now: Codex" in t for t in texts)
+    assert any("Workmesh · Pool ON (1 rule) · sharing: detailed" in t for t in texts)
